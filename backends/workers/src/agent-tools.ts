@@ -10,6 +10,8 @@ import { builtinDefinitions as inboxBuiltinDefinitions } from "./inbox-definitio
 import { retriesModelError } from "./model-errors.ts";
 import { modelCompactionSettings } from "./model-context.ts";
 import { withCompactionPrompt } from "./model-compaction.ts";
+import { idleCompaction } from "./idle-compaction.ts";
+import { idleCompactionEnabled } from "./idle-compaction-schedule.ts";
 import { takesFiles } from './tool-file-schema.ts';
 import { toolOutputExtension } from "./tool-output.ts";
 import { agentUpdatesExtension } from "./agent-updates.ts";
@@ -49,7 +51,7 @@ import { agentBuiltins } from "./agent-builtins.ts";
 import { writtenFile, presentedFile } from "./file-output.ts";
 import { RefHeldError } from "./repos/repo-policy.ts";
 import { selectAgentTools, wordedFileTools } from "./file-tool-selection.ts";
-import { Env } from "./agent-types.ts";
+import type { Env, RequestRecord } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
 export function createDecisions(this: AgentRuntime): ReturnType<typeof decisionService> {
@@ -136,8 +138,8 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
       },
       // The provider wrapper owns preflight so its run caps share the step's
       // tenant read with credentials and accounting, including compaction.
-      beforeRequest: async invocation => {
-        const stopped = await this.limits.check(Date.now(), "metered", invocation);
+      beforeRequest: async (invocation, idle) => {
+        const stopped = idle ? undefined : await this.limits.check(Date.now(), "metered", invocation);
         if (stopped) {
           this.retryModelFailure = false;
           throw new Error(stopped.error);
@@ -145,21 +147,21 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
         await assertContextRange(
           contextRangeLimit((this.env as Env & { AGENT_CONTEXT_RANGE_MAX_BYTES?: string }).AGENT_CONTEXT_RANGE_MAX_BYTES),
           await (await this.harness.pi()).root(BACKGROUND_CONTEXT),
-          async failure => { await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
+          async failure => { if (!idle) await this.ctx.storage.put(`run-limit:${(await this.currentRun()).id}`, failure); },
         );
       },
       wrapProvider: (provider) =>
         meterProvider(
           provider,
           this.env,
-          async () => {
-            const conf = await this.config(),
-              run = await this.currentRun();
-            const params = "params" in run ? run.params : undefined;
+          async idle => {
+            const conf = await this.config();
+            const run: Pick<RequestRecord, "id" | "params"> | undefined = idle ? undefined : await this.currentRun();
+            const params = run?.params;
             return {
               tenant: conf.tenantId,
               agent: conf.id,
-              requestId: run.id === "background" ? undefined : run.id,
+              requestId: run?.id === "background" ? undefined : run?.id,
               subject: (params?.endUser as string | undefined) ?? conf.config.subject,
               context: conf.config.context,
               bucket:
@@ -185,15 +187,17 @@ export function createModels(this: AgentRuntime): ReturnType<typeof modelRuntime
           },
           action => this.dbProfile.run("admission", action),
         ),
-      settings: async () => {
+      settings: async idle => {
         const conf = await this.config();
-        const run = await this.currentRun();
-        const params = "params" in run ? run.params : undefined;
+        const run: Pick<RequestRecord, "id" | "params"> | undefined = idle ? undefined : await this.currentRun();
+        const params = run?.params;
         return {
           ...conf.config,
           ...params,
-          requestId: run.id,
-          outputReminded: !!(await this.ctx.storage.get(`output-reminded:${run.id}`)),
+          requestId: run?.id ?? "background",
+          outputReminded: !!run && !!(await this.ctx.storage.get(`output-reminded:${run.id}`)),
+          idleCompactionEligible: idleCompactionEnabled(this.env, conf.config) && conf.config.type !== "subagent" &&
+            !params?.output && !params?.endUser && !params?.bucket && !params?.spendLimit && !params?.runLimits,
           runLimits: {
             ...conf.config.runLimits,
             ...(params?.runLimits as object),
@@ -547,11 +551,13 @@ export function createHarness(this: AgentRuntime): PiHarness {
         registry.install(this.codeExtension);
         this.availableTools = prioritizedTools(registry.snapshot().tools());
         lap("harness tools", "Harness.open");
+        const idle = idleCompaction(this);
+        if (idleCompactionEnabled(this.env)) registry.install(idle.extension);
         const opened = await Harness.open(
           storage,
           {
             models: this.models.models,
-            registry: withCompactionPrompt(registry, fixed => this.modelCompaction?.(fixed)),
+            registry: withCompactionPrompt(registry, fixed => this.modelCompaction?.(fixed), idle),
             onWake,
             settings: () => ({
               afterFailedRun: "withdraw",

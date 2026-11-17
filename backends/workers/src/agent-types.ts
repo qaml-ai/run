@@ -90,6 +90,7 @@ export interface Env
   AGENT_VOICE_SESSIONS_PER_TENANT?: string;
   AI: Ai;
   MODEL: string;
+  AGENT_IDLE_COMPACTION?: string;
   API_TOKEN: string;
   AGENT_SECRETS_KEY?: string;
   AGENT_PUBLIC_URL?: string;

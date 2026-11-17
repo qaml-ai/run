@@ -59,6 +59,8 @@ export interface AgentConfig {
    * For a tool-less agent (a classifier, a one-line answerer). Best set when the agent is made.
    */
   codeMode?: boolean;
+  /** Set to false to disable idle compaction for this agent on Workers. */
+  idleCompaction?: boolean;
   /**
    * Tools that run in this process (`tool({...})`). An agent with them is attached to this process: it
    * answers the agent's tool calls, one process at a time. Serverless or several processes: serve
@@ -747,8 +749,8 @@ export class Agent {
     const { whileRunning: _whileRunning, spendLimit: _spendLimit, output: _output, ...message } = promptOptions(rest.idempotencyKey ?? globalThis.crypto.randomUUID(), rest);
     return this.client.steerMessage(text, message);
   }
-  /** Change its model, instructions, thinking level, tools, maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
-  configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp"> & { maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
+  /** Change its model, instructions, thinking level, tools, idle compaction, maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
+  configure(config: Pick<AgentConfig, "model" | "instructions" | "thinkingLevel" | "tools" | "mcp" | "idleCompaction"> & { maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
     const { instructions, ...rest } = config;
     return this.client.configure({ ...rest, ...(instructions !== undefined ? { systemPrompt: instructions } : {}) });
   }

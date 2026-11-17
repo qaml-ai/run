@@ -1,9 +1,9 @@
 import { createAssistantMessageEventStream, type Api, type AssistantMessage, type AssistantMessageEvent, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai/models";
 import { getModels, getModel, callSettings, withOpenRouterHosts, reasoningFloor } from "./model-catalog.ts";
-import { resolveModel, routeModel, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
+import { resolveModel, routeModel, virtualChain, type VirtualSelection, type ModelEndpoints, type CustomProviders } from "./model-policy.ts";
 import { deepseekContext, refusedReasoningReplay } from "./deepseek-policy.ts";
-import { OutputRequest } from "./output-request.ts";
+import { clearStructuredOutput, OutputRequest } from "./output-request.ts";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { boundedModel } from "./model-context.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
@@ -21,20 +21,23 @@ import { ModelReplayRetry, type ModelRetryEvent } from "./model-replay-retry.ts"
 import { missingModelKey } from "./selfhost-policy.ts";
 import { geminiOnOpenRouter, ReasoningDrop, refusedForeignReasoning } from "../../../shared/gemini-reasoning.ts";
 import { FlexWait, asksFlex, flexFallbackDeltaUsd, flexWaitMs } from "./model-flex-wait.ts";
+import { digest } from "./api-contract.ts";
+import { IDLE_COMPACTION_CALL, IDLE_COMPACTION_SKIPPED, IDLE_SUMMARY_PROMPT, type CachedRequest, type IdleCompactionDispatch } from "./idle-compaction.ts";
+import { modelIdlePayload, readModelIdleCache } from "./model-idle-compaction-payload.ts";
 
 /** `flexWaitSeconds`: how long a call asked on flex waits for flex capacity before the default tier takes it (model-flex-wait.ts). */
-export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; flexWaitSeconds?: number; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
+export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; flexWaitSeconds?: number; idleCompactionEligible?: boolean; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
 export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   authorizeRepoFile?: (file:import("./attachment-policy.ts").RepoFileRef)=>Promise<boolean>;
-  beforeRequest?: (invocation: AgentInvocation) => Promise<void>;
+  beforeRequest?: (invocation: AgentInvocation, idleCompaction?: boolean) => Promise<void>;
   onStreamEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
   onDiscardedOutput?: (message: AssistantMessage) => void | Promise<void>;
   onRetryEvent?: (event: ModelRetryEvent) => void | Promise<void>;
   onStall?: (stall: Stall & { provider: string; model: string }) => void | Promise<void>;
   wrapProvider?: (provider: Provider) => Provider;
-  settings?: () => Promise<ModelRequestSettings>;
+  settings?: (idleCompaction?: boolean) => Promise<ModelRequestSettings>;
   credentials?: (provider: string, invocation: AgentInvocation) => Promise<ModelCredentials | undefined>;
   endpoints?: ModelEndpoints;
   customProviders?: CustomProviders;
@@ -56,12 +59,23 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
   /** Gemini's refusals of another provider's reasoning, remembered for this agent's later Gemini calls (gemini-reasoning.ts). */
   const reasoning = new ReasoningDrop();
   const filterFallbacks = contentFilterFallbacks(env.AGENT_CONTENT_FILTER_FALLBACKS);
-  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions = {},
+  const prepare = async (model: Model<Api>, context: TranscriptContext, options: StreamOptions & IdleCompactionDispatch = {},
     previous?: { context: TranscriptContext; toolChoice?: unknown }) => AgentInvocation.run(async invocation => {
-    const callKind = modelCallKind(context);
-    await hooks.beforeRequest?.(invocation);
-    const config = await hooks.settings?.() ?? {};
-    if (!previous && config.model?.startsWith("camelrun/")) {
+    const idle = options[IDLE_COMPACTION_CALL];
+    const replay = idle && "replay" in idle ? idle : undefined;
+    const capture = idle && "capture" in idle ? idle.capture : undefined;
+    const callKind = replay ? "compaction" : modelCallKind(context);
+    await hooks.beforeRequest?.(invocation, !!replay);
+    const config = await hooks.settings?.(!!replay) ?? {};
+    if (replay && (!config.idleCompactionEligible || !await replay.stillIdle()))
+      throw new Error(IDLE_COMPACTION_SKIPPED);
+    if (replay && config.model?.startsWith("camelrun/")) {
+      const route = replay.replay.route;
+      const selected = route && virtualChain(config.model)?.find((member: VirtualSelection) =>
+        member.provider === route.provider && member.id === route.id && member.serviceTier === route.serviceTier);
+      if (!selected) throw new Error(IDLE_COMPACTION_SKIPPED);
+      model = boundedModel(selected, config.runLimits?.contextTokens);
+    } else if (!previous && config.model?.startsWith("camelrun/")) {
       const user = config.requestId ?? String([...context.messages].reverse().find(message => message.role === "user")?.timestamp ?? 0);
       if (!routing || routing.user !== user) routing = { user, failures: [] };
       let selected = routeModel(resolveModel(config.model), { reason: routing.failed ? "retry" : routing.previous ? "continuation" : "user", failed: routing.failed, previous: routing.previous });
@@ -87,9 +101,25 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
         : (model as Model<Api> & { runtimeApi?: Api }).runtimeApi ?? catalog?.api ?? model.api };
       if (FETCH_APIS.includes(model.api) && catalog) model = { ...model, baseUrl: catalog.baseUrl };
     }
+    // Credentials and routing are compared by hash so replay stays in the namespace that warmed the cache.
+    const keyHash = (capture || replay) && config.idleCompactionEligible && options.sessionId
+      ? await digest(JSON.stringify([
+        model.provider, model.api, model.id, model.baseUrl, (model as VirtualSelection).serviceTier,
+        credential, model.headers, options.apiKey, options.headers, config.modelHeaders,
+      ]))
+      : undefined;
+    if (replay && (keyHash !== replay.replay.keyHash || options.sessionId !== replay.replay.sessionId))
+      throw new Error(IDLE_COMPACTION_SKIPPED);
+    const usesOpenRouter = model.provider === "openrouter" && /^https:\/\/openrouter\.ai\//.test(credential?.baseUrl ?? model.baseUrl);
     let fallback = filterFallbacks.get(`${model.provider}/${model.id}`);
-    if (fallback && (credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider, invocation))?.apiKey)) fallback = undefined;
-    const virtualNext = config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
+    if (fallback && (replay || credential?.identity || credential?.baseUrl && !credential.deployments || !(await hooks.credentials?.(fallback.provider, invocation))?.apiKey)) fallback = undefined;
+    const virtualNext = !replay && config.model?.startsWith("camelrun/") ? routeModel(resolveModel(config.model), { reason: "retry", failed: model }) : undefined;
+    if (replay) {
+      const instruction = context.messages.at(-1);
+      if (instruction?.role !== "user") throw new Error(IDLE_COMPACTION_SKIPPED);
+      const prefix = clearStructuredOutput({ messages: context.messages.slice(0, -1) });
+      context = normalizeContext({ messages: [...prefix.messages, instruction] });
+    }
     const structured = previous ?? (callKind === "compaction" ? { context, toolChoice: undefined } : outputRequest.prepare(model, context, config));
     const { toolChoice } = structured;
     context = structured.context;
@@ -103,6 +133,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
     if (model.provider === "amazon-bedrock" && !credential?.apiKey && !options.apiKey)
       throw Object.assign(new Error("Bedrock requires an API key"), { code: "model_key_missing" });
     const onPayload = options.onPayload;
+    let cachedRequest: CachedRequest | undefined;
     const reasoning = (options as SimpleStreamOptions).reasoning || reasoningFloor(model);
     let transportError: string | undefined;
     const tenantFetch: typeof fetch | undefined = credential?.baseUrl ? async (input, init) => {
@@ -124,8 +155,10 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       [PREPARED_MODEL_CREDENTIALS]: credential,
       modelCallKind: callKind,
       ...options,
+      ...(replay ? { idleCompaction: true } : {}),
       [MODEL_INVOCATION]: invocation,
       ...(model.api === "openai-codex-responses" ? { sessionId: await hooks.agentId?.() ?? options.sessionId } : {}), ...(toolChoice !== undefined ? { toolChoice: toolChoice as SimpleStreamOptions["toolChoice"] } : {}), ...callSettings(model, config, config.thinkingLevel),
+      ...(replay ? { maxTokens: options.maxTokens } : {}),
       ...(reasoning ? { reasoning } : {}),
       ...(fallback || virtualNext ? { supersede: (message: AssistantMessage) => fallback && isContentFilterBlock(message) ? "content_filter" as const : virtualNext && !message.content.length && isModelUnavailable(message) ? "unavailable" as const : undefined } : {}),
       ...(credential ? { apiKey: credential.bearer ? "runtime-bearer" : credential.apiKey ?? "keyless" } : {}),
@@ -136,21 +169,46 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       headers: { ...credential?.headers, ...options.headers, ...config.modelHeaders, ...(credential?.identity ? { "X-Agent-Runtime-Identity": credential.apiKey } : {}), ...(credential?.bearer && credential.apiKey ? { Authorization: `Bearer ${credential.apiKey}`, "x-api-key": null } : {}) },
       onPayload: async (payload: unknown, target: Model<Api>) => {
         const adjusted = withOpenRouterHosts(target, payload, config.dataCollection ?? undefined);
-        return await onPayload?.(adjusted, target) ?? adjusted;
+        const final = await onPayload?.(adjusted, target) ?? adjusted;
+        const order = usesOpenRouter && (capture || replay)
+          ? (final as { provider?: { order?: unknown } } | null)?.provider?.order
+          : undefined;
+        // OpenRouter disables session affinity for explicitly ordered providers.
+        const usesManualOrder = Array.isArray(order) && order.length > 0;
+        if (replay) {
+          const verified = modelIdlePayload(target.api, final, replay.replay.cache, IDLE_SUMMARY_PROMPT);
+          if (!verified || usesManualOrder || !await replay.stillIdle()) throw new Error(IDLE_COMPACTION_SKIPPED);
+          if (!usesOpenRouter) return verified;
+          return { ...verified, provider: { ...(verified.provider as object | undefined), allow_fallbacks: false } };
+        }
+        if (capture && keyHash && options.sessionId && !toolChoice && !usesManualOrder) {
+          try {
+            const cache = readModelIdleCache(target.api, final);
+            cachedRequest = cache ? {
+              cache, keyHash, sessionId: options.sessionId, at: Date.now(), retention: options.cacheRetention,
+              route: { provider: selected.provider, id: selected.id, serviceTier: (selected as VirtualSelection).serviceTier },
+            } : undefined;
+          } catch { cachedRequest = undefined; }
+        }
+        return final;
       },
     };
-    return { model: credential?.baseUrl && !FETCH_APIS.includes(model.api) ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, selected, structured, transportError: () => transportError };
+    return { model: credential?.baseUrl && !FETCH_APIS.includes(model.api) ? { ...model, baseUrl: credential.baseUrl } : model, context: normalizeContext(deepseekContext(model, context)), options: prepared, config, fallback, virtualNext, callKind, selected, structured, transportError: () => transportError,
+      capture: async (message: AssistantMessage) => { if (cachedRequest) await capture?.(cachedRequest, message); },
+    };
   });
-  const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
+  const wrap = (simple: boolean) => (model: Model<Api>, context: TranscriptContext, options?: StreamOptions & IdleCompactionDispatch) => {
     const output = createAssistantMessageEventStream();
     void (async () => {
       try {
         const original = context;
-        reasoning.model_((await hooks.settings?.().catch(() => undefined) as { model?: string } | undefined)?.model);
+        const idle = options?.[IDLE_COMPACTION_CALL];
+        const background = !!idle && "replay" in idle;
+        if (!background) reasoning.model_((await hooks.settings?.().catch(() => undefined))?.model);
         // Each member gets the history as it may send it: a Gemini member without what was refused, any other as it was.
         const history = (target: Model<Api>) => reasoning.context(target, original);
         let prepared = await prepare(model, history(model), options);
-        replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
+        if (!background) replayRetry.begin(prepared.config.requestId ?? String(context.messages.findLast(message => message.role === "user")?.timestamp ?? 0));
         // A call asked on flex that found no flex capacity: its wait (`flex`), and, once it moved to the default tier, from what.
         let flex: FlexWait | undefined, fellBack: { model: string; waitedMs: number; attempts: number } | undefined;
         let retry = false, reasoningDropped = false;
@@ -163,7 +221,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           const options = { ...prepared.options, signal, onProviderStreamEvent: (event: unknown) => { activity(event); onProviderStreamEvent?.(event, prepared.model); } };
           return simple ? provider.streamSimple(prepared.model, prepared.context, options as SimpleStreamOptions) : provider.stream(prepared.model, prepared.context, options);
         }, streamTimeouts(prepared.model, prepared.config.thinkingLevel, prepared.config.runLimits, timeouts), options?.signal,
-        stall => { stalled = Promise.resolve(hooks.onStall?.({ ...stall, provider: prepared.model.provider, model: prepared.model.id })); });
+        stall => { if (!background) stalled = Promise.resolve(hooks.onStall?.({ ...stall, provider: prepared.model.provider, model: prepared.model.id })); });
         for await (const event of stream) {
           if (event.type === "error" || event.type === "done") await stalled;
           if (event.type === "error" && event.reason !== "aborted" && !isStalled(event.error.errorMessage) && prepared.transportError()) event.error.errorMessage = prepared.transportError();
@@ -171,7 +229,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           // refusal is a 400, but the source runtime also retries this exact
           // request so OpenRouter can choose another host. Keep the prepared
           // context and payload unchanged, and never retry a tenant endpoint.
-          if (event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" &&
+          if (!background && event.type === "error" && event.reason !== "aborted" && prepared.model.provider === "openrouter" &&
               !prepared.options.endpointIdentity && refusedReasoningReplay(event.error.errorMessage) &&
               !options?.signal?.aborted && await replayRetry.retry(event.error, options?.signal)) {
             retry = true;
@@ -179,7 +237,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
           }
           // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same member again, once, with the
           // history's encrypted reasoning dropped, for this call and every member after it. Never a member failure.
-          if (event.type === "error" && event.reason !== "aborted" && geminiOnOpenRouter(prepared.model) && !reasoningDropped &&
+          if (!background && event.type === "error" && event.reason !== "aborted" && geminiOnOpenRouter(prepared.model) && !reasoningDropped &&
               refusedForeignReasoning(event.error.errorMessage) && !options?.signal?.aborted) {
             reasoningDropped = true;
             reasoning.refused();
@@ -190,7 +248,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             continue;
           }
           // Flex with no capacity: asked again within the call's flex wait, then the next member (the default tier) takes it below.
-          if (event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
+          if (!background && event.type === "error" && event.reason !== "aborted" && asksFlex(prepared.model) && !event.error.content.length && isModelUnavailable(event.error) && !options?.signal?.aborted) {
             flex ??= new FlexWait(flexWaitMs(env, prepared.config.flexWaitSeconds), hooks.onRetryEvent);
             if (await flex.retry(event.error, options?.signal)) { retry = true; continue; }
             if (prepared.virtualNext) {
@@ -228,7 +286,7 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
             retry = true;
             continue;
           }
-          if (routing && event.type === "error") {
+          if (!background && routing && event.type === "error") {
             routing.failed = prepared.model;
             if (event.reason !== "aborted") {
               failed(prepared.model, event.error);
@@ -236,14 +294,19 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
               if (!prepared.virtualNext) console.log(JSON.stringify({ type: "virtual_model_chain_failed", tenant: env.AGENT_TENANT ?? null, model: prepared.config.model, failures: routing.failures.slice(-8) }));
             }
           }
-          if (routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; routing.failures = []; }
+          if (!background && routing && event.type === "done") { routing.previous = prepared.model; routing.failed = undefined; routing.failures = []; }
           // Cut off at its output limit (Responses' incomplete: max_output_tokens): a truncated answer, as from any model,
           // never a member failure (the next member has the same limit). Logged: a reasoning model can spend it all thinking.
           if (event.type === "done" && event.message.stopReason === "length")
             console.log(JSON.stringify({ type: "model_output_cut", tenant: env.AGENT_TENANT ?? null, model: `${prepared.model.provider}/${prepared.model.id}`, maxTokens: prepared.model.maxTokens,
               output: event.message.usage?.output ?? null, answered: event.message.content.some(part => part.type === "text" || part.type === "toolCall") }));
-          if (event.type === "done") await replayRetry.success();
-          await hooks.onStreamEvent?.(event);
+          if (!background) {
+            if (event.type === "done") {
+              await replayRetry.success();
+              if (idle && "capture" in idle) await prepared.capture(event.message).catch(() => {});
+            }
+            await hooks.onStreamEvent?.(event);
+          }
           output.push(event);
         }
         const result = await stream.result();

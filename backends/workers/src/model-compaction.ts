@@ -1,7 +1,8 @@
 import { CompactionTask, GenerationTask, type AnyTask, type CompactionSettings, type RegistryReader, type RegistrySnapshot } from "@earendil-works/pi-durable";
+import type { idleCompaction } from "./idle-compaction.ts";
 
 /** Measure the system message at the same boundary where Pi selects a compaction prefix. */
-export function withCompactionPrompt(registry: RegistryReader, policy: (fixedTokens: number) => CompactionSettings | undefined): RegistryReader {
+export function withCompactionPrompt(registry: RegistryReader, policy: (fixedTokens: number) => CompactionSettings | undefined, idle: ReturnType<typeof idleCompaction>): RegistryReader {
   const wrap = (task: AnyTask, phase: string): AnyTask => {
     const definition = task.definition;
     const original = definition.phases[phase];
@@ -20,8 +21,8 @@ export function withCompactionPrompt(registry: RegistryReader, policy: (fixedTok
     } } } };
   };
   const tasks = new Map([
-    [GenerationTask.definition.name, wrap(GenerationTask, "prepare")],
-    [CompactionTask.definition.name, wrap(CompactionTask, "select")],
+    [GenerationTask.definition.name, wrap(idle.generation, "prepare")],
+    [CompactionTask.definition.name, wrap(idle.compaction, "select")],
   ]);
   return {
     subscribe: listener => registry.subscribe(listener),

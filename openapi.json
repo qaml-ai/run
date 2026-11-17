@@ -4695,6 +4695,10 @@
             "additionalProperties": false,
             "description": "What it does with prompts that arrive while a turn runs (QueueSetting): {mode: \"batch\"} merges them into one turn. On an upsert of an existing agent, leaving it out keeps the one it has; an agent from a definition gets the definition's unless this is given"
           },
+          "idleCompaction": {
+            "type": "boolean",
+            "description": "On Workers, eligible agents compact during idle time by default. Set false to disable it. On an upsert, omitting it preserves the existing setting"
+          },
           "modelHeaders": {
             "$ref": "#/components/schemas/ModelHeaders"
           },
@@ -5411,6 +5415,10 @@
                     ]
                   }
                 ]
+              },
+              "idleCompaction": {
+                "type": "boolean",
+                "description": "The agent’s explicit idle compaction setting on Workers. If omitted, eligible agents use the default"
               },
               "builtins": {
                 "type": "array",
@@ -6625,6 +6633,10 @@
             ],
             "additionalProperties": false,
             "description": "Replaces what it does with prompts that arrive while a turn runs (QueueSetting), from the next turn's start; null: one turn each. Set here on an agent from a definition, it stays when the definition is applied"
+          },
+          "idleCompaction": {
+            "type": "boolean",
+            "description": "On Workers, false disables idle compaction for this agent and true re-enables it for eligible conversations"
           },
           "modelHeaders": {
             "type": [

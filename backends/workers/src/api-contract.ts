@@ -32,6 +32,7 @@ export interface AgentConfiguration {
   name?: string;
   metadata?: Record<string, unknown>;
   idleTtlSeconds?: number | null;
+  idleCompaction?: boolean;
   type?: string;
   thinkingLevel?: string;
   maxOutputTokens?: number | null;
@@ -107,7 +108,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   rejectWorkflow(input);
   let fields: Record<string, unknown>;
   try {
-    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "computerLimit", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking", "workflows"]);
+    fields = object(input, ["model", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "metadata", "name", "type", "thinkingLevel", "mcp", "ttlSeconds", "idleTtlSeconds", "idleCompaction", "builtins", "webSearch", "delegate", "decide", "mounts", "maxOutputTokens", "temperature", "dataCollection", "language", "modelHeaders", "computerLimit", "runLimits", "queue", "initialMessages", "importMessages", "definition", "subject", "context", "keyScope", "spendLimit", "bucket", "humanInput", "subagents", "workspaceId", "remount", "prompt", "mcpServers", "openApi", "definitionRevision", "definitionOverrides", "computer", "networking", "workflows"]);
   } catch (error) {
     if (error instanceof BadRequest && error.message.startsWith("Unsupported field: "))
       throw new BadRequest(`Unknown agent field: ${error.message.slice("Unsupported field: ".length).split(", ")[0]}`);
@@ -137,7 +138,7 @@ export function configuration(input: unknown, defaultModel: string, operation: "
   if (fields.definitionRevision !== undefined) config.definitionRevision = Number(fields.definitionRevision);
   if (Array.isArray(fields.definitionOverrides)) config.definitionOverrides = fields.definitionOverrides as string[];
   if (!config.model?.trim()) throw new BadRequest("model must be nonempty");
-  for (const field of ["fileTools", "codeMode"] as const) {
+  for (const field of ["fileTools", "codeMode", "idleCompaction"] as const) {
     if (fields[field] !== undefined && typeof fields[field] !== "boolean") throw new BadRequest(`${field} must be a boolean`);
     if (fields[field] !== undefined) config[field] = fields[field] as boolean;
   }

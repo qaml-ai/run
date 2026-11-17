@@ -609,6 +609,7 @@ export const AgentInput = z.object({
   computerLimit: z.number().int().min(1).max(64).optional().openapi({ description: "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot" }),
   runLimits: RunLimits.optional().openapi({ description: "The most one run may take (model responses, seconds); an agent from a definition gets the definition's unless this is given" }),
   queue: QueueSettingInput.nullable().optional().openapi({ description: "What it does with prompts that arrive while a turn runs (QueueSetting): {mode: \"batch\"} merges them into one turn. On an upsert of an existing agent, leaving it out keeps the one it has; an agent from a definition gets the definition's unless this is given" }),
+  idleCompaction: z.boolean().optional().openapi({ description: "On Workers, eligible agents compact during idle time by default. Set false to disable it. On an upsert, omitting it preserves the existing setting" }),
   modelHeaders: ModelHeaders.optional(),
   prompt: PromptInput.optional().openapi({ description: "A first prompt, as POST /v1/agents/{id}/prompt takes it, sent once the agent is made: it runs as soon as the agent has started, so a new conversation needs one call. Give it a requestId: a retry of the create (same Idempotency-Key) with the same requestId makes no second agent and sends no second prompt" }),
 }).strict().openapi("AgentInput");
@@ -854,6 +855,7 @@ export const AgentDetail = AgentSummary.extend({
   keyScope: z.string().nullable().openapi({ description: "The key scope its model calls take keys from first" }),
   bucket: z.string().nullable().openapi({ description: "The bucket of its subject's credit its runs spend from (end-user credits); null: \"default\"" }),
   modelHeaders: ModelHeaders.nullable(),
+  idleCompaction: z.boolean().optional().openapi({ description: "The agent’s explicit idle compaction setting on Workers. If omitted, eligible agents use the default" }),
   builtins: z.array(Builtin).openapi({ description: "The tools the runtime answers itself: its own, or its definition's" }),
   decide: z.boolean().nullable().openapi({ description: "Its decide setting, its own or its definition's: false (none), true (asked for), or null (the default: the tool unless it has no code mode and no other tools). The tool is offered only where the account has an OpenRouter key decisions can use; toolSources shows it" }),
   delegate: DelegateSettings.nullable().openapi({ description: "Who it may delegate to, with the delegate or agents builtin" }),
@@ -1275,6 +1277,7 @@ export const ConfigureInput = z.object({
   computerLimit: z.number().int().min(1).max(64).optional().openapi({ description: "Concurrent running machines per root agent tree; default 4 or the tenant default. Shared children use no additional slot" }),
   runLimits: RunLimits.nullable().optional().openapi({ description: "Replaces the agent's run limits from its next run; null removes them (the runtime's apply). Set here on an agent from a definition, they stay when the definition is applied" }),
   queue: QueueSettingInput.nullable().optional().openapi({ description: "Replaces what it does with prompts that arrive while a turn runs (QueueSetting), from the next turn's start; null: one turn each. Set here on an agent from a definition, it stays when the definition is applied" }),
+  idleCompaction: z.boolean().optional().openapi({ description: "On Workers, false disables idle compaction for this agent and true re-enables it for eligible conversations" }),
   modelHeaders: ModelHeaders.nullable().optional().openapi({ description: "Replaces the agent's model headers; null or {} removes them" }),
   humanInput: z.strictObject({ unattended: z.literal("decline").optional(), expiresInSeconds: z.number().int().min(60).max(2592000).optional(), approvers: z.array(z.string()).max(100).optional() }).optional(),
   builtins: z.array(Builtin).max(13).optional().openapi({ description: "Replaces the agent's builtins; [] removes them. Not for an agent made from a definition, whose builtins are its definition's" }),

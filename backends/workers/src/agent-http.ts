@@ -42,6 +42,7 @@ import { agentBuiltins } from "./agent-builtins.ts";
 import { resetContext } from "./context-reset.ts";
 import { setAgentSpendLimit } from "./agent-spend.ts";
 import { flushCompletedSettlement } from "./agent-turn-loop.ts";
+import { abortIdleCompaction } from "./idle-compaction-schedule.ts";
 import { Config, RequestRecord, Env, json, canonical, reqKey } from "./agent-types.ts";
 import type { AgentRuntime } from "./agent-runtime.ts";
 
@@ -319,7 +320,7 @@ export async function fetchRequestImpl(this: AgentRuntime, invocation: AgentInvo
               }).removeAgent(conf.id),
             );
           await this.delegation.destroy();
-          await this.harness.session().abort();
+          await Promise.all([this.harness.session().abort(), abortIdleCompaction(this)]);
           await this.cancelHumanInputs();
           // Settling still reads configuration and writes durable charge receipts.
           // Keep it available until every accepted operation has drained.

@@ -547,6 +547,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const steps = new Steps();
     const made: { agent?: string; upsert: boolean } = { upsert: false };
     try {
+      if (params?.idleCompaction !== undefined) throw new HttpError(400, "Idle compaction is available on the Workers backend");
       const requestedWorkspace = params?.workspaceId;
       if (requestedWorkspace !== undefined) await workspaces.validate(tenant, requestedWorkspace);
       const result = await provisionAgent(tenant, params, key, steps, made, parent, admit, run);

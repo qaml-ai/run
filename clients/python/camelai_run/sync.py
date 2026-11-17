@@ -328,10 +328,10 @@ class AgentClient(_AgentCalls):
             record = self._settled_replay_record(request_id, timeout)
         return _steer_receipt(record)
 
-    def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT):
+    def configure(self, *, model=None, system_prompt=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT, idle_compaction=None):
         """Change the model, system prompt, thinking level, declared tools, max_output_tokens or temperature between runs (None
-        removes either of the last two; this client never serves tools)."""
-        params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level}.items() if value is not None}
+        removes either of the last two; this client never serves tools). `idle_compaction=False` disables idle compaction on Workers."""
+        params = {key: value for key, value in {"model": model, "systemPrompt": system_prompt, "thinkingLevel": thinking_level, "idleCompaction": idle_compaction}.items() if value is not None}
         params.update({key: value for key, value in {"maxOutputTokens": max_output_tokens, "temperature": temperature, "dataCollection": data_collection, "language": language}.items() if value is not _DEFAULT})
         if tools is not None:
             params["mcp"] = {"tools": [item.mcp_tool() for item in tools]}
@@ -604,9 +604,9 @@ class Agent:
             raise TypeError(f"steer() takes {', '.join(sorted(unknown))} only with wait=True")
         return self.client.steer_message(text, from_=_sender(user) if user else None, **options)
 
-    def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT):
-        """Change its model, instructions, thinking level or declared tools between runs."""
-        return self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language)
+    def configure(self, *, model=None, instructions=None, thinking_level=None, tools=None, max_output_tokens=_DEFAULT, temperature=_DEFAULT, data_collection=_DEFAULT, language=_DEFAULT, idle_compaction=None):
+        """Change its model, instructions, thinking level, declared tools or idle compaction between runs."""
+        return self.client.configure(model=model, system_prompt=instructions, thinking_level=thinking_level, tools=tools, max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, idle_compaction=idle_compaction)
 
     def abort(self, *, queued=None, children=None):
         """Stop the agent: its running turn, and the runs queued behind it unless queued="keep", and its background
@@ -787,7 +787,7 @@ class Agents:
     def upsert(self, key, *, model=None, instructions=None, tools=None, definition=None, thinking_level=None, subject=None, context=None,
                key_scope=None, spend_limit=None, run_limits=None, computer_limit=None, model_headers=None, mounts=None, remount=None, name=None, metadata=None, instructions_append=None, file_tools=None,
                builtins=None, delegate=None, code_mode=None, initial_messages=None, import_messages=None, max_output_tokens=None, temperature=None, data_collection=None, language=None, mcp_servers=None, bucket=None,
-               queue=None):
+               queue=None, idle_compaction=None):
         """The agent for `key`, made now if there is none, and set to this configuration if it differs (see
         camelai_run.Agents.upsert). `tools` are declared, never served here: a process with the async SDK serves them
         (Agents().get(key, tools=...)). Tools for serverless or many workers: serve_tools and a definition. An upsert
@@ -795,14 +795,14 @@ class Agents:
         `initial_messages` (Pi messages) is the history it begins with, used only when the agent is made; `import_messages`
         ({"format": "anthropic" | "openai-responses" | "openai-chat", "messages": [...], "model"?}) is one in another API's
         format, which the runtime converts (not both). `mcp_servers` are MCP servers of its own, without credentials
-        (auth {"type": "runtime"} or none)."""
+        (auth {"type": "runtime"} or none). `idle_compaction=False` disables idle compaction for this agent on Workers."""
         tools = list(tools or [])
         session = self.runtime.upsert_agent(key, tools=tools, definition=definition, system_prompt=instructions, model=model, thinking_level=thinking_level,
                                             subject=subject, context=context, key_scope=key_scope, spend_limit=spend_limit, run_limits=run_limits, computer_limit=computer_limit,
                                             model_headers=model_headers, mounts=mounts, remount=remount, name=name, metadata=metadata, system_prompt_append=instructions_append, file_tools=file_tools,
                                             builtins=builtins, delegate=delegate, code_mode=code_mode, initial_messages=initial_messages, import_messages=import_messages,
                                             max_output_tokens=max_output_tokens, temperature=temperature, data_collection=data_collection, language=language, mcp_servers=mcp_servers, bucket=bucket,
-                                            queue=queue)
+                                            queue=queue, idle_compaction=idle_compaction)
         agent = self.agent(session, tools=tools)
         agent.config_hash = session.get("configHash")
         return agent

@@ -4,6 +4,7 @@ import type { AgentConfiguration } from './api-contract.ts';
 export function replacementConfiguration(current: AgentConfiguration, input: Record<string, unknown>) {
   const params = { ...input };
   if (input.metadata === undefined && current.metadata !== undefined) params.metadata = current.metadata;
+  if (input.idleCompaction === undefined && current.idleCompaction !== undefined) params.idleCompaction = current.idleCompaction;
   if (input.definition !== undefined) return params;
   const defaults = {
     codeMode: true, fileTools: true, thinkingLevel: 'off', systemPromptAppend: '',
