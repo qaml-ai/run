@@ -12,6 +12,7 @@ export WARM_REPO_TOKEN=synthetic-warm-repo-fixture-20261117
 
 case "$role" in
   server|1)
+    rm -f work/warmrepo-results/STOP
     state=$(mktemp -d /tmp/warmrepo-pair.XXXXXX)
     server_pid=
     cleanup() {
@@ -22,6 +23,8 @@ case "$role" in
       rm -rf "$state"
     }
     trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     python3 - <<'PY'
 import socket
 s = socket.socket()
