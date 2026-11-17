@@ -97,7 +97,7 @@ func host(args []string) error {
 		return e
 	}
 	defer r.Close()
-	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data}, s, r)
+	m, e := image.New(image.Config{StreamIdle: *streamIdle, ApplyMax: *applyMax, BaselineDiskMax: *baselineDiskMax, VirtualSize: *virtualSize, MaxFiles: *maxFiles, MaxBytes: *maxBytes, MaxPathsBytes: *maxPaths, Data: *data, PrebuiltImages: true}, s, r)
 	if e != nil {
 		return e
 	}

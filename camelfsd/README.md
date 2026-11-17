@@ -219,17 +219,42 @@ unavailable (503). Conflict lists are in error.details.conflicts.
 ## Session mounts and guest streams
 
 Every session mount names a tree, its 40-hex parent commit and the tier's
-lease fence with a holder and a positive epoch. The host reflinks a local image
-for the exact tree or an ancestor recorded on the host. After a cache miss, a
-host with images for the lineage follows up to four first-parent Git links.
-It reuses a matching image when every target path exists in the base tree and
-the base has no tracked paths in the guest's temporary-file namespace.
-New paths can collide with image-only directories, so the host builds the
-workspace from Git in that case. A cold host also reflinks a blank workspace
-(`--virtual-size`, default 1 GiB) and applies the Git tree in the guest.
+lease fence with a holder and a positive epoch. The host verifies that the
+commit names that tree before selecting an image. Normal `camelfsd host`
+starts enable shared prebuilt ext4 images.
+
+The host first reflinks a local image for the exact tree or a safe ancestor.
+After a local miss, it reads the shared descriptor for that exact lineage,
+tree, disk size (`--virtual-size`, default 1 GiB; the pilot uses 64 GiB) and
+image recipe. A shared hit downloads the artifact in parallel 8 MiB ranges.
+The artifact is a gzip-compressed stream of allocated extents with their
+offsets. The host verifies the compressed and extent-stream SHA256 digests,
+lengths and extent bounds, then installs a sparse local image before reflinking
+it for the VM. Holes need no zero scan during preparation or restore. The guest
+receives the full file index. Tracked `.camelfs-tmp-*` leaves are resent because
+guest startup cleans that namespace.
+
+Only an absent descriptor starts a synchronous producer. It reads verified
+canonical Git files, builds a clean ext4 image with `mkfs.ext4 -d`, encodes its
+allocated extents, compresses and uploads them, and publishes the immutable
+descriptor last. Concurrent producers adopt the same published descriptor.
+First use pays preparation and
+upload; later cold hosts share that artifact. Malformed descriptors, missing
+advertised payloads, storage errors and integrity failures fail the start.
+Interrupted local build spools are removed on host startup.
+
+A host with images for the lineage follows up to four first-parent Git links.
+It reuses an ancestor when every target path exists in the base tree and the
+base has no tracked paths in the guest's temporary-file namespace. API edits
+produce a new tree identity. Compatible local images apply the delta; a fresh
+host selects or builds the new exact artifact. API commits do not build disk
+images or enqueue background work.
+
 The Git tree preserves regular files, their executable bit and symlinks.
-A tree rebuild drops image-only state such as `.git`, empty directories,
-ownership, timestamps and xattrs. A local image can retain that state.
+A clean image drops image-only state such as `.git`, empty directories,
+ownership, timestamps and xattrs. A local checkpoint image can retain that
+state. Shared images are disposable derivatives of canonical files; their
+object layout and deletion rules are described below.
 
 Among eligible hosts with the same guest image cache status, placement ranks
 hosts by a stable hash of the repo lineage and host ID. This keeps repeat starts
@@ -270,6 +295,75 @@ Live mounts still use `mounts/<jobId>/state.json`. A data-directory lock
 excludes concurrent daemons. Startup discards incomplete local snapshots and
 recovers fenced mounts in the current format. Stop guests before running
 `camelfsd cleanup --data DIR` to clear old mount state and legacy `cache/`.
+
+### Shared prebuilt image timings
+
+On November 17, 2026, source `76f13612` ran two order-reversed rounds on the
+pilot `m8id.xlarge`. Both arms used the same qualification binary and committed
+versions. Each VM had 2 vCPUs, 2048 MiB RAM and the serving unit's actual 64 GiB
+workspace disk. Fixtures contained one 4 KiB file or 49.0625/499.0625 MiB of
+random files. Fresh daemon directories modelled an empty host cache on the
+same physical host.
+
+| Workspace | Cold canonical control | First prebuilt build | Shared image hit | Local image hit |
+| --- | ---: | ---: | ---: | ---: |
+| 4 KiB | 0.685 s | 0.797 s | 0.932 s | 0.338 s |
+| 50 MiB | 2.310 s | 4.577 s | 1.707 s | 0.556 s |
+| 500 MiB | 5.198 s | 12.459 s | 3.227 s | 0.559 s |
+
+Each cell is a median of two starts, timed from a VM-create request on an
+already-ready host to the first verified file read. Host provisioning, daemon
+startup and Worker/model ingress are outside this timer. The canonical and
+shared-image columns replay the same initial tree in fresh directories
+(`remote-hit` phase). First build includes canonical reads, materialization,
+mkfs, extent encoding, compression and publication. Tiny shared hits were slower
+than the canonical control. API edits and additions create new tree identities
+and pay producer cost on a cold miss; compatible same-host ancestors can still
+apply a delta.
+
+All 70 timed starts passed complete regular-file checksums and counts. Four
+changed/no-op checkpoint pairs passed, with regular files, executable mode and
+symlinks preserved on recovery. Two owned corrupt-image tests failed before
+becoming runnable and left no mount or tree-cache entry. The qualification
+restored the original serving daemon and removed 1,924 synthetic S3 objects and
+40,024 DynamoDB locator rows across its six owned lineages.
+
+The slowest start was a new 500 MiB checkpoint image at 15.451 s. The slowest
+shared restore took 4.438 s. Every first read completed within the Worker's
+60 s startup deadline. These runs do not qualify 2 GB or near-8 GiB logical
+workspaces, live multipart payloads above 5 GiB, or latency across distinct
+physical hosts. See L136 and the
+[full measurements and offline verifier](benchmarks/prebuilt-starts/README.md)
+for every observation, range, boot stage, recipe pin and cleanup receipt.
+
+An earlier dense format passed smaller-disk native tests but took 61 s to
+prepare a tiny workspace on the pilot's actual 64 GiB disk. Its public canary
+failed and was rolled back. Format 2 encodes allocated extents instead of
+processing holes as zeros; all current qualification VMs use 64 GiB disks.
+The [historical failure and rollback receipts](benchmarks/prebuilt-starts/historical/dense-v1/README.md)
+remain separate from the current sparse-format results.
+
+### Prebuilt image pilot canary
+
+On November 17, 2026, the pilot installed source
+`76f136125550e33f7d32784b35093f6367a0488b`, running binary SHA256
+`ee18bda5d8adc05a0a662712af5d65db6769662cf5d21bd8fd8712d30eb17707`.
+The ordinary `camelfsd host` command prepared two new exact-tree images on
+64 GiB workspace disks in 344.758 and 277.523 ms. These are image-preparation
+times, separate from model, Worker ingress and VM boot latency.
+
+Two public Worker/SDK Bash sessions ran on distinct Linux boots. The first
+published a changed checkpoint. After that VM ended, an API addition created
+a new tree. The second VM verified all three committed file hashes and
+published an unchanged checkpoint. Two compute events reconciled to 22.406 s
+of usage, and the billed totals remained stable on a second poll.
+
+The canary removed its tenant, agent, tokens, temporary operator, 19 current
+S3 objects and three locator rows. Its lineage retains the deletion fence and
+the accounting audit remains. Final checks found zero current S3 keys for the
+fixture, no VM scopes, TAPs or workspace mounts, and a healthy undrained host
+with both slots free. The sparse-format candidate remains installed. See the
+[captured public canary and install receipts](benchmarks/prebuilt-starts/results.md#deployed-normal-cli-canary).
 
 ### Firecracker cold restore timings
 
@@ -487,3 +581,19 @@ resume an interrupted sweep. The final conditional write records `deletedAt`.
 Subsequent requests return `410 lineage_deleted`. An exact replay of a successful
 keyed lineage deletion returns its original `204` while the idempotency entry
 is available.
+
+Prebuilt workspace images use two derived object kinds within that same lineage
+prefix. `i/<identity-sha256>` is an immutable descriptor for an exact tree, disk
+size and image recipe. It names `w/<compressed-sha256>`, uploaded before the
+descriptor becomes visible. Hosts discover the exact descriptor without listing
+objects or adding a DynamoDB table. Only a missing descriptor starts a build.
+Invalid descriptors and unavailable or corrupt referenced payloads fail the start.
+
+Lineage deletion fences refs and ends its VMs. It does not physically remove S3
+objects. The collector is not implemented yet. A physical lineage purge includes
+both `i/` and `w/` after its builders and VMs have stopped. These derived kinds
+are separate from canonical Git objects and blob quota. A future collector must
+retain each descriptor's payload or remove the descriptor with it, rather than
+applying Git-blob reachability to image payloads. Concurrent losing builds can
+leave unreferenced `w/` payloads for collection. S3's existing noncurrent-version
+retention also applies to deleted image objects.

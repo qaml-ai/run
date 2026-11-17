@@ -45,17 +45,21 @@ Agent VMs run on Firecracker hosts managed by the tier (`/v1/vms`, host enrollme
   file apply measured 50 MB 8.0→4.2 s, 500 MB ~12→7.2 s, and 2 GB 28→15.5 s.
 - Done on the pilot: Firecracker Bash, committed workspace reads and checkpoint recovery (#1208, #1211).
   The legacy Cloudflare container class and application are retired (#1210, #1212).
-- Shared workspace disk replicas are removed (#1209). Git commits hold the durable workspace.
-  Hosts keep local image caches for warm starts. Cold starts reconstruct committed files. The paired
-  benchmarks and the cold-start cost are recorded in L133.
+- Git commits hold the durable workspace. Hosts keep local reflink images for warm starts and share
+  disposable prebuilt ext4 artifacts for exact committed trees. The first cold miss builds and publishes
+  its sparse extent artifact synchronously; subsequent cold hosts download and verify it without
+  scanning unused disk space. API edits select the new tree without a background image producer.
+  Legacy workspace-root/chunk replication remains retired
+  (#1209). L133 retains the historical cost of that retirement; the workspace-delivery measurements
+  separate ready-artifact restore from preparation and upload.
 - The pilot's `bash` tool boots and reuses one VM per agent branch, fences it with the ref lease, and
   checkpoints before returning success. The idle VM shuts down and its usage settles through durable
   receipts. File tools operate on committed workspace versions without booting a VM.
-- Next: L132, the 2 GB bound. The host→guest vsock carries ~200 MB/s, then guest disk writes (~230 MB/s), then
-  S3 head-of-line (3.3 s). Measure raw vsock throughput first; then bigger frames and buffers, or build the
-  first tree into the image on the host.
-- Next: L131, small files. ~10k small blobs cost ~3.4 s of S3 GET latency at 128 in flight. Fix by packing small
-  blobs into fewer objects; a storage-format change, so design first.
+- Next: L132, the 2 GB bound. Measure the normal prebuilt image path at 2 GB, including a true first miss
+  and a shared-artifact hit. The earlier canonical path spent time in vsock transfer, guest writes and S3.
+- L131's small files now use 8 MiB bundles with the normal 64 KiB member cutoff. Query-based locators and
+  parallel reads reduce cold metadata and object latency. The 1 MiB member experiment stays isolated;
+  its measured 500 MiB first-read time was slower than the normal cutoff.
 - Later: ublk for the block layer, measured before adopting.
 
 ### 4. Voice split

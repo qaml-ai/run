@@ -1,0 +1,92 @@
+{
+  "verifiedAt": "2026-11-17T17:56:16.384045+00:00",
+  "account": "904534089871",
+  "instance": "i-06fa9b78a2a9d188b",
+  "region": "us-west-2",
+  "instancePurpose": "camel-fs-prototype",
+  "role": "camel-fs-proto",
+  "inlinePolicy": "prebuilt-workspace-images",
+  "policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "PrebuiltWorkspaceImageReadWrite",
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:GetObjectAttributes"
+        ],
+        "Resource": [
+          "arn:aws:s3:::camelfs-prod-904534089871/*/i/*",
+          "arn:aws:s3:::camelfs-prod-904534089871/*/w/*"
+        ]
+      },
+      {
+        "Sid": "AbortWorkspaceImageUpload",
+        "Effect": "Allow",
+        "Action": [
+          "s3:AbortMultipartUpload"
+        ],
+        "Resource": [
+          "arn:aws:s3:::camelfs-prod-904534089871/*/w/*"
+        ]
+      },
+      {
+        "Sid": "PrebuiltWorkspaceImageList",
+        "Effect": "Allow",
+        "Action": [
+          "s3:ListBucket"
+        ],
+        "Resource": [
+          "arn:aws:s3:::camelfs-prod-904534089871"
+        ],
+        "Condition": {
+          "StringLike": {
+            "s3:prefix": [
+              "*/i/*",
+              "*/w/*"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "managedPolicy": {
+    "arn": "arn:aws:iam::904534089871:policy/camelfs-prod-host",
+    "unchangedDefaultVersion": "v10",
+    "sourceIaCUpdatePendingApplication": true
+  },
+  "preservedExistingInlinePolicies": [
+    "proto-bucket"
+  ],
+  "simulation": [
+    {
+      "Action": "s3:GetObject",
+      "Decision": "allowed"
+    },
+    {
+      "Action": "s3:PutObject",
+      "Decision": "allowed"
+    },
+    {
+      "Action": "s3:GetObjectAttributes",
+      "Decision": "allowed"
+    },
+    {
+      "Action": "s3:AbortMultipartUpload",
+      "Decision": "allowed"
+    }
+  ],
+  "instanceCredentialProbe": {
+    "callerArn": "arn:aws:sts::904534089871:assumed-role/camel-fs-proto/i-06fa9b78a2a9d188b",
+    "operation": "GetObject",
+    "bucket": "camelfs-prod-904534089871",
+    "key": "prebuilt-iam-probe-20261117/i/0000000000000000000000000000000000000000000000000000000000000000",
+    "result": "NoSuchKey",
+    "httpMeaning": 404,
+    "exitCode": 254,
+    "objectWritten": false
+  },
+  "lifecycleChanged": false
+}

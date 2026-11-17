@@ -1,0 +1,9 @@
+2026/11/17 18:16:19 INFO compute_prebuilt_image vm=vm-client_4524f4b46c96cc9e637c206275ff932f27cfcc69-9fabbfee0a1f42f0-1 lineage=pilot-prebuilt-0eb69ff738:repo_39af91f1c399b3d9ae8d51c2 tree=88332fcb3fe32d5f3e054d3f5c5472a082677761 mode=build image=0af0e40cb357a4bd080fa6353fd383da1f5a591d8f2a7cbf93d98d848ba01af3 buildMs=60173.246 publishMs=810.703 transferMs=0 ms=60999.749 error=<nil>
+2026/11/17 18:16:20 INFO compute_boot vm=vm-client_4524f4b46c96cc9e637c206275ff932f27cfcc69-9fabbfee0a1f42f0-1 image=0.003 mount=61140.359 first_exec=696.853 syncMs=0 disk=15.131 assets=0.147 tap=2.725 policy=0.078 scope=0.604 vsock=670.032 error=<nil>
+2026/11/17 18:16:21 INFO compute_exec vm=vm-client_4524f4b46c96cc9e637c206275ff932f27cfcc69-9fabbfee0a1f42f0-1 exec=aeb808c8e5520ee620d43a992418537081cc2ac29eea4f6204d71338f4b086f1 op=exec ms=21.044 exitCode=0 timedOut=false error=<nil>
+2026/11/17 18:16:21 INFO compute_checkpoint vm=vm-client_4524f4b46c96cc9e637c206275ff932f27cfcc69-9fabbfee0a1f42f0-1 freeze=39 walk=0 commit=36.059 cas=198.791 error=<nil>
+RESTORED_SOURCE=55e6f5ba44787eb8ff5f4df08fe44f398ef0b86d
+6bf910a1cc1bc29df3bb8a874a1c9f2a7f4427c89511fed2aad0b0308a0e4d8c  /proc/127094/exe
+6bf910a1cc1bc29df3bb8a874a1c9f2a7f4427c89511fed2aad0b0308a0e4d8c  /usr/local/bin/camelfsd
+a3516e0ed9d3127226761f8ffe71eff1e35d8f452537a12f473b9d10b6f60f18  /etc/systemd/system/camelfsd.service
+ba36096f57c82587967a58cfebffc581b1324d7f6251108733f63db48ed64f73  /etc/camel/kvm-host.conf

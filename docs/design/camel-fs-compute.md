@@ -300,11 +300,14 @@ scripts.
       branch, measured at ≈ 110–220 ms), and stops it.
     - `idleStopS` is one constant with a default of ≈ 10 **seconds**, at most 1 hour, counted only while no
       `exec` runs.
-    - The next `bash` call boots a fresh VM from the branch's latest tree. With #1209, a same-host image
-      restores by reflink. A host without a cached image applies the committed tree in the guest.
-      At 50 / 500 / 2,000 MiB, paired pilot medians were 0.594 / 0.601 / 0.642 s for a same-host
-      checkpointed tree and 8.026 / 11.235 / 20.677 s for a cold restore. See L133 and
-      [the full measurements](../../camelfsd/README.md#firecracker-cold-restore-timings).
+    - The next `bash` call boots a fresh VM from the branch's latest tree. A same-host image restores
+      by reflink. A host without a usable local image restores the exact tree's shared prebuilt ext4
+      artifact. Its compressed extent stream preserves sparse holes without scanning the virtual disk.
+      If its descriptor is absent, that start builds and publishes a clean image from canonical
+      Git files before booting. Storage and integrity errors fail the start. API edits select a new tree;
+      compatible local ancestors can still apply a delta. See
+      [the mount path](../../camelfsd/README.md#session-mounts-and-guest-streams) and
+      [the measurements](../../camelfsd/README.md#shared-prebuilt-image-timings).
     - A host prewarms its guest image after registration (L112).
     - **A fresh guest root filesystem per boot.** Each VM mounts the branch at `/workspace`, where the shell
       starts. Installed packages, `/tmp` and the shell's environment are gone after a sleep.

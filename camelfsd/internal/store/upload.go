@@ -123,7 +123,7 @@ func (s *Uploaded) rememberRoot(ctx context.Context, k string, b []byte) error {
 func (s *Uploaded) Put(ctx context.Context, k string, b []byte) error {
 	// The key identifies the tree, so successive writers can propose
 	// distinct bodies. Let the underlying store arbitrate by key.
-	if _, kind, _, _ := splitKey(k); kind == "tr" {
+	if _, kind, _, _ := splitKey(k); kind == "tr" || kind == "i" {
 		return s.Store.Put(ctx, k, b)
 	}
 	ok, e := s.known(ctx, k)

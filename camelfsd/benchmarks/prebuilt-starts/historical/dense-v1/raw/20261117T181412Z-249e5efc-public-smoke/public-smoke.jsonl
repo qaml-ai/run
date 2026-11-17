@@ -1,0 +1,10 @@
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"starting","host":"i-06fa9b78a2a9d188b","source":"249e5efc5bbf2b3521cef283d14006f4ae0a6b19"}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"bootstrap-html","method":"GET","path":"/healthz","status":404,"title":"Page not found","server":"cloudflare","ray":"a5c0b7910b1e1561-PDX","cache":null}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"bootstrap-route-check","path":"/v1/tenants/pilot-prebuilt-0eb69ff738/deletion","result":"routed-json-404"}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"bootstrap-route-check","path":"/pilot-api/v1/tenants/pilot-prebuilt-0eb69ff738/deletion","result":"routed-json-404"}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"owned-workspace","agent":"client_4524f4b46c96cc9e637c206275ff932f27cfcc69","lineage":"pilot-prebuilt-0eb69ff738:repo_39af91f1c399b3d9ae8d51c2","seedVersion":"c8fed1532d5f8e0637633c2728866167638844bf","seedTree":"88332fcb3fe32d5f3e054d3f5c5472a082677761","vms":["vm-client_4524f4b46c96cc9e637c206275ff932f27cfcc69-9fabbfee0a1f42f0-1","vm-client_4524f4b46c96cc9e637c206275ff932f27cfcc69-9fabbfee0a1f42f0-2"]}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"bash-turn","request":"prebuilt-first-start","state":"failed","error":"turn_limit","tools":[{"tool":"bash","ok":false,"code":"tool_error"},{"tool":"bash","ok":true},{"tool":"present_file","ok":false,"code":"tool_error"}]}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"bash-tool-diagnostic","message":"<harness>\n[error] camel-fs tier unreachable\n</harness>"}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"bash-tool-diagnostic","message":"<harness>\n[error] Tool present_file was aborted\n</harness>"}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"owned-tenant-deleted","tenants":0,"agents":0,"tokens":0}
+{"tenant":"pilot-prebuilt-0eb69ff738","step":"failed","message":"Unexpected end of JSON input"}

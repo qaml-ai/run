@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -124,17 +125,20 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from strin
 		prev[f.Path] = f
 	}
 	var ops []wire.Op
-	if from != v.Tree {
-		for _, f := range next {
+	for _, f := range next {
+		// The guest cleans temporary leaves before apply. Recreate tracked
+		// leaves even when their bytes already exist in an exact cached image.
+		recreate := m.PrebuiltImages && strings.HasPrefix(filepath.Base(f.Path), ".camelfs-tmp-")
+		if from != v.Tree || recreate {
 			p, ok := prev[f.Path]
-			if !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
+			if recreate || !ok || p.SHA1 != f.SHA1 || p.Mode != f.Mode {
 				if f.Size > workspaceBytes || f.Mode == "120000" && f.Size > 4096 {
 					return fmt.Errorf("apply blob exceeds workspace or symlink size")
 				}
 				ops = append(ops, wire.Op{Path: f.Path, Op: "put", Mode: f.Mode, Size: f.Size})
 			}
-			delete(prev, f.Path)
 		}
+		delete(prev, f.Path)
 	}
 	for p := range prev {
 		ops = append(ops, wire.Op{Path: p, Op: "del"})
@@ -153,7 +157,7 @@ func (m *Manager) listenStreams(ctx context.Context, v *Mount, vsock, from strin
 		a.Files, a.Bytes = m.PackedApply.Files, m.PackedApply.Bytes
 	}
 	if apply {
-		v.needsBaseline = a.Files > 0
+		v.needsBaseline = a.Files > 0 && (!m.PrebuiltImages || from != v.Tree)
 	}
 	s := &streams{conns: map[net.Conn]bool{}}
 	v.streams = s

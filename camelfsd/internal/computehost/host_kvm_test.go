@@ -322,6 +322,7 @@ type kvmDaemonConfig struct {
 	VirtualSize                int64  // blank branch image size; 0 means 32 MiB
 	PackedApply                *image.PackedApply
 	PackedParallel             bool
+	PrebuiltImages             bool // false is the test-only canonical control; the normal daemon always enables it
 }
 
 func openBenchmarkStore(ctx context.Context, url, objectsTable string, depth int) (store.Store, error) {
@@ -367,7 +368,7 @@ func TestKVMComputeDaemonProcess(t *testing.T) {
 	db, err := refs.Open(filepath.Join(q.Data, "refs.db"))
 	must(err)
 	defer db.Close()
-	m, err := image.New(image.Config{Data: q.Data, VirtualSize: virtual, PackedApply: q.PackedApply, PackedParallel: q.PackedParallel}, store.WithDepth(local, depth), db)
+	m, err := image.New(image.Config{Data: q.Data, VirtualSize: virtual, PackedApply: q.PackedApply, PackedParallel: q.PackedParallel, PrebuiltImages: q.PrebuiltImages}, store.WithDepth(local, depth), db)
 	must(err)
 	defer m.Close()
 	// Enrollment is already persisted by the harness.

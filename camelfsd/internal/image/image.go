@@ -27,6 +27,7 @@ type Config struct {
 	MaxFiles                int
 	MaxBytes, MaxPathsBytes int64
 	BaselineDiskMax         int64
+	PrebuiltImages          bool         // normal daemon starts; false only for legacy fixtures
 	PackedApply             *PackedApply // benchmark fixture only; no runtime flag
 	PackedParallel          bool         // benchmark fixture only; no runtime flag
 }
@@ -82,6 +83,11 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 			return nil, e
 		}
 	}
+	if c.PrebuiltImages {
+		if e := recoverPrebuiltImages(c.Data); e != nil {
+			return nil, e
+		}
+	}
 	if e := Probe(c.Data); e != nil {
 		return nil, e
 	}
@@ -107,8 +113,10 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	if c.VirtualSize < 1 || c.VirtualSize%512 != 0 || c.MaxFiles < 1 || c.MaxBytes < 1 || c.MaxPathsBytes < 1 {
 		return nil, apierr.Invalid("invalid size or checkpoint caps")
 	}
-	if e := blank(c); e != nil {
-		return nil, e
+	if !c.PrebuiltImages {
+		if e := blank(c); e != nil {
+			return nil, e
+		}
 	}
 	if c.BaselineDiskMax < 0 {
 		return nil, apierr.Invalid("invalid baseline disk cap")
@@ -166,6 +174,7 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	}
 	m.mounts[q.JobID] = nil
 	m.mu.Unlock()
+	defer m.unprotect(q.JobID)
 	defer func() {
 		if err != nil {
 			m.mu.Lock()
@@ -179,6 +188,11 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	}
 	if !ok {
 		return nil, os.ErrNotExist
+	}
+	if m.PrebuiltImages {
+		if err := m.validateBootCommit(ctx, q.Lineage, q.Tree, q.Parent); err != nil {
+			return nil, err
+		}
 	}
 	baseTree, imageID, e := m.cachedAncestor(ctx, q.Lineage, q.Tree)
 	if e != nil {
@@ -220,7 +234,6 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	base := blankImage(m.Data, m.VirtualSize)
 	if imageID != "" {
 		m.protect(v.JobID, imageID)
-		defer m.unprotect(v.JobID)
 		cached := m.image(imageID)
 		if st, err := os.Stat(cached); err == nil && st.Size() == m.VirtualSize {
 			store.TouchUsed(cached, time.Now())
@@ -228,6 +241,25 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 		} else {
 			v.BaseTree, v.CachedImage = "", ""
 		}
+	}
+	if !v.Warm && m.PrebuiltImages {
+		imageID, e = m.preparePrebuiltImage(ctx, q)
+		if e != nil {
+			return nil, e
+		}
+		if !root.Hex(imageID, 64) {
+			return nil, fmt.Errorf("invalid prebuilt image ID")
+		}
+		cached := m.image(imageID)
+		st, err := os.Stat(cached)
+		if err != nil {
+			return nil, err
+		}
+		if !st.Mode().IsRegular() || st.Size() != m.VirtualSize {
+			return nil, fmt.Errorf("invalid prebuilt image file")
+		}
+		store.TouchUsed(cached, time.Now())
+		base, v.BaseTree, v.CachedImage, v.Warm = cached, q.Tree, imageID, true
 	}
 	if e = clone(base, v.Dest); e != nil {
 		return nil, e

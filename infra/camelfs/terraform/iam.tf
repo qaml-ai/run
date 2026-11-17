@@ -211,11 +211,11 @@ locals {
     && try(tolist(statement.Principal.Service), [statement.Principal.Service]) == ["ec2.amazonaws.com"]
   ])
 
-  # A host's keys (camelfsd/README.md, "Durability and lineage scope"): <lineage>/{o,t,k,r,c,ts,tr}/<hash>, the lineage
+  # A host's keys (camelfsd/README.md, "Durability and lineage scope"): <lineage>/{o,p,t,k,r,c,ts,tr,i,w}/<hash>, the lineage
   # first; and the guest image under guest/ (K1), read only. Scoped to exactly those (the lead, 2026-11-14): anything
   # else in the bucket — another prefix, a future one — is denied by omission, not by a deny statement to keep up.
   # A lineage is one path segment and hashes are hex, so "*/o/*" cannot match a key outside a lineage's objects.
-  host_object_kinds = ["o", "p", "t", "k", "r", "c", "ts", "tr"]
+  host_object_kinds = ["o", "p", "t", "k", "r", "c", "ts", "tr", "i", "w"]
   host_object_arns  = [for kind in local.host_object_kinds : "${aws_s3_bucket.objects.arn}/*/${kind}/*"]
   host_bucket_statements = [
     {
@@ -223,6 +223,12 @@ locals {
       Effect   = "Allow"
       Action   = ["s3:GetObject", "s3:PutObject", "s3:GetObjectAttributes"]
       Resource = local.host_object_arns
+    },
+    {
+      Sid      = "AbortWorkspaceImageUpload"
+      Effect   = "Allow"
+      Action   = ["s3:AbortMultipartUpload"]
+      Resource = ["${aws_s3_bucket.objects.arn}/*/w/*"]
     },
     # The hosts' CA certificate a host pins at install (mtls.tf, the lead's ruling 2026-11-14): the one object of the
     # trust bucket a host may read; the AOP CA next to it is the public listener's business.

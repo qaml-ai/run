@@ -1,0 +1,14 @@
+{
+  "at": "2026-11-17T18:18:55.019277+00:00",
+  "tenant": "pilot-prebuilt-0eb69ff738",
+  "lineage": "pilot-prebuilt-0eb69ff738:repo_39af91f1c399b3d9ae8d51c2",
+  "tenantAgentsTokens": 0,
+  "lineageTombstoned": true,
+  "refsWithVersions": 0,
+  "s3CurrentKeys": 0,
+  "locatorRowsRemoved": 2,
+  "locatorRowsRemaining": 0,
+  "accountingPreserved": true,
+  "noncurrentS3VersionsRetained": true,
+  "servingRestored": "55e6f5ba44787eb8ff5f4df08fe44f398ef0b86d"
+}

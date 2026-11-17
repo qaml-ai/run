@@ -1,0 +1,6 @@
+coldbench-0-1794939861393902527: cleared 1 locator rows; image descriptors/payloads are S3-only
+coldbench-0-1794940336335124291: cleared 1 locator rows; image descriptors/payloads are S3-only
+coldbench-50-1794939896379078202: cleared 10006 locator rows; image descriptors/payloads are S3-only
+coldbench-50-1794940371286100496: cleared 10006 locator rows; image descriptors/payloads are S3-only
+coldbench-500-1794940059116947910: cleared 10005 locator rows; image descriptors/payloads are S3-only
+coldbench-500-1794940532729424556: cleared 10005 locator rows; image descriptors/payloads are S3-only
