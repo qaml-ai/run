@@ -76,6 +76,20 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	if packedMode != "" && packedMode != "control" && packedMode != "plain" && packedMode != "gzip" {
 		t.Fatal("CAMELFSD_KVM_PACKED_APPLY must be control, plain or gzip")
 	}
+	content := os.Getenv("CAMELFSD_KVM_CONTENT")
+	if content != "" && content != "random" && content != "source" {
+		t.Fatal("CAMELFSD_KVM_CONTENT must be random or source")
+	}
+	t.Logf("benchmark content=%s", content)
+	seedBytes := func(path string, size int) ([]byte, error) {
+		if content == "source" && strings.HasPrefix(path, "src/") {
+			text := []byte(fmt.Sprintf("// %s\nexport type Item = { id: string; active: boolean; tags: string[] };\nexport function activeItems(items: Item[]): Item[] {\n  return items.filter(item => item.active).map(item => ({ ...item, tags: [...item.tags].sort() }));\n}\n", path))
+			return bytes.Repeat(text, (size+len(text)-1)/len(text))[:size], nil
+		}
+		raw := make([]byte, size)
+		_, err := rand.Read(raw)
+		return raw, err
+	}
 	objectsTable := os.Getenv("CAMELFSD_KVM_OBJECTS_TABLE")
 	remote, err := openBenchmarkStore(ctx, url, objectsTable, 64)
 	must(err)
@@ -97,8 +111,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 			blobs = append(blobs, "4096 "+path)
 			continue
 		}
-		raw := make([]byte, 4096)
-		_, err := rand.Read(raw)
+		raw, err := seedBytes(path, 4096)
 		must(err)
 		blob := batch.StageBlob(raw)
 		sum := sha256.Sum256(raw)
@@ -124,8 +137,8 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	must(store.Parallel(ctx, 64, blobs, func(item string) error {
 		sizeField, path, _ := strings.Cut(item, " ")
 		size, _ := strconv.Atoi(sizeField)
-		raw := make([]byte, size)
-		if _, err := rand.Read(raw); err != nil {
+		raw, err := seedBytes(path, size)
+		if err != nil {
 			return err
 		}
 		sum := sha256.Sum256(raw)
