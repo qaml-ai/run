@@ -6549,6 +6549,15 @@ it, and the summary, the recent messages and the system prompt carry on from the
 limits, on the agent or its definition; a single run cannot set it. For a chat agent whose turns mostly need what
 happened recently, 100,000 is a reasonable start.
 
+
+## Idle compaction
+
+On the Node backend, eligible conversations compact asynchronously while idle, before the provider cache is expected to expire or the host unloads. Existing agents use the default as soon as their next eligible model response leaves a reusable prompt. The summary uses the same model and prompt prefix. Its model usage is billed as compaction.
+
+Set `idleCompaction: false` when creating or upserting an agent, or in `PATCH /v1/agents/{id}/configuration`, to opt out. Set `true` to enable it again. Omitting the field on an upsert keeps the agent's current setting. The TypeScript SDK uses `idleCompaction`, and the Python SDK uses `idle_compaction`.
+
+A new prompt cancels background compaction so the next turn can begin. A response qualifies after it reports at least 64,000 cached input or cache-write tokens. Cache availability depends on the provider.
+
 ---
 
 <!-- https://run.camelai.com/docs/guides/custom-models.md -->

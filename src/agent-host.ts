@@ -19,6 +19,8 @@ import { allowedInCheck, checkRequest, MONITOR_LIMITS, TOOL_CALLS_ERROR } from "
 import { AGENT_UPDATES, renderMessages, stamp, type MessageSource } from "./sender.ts";
 import { closeInterruptedTurn, importedHistory, interruptedTurnRepairs, step, validateInitialMessages, validateUserMessages } from "./history.ts";
 import { contextTokens, explicitKeyStream, modelKeyFailure, type ModelGate } from "./compaction.ts";
+import { IDLE_COMPACTION_CALL, IDLE_SUMMARY_PROMPT, type CachedRequest } from "./model-idle-compaction.ts";
+import { idleCompactionFresh, idleCompactionWindow } from "./idle-compaction.ts";
 import { requestImageLimit } from "./request-images.ts";
 import { codeRequest, DEFAULT_RETRY, SANDBOX_LIMITS } from "./limits.ts";
 import { isStalled, streamTimeouts } from "./model-stream.ts";
@@ -155,6 +157,61 @@ export function createAgentHost(hostIO: HostIO) {
   /** The agent's history and turn, in its Pi journal. */
   let journal: HostJournal;
   let busy = false;
+  type IdleRequest = {
+    request: CachedRequest;
+    model: AgentConfig["model"];
+    context: Parameters<NonNullable<DurableAgentOptions["streamFn"]>>[1];
+    options: Parameters<NonNullable<DurableAgentOptions["streamFn"]>>[2];
+    authProvider?: string;
+  };
+  let idleRequest: IdleRequest | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const idleCompactionEnabled = () => config.idleCompactionEnabled !== false && config.idleCompaction !== false;
+
+  function cancelIdleCompaction() {
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+    idleRequest = undefined;
+  }
+
+  function scheduleIdleCompaction(stream: NonNullable<DurableAgentOptions["streamFn"]>) {
+    const cached = idleRequest;
+    if (!cached || !idleCompactionEnabled() || disposed) return;
+    const { dueAt, expiresAt } = idleCompactionWindow(cached.request.at, cached.request.cache.ttlMs,
+      Date.now(), config.idleTimeoutMs ?? 5 * 60_000);
+    if (!idleCompactionFresh(expiresAt)) { cancelIdleCompaction(); return; }
+    const stillIdle = async () => {
+      if (busy || disposed || idleRequest !== cached || !idleCompactionEnabled() || !idleCompactionFresh(expiresAt) ||
+          journal.failed !== undefined || journal.active || agent!.hasQueuedMessages()) return false;
+      await journal.refresh();
+      if (journal.active || journal.awaiting.length || await contextError() || await io.runLimit()) return false;
+      return !busy && !disposed && idleRequest === cached && idleCompactionEnabled() && idleCompactionFresh(expiresAt);
+    };
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      const settled = () => {
+        if (idleRequest === cached) idleRequest = undefined;
+        io.emit({ type: "idle_compaction_finished", background: true });
+      };
+      void (async () => {
+        if (!await stillIdle()) { if (idleRequest === cached) idleRequest = undefined; return; }
+        io.emit({ type: "idle_compaction_started", background: true });
+        const started = await agent!.compactIdle(stillIdle, (_model, _context, options) => stream(cached.model, {
+          ...cached.context, messages: [...cached.context.messages, { role: "user", timestamp: Date.now(), content: IDLE_SUMMARY_PROMPT }],
+        }, {
+          ...cached.options, ...cached.request.options, apiKey: config.apiKey, signal: options?.signal,
+          maxTokens: Math.min(options?.maxTokens ?? 4_096, 4_096), maxRetries: 0,
+          [IDLE_COMPACTION_CALL]: { replay: cached.request, stillIdle },
+        } as typeof options), settled);
+        if (!started) settled();
+      })().catch(error => {
+        settled();
+        console.error(JSON.stringify({ type: "idle_compaction_failed", agent: config.id, error: safeError(error) }));
+      });
+    }, Math.max(0, dueAt - Date.now()));
+    idleTimer.unref();
+  }
+  let idleSummaryStream: NonNullable<DurableAgentOptions["streamFn"]>;
   let active: AbortController | undefined;
   /** Why the current run ended early: a run or spend limit, or tool calls waiting on a person's input. */
   let stopped: { stopped: RunStop["stopped"] | "input_required"; error?: string; code?: string; limit?: RunStop["limit"]; reason?: string; bucket?: string; endUser?: string } | undefined;
@@ -967,6 +1024,19 @@ export function createAgentHost(hostIO: HostIO) {
       // A summary reads the conversation as a turn does: the agent's OpenRouter data policy goes on it too.
       const summaryStream: typeof summaries = (model, context, options) => routedCall("direct", on =>
         summaries(on, context, { ...options, ...(config.dataCollection ? { dataCollection: config.dataCollection } : {}) } as typeof options), options?.signal, model);
+      const idleAttempt: ModelAttemptHook | undefined = io.modelAttempt && (event => io.modelAttempt!(
+        event.type === "begin" ? { ...event, kind: "compaction", background: true } : event));
+      idleSummaryStream = explicitKeyStream(() => idleRequest?.authProvider !== undefined ? io.modelAuth(idleRequest.authProvider) : perCall() ? io.modelAuth() : undefined, () => config.modelHeaders, gate,
+        (model, reasoning) => streamTimeouts(model, reasoning, config.runLimits, config.streamTimeouts),
+        undefined, io.modelOutbound, idleAttempt);
+      const capturedOptions = (model: AgentConfig["model"], context: IdleRequest["context"], options: IdleRequest["options"], authProvider?: string) => {
+        idleRequest = undefined;
+        if (!idleCompactionEnabled()) return options;
+        return { ...options, [IDLE_COMPACTION_CALL]: { capture: async (request: CachedRequest, message: AssistantMessage) => {
+          if (message.stopReason === "stop" && message.usage.cacheRead + message.usage.cacheWrite >= 64_000 &&
+              idleCompactionEnabled() && !disposed) idleRequest = { request, model, context, options, authProvider };
+        } } } as typeof options;
+      };
       const agentOptions: Omit<DurableAgentOptions, "durable"> = {
         initialState: {
           model: config.model,
@@ -998,8 +1068,13 @@ export function createAgentHost(hostIO: HostIO) {
           return routedCall(messages.at(-1)?.role === "toolResult" ? "continuation" : "user", on => {
             // Gemini refusing reasoning another provider produced (gemini-reasoning.ts): the same model again, once, with
             // the history's encrypted reasoning dropped, before Pi sees the refusal.
-            const once = stream(on, history(on), asked(on));
-            const first = !geminiOnOpenRouter(on) ? once : withModelFallback(once, () => { reasoning.refused(); return stream(on, history(on), asked(on)); }, {
+            const request = history(on);
+            const once = stream(on, request, capturedOptions(on, request, asked(on)));
+            const first = !geminiOnOpenRouter(on) ? once : withModelFallback(once, () => {
+              reasoning.refused();
+              const retry = history(on);
+              return stream(on, retry, capturedOptions(on, retry, asked(on)));
+            }, {
               moves: (message, partial) => refusedForeignReasoning(message.errorMessage) && !partial?.content.length,
               blocked: () => console.log(JSON.stringify({ type: "model_reasoning_replay_dropped", tenant: config.tenant, agent: config.id, model: `${on.provider}/${on.id}`, tier: (on as { serviceTier?: string }).serviceTier ?? null })),
               unavailable: error => console.error(JSON.stringify({ type: "model_reasoning_replay_failed", agent: config.id, model: `${on.provider}/${on.id}`, error: safeError(error) })),
@@ -1008,7 +1083,10 @@ export function createAgentHost(hostIO: HostIO) {
             const fallback = config.contentFilterFallback;
             if (!fallback || fallback.from !== `${on.provider}/${on.id}`) return first;
             const to = `${fallback.model.provider}/${fallback.model.id}`;
-            return withModelFallback(first, () => viaFallback(fallback.model, history(fallback.model), asked(fallback.model)), {
+            return withModelFallback(first, () => {
+              const retry = history(fallback.model);
+              return viaFallback(fallback.model, retry, capturedOptions(fallback.model, retry, asked(fallback.model), fallback.model.provider));
+            }, {
               blocked: () => recordModelFallback({ tenant: config.tenant, agent: config.id, from: fallback.from, to, reason: "content_filter" }),
               unavailable: error => console.error(JSON.stringify({ type: "model_fallback_failed", agent: config.id, model: fallback.from, fallback: to, error: safeError(error) })),
               aborted: () => !!options?.signal?.aborted,
@@ -1068,14 +1146,15 @@ export function createAgentHost(hostIO: HostIO) {
         summaryStream,
         get contextWindow() { return compactionModel().contextWindow; },
         get maxOutputTokens() { return config.maxOutputTokens ?? undefined; },
-        onSummary: message => emitCompaction({ type: "compaction_usage", provider: message.provider,
-          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true }),
-        onCompaction: async ({ keptMessages, reason }) => {
+        onSummary: (message, state) => emitCompaction({ type: "compaction_usage", provider: message.provider,
+          model: message.model, usage: message.usage, timestamp: message.timestamp, durable: true, ...(state?.background ? { background: true } : {}) }),
+        onCompaction: async ({ keptMessages, reason, background }) => {
+          cancelIdleCompaction();
           // The context as the agent held it when Pi compacted it: its history messages less those the summary keeps.
           const before = agent!.state.messages;
           const held = before.filter(message => message.role !== "system" && !isSummary(message)).length;
           console.error(JSON.stringify({ type: "compaction_end", agent: config.id, reason, contextTokens: agent!.contextTokens }));
-          emitCompaction({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages) });
+          emitCompaction({ type: "compaction_end", contextTokens: agent!.contextTokens, reason, tokensBefore: contextTokens(before), keptMessages, summarizedMessages: Math.max(0, held - keptMessages), ...(background ? { background: true } : {}) });
         },
       } });
       // An agent whose queue batches takes the steers that wait for a boundary all at once there.
@@ -1129,6 +1208,9 @@ export function createAgentHost(hostIO: HostIO) {
     }
     if (method === "configure") {
       if (busy) throw new Error("Agent is busy");
+      cancelIdleCompaction();
+      await agent.abortIdleCompaction();
+      if (params.idleCompaction !== undefined) config.idleCompaction = params.idleCompaction;
       if (params.sharedAgent !== undefined) config.sharedAgent = params.sharedAgent ?? undefined;
       if (params.systemPrompt !== undefined) config.systemPrompt = params.systemPrompt ?? undefined;
       if (params.systemPromptAppend !== undefined) config.systemPromptAppend = params.systemPromptAppend;
@@ -1155,6 +1237,8 @@ export function createAgentHost(hostIO: HostIO) {
     }
     // Before a stop: index the settled turns, so a page of them needs neither the process nor the journal.
     if (method === "steer") {
+      cancelIdleCompaction();
+      await agent.abortIdleCompaction();
       const messages = await fittedImages(userMessages(params));
       // A prompt sent `whileRunning: "steer"`: only for the running turn, and only while it can still take it.
       if (params.whileRunning === "steer" && !steerable) return { steered: false };
@@ -1164,12 +1248,15 @@ export function createAgentHost(hostIO: HostIO) {
     }
     // The node's lease went stale: its model requests in flight are cut, and made again once it is fresh (`retryDecision`).
     if (method === "interrupt") {
+      cancelIdleCompaction();
       const open = [...gate.open];
       gate.open.clear();
       for (const request of open) request.abort();
       return { interrupted: open.length };
     }
     if (method === "abort") {
+      cancelIdleCompaction();
+      await agent.abortIdleCompaction();
       // The runtime's own stop of a run past its time limit: the run ends as that limit's, not as aborted.
       if (busy && (params?.stopped === "turn_limit" || params?.stopped === "spend_limit")) stopped = { stopped: params.stopped, error: String(params.message ?? ""), code: params.stopped };
       // A stop of the agent (not just its turn): messages held for the turn or the next one are dropped too, so nothing runs after it.
@@ -1189,6 +1276,7 @@ export function createAgentHost(hostIO: HostIO) {
     // A batch (client-sessions.ts `batchOf`): the prompts that waited behind the last turn, each its own message after the first's.
     const promptMessages = method === "prompt" ? [...userMessages(params), ...(Array.isArray(params.batch) ? params.batch.flatMap(userMessages) : [])] : undefined;
     busy = true;
+    cancelIdleCompaction();
     contextMetrics.reset();
     reportContextRange = true;
     stopped = undefined;
@@ -1197,7 +1285,9 @@ export function createAgentHost(hostIO: HostIO) {
     output = undefined;
     forcing = { left: FORCED_OUTPUT_REQUESTS, reminding: false, last: false };
     active = new AbortController();
+    let compactWhenIdle = false;
     try {
+      await agent.abortIdleCompaction();
       // Aborted before this host had it (its session's `aborted`): a turn resumed from the journal is open here, and is closed.
       if (method === "continue" && params?.aborted) return await abortedBeforeLoop();
       // A notification's turn the runtime refused as it landed (a cap), resumed here: closed without the model.
@@ -1300,6 +1390,7 @@ export function createAgentHost(hostIO: HostIO) {
       // Why it failed, when the remedy is the caller's (a key) or worth telling apart: a model whose stream went quiet past
       // every retry, or a run aborted (stopped by its caller).
       const failure = error ? modelKeyFailure(error, config.model) ?? (isStalled(error) ? { code: "model_stream_stalled" } : active.signal.aborted || last?.stopReason === "aborted" ? { code: "aborted" } : {}) : {};
+      compactWhenIdle = !error && !missing && !stopped && !active.signal.aborted;
       return {
         messages: journal.total, ...answered, error, ...failure, ...(stopped ?? {}), ...(given ? { output: given.value } : {}),
         ...(missing ? { error: `The model ended its turn without calling ${OUTPUT_TOOL}, so the run has no output in its schema`, code: "output_missing" } : {}),
@@ -1311,6 +1402,7 @@ export function createAgentHost(hostIO: HostIO) {
       await io.cancelTools();
       active = undefined;
       busy = false;
+      if (compactWhenIdle) scheduleIdleCompaction(idleSummaryStream);
     }
   }
 
@@ -1459,6 +1551,7 @@ export function createAgentHost(hostIO: HostIO) {
    */
   async function dispose() {
     disposed = true;
+    cancelIdleCompaction();
     const closing = agent?.close();
     active?.abort();
     await io.cancelTools();

@@ -4565,6 +4565,10 @@
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
           },
+          "idleCompaction": {
+            "type": "boolean",
+            "description": "Compact eligible conversations during idle time by default. Set false to disable. Omitting it on an upsert preserves the current setting"
+          },
           "codeMode": {
             "type": "boolean",
             "description": "false: no code mode (the codemode tool). The model calls every tool directly, and the system prompt carries only the runtime text those tools need: for an agent with no tools (with fileTools: false too, and no builtins or tool sources), only the application's instructions and a short note on who sent each message. For a tool-less agent, such as a classifier. Best set when the agent is made: changed later, its tools change, while a conversation under way keeps the runtime text it began with"
@@ -5377,6 +5381,10 @@
                   false
                 ],
                 "description": "Present when the model gets no file tools but present_file"
+              },
+              "idleCompaction": {
+                "type": "boolean",
+                "description": "The explicit idle compaction setting. Omitted means eligible conversations use the runtime default"
               },
               "codeMode": {
                 "type": "boolean",
@@ -6473,6 +6481,10 @@
             "type": "string",
             "maxLength": 32000,
             "description": "Text after the system prompt; empty removes it"
+          },
+          "idleCompaction": {
+            "type": "boolean",
+            "description": "Set false to disable idle compaction, or true to re-enable it for eligible conversations"
           },
           "thinkingLevel": {
             "type": "string",
@@ -11580,6 +11592,10 @@
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
           },
+          "idleCompaction": {
+            "type": "boolean",
+            "description": "Compact idle conversations by default. Set false to disable it for agents made from this definition"
+          },
           "codeMode": {
             "type": "boolean",
             "description": "false: its agents get no code mode and call every tool directly (AgentInput.codeMode)"
@@ -12109,6 +12125,10 @@
           "fileTools": {
             "type": "boolean",
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
+          },
+          "idleCompaction": {
+            "type": "boolean",
+            "description": "Compact idle conversations by default. Set false to disable it for agents made from this definition"
           },
           "codeMode": {
             "type": "boolean",
@@ -12743,6 +12763,13 @@
               "null"
             ],
             "description": "false: the model gets no file tools (read, write, edit, ls, glob, grep), only present_file; code can still call them (tools.read and so on) for attachments, tool outputs and saved results. For applications with file tools of their own"
+          },
+          "idleCompaction": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Compact idle conversations by default. Set false to disable it for agents made from this definition"
           },
           "codeMode": {
             "type": [

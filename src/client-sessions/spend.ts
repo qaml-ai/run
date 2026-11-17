@@ -368,7 +368,7 @@ export function nativeUsageEffect(ctx: SpendContext, session: Session, entry: im
   if (!message || !billed(message)) return undefined;
   const usage = responseUsage(ctx, session, message, true);
   const via = endpoint(ctx, session) ? `${session.header.config.model.provider}/` : "";
-  const request = runningRun(session);
+  const request = summary && (entry.data as { background?: boolean }).background === true ? undefined : runningRun(session);
   const { keyScope } = session.header;
   const identity = billingIdentity(session, request);
   const payload: UsageRecord = { usage, provider: via + (message as any).provider, model: (message as any).model,

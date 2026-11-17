@@ -72,7 +72,7 @@ export async function resolveApiKey(ctx: ConfigurationContext, session: Session,
  * apply when an agent is made.
  */
 function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], config: Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">, metadata: AgentMetadata,
-  mounts: unknown, origin: { definition: DefinitionRef } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers" | "decide" | "humanInput"> = {}, remount = false, keepModel = false) {
+  mounts: unknown, origin: { definition: DefinitionRef; overrides?: string[] } | undefined, identity: AgentIdentity | undefined, provisionHash: string, own: Pick<Sources, "builtins" | "delegate" | "mcpServers" | "decide" | "humanInput"> = {}, remount = false, keepModel = false) {
   const differs = (a: unknown, b: unknown) => canonical(a ?? null) !== canonical(b ?? null);
   const remounted = mounts !== undefined && differs((header.mounts ?? []).map(({ volumeId, path, mode }) => ({ volumeId, path, mode })), (VolumeService.resolved(header.id, mounts as unknown[]) as { volumeId: string; path: string; mode?: string }[]).map(({ volumeId, path, mode }) => ({ volumeId, path, mode: mode ?? "rw" })));
   const fixed = [
@@ -93,6 +93,8 @@ function reconfiguration(header: SessionHeader, definitions: ToolDefinition[], c
     ...config.language !== undefined ? { language: config.language } : {},
     // Its queue likewise: an upsert that leaves it out keeps the one set by PATCH .../configuration.
     ...config.queue !== undefined ? { queue: config.queue } : {},
+    // A definition can supply this value during provisioning. An upsert changes it only when the caller supplied it.
+    ...(config.idleCompaction !== undefined && (!origin || origin.overrides?.includes("idleCompaction")) ? { idleCompaction: config.idleCompaction } : {}),
     // Only a definition's own fields are the agent's: the rest follow its definition.
     ...origin ? {} : { systemPrompt: config.systemPrompt ?? null, modelHeaders: config.modelHeaders ?? null, tools: definitions, builtins: own.builtins ?? [], delegate: own.delegate ?? null, humanInput: own.humanInput ?? {}, mcpServers: own.mcpServers ?? [], decide: own.decide ?? null },
   };
@@ -108,6 +110,7 @@ function upsertChanges(header: SessionHeader, target: Record<string, any>) {
   if (target.systemPromptAppend !== undefined && target.systemPromptAppend !== (current.systemPromptAppend ?? "")) changes.systemPromptAppend = target.systemPromptAppend;
   if (target.fileTools !== undefined && target.fileTools !== (current.fileTools !== false)) changes.fileTools = target.fileTools;
   if (target.codeMode !== undefined && target.codeMode !== (current.codeMode !== false)) changes.codeMode = target.codeMode;
+  if (target.idleCompaction !== undefined && target.idleCompaction !== (current.idleCompaction !== false)) changes.idleCompaction = target.idleCompaction;
   if ("systemPrompt" in target && differs(current.systemPrompt, target.systemPrompt)) changes.systemPrompt = target.systemPrompt;
   if ("modelHeaders" in target && differs(current.modelHeaders, target.modelHeaders)) changes.modelHeaders = target.modelHeaders;
   if ("computerLimit" in target && differs(current.computerLimit, target.computerLimit)) changes.computerLimit = target.computerLimit;
@@ -430,6 +433,7 @@ export async function inspect(ctx: ConfigurationContext, id: string, tenant: str
     spendLimit: await ctx.spendOf(session).then(spend => spend && { usd: spend.usd, spent: spend.spent }), runLimits: session.header.config.runLimits ?? null, ...(session.header.config.computerLimit !== undefined ? { computerLimit: session.header.config.computerLimit } : {}),
     maxOutputTokens: session.header.config.maxOutputTokens ?? null, temperature: session.header.config.temperature ?? null, dataCollection: session.header.config.dataCollection ?? null, language: session.header.config.language ?? null,
     queue: session.header.config.queue ?? null,
+    ...(session.header.config.idleCompaction !== undefined ? { idleCompaction: session.header.config.idleCompaction } : {}),
     ...(session.header.forkedFrom ? { forkedFrom: session.header.forkedFrom } : {}),
     ...activityOf(session.running.values()), cursor: session.cursor, events: session.events.map(({ id, data }) => ({ id, data })), requests: [...session.requests.values()].filter(record => !checkRequest(record.id)).map(visible) };
 }

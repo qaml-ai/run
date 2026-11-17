@@ -13,7 +13,7 @@ import { HttpError } from './http.ts';
 import { languageInput } from './language.ts';
 import { queueInput, type QueueSetting } from '../shared/queue-mode.ts';
 
-type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey'>;
+type SessionConfig = Omit<AgentConfig, 'id' | 'directory' | 'tools' | 'apiKey' | 'idleTimeoutMs' | 'idleCompactionEnabled'>;
 
 /** What a model on a tenant's own endpoint can do, for a model the catalog lacks. */
 export type EndpointModel = { contextWindow: number; maxTokens: number; reasoning?: boolean; input?: ('text' | 'image')[] };
@@ -265,22 +265,24 @@ export function sessionConfig(input: any, defaultModel: AgentConfig['model'], de
   }
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
-  return { model, ...updates, ...(input.fileTools === false ? { fileTools: false } : {}), ...(input.codeMode === false ? { codeMode: false } : {}), ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
+  if (input.idleCompaction !== undefined && typeof input.idleCompaction !== 'boolean') throw new Error('idleCompaction must be true or false');
+  return { model, ...updates, ...(input.idleCompaction !== undefined ? { idleCompaction: input.idleCompaction } : {}), ...(input.fileTools === false ? { fileTools: false } : {}), ...(input.codeMode === false ? { codeMode: false } : {}), ...(input.initialMessages !== undefined ? { initialMessages: input.initialMessages } : {}) };
 }
 
 /**
  * Scoped credentials can change behavior, tools and the model, but never a model
  * endpoint or credentials: a model can only be named from Pi's catalog.
  */
-export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'computerLimit' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue' | 'networking'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
+export function configurationUpdate(input: any, endpoints?: ModelEndpoints, custom?: CustomProviders): Pick<AgentConfig, 'systemPrompt' | 'systemPromptAppend' | 'thinkingLevel' | 'modelHeaders' | 'computerLimit' | 'runLimits' | 'maxOutputTokens' | 'temperature' | 'dataCollection' | 'language' | 'queue' | 'networking' | 'idleCompaction'> & { tools?: AgentConfig['tools']; model?: AgentConfig['model']; keyScope?: string | null } {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid configuration');
-  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'computerLimit', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue', 'networking'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
+  for (const key of Object.keys(input)) if (!['systemPrompt', 'systemPromptAppend', 'thinkingLevel', 'mcp', 'model', 'keyScope', 'modelHeaders', 'tools', 'fileTools', 'codeMode', 'computerLimit', 'runLimits', 'maxOutputTokens', 'temperature', 'dataCollection', 'language', 'queue', 'networking', 'idleCompaction'].includes(key)) throw new Error(`Unsupported scoped configuration field: ${key}`);
   if (input.networking !== undefined) {
     input = { ...input, networking: networkingInput(input.networking) };
     if (input.networking.type === 'limited') throw new HttpError(400, 'Limited networking is unavailable on the Node/Sprites backend');
   }
   if (input.fileTools !== undefined && typeof input.fileTools !== 'boolean') throw new Error('fileTools must be true or false');
   if (input.codeMode !== undefined && typeof input.codeMode !== 'boolean') throw new Error('codeMode must be true or false');
+  if (input.idleCompaction !== undefined && typeof input.idleCompaction !== 'boolean') throw new Error('idleCompaction must be true or false');
   if (input.keyScope !== undefined && input.keyScope !== null) checkScope(input.keyScope);
   // Replaced whole; null or {} removes them.
   if (input.modelHeaders !== undefined) input = { ...input, modelHeaders: modelHeadersInput(input.modelHeaders) };
