@@ -13,6 +13,9 @@ mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 exchange /x
 read mode action < /x/request
 stamp() { cut -d' ' -f1 /proc/uptime > "/x/$1"; }
 stamp start
+if [ -e /x/trace ]; then
+    (sleep 15; echo w >/proc/sysrq-trigger; echo t >/proc/sysrq-trigger; dmesg | tail -400 >/x/blocked; cat /x/blocked >/dev/console) &
+fi
 set -x
 if [ "$mode" = git ]; then
     mount -t tmpfs tmpfs /base

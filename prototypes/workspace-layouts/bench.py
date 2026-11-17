@@ -25,7 +25,12 @@ def run(*args, **kw):
 def digest(b):
     return hashlib.sha256(b).hexdigest()
 
+class RangeServer(http.server.ThreadingHTTPServer):
+    request_queue_size = 128
+
 class Origin(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_HEAD(self):
         self.serve(False)
 
@@ -251,6 +256,8 @@ def one(root, boot, out, mib, mode, server, transfer=None, export=False):
             x = session/"exchange"
             x.mkdir()
             (x/"request").write_text(f"{mode} {action}\n")
+            if os.getenv("CAMELFS_STALL_TRACE"):
+                (x/"trace").touch()
             if mode == "hybrid":
                 descriptor_bytes = (origin/descriptor_id).read_bytes()
                 assert digest(descriptor_bytes)==descriptor_id
@@ -376,7 +383,7 @@ def main():
         tmp=Path(d)
         boot=tmp/"boot"
         run("bash",HERE/"kernel.sh",boot)
-        with http.server.ThreadingHTTPServer(("127.0.0.1",0),Origin) as server:
+        with RangeServer(("127.0.0.1",0),Origin) as server:
             server.root=tmp/"origin"
             server.root.mkdir()
             server.lock=threading.Lock()
