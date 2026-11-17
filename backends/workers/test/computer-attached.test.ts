@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { idleCompactionDeadline, wakeIdleCompaction } from "../src/idle-compaction-schedule.ts";
 
 // Exercise the runtime methods with only their storage and computer dependencies replaced.
 function method(file: string, name: string, globals: Record<string, unknown> = {}) {
@@ -106,7 +107,7 @@ test("arming skips only a known absent computer and preserves live lease deadlin
       COMPUTER_ATTACHED: key, TERMINAL_EVENTS_PREFIX: "terminal:",
       ComputerService: class { async nextDeadline() { queries++; return due; } },
       inputAdmissionDeadline: () => Infinity, checkGcDeadline: async () => Infinity,
-      repoMoveDeadline: async () => undefined, bashEnabled: () => false,
+      repoMoveDeadline: async () => undefined, bashEnabled: () => false, idleCompactionDeadline,
     });
     const runtime = {
       invalidateMaintenance() {}, maintenanceGeneration: 0,
@@ -133,7 +134,7 @@ test("wake skips sweep only for a false attachment hint and processes only due d
     let expirations = 0, sweeps = 0;
     const wake = method("agent-lifecycle", "wakeImpl", {
       COMPUTER_ATTACHED: key, Date: { now: () => now }, restageInputMirrors: noop, flushScheduleOutcomes: noop,
-      bashEnabled: () => false, drainRepoMoves: noop,
+      bashEnabled: () => false, drainRepoMoves: noop, wakeIdleCompaction,
       expireDecisions: async () => { expirations++; }, flushMonitors: noop, collectChecks: noop,
       ComputerService: class { async sweepAgent() { sweeps++; } },
     });
