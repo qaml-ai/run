@@ -100,6 +100,20 @@ func (m *Manager) cachedAncestor(ctx context.Context, lineage, tree string) (str
 // walking a repository's history during boot.
 const cachedCommitHops = 4
 
+func (m *Manager) validateBootCommit(ctx context.Context, lineage, tree, version string) error {
+	commit, found, err := m.objects(lineage).CommitAncestry(ctx, lineage, version)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("boot commit %s is missing", version)
+	}
+	if commit.Tree != tree {
+		return fmt.Errorf("boot commit %s does not name tree %s", version, tree)
+	}
+	return nil
+}
+
 func (m *Manager) cachedCommitAncestor(ctx context.Context, lineage, tree, version string) (string, string, error) {
 	repo := m.objects(lineage)
 	var hasImages bool
