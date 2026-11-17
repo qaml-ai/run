@@ -1,9 +1,11 @@
 # Workspace delivery experiments
 
 These are the November 17, 2026 workspace delivery prototypes and their measured
-results. Normal daemon starts retain canonical parallel restore and the 64 KiB
-bundle cutoff. Prepared apply is an explicitly configured image-manager path.
-Clean ext4 preparation and restore live in the KVM test fixture. Warm Git is a
+results. These archived trials used canonical parallel restore as their control
+and the normal 64 KiB bundle cutoff. Normal daemon starts now integrate shared
+prebuilt ext4 images; see the [current mount path](../../README.md#session-mounts-and-guest-streams).
+Prepared apply remains an explicitly configured image-manager path. The clean
+ext4 prototypes measured here live in the KVM test fixture. Warm Git is a
 standalone benchmark command. The 1 MiB bundle cutoff requires both build tags
 `kvm,camelfs_medium_bundles`.
 

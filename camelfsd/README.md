@@ -219,17 +219,38 @@ unavailable (503). Conflict lists are in error.details.conflicts.
 ## Session mounts and guest streams
 
 Every session mount names a tree, its 40-hex parent commit and the tier's
-lease fence with a holder and a positive epoch. The host reflinks a local image
-for the exact tree or an ancestor recorded on the host. After a cache miss, a
-host with images for the lineage follows up to four first-parent Git links.
-It reuses a matching image when every target path exists in the base tree and
-the base has no tracked paths in the guest's temporary-file namespace.
-New paths can collide with image-only directories, so the host builds the
-workspace from Git in that case. A cold host also reflinks a blank workspace
-(`--virtual-size`, default 1 GiB) and applies the Git tree in the guest.
+lease fence with a holder and a positive epoch. The host verifies that the
+commit names that tree before selecting an image. Normal `camelfsd host`
+starts enable shared prebuilt ext4 images.
+
+The host first reflinks a local image for the exact tree or a safe ancestor.
+After a local miss, it reads the shared descriptor for that exact lineage,
+tree, disk size (`--virtual-size`, default 1 GiB) and image recipe. A shared
+hit downloads the gzip artifact in parallel 8 MiB ranges, verifies compressed
+and raw SHA256 hashes and lengths, and installs a sparse local image before
+reflinking it for the VM. The guest receives the full file index. Tracked
+`.camelfs-tmp-*` leaves are resent because guest startup cleans that namespace.
+
+Only an absent descriptor starts a synchronous producer. It reads verified
+canonical Git files, builds a clean ext4 image with `mkfs.ext4 -d`, compresses
+and uploads it, and publishes the immutable descriptor last. Concurrent
+producers adopt the same published descriptor. First use pays preparation and
+upload; later cold hosts share that artifact. Malformed descriptors, missing
+advertised payloads, storage errors and integrity failures fail the start.
+Interrupted local build spools are removed on host startup.
+
+A host with images for the lineage follows up to four first-parent Git links.
+It reuses an ancestor when every target path exists in the base tree and the
+base has no tracked paths in the guest's temporary-file namespace. API edits
+produce a new tree identity. Compatible local images apply the delta; a fresh
+host selects or builds the new exact artifact. API commits do not build disk
+images or enqueue background work.
+
 The Git tree preserves regular files, their executable bit and symlinks.
-A tree rebuild drops image-only state such as `.git`, empty directories,
-ownership, timestamps and xattrs. A local image can retain that state.
+A clean image drops image-only state such as `.git`, empty directories,
+ownership, timestamps and xattrs. A local checkpoint image can retain that
+state. Shared images are disposable derivatives of canonical files; their
+object layout and deletion rules are described below.
 
 Among eligible hosts with the same guest image cache status, placement ranks
 hosts by a stable hash of the repo lineage and host ID. This keeps repeat starts
