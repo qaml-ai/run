@@ -292,6 +292,40 @@ excludes concurrent daemons. Startup discards incomplete local snapshots and
 recovers fenced mounts in the current format. Stop guests before running
 `camelfsd cleanup --data DIR` to clear old mount state and legacy `cache/`.
 
+### Shared prebuilt image timings
+
+On November 17, 2026, source `249e5efc` ran two order-reversed rounds on the
+pilot `m8id.xlarge`. Both arms used the same qualification binary and committed
+versions. Each VM had 2 vCPUs and 2048 MiB RAM. Nominal 50/500 MiB fixtures
+contained 49.0625/499.0625 MiB of random files on 1074/1524 MiB workspace disks.
+Fresh daemon directories modelled an empty host cache on the same physical host.
+
+| Workspace | Cold canonical control | First prebuilt build | Shared image hit | Local image hit |
+| --- | ---: | ---: | ---: | ---: |
+| 50 MiB | 2.348 s | 4.754 s | 2.118 s | 0.559 s |
+| 500 MiB | 6.473 s | 13.971 s | 3.810 s | 0.593 s |
+
+Each cell is a median of two starts, timed from the ordinary VM-create request
+to the first verified file read. The canonical and shared-image columns replay
+the same initial tree in fresh directories (`remote-hit` phase). First build
+includes canonical reads, materialization, mkfs, compression and publication.
+API edits and additions create new tree identities and pay that producer cost
+on a cold miss. Compatible same-host ancestors can still apply a delta.
+
+All 58 timed starts passed complete regular-file checksums and counts. Four
+changed/no-op checkpoint pairs passed, with regular files, executable mode and
+symlinks preserved on recovery. Two owned corrupt-image tests failed before
+becoming runnable and left no mount or tree-cache entry. The qualification
+restored the original serving daemon and removed its synthetic S3 keys and
+DynamoDB locator rows.
+
+One later 500 MiB checkpoint-artifact restore took 13.088 s, including 12.000 s
+in artifact fetch and verification. That tail is retained in the raw results;
+its cause was not isolated. These runs do not qualify larger first builds or
+live multipart payloads above 5 GiB against the Worker's 60 s startup deadline.
+See L136 and the [full measurements and offline verifier](benchmarks/prebuilt-starts/README.md)
+for every observation, range, boot stage, recipe pin and cleanup receipt.
+
 ### Firecracker cold restore timings
 
 On November 16, 2026, `TestKVMColdSessionBench` ran both implementations on the

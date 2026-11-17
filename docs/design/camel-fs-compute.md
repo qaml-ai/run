@@ -306,7 +306,7 @@ scripts.
       Git files before booting. Storage and integrity errors fail the start. API edits select a new tree;
       compatible local ancestors can still apply a delta. See
       [the mount path](../../camelfsd/README.md#session-mounts-and-guest-streams) and
-      [the measurements](../../camelfsd/README.md#firecracker-cold-restore-timings).
+      [the measurements](../../camelfsd/README.md#shared-prebuilt-image-timings).
     - A host prewarms its guest image after registration (L112).
     - **A fresh guest root filesystem per boot.** Each VM mounts the branch at `/workspace`, where the shell
       starts. Installed packages, `/tmp` and the shell's environment are gone after a sleep.

@@ -104,7 +104,7 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
 4. `backends/workers/README.md`: the Workers runtime and the pilot (`run-pilot.camelai.dev`, no external users).
 5. `docs/design/roadmap.md`: the plan. The tracks, their next items, what gets simpler after v0, and the order.
 
-**Where it stands (2026-11-16)**
+**Where it stands (2026-11-17)**
 - The camel-fs tier serves the pilot: refs in DynamoDB (#1204 guards ref writes with deletion stamps), VMs on
   a Firecracker host, guest image chosen by `GUEST_IMAGE_SHA256` in `backends/workers/wrangler.pilot.jsonc`.
 - File tools read and write committed workspace versions, and successful Bash calls publish their checkpoint
@@ -113,6 +113,7 @@ Most active work is not on main. Start here when you pick it up on a fresh machi
   from verified canonical files. Storage and integrity failures fail the start. Shared workspace-root and chunk
   replication remain retired; the new images are disposable derivatives of Git files.
 - L131/L132 track cold-restore performance, and L133 records the earlier cost of removing shared images.
+  L136 records the new prebuilt producer cost and latency tail; L137 covers retained derived S3 bytes.
   The Firecracker daemon restart drill preserved the running VM, reattached its command, and reconciled
   its checkpoint and usage. See `camelfsd/README.md` for the deployed build and measurements.
 - The pilot uses Firecracker for managed Bash. The legacy Cloudflare class and application are retired
