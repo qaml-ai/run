@@ -2,14 +2,68 @@ package store
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+type objectRangeErrorDB struct{ BundleDB }
+
+func (objectRangeErrorDB) GetItem(context.Context, *dynamodb.GetItemInput, ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	return nil, errors.New("catalog unavailable")
+}
+
+func TestObjectRangePackedMember(t *testing.T) {
+	ctx := t.Context()
+	raw := Local{Dir: t.TempDir()}
+	db := &bundleTestDB{rows: make(map[string]locatorItem)}
+	s := ForLineage(WithDepth(WithBundles(raw, db, "objects"), 2), "range")
+	blob := newSmall([]byte("before|wanted|after"))
+	if _, err := PutSmallBlobs(ctx, s, []SmallBlob{blob}); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := raw.Has(ctx, "range/"+blob.Key); err != nil || exists {
+		t.Fatalf("packed fixture has a loose object: %v %v", exists, err)
+	}
+	got, err := ReadObjectRange(ctx, s, blob.Key, 7, 6, int64(len(blob.Data)))
+	if err != nil || !bytes.Equal(got, blob.Data[7:13]) {
+		t.Fatalf("packed range = %q, %v", got, err)
+	}
+	if _, err := ReadObjectRange(ctx, s, blob.Key, 7, 6, int64(len(blob.Data)+1)); err == nil {
+		t.Fatal("accepted a mismatched logical object size")
+	}
+	failing := ForLineage(WithBundles(raw, objectRangeErrorDB{db}, "objects"), "range")
+	if _, err := ReadObjectRange(ctx, failing, blob.Key, 7, 6, int64(len(blob.Data))); err == nil {
+		t.Fatal("ignored a catalog error")
+	}
+	loc, err := LocateBundlesForRestore(ctx, s, []string{smallID(blob)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Put(ctx, "range/"+blob.Key, blob.Data); err != nil {
+		t.Fatal(err)
+	}
+	delete(db.rows, "range/"+blob.Key)
+	if _, err := ReadObjectRange(ctx, s, blob.Key, 7, 6, int64(len(blob.Data))); err == nil {
+		t.Fatal("missing locator silently used loose bytes")
+	}
+	db.rows["range/"+blob.Key] = locationItem("range", smallID(blob), blobLocation{BundleRef: loc[smallID(blob)], attempt: "test"})
+	if err := os.WriteFile(filepath.Join(raw.Dir, "range", loc[smallID(blob)].Key), []byte("corrupt pack"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadObjectRange(ctx, s, blob.Key, 7, 6, int64(len(blob.Data))); err == nil {
+		t.Fatal("corrupt pack silently used loose bytes")
+	}
+}
 
 func TestObjectRangeForPackedApplyPrototype(t *testing.T) {
 	payload := []byte("before|wanted|after")

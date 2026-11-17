@@ -15,8 +15,24 @@ import (
 // ReadObjectRange reuses exact S3 range reads for the packed-apply benchmark.
 // The caller verifies the complete immutable object's digest after assembly.
 func ReadObjectRange(ctx context.Context, s Store, key string, offset, size, total int64) ([]byte, error) {
-	if !valid(fullKey(s, key)) || size <= 0 || total < size || offset < 0 || offset > total-size {
+	full := fullKey(s, key)
+	if !valid(full) || size <= 0 || total < size || offset < 0 || offset > total-size {
 		return nil, fmt.Errorf("invalid object range")
+	}
+	lineage, kind, id, _ := splitKey(full)
+	if b, _ := bundleScope(s); b != nil && kind == "o" && total <= BundleMaxBlob {
+		loc, err := b.lookup(ctx, lineage, id)
+		if err != nil {
+			return nil, err
+		}
+		if loc.Key == "" || loc.Size != total {
+			return nil, fmt.Errorf("small object range requires a matching bundle locator")
+		}
+		data, err := readBundleMember(ctx, s, lineage, id, loc.BundleRef)
+		if err != nil {
+			return nil, err
+		}
+		return data[offset : offset+size], nil
 	}
 	return readBundleRange(ctx, s, key, BundleRef{Offset: offset, Size: size, PackSize: total})
 }
