@@ -8,19 +8,19 @@ These runs used Firecracker 1.13.1 and KVM on an EC2 m8id.xlarge with local inst
 
 | State on arrival | Edits | Median to durable acknowledgment | Observed range |
 | --- | ---: | ---: | ---: |
-| Sleeping VM, empty host block cache | 3 | 1,774 ms | 1,734–1,788 ms |
-| Sleeping VM, populated host block cache | 3 | 1,332 ms | 1,301–1,341 ms |
-| Running VM and populated cache | 12 | 175 ms | 128–409 ms |
+| Sleeping VM, empty host block cache | 6 | 1,728 ms | 1,662–1,788 ms |
+| Sleeping VM, populated host block cache | 6 | 1,317 ms | 1,243–1,372 ms |
+| Running VM and populated cache | 24 | 161 ms | 117–409 ms |
 
-Each pair started from an identical snapshot under a fresh ref. The empty-cache run fetched 13 blocks and was killed immediately after its first acknowledgment. The next run began with those blocks cached on NVMe, started a new guest, and made five edits before it was killed. The 12 warm timings are edits two through five across those three guests. The separate fault case is excluded from the timing summary. Host OS page caches were allowed to remain warm.
+We ran two independent sets of three pairs. Each pair started from an identical snapshot under a fresh ref. The empty-cache run fetched 13 blocks and was killed immediately after its first acknowledgment. The next run began with those blocks cached on NVMe, started a new guest, and made five edits before it was killed. The 24 warm timings are edits two through five across six guests. The two separate fault cases are excluded from the timing summary. Host OS page caches were allowed to remain warm.
 
-On a running VM the median edit plus Bash readback took 4.3 ms, freeze took 12.4 ms, uploading the changed blocks and map took 102.4 ms, conditional ref publication took 38.7 ms and thaw took 3.0 ms. Per-phase medians need not add to the median request. Each 33-byte write uploaded 1–1.5 MiB of block bodies, plus the map and ref. Raw records include elapsed time, bytes and phases per edit. The sleeping cases also include owner claim, device attach, kernel boot and workspace mount. The API coordinator and its AWS client were already initialized.
+On a running VM the median edit plus Bash readback took 4.2 ms, freeze took 8.7 ms, uploading the changed blocks and map took 103.3 ms, conditional ref publication took 37.4 ms and thaw took 2.9 ms. Per-phase medians need not add to the median request. Each 33-byte write uploaded 1–1.5 MiB of block bodies, plus the map and ref. Raw records include elapsed time, bytes and phases per edit. The sleeping cases also include owner claim, device attach, kernel boot and workspace mount. The API coordinator and its AWS client were already initialized.
 
 ## Failure and takeover
 
-For each of the six measured owner sessions, the supervisor killed the owner, its Firecracker guest and its block backend immediately after the terminal acknowledgment. A seventh run killed them during a subsequent edit after uploading its new immutable data but before publishing its ref. A second machine fetched each authoritative ref from S3, took ownership and attempted a publish with the displaced owner's ETag. All seven stale publishes returned HTTP 412, including the attempt immediately after takeover with the file revision still unchanged.
+For each of the twelve measured owner sessions, the supervisor killed the owner, its Firecracker guest and its block backend immediately after the terminal acknowledgment. Two additional runs killed them during a subsequent edit after uploading its new immutable data but before publishing its ref. A second machine fetched each authoritative ref from S3, took ownership and attempted a publish with the displaced owner's ETag. All fourteen stale publishes returned HTTP 412, including the attempt immediately after takeover with the file revision still unchanged.
 
-The second machine created an empty block cache for each recovered root, attached a fresh read-only NBD device, mounted ext4 and read the acknowledged bytes. It also independently rebuilt the entire image from hash-verified S3 objects, checked it with e2fsck and checked an untouched file. The interrupted run recovered the previous acknowledged value. These checks used a mounted filesystem on the second host. The native timing runs used a Firecracker guest on the writer.
+The second machine created an empty block cache for each recovered root, attached a fresh read-only NBD device, mounted ext4 and read the acknowledged bytes. It also independently rebuilt the entire image from hash-verified S3 objects, checked it with e2fsck and checked an untouched file. Both interrupted runs recovered their previous acknowledged values. These checks used a mounted filesystem on the second host. The native timing runs used a Firecracker guest on the writer.
 
 ## Abrupt loss of the owner host
 
@@ -49,6 +49,6 @@ sudo --preserve-env=TRIAL_BUCKET,TRIAL_PREFIX,TRIAL_KERNEL,TRIAL_NBD,TRIAL_INITR
 
 On the recovery host use the same test bucket and prefix, an unused NBD device, local nbdkit and its Python plugin, and set NBD_CLIENT to the absolute nbd-client path. Copy only the JSON receipts to that host. Run `python3 recover.py writer.json recovery.json` as a user with test-prefix S3 access and passwordless sudo for the short-lived mount, attach and detach. Recovery claims each ref, advances its epoch and verifies the prior owner is fenced.
 
-See the [native receipts](results/writer.json) and [independent takeover and recovery checks](results/recovery.json).
+The two runs include [first-run receipts](results/writer.json), [first-run recovery](results/recovery.json), [repeat receipts](results/writer-repeat.json) and [repeat recovery](results/recovery-repeat.json).
 
 For the power-cut variant, run the writer inside a disposable Linux VM with nested KVM, NBD, the same guest kernel and initrd, and credentials restricted to a separate experiment prefix. The harness ran on an Ubuntu 24.04 owner VM with two vCPUs and 1.5 GiB of RAM. From the outer machine, use `sudo python3 powercut.py outside <qemu-pidfile> <private-owner-disk> <report.json> ssh ...` with a remote command that invokes `python3 powercut.py inside <fresh-scratch-folder>` with the writer environment. The external process validates the private VMM and waits for the second acknowledgment before cutting power. Remove the private owner disk, transfer the JSON receipt, then run the same independent reader with the power-cut prefix.
