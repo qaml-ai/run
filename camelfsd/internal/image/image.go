@@ -83,6 +83,11 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 			return nil, e
 		}
 	}
+	if c.PrebuiltImages {
+		if e := recoverPrebuiltImages(c.Data); e != nil {
+			return nil, e
+		}
+	}
 	if e := Probe(c.Data); e != nil {
 		return nil, e
 	}
@@ -108,11 +113,7 @@ func New(c Config, s store.Store, r refs.Repository) (*Manager, error) {
 	if c.VirtualSize < 1 || c.VirtualSize%512 != 0 || c.MaxFiles < 1 || c.MaxBytes < 1 || c.MaxPathsBytes < 1 {
 		return nil, apierr.Invalid("invalid size or checkpoint caps")
 	}
-	if c.PrebuiltImages {
-		if e := recoverPrebuiltImages(c.Data); e != nil {
-			return nil, e
-		}
-	} else {
+	if !c.PrebuiltImages {
 		if e := blank(c); e != nil {
 			return nil, e
 		}
