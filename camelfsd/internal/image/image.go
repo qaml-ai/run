@@ -182,6 +182,21 @@ func (m *Manager) Mount(ctx context.Context, q Request) (out *Mount, err error) 
 	if e != nil {
 		return nil, e
 	}
+	if imageID == "" {
+		baseTree, imageID, e = m.cachedCommitAncestor(ctx, q.Lineage, q.Tree, q.Parent)
+		if e != nil {
+			return nil, e
+		}
+		if imageID != "" {
+			canReuse, err := m.canReuseCommitImage(ctx, q.Lineage, baseTree, q.Tree)
+			if err != nil {
+				return nil, err
+			}
+			if !canReuse {
+				baseTree, imageID = "", ""
+			}
+		}
+	}
 	v := &Mount{Request: q, BaseTree: baseTree, CachedImage: imageID, mu: new(sync.Mutex)}
 	v.Parent = refs.Value{Commit: q.Parent, Tree: q.Tree}
 	v.Request.Parent = ""

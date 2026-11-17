@@ -216,11 +216,21 @@ unavailable (503). Conflict lists are in error.details.conflicts.
 
 Every session mount names a tree, its 40-hex parent commit and the tier's
 lease fence with a holder and a positive epoch. The host reflinks a local image
-for the exact tree or one of up to 64 known ancestors. Without a local image it
-reflinks a blank workspace (`--virtual-size`, default 1 GiB) and the guest applies
-the Git tree. The Git tree preserves regular files, their executable bit and
-symlinks. A tree rebuild drops image-only state such as `.git`, empty directories,
+for the exact tree or an ancestor recorded on the host. After a cache miss, a
+host with images for the lineage follows up to four first-parent Git links.
+It reuses a matching image when every target path exists in the base tree and
+the base has no tracked paths in the guest's temporary-file namespace.
+New paths can collide with image-only directories, so the host builds the
+workspace from Git in that case. A cold host also reflinks a blank workspace
+(`--virtual-size`, default 1 GiB) and applies the Git tree in the guest.
+The Git tree preserves regular files, their executable bit and symlinks.
+A tree rebuild drops image-only state such as `.git`, empty directories,
 ownership, timestamps and xattrs. A local image can retain that state.
+
+Among eligible hosts with the same guest image cache status, placement ranks
+hosts by a stable hash of the repo lineage and host ID. This keeps repeat starts
+near their local workspace images while allowing other hosts to take work when
+the preferred host is full or draining.
 
 When a session applies a nonempty file delta, the host captures a baseline
 before first exec. One publisher per host processes these snapshots after
