@@ -2,7 +2,7 @@
 import bisect
 import hashlib
 import json
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import sqlite3
 import subprocess
 import tarfile
@@ -25,7 +25,10 @@ def entry(mode, data, insert):
 
 
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, *, readonly=False):
+        if readonly:
+            self.db = sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro",uri=True,check_same_thread=False)
+            return
         self.db = sqlite3.connect(path,check_same_thread=False)
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY, data BLOB NOT NULL);
@@ -45,6 +48,19 @@ class Store:
             raise IOError("manifest hash mismatch")
         return json.loads(raw)["files"]
 
+    def patch(self, info, offset, replacement):
+        mode, size, chunks = info
+        end = offset + len(replacement)
+        if not 0 <= offset <= end <= size:
+            raise ValueError("overwrite outside file")
+        result = list(chunks)
+        for i in range(offset//CHUNK, (end+CHUNK-1)//CHUNK):
+            content = bytearray(self.get(chunks[i]))
+            left, right = max(offset,i*CHUNK), min(end,(i+1)*CHUNK)
+            content[left-i*CHUNK:right-i*CHUNK] = replacement[left-offset:right-offset]
+            result[i] = self.insert(bytes(content))
+        return [mode,size,result]
+
     def commit(self, branch, parent, edits):
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
@@ -57,6 +73,10 @@ class Store:
                     raise ValueError("invalid fixture path")
                 if mode == "delete":
                     del files[path]
+                elif mode == "patch":
+                    if files[path][0] == "link":
+                        raise ValueError("cannot patch symlink")
+                    files[path] = self.patch(files[path],*data)
                 else:
                     files[path] = entry(mode, data, self.insert)
             raw = encode({"parent":parent,"files":files})

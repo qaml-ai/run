@@ -10,7 +10,7 @@ from store import Device, Store
 API_VERSION = 2
 
 def open(readonly):
-    store = Store(os.environ["SNAP_DB"])
+    store = Store(os.environ["SNAP_DB"], readonly=True)
     stats = [0,0,0]
     @functools.lru_cache(maxsize=128)
     def fetch(key):
