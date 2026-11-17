@@ -1,0 +1,423 @@
+{
+  "direct-64": {
+    "source": "a4309c6b",
+    "mib": 64,
+    "files": 1155,
+    "fixture_and_seed_s": 0.8551385569999184,
+    "phases": {
+      "edit": {
+        "index_bytes": 98816,
+        "index_s": 0.10579310600019198,
+        "host_first_s": 8.75742085600018,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16999999999999993,
+        "full_scan_s": 3.1800000000000006,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "recover": {
+        "index_bytes": 98816,
+        "index_s": 0.148114779000025,
+        "host_first_s": 8.198360860000093,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.3000000000000007,
+        "full_scan_s": 3.67,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "fork": {
+        "index_bytes": 98816,
+        "index_s": 0.09398752900006002,
+        "host_first_s": 7.740027090000012,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16999999999999993,
+        "full_scan_s": 3.41,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "fault": {
+        "index_bytes": 98816,
+        "index_s": 0.10032978200001708
+      }
+    },
+    "api_edit_s": 0.004178951999847413,
+    "checkpoint_publish_s": 0.012193616000104157
+  },
+  "direct-500": {
+    "source": "a4309c6b",
+    "mib": 500,
+    "files": 8131,
+    "fixture_and_seed_s": 13.273671681999986,
+    "phases": {
+      "edit": {
+        "index_bytes": 664064,
+        "index_s": 1.0360233320000134,
+        "host_first_s": 13.434382336999988,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.23000000000000043,
+        "full_scan_s": 24.06,
+        "source_bytes": 524359537,
+        "device_bytes": 524370944,
+        "device_reads": 8135
+      },
+      "recover": {
+        "index_bytes": 664064,
+        "index_s": 0.5459495099999003,
+        "host_first_s": 8.135545600999876,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16999999999999993,
+        "full_scan_s": 25.5,
+        "source_bytes": 524359537,
+        "device_bytes": 524370944,
+        "device_reads": 8135
+      },
+      "fork": {
+        "index_bytes": 664064,
+        "index_s": 0.5149623759998576,
+        "host_first_s": 8.23281642500001,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16999999999999993,
+        "full_scan_s": 25.32,
+        "source_bytes": 524359537,
+        "device_bytes": 524370944,
+        "device_reads": 8135
+      },
+      "fault": {
+        "index_bytes": 664064,
+        "index_s": 0.4781209200000376
+      }
+    },
+    "api_edit_s": 0.32496401999992486,
+    "checkpoint_publish_s": 0.02730808999990586
+  },
+  "http-500": {
+    "source": "dd4f45c5",
+    "mib": 500,
+    "origin_delay_ms": 0.0,
+    "files": 8131,
+    "fixture_and_seed_s": 14.781639967999581,
+    "phases": {
+      "edit": {
+        "manifest_bytes": 804074,
+        "index_bytes": 664064,
+        "index_s": 2.3737831250000454,
+        "host_first_s": 11.618204805999994,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.11000000000000032,
+        "full_scan_s": 22.34,
+        "source_bytes": 524359537,
+        "device_bytes": 524370944,
+        "device_reads": 8135
+      },
+      "recover": {
+        "manifest_bytes": 804101,
+        "index_bytes": 664064,
+        "index_s": 0.5618068929998117,
+        "host_first_s": 7.041679701999783,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.11000000000000032,
+        "full_scan_s": 21.25,
+        "source_bytes": 524359537,
+        "device_bytes": 524370944,
+        "device_reads": 8135
+      },
+      "fork": {
+        "manifest_bytes": 804074,
+        "index_bytes": 664064,
+        "index_s": 0.5653146129998277,
+        "host_first_s": 7.232429695999599,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.1200000000000001,
+        "full_scan_s": 21.32,
+        "source_bytes": 524359537,
+        "device_bytes": 524370944,
+        "device_reads": 8135
+      },
+      "fault": {
+        "manifest_bytes": 804101,
+        "index_bytes": 664064,
+        "index_s": 0.537197863000074
+      }
+    },
+    "api_edit_s": 0.1700836039999558,
+    "checkpoint_publish_s": 0.004517639999903622
+  },
+  "http-64": {
+    "source": "dd4f45c5",
+    "mib": 64,
+    "origin_delay_ms": 0.0,
+    "files": 1155,
+    "fixture_and_seed_s": 0.8829184999999597,
+    "phases": {
+      "edit": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.14127347800013013,
+        "host_first_s": 11.071245312999963,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16000000000000014,
+        "full_scan_s": 3.16,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "recover": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.09642498499988506,
+        "host_first_s": 6.495968925999932,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.1200000000000001,
+        "full_scan_s": 2.9000000000000004,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "fork": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.09680421400025807,
+        "host_first_s": 6.73347689000002,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.15000000000000036,
+        "full_scan_s": 3.0200000000000005,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "fault": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.0947894930000075
+      }
+    },
+    "api_edit_s": 0.001772692000031384,
+    "checkpoint_publish_s": 0.0061762939999425726
+  },
+  "http-64-delay": {
+    "source": "dd4f45c5",
+    "mib": 64,
+    "origin_delay_ms": 5.0,
+    "files": 1155,
+    "fixture_and_seed_s": 0.7822829649999221,
+    "phases": {
+      "edit": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.1059955059999993,
+        "host_first_s": 8.392886433000058,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.1899999999999995,
+        "full_scan_s": 10.34,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "recover": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.09791265900003054,
+        "host_first_s": 10.122244361999947,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.17999999999999972,
+        "full_scan_s": 10.65,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "fork": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.09565068699998847,
+        "host_first_s": 7.794754022999996,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.17999999999999972,
+        "full_scan_s": 10.000000000000002,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159
+      },
+      "fault": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.10287668899991331
+      }
+    },
+    "api_edit_s": 0.0021613019998767413,
+    "checkpoint_publish_s": 0.006088937000185979
+  },
+  "batch-64": {
+    "source": "f2b76343",
+    "mib": 64,
+    "batch": 16,
+    "origin_delay_ms": 5.0,
+    "files": 1155,
+    "fixture_and_seed_s": 1.8538716559999102,
+    "phases": {
+      "edit": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.11191017400005876,
+        "host_first_s": 12.515499567000006,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.13999999999999968,
+        "full_scan_s": 3.42,
+        "source_bytes": 67183797,
+        "device_bytes": 67191808,
+        "device_reads": 1159,
+        "origin_requests": 88
+      },
+      "recover": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.09584917000006499,
+        "host_first_s": 7.407895502999963,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16000000000000014,
+        "full_scan_s": 3.0699999999999994,
+        "source_bytes": 67183797,
+        "device_bytes": 67191808,
+        "device_reads": 1159,
+        "origin_requests": 88
+      },
+      "fork": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.08325801000000865,
+        "host_first_s": 7.5670677479999995,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16000000000000014,
+        "full_scan_s": 3.049999999999999,
+        "source_bytes": 67183797,
+        "device_bytes": 67191808,
+        "device_reads": 1159,
+        "origin_requests": 88
+      },
+      "fault": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.08225000799984628,
+        "origin_requests": 4
+      }
+    },
+    "api_edit_s": 0.058810668999967675,
+    "checkpoint_publish_s": 0.005019153999910486
+  },
+  "single-64": {
+    "source": "f2b76343",
+    "mib": 64,
+    "batch": 1,
+    "origin_delay_ms": 5.0,
+    "files": 1155,
+    "fixture_and_seed_s": 1.6623830809999163,
+    "phases": {
+      "edit": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.23084651100009523,
+        "host_first_s": 13.246899360000043,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.1299999999999999,
+        "full_scan_s": 9.09,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159,
+        "origin_requests": 1156
+      },
+      "recover": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.09957794700005707,
+        "host_first_s": 8.60808247400007,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.1299999999999999,
+        "full_scan_s": 8.53,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159,
+        "origin_requests": 1156
+      },
+      "fork": {
+        "manifest_bytes": 113450,
+        "index_bytes": 98816,
+        "index_s": 0.09541815500006123,
+        "host_first_s": 7.1549096520001285,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.13999999999999968,
+        "full_scan_s": 8.93,
+        "source_bytes": 67180401,
+        "device_bytes": 67191808,
+        "device_reads": 1159,
+        "origin_requests": 1156
+      },
+      "fault": {
+        "manifest_bytes": 113477,
+        "index_bytes": 98816,
+        "index_s": 0.09571882600016579,
+        "origin_requests": 4
+      }
+    },
+    "api_edit_s": 0.0023114709999845218,
+    "checkpoint_publish_s": 0.0054650220000667105
+  },
+  "batch-500": {
+    "source": "f2b76343",
+    "mib": 500,
+    "batch": 16,
+    "origin_delay_ms": 5.0,
+    "files": 8131,
+    "fixture_and_seed_s": 10.883472739999888,
+    "phases": {
+      "edit": {
+        "manifest_bytes": 804074,
+        "index_bytes": 664064,
+        "index_s": 0.6093285770000421,
+        "host_first_s": 9.23580514299988,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16999999999999993,
+        "full_scan_s": 30.890000000000004,
+        "source_bytes": 524362933,
+        "device_bytes": 524370944,
+        "device_reads": 8135,
+        "origin_requests": 524
+      },
+      "recover": {
+        "manifest_bytes": 804101,
+        "index_bytes": 664064,
+        "index_s": 0.5536568979998719,
+        "host_first_s": 8.342017159999841,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16999999999999993,
+        "full_scan_s": 31.68,
+        "source_bytes": 524362933,
+        "device_bytes": 524370944,
+        "device_reads": 8135,
+        "origin_requests": 524
+      },
+      "fork": {
+        "manifest_bytes": 804074,
+        "index_bytes": 664064,
+        "index_s": 0.5318736030001219,
+        "host_first_s": 8.403383031999965,
+        "first_source_bytes": 65545,
+        "guest_first_s": 0.16000000000000014,
+        "full_scan_s": 27.119999999999997,
+        "source_bytes": 524362933,
+        "device_bytes": 524370944,
+        "device_reads": 8135,
+        "origin_requests": 524
+      },
+      "fault": {
+        "manifest_bytes": 804101,
+        "index_bytes": 664064,
+        "index_s": 0.5801325760000964,
+        "origin_requests": 4
+      }
+    },
+    "api_edit_s": 0.0019638799999484036,
+    "checkpoint_publish_s": 0.007576232000019445
+  }
+}

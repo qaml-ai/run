@@ -1,0 +1,8 @@
+{
+  "changed_bytes": 1,
+  "new_content_bytes": 65536,
+  "new_manifest_bytes": 55367,
+  "file_count": 8001,
+  "patch_ms": 3.057702000205609,
+  "rollback_verified": true
+}

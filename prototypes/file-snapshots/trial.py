@@ -8,7 +8,7 @@ import sys
 import tarfile
 import time
 from store import Store, index, encode, hash_bytes
-from origin import ChunkOrigin
+from origin import ChunkOrigin, MAX_BATCH
 HERE = Path(__file__).resolve().parent
 sys.path.append(str(HERE.parent/"workspace-layouts"))
 from bench import fixture
@@ -23,6 +23,8 @@ def stop(p):
             p.wait()
 
 def run(work, out, mib, delay_ms,batch):
+    if mib < 1 or delay_ms < 0 or not 1 <= batch <= MAX_BATCH:
+        raise ValueError("expected positive MiB, nonnegative delay and batch size 1–16")
     out.mkdir(parents=True,exist_ok=True)
     clock = time.monotonic
     start = clock()

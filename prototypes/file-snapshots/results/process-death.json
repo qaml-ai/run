@@ -1,0 +1,10 @@
+{
+  "inside": {
+    "recovered": "before",
+    "termination": -9
+  },
+  "acknowledged": {
+    "recovered": "after",
+    "termination": -9
+  }
+}
