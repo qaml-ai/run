@@ -163,12 +163,19 @@ def inputs_integrity(files, action):
         expected["src/moved"] = expected.pop("src/remove")
     return expected
 
-def one(root, boot, out, mib, mode, server):
+def one(root, boot, out, mib, mode, server, transfer=None, export=False):
     root.mkdir()
     files = root/"files"
     fixture(files,mib)
+    if transfer:
+        with tarfile.open(transfer) as archive:
+            archive.extractall(root,filter="data")
+        (root/"objects").rename(server.root/"imported")
+        for item in (server.root/"imported").iterdir():
+            item.rename(server.root/item.name)
     catalog = sqlite3.connect(root/"refs")
-    catalog.execute("create table heads (branch text primary key, rev text)")
+    if not transfer:
+        catalog.execute("create table heads (branch text primary key, rev text)")
     def advance(branch, old, new):
         with catalog:
             c = catalog.execute("update heads set rev=? where branch=? and rev=?", (new,branch,old))
@@ -179,8 +186,17 @@ def one(root, boot, out, mib, mode, server):
     origin = server.root
     url = f"http://127.0.0.1:{server.server_port}/"
     t = clock()
-    git = Git(root,files) if mode != "block" else None
     base = None
+    if transfer:
+        descriptor_id,fault_byte = json.loads((root/"handoff").read_text())
+        payload = (origin/descriptor_id).read_bytes()
+        assert digest(payload) == descriptor_id
+        descriptor = json.loads(payload)
+        base = descriptor["object"]
+        git = object.__new__(Git)
+        git.repo,git.index,git.base = root/"git",root/"index",descriptor["tree"]
+    else:
+        git = Git(root,files) if mode != "block" else None
     def publish(image):
         # Immutable object plus durable directory entry before ref CAS.
         with image.open("rb") as f:
@@ -189,7 +205,7 @@ def one(root, boot, out, mib, mode, server):
         os.replace(image,origin/oid)
         syncdir(origin)
         return oid
-    if mode in ("block","hybrid"):
+    if not transfer and mode in ("block","hybrid"):
         image = root/"seed.raw"
         with image.open("wb") as f:
             f.truncate((mib*2+32)*MIB)
@@ -224,8 +240,9 @@ def one(root, boot, out, mib, mode, server):
     if mode == "owner":
         fill_owner(git.base)
     seed = git.base if git else base
-    with catalog:
-        catalog.execute("insert into heads values ('main',?)",(seed,))
+    if not transfer:
+        with catalog:
+            catalog.execute("insert into heads values ('main',?)",(seed,))
     rows = {"mode":mode,"payload_mib":mib,"seed_s":clock()-t,"phases":{}}
     def boot_once(rev,action):
         t = clock()
@@ -297,25 +314,33 @@ def one(root, boot, out, mib, mode, server):
             stats.update(publication_s=clock()-pub_start,verification_s=verification_s,total_s=clock()-t,range_bytes=server.total-start_bytes)
             return new,stats
     expected = {a:inputs_integrity(files,a) for a in ("edit","recover","fork")}
-    t=clock()
-    if git:
-        edited = git.update(seed,[("src/hot","100644",b"api edit\n")],[])
-        advance("main",seed,edited)
-        rows["phases"]["api"]={"total_s":clock()-t}
-    else:
-        edited,rows["phases"]["api"]=boot_once(seed,"api")
-    with catalog:
-        catalog.execute("insert into heads values ('fork',?)",(edited,))
-    final, rows["phases"]["edit"] = boot_once(read("main"),"edit")
-    try:
-        advance("main",edited,seed)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("stale update succeeded")
-    assert read("main")==final
+    if not transfer:
+        t=clock()
+        if git:
+            edited = git.update(seed,[("src/hot","100644",b"api edit\n")],[])
+            advance("main",seed,edited)
+            rows["phases"]["api"]={"total_s":clock()-t}
+        else:
+            edited,rows["phases"]["api"]=boot_once(seed,"api")
+        with catalog:
+            catalog.execute("insert into heads values ('fork',?)",(edited,))
+        final, rows["phases"]["edit"] = boot_once(read("main"),"edit")
+        try:
+            advance("main",edited,seed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("stale update succeeded")
+        assert read("main")==final
     # Reopen catalog and start completely fresh QEMU processes with empty overlays.
     catalog.close()
+    if export:
+        (root/"handoff").write_text(json.dumps([descriptor_id,fault_byte]))
+        with tarfile.open(out/"handoff.tar.gz","w:gz",compresslevel=1) as archive:
+            for item in ("refs","git","handoff"):
+                archive.add(root/item,arcname=item)
+            for oid in (base,descriptor_id):
+                archive.add(origin/oid,arcname="objects/"+oid)
     catalog=sqlite3.connect(root/"refs")
     if mode == "owner":
         shutil.rmtree(owner_path)
@@ -340,7 +365,11 @@ def main():
     p.add_argument("--mib",type=int,default=64)
     p.add_argument("--rounds",type=int,default=2)
     p.add_argument("--modes",nargs="+",choices=("hybrid","block","git","owner"),default=["block","git","hybrid"])
+    p.add_argument("--export",action="store_true")
+    p.add_argument("--import-from",type=Path)
     args=p.parse_args()
+    if (args.export or args.import_from) and (args.modes != ["hybrid"] or args.rounds != 1):
+        p.error("transfer runs take --rounds 1 --modes hybrid")
     out=args.out.resolve()
     out.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory() as d:
@@ -358,7 +387,7 @@ def main():
                 for mode in order if i%2==0 else reversed(order):
                     name=f"{i}-{mode}"
                     root=tmp/name
-                    row=one(root,boot,out,args.mib,mode,server)
+                    row=one(root,boot,out,args.mib,mode,server,args.import_from,args.export)
                     (out/(name+".json")).write_text(json.dumps(row,indent=2)+"\n")
                     print(name,json.dumps(row),flush=True)
                     shutil.rmtree(root)
