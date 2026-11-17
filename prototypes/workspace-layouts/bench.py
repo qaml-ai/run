@@ -257,7 +257,7 @@ def one(root, boot, out, mib, mode, server):
             log = out/(root.name+"-"+action+".log")
             start_bytes = server.total
             cmd = ["qemu-system-x86_64","-machine","accel=tcg","-cpu","max","-m",str(max(640,2*mib+320)),
-                   "-nodefaults","-nographic","-no-reboot","-serial","stdio","-kernel",boot/"kernel",
+                   "-nodefaults","-device","virtio-rng-pci","-nographic","-no-reboot","-serial","stdio","-kernel",boot/"kernel",
                    "-initrd",boot/"init.gz","-append","console=ttyS0 quiet panic=1 rdinit=/init",
                    "-virtfs",f"local,path={x},mount_tag=exchange,security_model=none",*args]
             stats = {"file_delivery_bytes":delivery,"prepare_s":clock()-t}

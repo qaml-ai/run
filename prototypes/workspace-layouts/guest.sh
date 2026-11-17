@@ -13,6 +13,7 @@ mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 exchange /x
 read mode action < /x/request
 stamp() { cut -d' ' -f1 /proc/uptime > "/x/$1"; }
 stamp start
+set -x
 if [ "$mode" = git ]; then
     mount -t tmpfs tmpfs /base
     tar xf /x/base.tar -C /base
@@ -28,7 +29,7 @@ if [ "$mode" != block ]; then
     mount -t tmpfs tmpfs /scratch
     mkdir /scratch/u /scratch/w
     mount -t overlay overlay -o lowerdir=/base,upperdir=/scratch/u,workdir=/scratch/w /ws
-    if [ -f /x/patch.tar ]; then tar xf /x/patch.tar -C /ws; fi
+    if [ -f /x/patch.tar ]; then /bin/gnu-tar xf /x/patch.tar -C /ws; fi
     if [ -f /x/deleted ]; then while IFS= read -r name; do rm "/ws/$name"; done < /x/deleted; fi
 fi
 cd /ws
@@ -41,6 +42,7 @@ else
     if [ "$action" = recover ]; then test "$(cat src/hot)" = 'vm write'; else test "$(cat src/hot)" = 'api edit'; fi
     stamp first
     # Signal first verified read so the host can sample origin traffic before scanning.
+    set +x
     touch /x/reached
     while [ ! -f /x/proceed ]; do sleep 0.01; done
     stamp scanstart
