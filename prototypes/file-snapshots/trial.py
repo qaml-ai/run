@@ -2,12 +2,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import signal
+import threading
 import subprocess as sp
 import sys
 import tarfile
 import time
-from store import Store, index
+from store import Store, index, encode, hash_bytes
+from origin import ChunkOrigin
 HERE = Path(__file__).resolve().parent
 sys.path.append(str(HERE.parent/"workspace-layouts"))
 from bench import fixture
@@ -21,7 +22,7 @@ def stop(p):
             p.kill()
             p.wait()
 
-def run(work, out, mib):
+def run(work, out, mib, delay_ms):
     out.mkdir(parents=True,exist_ok=True)
     clock = time.monotonic
     start = clock()
@@ -31,7 +32,7 @@ def run(work, out, mib):
     sums = {str(p.relative_to(files)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     store = Store(work/"origin.sqlite")
     seed = store.commit("main",None,((str(p.relative_to(files)),"644",p.read_bytes()) for p in paths))
-    report = {"mib":mib,"files":len(paths),"fixture_and_seed_s":clock()-start,"phases":{}}
+    report = {"mib":mib,"origin_delay_ms":delay_ms,"files":len(paths),"fixture_and_seed_s":clock()-start,"phases":{}}
     start = clock()
     edited = store.commit("main",seed,[("src/hot","644",b"api edit\n")])
     report["api_edit_s"] = clock()-start
@@ -50,9 +51,16 @@ def run(work, out, mib):
         (x/"expected").write_text(expected)
         t = clock()
         idx = session/"index"
-        index(store.load(version),idx,session/"headers.tar")
-        stats = {"index_bytes":idx.stat().st_size, "index_s":clock()-t}
-        env = dict(os.environ,SNAP_MODULE=str(HERE),SNAP_DB=str(work/"origin.sqlite"),
+        directory = store.load(version)
+        manifest = encode(directory)
+        (session/"manifest").write_bytes(manifest)
+        index(directory,idx,session/"headers.tar")
+        origin = ChunkOrigin(store,directory,delay_ms/1000)
+        thread = threading.Thread(target=origin.serve_forever,daemon=True)
+        thread.start()
+        stats = {"manifest_bytes":len(manifest),"index_bytes":idx.stat().st_size, "index_s":clock()-t}
+        env = dict(os.environ,SNAP_MODULE=str(HERE),SNAP_PORT=str(origin.server_port),
+                   SNAP_MANIFEST=str(session/"manifest"),SNAP_MANIFEST_HASH=hash_bytes(manifest),
                    SNAP_VERSION=version,SNAP_FIRST=str(x/"first"),SNAP_STATS=str(session/"first.json"),
                    SNAP_TOTAL=str(session/"total.json"))
         sock = session/"nbd"
@@ -85,6 +93,9 @@ def run(work, out, mib):
                     stop(vm)
             finally:
                 stop(server)
+                origin.shutdown()
+                thread.join()
+                origin.server_close()
         if action != "fault":
             observed = dict((p,h) for h,p in (row.split(None,1) for row in (x/"sums").read_text().splitlines()))
             assert observed == hashes
@@ -131,4 +142,4 @@ def run(work, out, mib):
     print(json.dumps(report),flush=True)
 
 if __name__ == "__main__":
-    run(Path(sys.argv[1]),Path(sys.argv[2]).resolve(),int(sys.argv[3]))
+    run(Path(sys.argv[1]),Path(sys.argv[2]).resolve(),int(sys.argv[3]),float(sys.argv[4]) if len(sys.argv)>4 else 0)

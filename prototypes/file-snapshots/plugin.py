@@ -1,24 +1,32 @@
 """Private read-only nbdkit endpoint for one pinned file snapshot."""
 import functools
+import http.client
 import json
 import os
 from pathlib import Path
 import sys
 sys.path.insert(0, os.environ["SNAP_MODULE"])
-from store import Device, Store
+from store import Device, hash_bytes
 
 API_VERSION = 2
 
 def open(readonly):
-    store = Store(os.environ["SNAP_DB"], readonly=True)
+    raw = Path(os.environ["SNAP_MANIFEST"]).read_bytes()
+    if hash_bytes(raw) != os.environ["SNAP_MANIFEST_HASH"]:
+        raise IOError("mount metadata mismatch")
+    connection = http.client.HTTPConnection("127.0.0.1",int(os.environ["SNAP_PORT"]),timeout=10)
     stats = [0,0,0]
     @functools.lru_cache(maxsize=128)
     def fetch(key):
-        data = store.get(key)
+        connection.request("GET","/"+key)
+        response = connection.getresponse()
+        data = response.read()
+        if response.status != 200 or hash_bytes(data) != key:
+            raise IOError("missing or corrupt chunk "+key)
         stats[0] += len(data)
         return data
-    device = Device(store.load(os.environ["SNAP_VERSION"]), fetch)
-    return device,stats,store
+    device = Device(json.loads(raw),fetch)
+    return device,stats,connection
 
 def get_size(h):
     return h[0].size
@@ -33,4 +41,4 @@ def pread(h, buf, offset, flags):
 
 def close(h):
     Path(os.environ["SNAP_TOTAL"]).write_text(json.dumps(h[1]))
-    h[2].db.close()
+    h[2].close()
