@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,19 @@ import (
 )
 
 func (m *Manager) fetchPrebuiltImage(ctx context.Context, descriptor store.WorkspaceImage, dir string) (string, error) {
+	source := store.ForLineage(m.Store, descriptor.Lineage)
+	info, err := source.Head(ctx, descriptor.Blob)
+	if err != nil {
+		return "", err
+	}
+	if descriptor.StoredSize <= 0 || info.Size != descriptor.StoredSize {
+		return "", fmt.Errorf("workspace image stored size mismatch")
+	}
+	// Decoding reserves one extra byte to verify EOF. That bound must fit in
+	// int64 before allocating ranges or reading any payload bytes.
+	if descriptor.StoredSize == math.MaxInt64 {
+		return "", fmt.Errorf("workspace image stored size overflows EOF bound")
+	}
 	encoded, err := os.OpenFile(filepath.Join(dir, "download.gz"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return "", err
@@ -23,10 +37,10 @@ func (m *Manager) fetchPrebuiltImage(ctx context.Context, descriptor store.Works
 	defer encoded.Close()
 	const partBytes = store.BundleTargetBytes
 	var offsets []string
-	for offset := int64(0); offset < descriptor.StoredSize; offset += partBytes {
+	for offset := int64(0); offset < descriptor.StoredSize; {
 		offsets = append(offsets, strconv.FormatInt(offset, 10))
+		offset += min(int64(partBytes), descriptor.StoredSize-offset)
 	}
-	source := store.ForLineage(m.Store, descriptor.Lineage)
 	err = store.Parallel(ctx, int(applyInflightBytes/partBytes), offsets, func(value string) error {
 		offset, _ := strconv.ParseInt(value, 10, 64)
 		size := min(int64(partBytes), descriptor.StoredSize-offset)
@@ -52,6 +66,9 @@ func (m *Manager) fetchPrebuiltImage(ctx context.Context, descriptor store.Works
 
 // Verify both representations before the image can enter the local cache.
 func decodePrebuiltImage(ctx context.Context, input io.Reader, descriptor store.WorkspaceImage, path string) (err error) {
+	if descriptor.StoredSize <= 0 || descriptor.StoredSize == math.MaxInt64 {
+		return fmt.Errorf("workspace image stored size overflows EOF bound")
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return err
