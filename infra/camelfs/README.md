@@ -180,6 +180,8 @@ host's current certificate on 443.
   those two prefixes. Existing grants and managed policy `camelfs-prod-host` version `v10` were preserved.
   Instance credentials returned `NoSuchKey` for an absent descriptor. Applying this module will update the
   shared managed policy to the same object-kind and abort grants. That IaC application remains pending.
+  Encoded images above the 5 GiB single-upload bound use conditional multipart publication. Multipart
+  success, failure and abort handling have unit coverage. A payload above that bound has not been qualified live.
 - The tier reaches each host security group on `host_compute_port` only (the boot/stop listener); the hosts'
   own egress rules (job-hosts: 443 out only) are theirs to widen, to 8443 (enrollment) and 8794 (the NLB).
 - The NLB's security group admits hosts on 8443 and 8794 only and reaches the tasks on 8793, 8794 and 8790 (8790
