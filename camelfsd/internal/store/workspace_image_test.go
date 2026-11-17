@@ -31,7 +31,7 @@ func workspaceFixture(t *testing.T, body string) (WorkspaceImage, *os.File) {
 		t.Fatal(err)
 	}
 	sha := root.Hash([]byte(body))
-	return WorkspaceImage{Format: WorkspaceImageFormat, Lineage: "tenant:repo", Tree: strings.Repeat("a", 40), Blob: "w/" + sha, SHA256: sha, RawSHA256: strings.Repeat("b", 64), VirtualSize: 64 << 20, StoredSize: int64(len(body))}, f
+	return WorkspaceImage{Format: WorkspaceImageFormat, Lineage: "tenant:repo", Tree: strings.Repeat("a", 40), Blob: "w/" + sha, SHA256: sha, ImageSHA256: strings.Repeat("b", 64), VirtualSize: 64 << 20, StoredSize: int64(len(body))}, f
 }
 
 func TestWorkspaceImagePublication(t *testing.T) {
@@ -88,7 +88,7 @@ func TestWorkspaceImagePublication(t *testing.T) {
 }
 
 func TestWorkspaceImageInvalidPublication(t *testing.T) {
-	for _, fault := range []string{"digest", "size", "shape", "namespace", "format", "raw-digest"} {
+	for _, fault := range []string{"digest", "size", "shape", "namespace", "format", "image-digest"} {
 		t.Run(fault, func(t *testing.T) {
 			d, f := workspaceFixture(t, "payload")
 			s := Local{t.TempDir()}
@@ -104,8 +104,8 @@ func TestWorkspaceImageInvalidPublication(t *testing.T) {
 				d.Blob = "o/" + d.SHA256
 			case "format":
 				d.Format++
-			case "raw-digest":
-				d.RawSHA256 = "bad"
+			case "image-digest":
+				d.ImageSHA256 = "bad"
 			}
 			if _, err := PublishWorkspaceImage(t.Context(), s, d, f); err == nil {
 				t.Fatal("invalid image published")
@@ -256,6 +256,19 @@ func TestWorkspaceImageDescriptorIdentity(t *testing.T) {
 	}
 	if err := verify("other/"+key, raw); err == nil {
 		t.Fatal("accepted foreign lineage")
+	}
+	legacy := d
+	legacy.Format = 1
+	old, _ := json.Marshal(legacy)
+	if _, err := decodeWorkspaceImage(old); err == nil {
+		t.Fatal("accepted a dense format-1 descriptor")
+	}
+	if _, err := decodeWorkspaceImage(bytes.Replace(raw, []byte("imageSha256"), []byte("rawSha256"), 1)); err == nil {
+		t.Fatal("accepted the retired raw-image digest field")
+	}
+	oldIdentity := fmt.Sprintf("workspace-image\x00%d\x00%s\x00%s\x00%s\x00%d", 1, "ext4-mkfs-v1-gzip-fast", d.Lineage, d.Tree, d.VirtualSize)
+	if key == "i/"+root.Hash([]byte(oldIdentity)) {
+		t.Fatal("sparse image reused a dense descriptor identity")
 	}
 	if _, err := decodeWorkspaceImage(append(bytes.Clone(raw), []byte(" {}")...)); err == nil {
 		t.Fatal("accepted trailing JSON")

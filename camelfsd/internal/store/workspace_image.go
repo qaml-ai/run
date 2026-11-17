@@ -20,15 +20,16 @@ import (
 )
 
 const (
-	WorkspaceImageFormat = 1
+	WorkspaceImageFormat = 2
 	// Changing the mkfs/compression recipe requires a new profile or format.
-	WorkspaceImageProfile          = "ext4-mkfs-v1-gzip-fast"
+	WorkspaceImageProfile          = "ext4-mkfs-v2-sparse-gzip-fast"
 	workspaceDescriptorLimit       = 4096
 	workspaceSinglePutLimit  int64 = 5 << 30
 	workspacePartSize        int64 = 64 << 20
 )
 
 // WorkspaceImage is a derived image of an exact canonical tree and disk shape.
+// ImageSHA256 authenticates the decoded sparse image representation.
 // Blob is relative to Lineage. Neither image kind participates in Git quota or
 // blob reachability. The canonical tree remains the source of truth.
 type WorkspaceImage struct {
@@ -37,7 +38,7 @@ type WorkspaceImage struct {
 	Tree        string `json:"tree"`
 	Blob        string `json:"blob"`
 	SHA256      string `json:"sha256"`
-	RawSHA256   string `json:"rawSha256"`
+	ImageSHA256 string `json:"imageSha256"`
 	VirtualSize int64  `json:"virtualSize"`
 	StoredSize  int64  `json:"storedSize"`
 }
@@ -53,7 +54,7 @@ func WorkspaceImageKey(lineage, tree string, size int64) (string, error) {
 }
 
 func (d WorkspaceImage) key() (string, error) {
-	if d.Format != WorkspaceImageFormat || !root.Hex(d.SHA256, 64) || !root.Hex(d.RawSHA256, 64) || d.Blob != "w/"+d.SHA256 || d.StoredSize <= 0 {
+	if d.Format != WorkspaceImageFormat || !root.Hex(d.SHA256, 64) || !root.Hex(d.ImageSHA256, 64) || d.Blob != "w/"+d.SHA256 || d.StoredSize <= 0 {
 		return "", fmt.Errorf("invalid workspace image descriptor")
 	}
 	return WorkspaceImageKey(d.Lineage, d.Tree, d.VirtualSize)
