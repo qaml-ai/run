@@ -36,7 +36,7 @@ export type ToolSource = "attached" | "served" | "mcp" | "openapi" | "builtin" |
 
 export const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 
-export type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey">;
+export type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey" | "idleTimeoutMs" | "idleCompactionEnabled">;
 /** Rarely-changing session identity and configuration (a row in `agents`); rewritten only when it changes. */
 export interface SessionHeader {
   /** `expiresAt` null: the agent lives until it is deleted. `idleTtlMs`: it moves on with each run (`stillUsed`). */
@@ -108,6 +108,8 @@ export type ClientEnv = { Bindings: HttpBindings & { operatorTenant?: string }; 
 export type BufferedEvent = { id: number; bytes: number; data: ClientEvent };
 export type Session = {
   header: SessionHeader;
+  /** A native background summary is still using this host. */
+  idleCompacting?: boolean;
   /** Revision of the stored header this node last read or wrote; writes are conditional on it. */
   revision?: number;
   /** The header write in flight (`writeHeader`): the next waits for it, so two never race on one revision. */
@@ -326,6 +328,8 @@ export interface ClientSessionOptions {
   busyAgents?: BusyAgents;
   /** Stop an agent's process, and unload its session, after this long without activity. */
   idleMs?: number;
+  /** Runtime-wide idle compaction switch, enabled by default. */
+  idleCompaction?: boolean;
   retry?: AgentConfig["retry"];
   /** Models a provider's content filter blocks wrongly, each with the same model elsewhere (model.ts `contentFilterFallbacks`). */
   contentFilterFallbacks?: Map<string, Model<Api>>;
@@ -411,7 +415,7 @@ export interface ClientSessionOptions {
   progressWaitMs?: number;
 }
 /** A definition resolved for an agent: its revision, agent configuration, client tools and tool sources. */
-export type DefinitionConfig = { id: string; revision: number; config: Partial<Pick<AgentConfig, "model">> & Pick<AgentConfig, "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "queue">; sources?: Sources; description?: string };
+export type DefinitionConfig = { id: string; revision: number; config: Partial<Pick<AgentConfig, "model">> & Pick<AgentConfig, "systemPrompt" | "thinkingLevel" | "fileTools" | "codeMode" | "idleCompaction" | "runLimits" | "maxOutputTokens" | "temperature" | "dataCollection" | "language" | "queue">; sources?: Sources; description?: string };
 /** One model response's usage; `kind` separates compaction summaries from the agent's turns. */
 /**
  * A model response's usage, a web tool's call (`searches`: web searches, `renders`: pages web_fetch had

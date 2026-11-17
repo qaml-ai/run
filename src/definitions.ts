@@ -56,6 +56,7 @@ export interface DefinitionSpec {
   fileTools?: boolean;
   /** false: agents get no code mode, and call every tool directly (AgentConfig.codeMode). */
   codeMode?: boolean;
+  idleCompaction?: boolean;
   computerLimit?: number;
   /** Built-in tools to enable: web_fetch, web_search, x_search, schedule, ask_user, delegate, agents. */
   builtins?: string[];
@@ -88,9 +89,9 @@ export interface ApplyResult { agent: string; requestId: string; status: "update
 /** Agent parameters from a definition, as `createAgent` takes them. */
 export type AgentParams = Record<string, unknown> & { tools?: ToolDefinition[] };
 
-const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "limits", "runLimits", "queue", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "networking", "workflows"] as const;
+const FIELDS = ["description", "model", "systemPrompt", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "limits", "runLimits", "queue", "idleCompaction", "mounts", "builtins", "webSearch", "mcpServers", "openApi", "humanInput", "delegate", "decide", "applyOnUpdate", "networking", "workflows"] as const;
 /** Configuration an agent made from a definition may set as its own, which applying the definition leaves. */
-export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "runLimits", "queue", "networking"] as const;
+export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "fileTools", "codeMode", "computerLimit", "runLimits", "queue", "networking", "idleCompaction"] as const;
 const PROVISION_FIELDS = ["definitionRevision", "humanInput", "name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
@@ -279,6 +280,7 @@ export class Definitions {
    */
   async provision(tenant: string, params: any): Promise<{ params: AgentParams; ref: DefinitionRef; provision: unknown; overrides: string[]; sources?: Sources }> {
     if (typeof params.definition !== "string") throw new HttpError(400, "definition must be a definition id");
+    if (params.idleCompaction !== undefined && typeof params.idleCompaction !== "boolean") throw new HttpError(400, "idleCompaction must be true or false");
     if (params.systemPrompt !== undefined) throw new HttpError(400, "systemPrompt comes from the definition; add to it with systemPromptAppend, or change the definition");
     const definition = await this.read(tenant, params.definition, params.definitionRevision);
     const { spec } = definition;
@@ -347,6 +349,7 @@ export class Definitions {
     if (spec.description !== undefined && (typeof spec.description !== "string" || !spec.description.trim() || spec.description.length > 1000)) throw new HttpError(400, "description must contain 1–1000 characters");
     if (spec.fileTools !== undefined && typeof spec.fileTools !== "boolean") throw new HttpError(400, "fileTools must be true or false");
     if (spec.codeMode !== undefined && typeof spec.codeMode !== "boolean") throw new HttpError(400, "codeMode must be true or false");
+    if (spec.idleCompaction !== undefined && typeof spec.idleCompaction !== "boolean") throw new HttpError(400, "idleCompaction must be true or false");
     if (spec.applyOnUpdate !== undefined && typeof spec.applyOnUpdate !== "boolean") throw new HttpError(400, "applyOnUpdate must be true or false");
     if (spec.decide !== undefined) decideInput(spec.decide);
     if (spec.workflows !== undefined && typeof spec.workflows !== "boolean" && !(spec.workflows && typeof spec.workflows === "object" && Object.keys(spec.workflows).every(key => key === "maxBudgetUsd") && typeof (spec.workflows as { maxBudgetUsd?: unknown }).maxBudgetUsd === "number" && (spec.workflows as { maxBudgetUsd: number }).maxBudgetUsd > 0))

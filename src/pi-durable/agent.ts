@@ -4,10 +4,13 @@ import { contentText, createAssistantMessageEventStream, getCurrentSystemMessage
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { RUNTIME } from "../system-prompt.ts";
+import { MARKER_KIND } from "./ordinals.ts";
 import { convertToLlm as contextMessages, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "../pi-harness/messages.ts";
+import { IDLE_COMPACTION_SKIPPED, IDLE_SUMMARY_PROMPT } from "../model-idle-compaction.ts";
+export { IDLE_SUMMARY_PROMPT } from "../model-idle-compaction.ts";
 import {
-  GenerationTask, Harness, LiveDoc, ToolTask, createRegistry, defineDoc, hook, section, wrapTool,
-  type Conversation, type ConversationId, type EntryId, type EntryRecord, type Extension, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type ToolRegistration, type Tx,
+  CompactionTask, GenerationTask, Harness, InboxDoc, LiveDoc, ToolTask, createRegistry, defineDoc, hook, section, wrapTool,
+  type Conversation, type ConversationId, type EntryId, type EntryRecord, type Extension, type HarnessOptions, type RegistryReader, type RegistrySnapshot, type Report, type Storage, type TaskId, type ToolRegistration, type Tx,
 } from "@earendil-works/pi-durable";
 
 /** A call a running tool made (code mode's `tools.<name>()`): the model's call that made it, and its key within that call. */
@@ -25,6 +28,25 @@ export const ContextLimitDoc = defineDoc({
   initial: (): { provider: string; model: string; window: number } => ({ provider: "", model: "", window: 0 }),
   checkpointWhen: () => true,
 });
+
+/** An idle summary is attempted at most once for a tail, including after the host reopens. */
+const IdleCompactionDoc = defineDoc({
+  kind: "camel.idle-compaction", version: 1, scope: "conversation", history: "latest", fork: "initial",
+  initial: (): { tail?: number; taskId?: number } => ({}),
+  checkpointWhen: () => true,
+});
+const IDLE_COMPACTION_INSTRUCTIONS = "camel.idle-compaction.v1";
+
+type IdleRequest = { messages: Message[]; model: AgentState["model"]; answer: AssistantMessage };
+type IdleCompaction = { request: IdleRequest; tail?: EntryId; taskId?: TaskId; stillIdle: () => Promise<boolean>; stream: AgentOptions["streamFn"]; controller: AbortController };
+
+function withOverrides<T extends object>(target: T, overrides: Partial<T>): T {
+  return new Proxy(target, { get(object, key) {
+    if (Object.hasOwn(overrides, key)) return Reflect.get(overrides, key);
+    const value = Reflect.get(object, key, object);
+    return typeof value === "function" ? value.bind(object) : value;
+  } });
+}
 
 // Evidence is separate from the limit: one dropped stream must not pin future turns to a smaller window.
 const InferredOverflowDoc = defineDoc({
@@ -100,8 +122,8 @@ export type DurableAgentOptions = Omit<AgentOptions, "transformContext"> & {
     contextWindow?: number;
     maxOutputTokens?: number;
     summaryStream?: AgentOptions["streamFn"];
-    onSummary?: (message: AssistantMessage) => void | Promise<void>;
-    onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow" }) => void | Promise<void>;
+    onSummary?: (message: AssistantMessage, options?: { background?: boolean }) => void | Promise<void>;
+    onCompaction?: (state: { summary: string; keptMessages: number; at: number; reason: "threshold" | "overflow"; background?: boolean }) => void | Promise<void>;
     /**
      * Pi's Session failed (`storage_failed`: a storage call failed past the Storage's own retries, by Pi's rule) and closed
      * the Storage, or the agent's commit observer failed or was ended, so what it holds may lag what is stored: the host
@@ -265,6 +287,9 @@ export class DurableAgent {
   private landedRetryAt = 0;
   /** Whether this run has started a compaction for a request that sent less than Pi holds (`compactSoon`). */
   private compactedShort = false;
+  private idleRequest?: IdleRequest;
+  private idleCompaction?: IdleCompaction;
+  private idleAdmission: Promise<unknown> = Promise.resolve();
   private heldTokenEstimates = new WeakMap<Message, number>();
   get contextTokens() { return { sent: this.sentTokens, window: Math.min(this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity, this.overflowWindow) }; }
   private errorMessage?: string;
@@ -371,13 +396,82 @@ export class DurableAgent {
         return original.phases.prepare(record, prepared, taskContext);
       },
     } } };
+    const compaction = { definition: { ...CompactionTask.definition, phases: { ...CompactionTask.definition.phases,
+      select: async (...args: Parameters<typeof CompactionTask.definition.phases.select>) => {
+        const [record, runtime, taskContext] = args;
+        if (!record.input.instructions?.startsWith(`${IDLE_COMPACTION_INSTRUCTIONS}:`)) return CompactionTask.definition.phases.select(...args);
+        try {
+          const idle = agent.idleCompaction;
+          if (!idle || idle.taskId !== record.id || !await agent.idleStillEligible(idle)) return CompactionTask.definition.abort(record, runtime, taskContext);
+          return await CompactionTask.definition.phases.select(...args);
+        } catch (error) {
+          if (runtime.signal.aborted) throw error;
+          return CompactionTask.definition.abort(record, runtime, taskContext);
+        }
+      },
+      summarize: async (...args: Parameters<typeof CompactionTask.definition.phases.summarize>) => {
+        const [record, runtime, taskContext] = args;
+        if (!record.input.instructions?.startsWith(`${IDLE_COMPACTION_INSTRUCTIONS}:`)) return CompactionTask.definition.phases.summarize(...args);
+        try {
+          const idle = agent.idleCompaction;
+          if (!idle || idle.taskId !== record.id || !await agent.idleStillEligible(idle)) return CompactionTask.definition.abort(record, runtime, taskContext);
+          return await CompactionTask.definition.phases.summarize(record, withOverrides(runtime, {
+            settings: { ...runtime.settings, retry: { ...runtime.settings.retry, enabled: false } },
+            models: withOverrides(runtime.models, { completeSimple: async (_model, _view, streamOptions) => {
+              if (!await agent.idleStillEligible(idle)) throw new Error(IDLE_COMPACTION_SKIPPED);
+              const signal = AbortSignal.any([runtime.signal, idle.controller.signal]);
+              signal.throwIfAborted();
+              // The provider replay verifies the actual cached wire prefix. Pi still selects and places the native cut.
+              const pending = (async () => {
+                const apiKey = await options.getApiKey?.(idle.request.model.provider);
+                signal.throwIfAborted();
+                const events = await idle.stream(idle.request.model, { messages: [...idle.request.messages,
+                  { role: "user", content: IDLE_SUMMARY_PROMPT, timestamp: Date.now() },
+                ] } as never, { ...streamOptions, signal, maxRetries: 0,
+                  maxTokens: Math.min(streamOptions?.maxTokens ?? 4096, 4096),
+                  apiKey });
+                const result = await events.result();
+                if (result.errorMessage?.includes(IDLE_COMPACTION_SKIPPED) && !result.usage.totalTokens) throw new Error(IDLE_COMPACTION_SKIPPED);
+                // MONEY: even a cancelled request's terminal usage belongs to the background summary, once.
+                await agent.conversation.commit(tx => tx.appendEntry(agent.conversation.id, {
+                  kind: "camel.compaction.usage", data: { message: result, background: true } as never,
+                }), context);
+                await options.durable.onSummary?.(result, { background: true });
+                return result;
+              })();
+              let abort: () => void = () => {};
+              const cancelled = new Promise<never>((_resolve, reject) => {
+                abort = () => reject(signal.reason ?? new Error("Idle compaction aborted"));
+                signal.addEventListener("abort", abort, { once: true });
+                if (signal.aborted) abort();
+              });
+              try {
+                // A provider that ignores cancellation cannot delay foreground input. Its eventual usage still settles.
+                const result = await Promise.race([pending, cancelled]);
+                if (result.stopReason !== "stop" || !summaryOf(result) || result.content.some(part => part.type === "toolCall")) throw new Error(IDLE_COMPACTION_SKIPPED);
+                return result;
+              } finally { signal.removeEventListener("abort", abort); }
+            } }),
+          }), taskContext);
+        } catch (error) {
+          if (runtime.signal.aborted) throw error;
+          // An opportunistic summary must not leave a compaction failure for the next foreground request.
+          return CompactionTask.definition.abort(record, runtime, taskContext);
+        }
+      },
+      retry: async (...args: Parameters<typeof CompactionTask.definition.phases.retry>) => {
+        const [record, runtime, taskContext] = args;
+        return record.input.instructions?.startsWith(`${IDLE_COMPACTION_INSTRUCTIONS}:`) ?
+          CompactionTask.definition.abort(record, runtime, taskContext) : CompactionTask.definition.phases.retry(...args);
+      },
+    } } };
     const registry: RegistryReader = {
       subscribe: listener => agent.registry.subscribe(listener),
       snapshot: () => {
         const snapshot = agent.registry.snapshot();
         return new Proxy(snapshot, { get(target, key) {
-          if (key === "task") return (name: string) => name === original.name ? task : target.task(name);
-          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item);
+          if (key === "task") return (name: string) => name === original.name ? task : name === CompactionTask.definition.name ? compaction : target.task(name);
+          if (key === "tasks") return () => target.tasks().map(item => item.definition.name === original.name ? task : item.definition.name === CompactionTask.definition.name ? compaction : item);
           const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
         } }) as RegistrySnapshot;
       },
@@ -528,7 +622,7 @@ export class DurableAgent {
         for (const item of items) agent.queueEvent(() => agent.committedMessage(item));
       }
     } catch (error) { observerFailed(error); } } });
-    await agent.reload();
+    await agent.readContext();
     agent._latestCursor = options.durable.cursor ?? await latestDurableCursor(options.durable.storage, agent.conversation.id);
     return agent;
   }
@@ -540,6 +634,10 @@ export class DurableAgent {
    * turn) are not counted.
    */
   private async adoptCompaction(entry: EntryRecord) {
+    const claim = await this.harness.snapshot(IdleCompactionDoc, this.conversation.id, context);
+    const submission = claim?.taskId === undefined ? undefined : await this.conversation.commit(
+      tx => tx.submissionByRequest(this.conversation.id, `compaction:${claim.taskId}`), context);
+    const background = submission?.type === "write" && submission.status === "done" && submission.entry === entry.id;
     const view = await this.conversation.context(context, { at: entry.id });
     const retained = new Set(view.entries.map(entry => entry.id));
     for (const id of this.originalInputs.keys()) if (id < entry.id && !retained.has(id as never)) this.originalInputs.delete(id);
@@ -553,7 +651,11 @@ export class DurableAgent {
       summary = summary.slice(COMPACTION_SUMMARY_PREFIX.length, -COMPACTION_SUMMARY_SUFFIX.length);
     }
     const reason = (entry.data as { reason?: string } | undefined)?.reason === "overflow" ? "overflow" : "threshold";
-    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason });
+    await this.options.durable.onCompaction?.({ summary, keptMessages, at: entry.model?.[0]?.timestamp ?? Date.now(), reason, ...background ? { background: true } : {} });
+    if (background) {
+      this.idleRequest = undefined;
+      await this.readContext();
+    }
   }
 
   /**
@@ -574,6 +676,11 @@ export class DurableAgent {
    * retraction's edit, a system message) or Pi settled an interrupted run.
    */
   async reload() {
+    await this.abortIdleCompaction();
+    await this.readContext();
+  }
+
+  private async readContext() {
     const view = await this.conversation.context(context);
     for (const entry of view.entries) if (entry.kind === "camel.user" && entry.model?.[0]?.role === "user" && !this.originalInputs.has(entry.id)) {
       const original = originalUser(entry);
@@ -751,6 +858,9 @@ export class DurableAgent {
         else stream.push(event);
       }
       const final = await events.result();
+      if (final.stopReason === "stop" && !signal?.aborted && !final.content.some(part => part.type === "toolCall")) {
+        this.idleRequest = { messages: [...llm], model: { ...this.state.model }, answer: final };
+      }
       if (final.stopReason === "error" && overflow(final) && !byteRefusal(final)) {
         const window = Math.max(limitFloor(this.state.model), Math.floor(Math.min(sent, inferred ? 272_000 : Infinity, this.overflowWindow, this.state.model.contextWindow, this.options.durable.contextWindow ?? Infinity) * 0.9));
         if (inferred || window < this.overflowWindow) {
@@ -1109,6 +1219,7 @@ export class DurableAgent {
 
   /** Abort handlers settle unknown work; opening itself never dispatches a task. */
   async discardInterruptedRun() {
+    await this.abortIdleCompaction();
     const listeners = [...this.listeners]; this.listeners.clear();
     await this.conversation.abort(context);
     await this.flushEvents();
@@ -1119,6 +1230,7 @@ export class DurableAgent {
   }
 
   async syncContext() {
+    await this.abortIdleCompaction();
     // The turn limit a round's end set (`afterTool`) and that round's calls go once the round is over; a round a lost
     // node left open keeps them, so it still ends here.
     const round = !!(await this.harness.snapshot(LiveDoc, this.conversation.id, context))?.tools;
@@ -1130,7 +1242,7 @@ export class DurableAgent {
     await this.conversation.configure({ model: { provider: this.state.model.provider, modelId: this.state.model.id },
       thinkingLevel: this.state.thinkingLevel, instructions: null, modelTools, ...round ? {} : { maxTurns: null } }, context);
     if (!round) await this.clearRoundEnd();
-    await this.reload();
+    await this.readContext();
   }
 
   /**
@@ -1139,6 +1251,7 @@ export class DurableAgent {
    * changes rebuilds its leading system message, the provider's cached prefix.
    */
   async replaceContext(messages: AgentMessage[]) {
+    await this.abortIdleCompaction();
     await this.checkpointContext(messages);
     this.messages = [...messages];
   }
@@ -1183,6 +1296,8 @@ export class DurableAgent {
     // No abort: a run left running stays Pi's, and the next owner's Pi goes on with it (a close is not a crash: a request it
     // cut is made again, a tool phase runs again from its top).
     this.closed = true;
+    this.idleRequest = undefined;
+    this.idleCompaction?.controller.abort();
     // close() seals the native mutation line synchronously. Awaiting idle first
     // lets a tool that ignores cancellation keep that line alive forever.
     let nativeError: unknown;
@@ -1218,6 +1333,86 @@ export class DurableAgent {
   prompt(message: AgentMessage | AgentMessage[] | string, images: ImageContent[] = []): Promise<void> {
     const messages = typeof message === "string" ? [{ role: "user", content: images.length ? [{ type: "text", text: message }, ...images] : message, timestamp: Date.now() } as AgentMessage] : Array.isArray(message) ? message : [message];
     return this.run(messages);
+  }
+
+  /** Queue one native background summary of the last successful request; admission never waits for the provider. */
+  compactIdle(stillIdle: () => Promise<boolean>, stream: AgentOptions["streamFn"], settled?: () => void): Promise<boolean> {
+    const request = this.idleRequest;
+    const work = this.idleAdmission.then(async () => {
+      if (!request || this.closed || this.running || this.queued.length || this.idleCompaction || this.idleRequest !== request || !await stillIdle()) return false;
+      const idle: IdleCompaction = { request, stillIdle, stream, controller: new AbortController() };
+      const taskId = await this.conversation.commit(async tx => {
+        const live = await tx.doc(LiveDoc, this.conversation.id);
+        const inbox = await tx.doc(InboxDoc, this.conversation.id);
+        const tail = await tx.latestEntryId(this.conversation.id);
+        if (tail === undefined || this.closed || this.running || this.queued.length || this.idleRequest !== request || live.run || live.compactions?.length || inbox.items.length) return;
+        const answerId = this._latestCursor?.entryId as EntryId | undefined;
+        if (answerId === undefined) return;
+        const answer = (await tx.entry(answerId))?.model?.[0];
+        if (answer?.role !== "assistant" || answer.timestamp !== request.answer.timestamp || answer.provider !== request.answer.provider || answer.model !== request.answer.model) return;
+        // Ending/rebasing the host's turn appends bookkeeping after the answer. Only those inert markers may follow it.
+        if (tail !== answerId) {
+          let cursor;
+          do {
+            const page = await tx.scanEntries({ conversationId: this.conversation.id, minEntryId: (answerId + 1) as EntryId, maxEntryId: tail }, 100, cursor);
+            for (const entry of page.items) {
+              const data = entry.data as { t?: string; active?: boolean } | undefined;
+              if (entry.kind !== MARKER_KIND || entry.model?.length || entry.head !== undefined || entry.edits?.length ||
+                  (data?.t !== "turn" && data?.t !== "base") || data.active !== false) return;
+            }
+            cursor = page.next;
+          } while (cursor !== undefined);
+        }
+        const claim = await tx.doc(IdleCompactionDoc, this.conversation.id);
+        if (claim.tail === tail) return;
+        const id = await tx.createTask(CompactionTask, { reason: "threshold", instructions: `${IDLE_COMPACTION_INSTRUCTIONS}:${tail}` }, {
+          ownership: { kind: "conversation" }, conversationId: this.conversation.id, background: true, abandonOnRestart: true,
+        });
+        idle.tail = tail; idle.taskId = id;
+        this.idleCompaction = idle;
+        claim.tail = tail; claim.taskId = id;
+        live.compactions = [{ taskId: id, trigger: "threshold", blocking: false, attempt: 1 }];
+        return id;
+      }, context);
+      if (taskId === undefined) return false;
+      this.harness.resume();
+      void this.harness.waitForTask(taskId, context).then(() => this.flushEvents()).finally(() => {
+        if (this.idleCompaction === idle) this.idleCompaction = undefined;
+        settled?.();
+      }).catch(error => {
+        if (!this.closed) console.error(JSON.stringify({ type: "idle_compaction_failed", message: error instanceof Error ? error.message : String(error) }));
+      });
+      return true;
+    });
+    this.idleAdmission = work.catch(() => {});
+    return work;
+  }
+
+  private async idleStillEligible(idle: IdleCompaction) {
+    if (this.closed || this.running || this.queued.length || this.idleCompaction !== idle || idle.controller.signal.aborted || this.idleRequest !== idle.request || !await idle.stillIdle()) return false;
+    return this.conversation.commit(async tx => {
+      const live = await tx.doc(LiveDoc, this.conversation.id);
+      const inbox = await tx.doc(InboxDoc, this.conversation.id);
+      const claim = await tx.doc(IdleCompactionDoc, this.conversation.id);
+      return !this.closed && !this.running && !this.queued.length && this.idleCompaction === idle && !idle.controller.signal.aborted &&
+        this.idleRequest === idle.request && claim.taskId === idle.taskId && !live.run && !inbox.items.length &&
+        !live.compactions?.some(item => item.taskId !== idle.taskId) && await tx.latestEntryId(this.conversation.id) === idle.tail;
+    }, context);
+  }
+
+  /** Cancel only speculative idle work. Ordinary foreground compaction and interrupted generations keep their semantics. */
+  async abortIdleCompaction() {
+    this.idleRequest = undefined;
+    const idle = this.idleCompaction;
+    idle?.controller.abort();
+    this.idleCompaction = undefined;
+    const claim = await this.harness.snapshot(IdleCompactionDoc, this.conversation.id, context);
+    if (claim?.taskId === undefined) return;
+    const id = claim.taskId as TaskId;
+    const task = await this.harness.getTask(id, context);
+    if (!task || task.state.status === "terminal") return;
+    await this.harness.abortTask(id, context);
+    await this.harness.waitForTask(id, context);
   }
   /**
    * Pi checks its threshold only as it prepares a request: messages that land without a turn (`landed`) get the same
@@ -1257,11 +1452,14 @@ export class DurableAgent {
   private run(messages: AgentMessage[]) {
     if (this.closed) return Promise.reject(new Error("Agent is closed"));
     if (this.running) return Promise.reject(new Error("Agent is already processing"));
+    this.idleRequest = undefined;
+    this.idleCompaction?.controller.abort();
     this.controller = new AbortController(); this.errorMessage = undefined; this.eventError = undefined; this.stoppedByFinishTurn = false; this.compactedShort = false; this.overflowed = false;
     this.running = this.runInner(messages).finally(() => { this.controller = undefined; this.running = undefined; });
     return this.running;
   }
   private async runInner(messages: AgentMessage[]) {
+    await this.abortIdleCompaction();
     await this.emit({ type: "agent_start" });
     // Messages the host wrote into the journal itself since the last run are not this run's.
     const written = this.options.durable.written?.();

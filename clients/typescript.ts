@@ -453,6 +453,8 @@ export interface CreateAgentOptions extends AgentOptions {
   fileTools?: boolean;
   /** false: no codemode; the model calls every tool directly, and a tool-less agent's prompt is little more than its instructions. */
   codeMode?: boolean;
+  /** Compact idle conversations while their provider cache may be warm. Default true. */
+  idleCompaction?: boolean;
   /** Concurrent machines per root tree, 1–64; default 4 or tenant default. */
   computerLimit?: number;
   name?: string;
@@ -585,6 +587,8 @@ export interface DefinitionInput {
   fileTools?: boolean;
   /** false: its agents get no codemode, and call every tool directly. */
   codeMode?: boolean;
+  /** Idle compaction for agents made from this definition. Default true. */
+  idleCompaction?: boolean;
   /** Concurrent machines per root tree, 1–64; default 4 or tenant default. */
   computerLimit?: number;
   limits?: { ttlSeconds?: number | null; idleTtlSeconds?: number | null }; mounts?: unknown[]; builtins?: Builtin[];
@@ -1181,7 +1185,7 @@ const AGENT_KEY = /^[A-Za-z0-9_-]{1,80}$/;
 const REQUEST_ID = AGENT_KEY;
 /** A create request's fields, from the options given. */
 function provisioning(options: CreateAgentOptions) {
-  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "computerLimit", "builtins", "decide", "delegate", "workflows", "mcpServers", "prompt"] as const;
+  const fields = ["networking", "metadata", "workspaceId", "subject", "context", "keyScope", "spendLimit", "bucket", "runLimits", "modelHeaders", "definition", "definitionRevision", "humanInput", "mounts", "remount", "model", "thinkingLevel", "maxOutputTokens", "temperature", "dataCollection", "language", "queue", "initialMessages", "importMessages", "name", "type", "systemPrompt", "systemPromptAppend", "fileTools", "codeMode", "idleCompaction", "computerLimit", "builtins", "decide", "delegate", "workflows", "mcpServers", "prompt"] as const;
   return withMultiAgent(Object.fromEntries(fields.filter(field => options[field] !== undefined).map(field => [field, options[field]])));
 }
 /** `delegate` settings bring their builtin: given the settings without delegate or agents, delegate is added. */
@@ -2992,7 +2996,7 @@ export class AgentClient {
   /** Hold idle input for the next run; an explicit payer uses prompt steering. */
   steer(text: string, options?: { endUser?: string; from?: Sender; files?: Attachment[]; metadata?: Record<string, string> }) { return options?.endUser !== undefined ? this.prompt(text, { ...options, whileRunning: "steer" }) : this.message("steer", text, options); }
   /** Change the prompt, thinking level, tools, model ("provider/model-id"), maxOutputTokens, temperature, dataCollection or language (null removes any of the last four) between runs. */
-  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
+  async configure(options: { systemPrompt?: string; thinkingLevel?: ThinkingLevel; tools?: Tools; mcp?: ToolServer; model?: string; idleCompaction?: boolean; maxOutputTokens?: number | null; temperature?: number | null; dataCollection?: "deny" | null; language?: string | null }) {
     const { tools, mcp, ...rest } = options;
     const server = mcp ?? (tools ? toolServer(tools) : undefined);
     const result = await this.request("configure", { ...rest, ...(server ? { mcp: { tools: await server.listTools() } } : {}) });

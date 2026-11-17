@@ -859,7 +859,7 @@ export class ClientSessions {
       // Lost or given up while it got ready (its node fenced, or is leaving): it starts nothing. A host started now would
       // serve an owner that is gone, and whoever loads the agent next would find it and take it for theirs, still starting.
       if (session.fault || session.leaving) throw session.fault ?? new Error("Agent stopped");
-      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, sharedAgent: runningRun(session)?.sharedAgent ?? undefined, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace, instructions }) => ({ path, mode, ...(instructions !== undefined ? { instructions } : {}), ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
+      const result = await steps.time("init", this.supervisor.start(session.header.id, { ...session.header.config, idleCompactionEnabled: this.options.idleCompaction !== false && !session.header.run, idleTimeoutMs: this.options.idleMs ?? 5 * 60_000, sharedAgent: runningRun(session)?.sharedAgent ?? undefined, model: withCatalogPrices(currentModel(session.header.config.model)), apiKey, mounts: [...VolumeService.markWorkspace(session.header.id, session.header.mounts ?? []).map(({ path, mode, workspace, instructions }) => ({ path, mode, ...(instructions !== undefined ? { instructions } : {}), ...workspace ? { workspace } : {} })), ...computer ? [{ path: "/computer", mode: "rw" as const, computer: true }] : []], ...(this.options.retry ? { retry: this.options.retry } : {}), ...(fallback ? { contentFilterFallback: fallback } : {}), ...(this.options.streamTimeouts ? { streamTimeouts: this.options.streamTimeouts } : {}), contextRangeMaxBytes: this.options.contextRangeMaxBytes, ...(session.resuming.size ? { resume: true } : {}), tenant: session.header.tenant, codeLimits: { cpuMs, maxTimeoutMs } }, {
         definitions,
         codeSlot: async signal => this.codeGate.acquire(session.header.tenant, (await spend.codeLimits(this.spendContext, session.header.tenant)).concurrent, signal),
         runLimit: async () => {
@@ -885,7 +885,9 @@ export class ClientSessions {
           : configuration.modelAuth(this.configurationContext, session, provider),
         modelAttempt: async event => {
           if (event.type === "begin" && session.header.revoked) return Promise.reject(new Error("Session revoked"));
-          const run = runningRun(session);
+          if (event.type === "begin" && event.background && expired(session.header.expiresAt)) throw new Error("Session expired");
+          // Background summaries keep their own billing context when a foreground run arrives.
+          const run = event.type === "begin" && event.background ? undefined : runningRun(session);
           const { keyScope } = session.header;
           const identity = spend.billingIdentity(session, run);
           // The runtime selects the payer and bucket; the host cannot override them.
@@ -896,7 +898,9 @@ export class ClientSessions {
           // Persisting a begin may span a database outage; recheck ownership before dispatch.
           if (event.type === "begin") {
             if (session.header.revoked) throw new Error("Session revoked");
+            if (event.background && expired(session.header.expiresAt)) throw new Error("Session expired");
             await this.leased(session);
+            if (event.background && expired(session.header.expiresAt)) throw new Error("Session expired");
           }
           return tracked;
         },
@@ -2698,6 +2702,8 @@ export class ClientSessions {
 
   /** Events of a compaction made between runs: billed here, as no run's stream carries them, and shown on the agent's stream. */
   private backgroundEvent(session: Session, event: any) {
+    if (event?.type === "idle_compaction_started") session.idleCompacting = true;
+    if (event?.type === "idle_compaction_finished") session.idleCompacting = false;
     if (event?.type === "compaction_usage" && event.usage) {
       const { identity, keyScope } = session.header;
       spend.compactionUsage(this.spendContext, session, event, { ...(identity ? { identity } : {}), ...(keyScope ? { keyScope } : {}) });
@@ -3079,7 +3085,7 @@ export class ClientSessions {
       for (const attached of session.retiring ?? []) events.send(attached.res, ": heartbeat\n\n");
       if (session.activeSince !== undefined && now - session.activeSince >= ACTIVE_REPORT_MS) spend.reportActive(this.spendContext, session, true, now);
       void this.overrun(session, now).catch(() => {});
-      if (this.busy(session) || now - session.lastActive < idleMs) continue;
+      if (this.busy(session) || now - session.lastActive < idleMs || session.idleCompacting && this.supervisor.agents.has(id)) continue;
       if (this.supervisor.agents.has(id)) void this.supervisor.stop(id).catch(() => {});
       else if (!session.response && !session.fault) {
         // Nothing is running and no application is connected: everything needed later is in storage. Its watchers

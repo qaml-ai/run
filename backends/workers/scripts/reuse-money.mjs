@@ -34,14 +34,11 @@ const callFetch = compaction.statements.find(node => ts.isFunctionDeclaration(no
 if (!callFetch) throw new Error('Missing source callFetch');
 const fetchApis = compaction.statements.find(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => declaration.name.getText(compaction) === 'FETCH_APIS'));
 if (!fetchApis) throw new Error('Missing source FETCH_APIS');
-const stream = compaction.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'explicitKeyStream');
-const source = stream?.getText(compaction);
-const first = source?.indexOf('    const input = () =>');
-const last = source?.indexOf('\n    const call = ', first);
-if (first === undefined || first < 0 || last === undefined || last < 0) throw new Error('Missing source request estimate');
+const estimate = compaction.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'estimateModelAttempt');
+if (!estimate) throw new Error('Missing source estimateModelAttempt');
 const extracted = [
   ['model-call-fetch', 'import type { UsageSink } from "./model-attempt-stream.ts";\nimport { network } from "./account-network.ts";\n' + fetchApis.getText(compaction) + '\n' + callFetch.getText(compaction)],
-  ['model-estimate', 'import type { Api, Model, TranscriptContext } from "@earendil-works/pi-ai";\nimport { estimateTokens } from "./money-tokens.ts";\nexport function estimateModelAttempt(model: Model<Api>, context: TranscriptContext, options: { maxTokens?: number }) {\n' + source.slice(first, last) + '\n    return estimate;\n}'],
+  ['model-estimate', 'import type { Api, Model, TranscriptContext } from "@earendil-works/pi-ai";\nimport { estimateTokens } from "./money-tokens.ts";\n' + estimate.getText(compaction)],
 ];
 for (const [name, body] of extracted) {
   const text = '// Generated from src/compaction.ts; source function/body unchanged.\n' + body + '\n';

@@ -15,6 +15,10 @@ import { network } from "./node-context.ts";
 import { capRequestImages } from "./request-images.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
 import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
+import { createHash } from "node:crypto";
+import { createAssistantMessageEventStream, type TranscriptContext } from "@earendil-works/pi-ai";
+import { IDLE_COMPACTION_CALL, IDLE_COMPACTION_SKIPPED, IDLE_SUMMARY_PROMPT, idleRequestOptions, type CachedRequest, type IdleCompactionDispatch } from "./model-idle-compaction.ts";
+import { modelIdlePayload, readModelIdleCache } from "./model-idle-compaction-payload.ts";
 
 /**
  * Model calls as the runtime makes them (`explicitKeyStream`: the tenant's key or per-call credentials, never the
@@ -45,6 +49,16 @@ export function contextTokens(messages: AgentMessage[], fixedTokens = 0): number
 function fileChars(message: AgentMessage): number {
   const content = (message as { content?: unknown }).content;
   return Array.isArray(content) ? content.reduce((sum: number, block) => sum + (validFileRef(block) ? charsOf(block) : 0), 0) : 0;
+}
+
+/** Estimate the request's input and output hold, using an observed cached prefix when supplied. */
+export function estimateModelAttempt(model: Model<Api>, context: TranscriptContext, options: { maxTokens?: number }, cachedTokensOverride?: number) {
+  const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
+    ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
+  // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
+  const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
+  const inputTokens = input(), cachedTokens = Math.min(inputTokens, cachedTokensOverride ?? (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
+  return { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
 }
 
 /** Where a call to a tenant's own endpoint carries its identity token, besides where the provider takes its key. */
@@ -295,47 +309,107 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
   onRefused?: (stop: CreditStop) => void, supersede?: (message: AssistantMessage) => Superseded | undefined): StreamFn {
   return (model, context, options) => {
     if (!options?.apiKey?.trim()) throw new Error(`No ${model.provider} API key is configured for this agent's model, ${model.provider}/${model.id}; set one with PUT /v1/providers/${model.provider}/key, or move the agent to a model you can use (GET /v1/models?available=true)`);
+    const apiKey = options.apiKey;
+    const idle = (options as typeof options & IdleCompactionDispatch)[IDLE_COMPACTION_CALL];
+    const replay = idle && "replay" in idle ? idle : undefined;
+    const capture = idle && "capture" in idle ? idle.capture : undefined;
+    if (replay) options = { ...options, ...replay.replay.options, maxTokens: 4096, maxRetries: 0, transport: "sse" };
     // Includes Pi summary calls. Bound images before estimating or sending the request.
     context = { ...context, messages: capRequestImages(context.messages, model) };
-    const apiKey = options.apiKey;
     // A provider's stream that goes quiet is ended (model-stream.ts), and so is one the turn's abort or the lease reaches, at once.
     const limits = timeouts?.(model, options.reasoning ?? reasoningFloor(model)) ?? streamTimeouts(model, options.reasoning ?? reasoningFloor(model));
     // What the request's context comes to, as the host estimates it: the input billed when provider usage is missing.
-    const input = () => Math.min(model.contextWindow, context.messages.reduce((sum, message) => sum + (message.role === "system"
-      ? Math.ceil(JSON.stringify(message).length / 4) : estimateTokens(message)), 0));
-    // The prefix the previous response read from or wrote to the provider's cache is likely read from it now, at its rate.
-    const previous = context.messages.findLast(message => message.role === "assistant")?.usage;
-    const inputTokens = input(), cachedTokens = Math.min(inputTokens, (previous?.cacheRead ?? 0) + (previous?.cacheWrite ?? 0));
-    const estimate = { inputTokens, ...(cachedTokens > 0 ? { cachedTokens } : {}), maxOutputTokens: options.maxTokens ?? model.maxTokens, rates: { input: model.cost.input, output: model.cost.output, cacheRead: model.cost.cacheRead } };
-    const call = (credentials: Credentials) => attemptStream(attemptModel(model, credentials), credentials.apiKey, "response", attempt, sink => {
-      const { signal, cut, done } = gatedSignal(gate, options.signal);
-      let requested = false;
-      return watchedStream(model, (watched, activity) => {
-        const [target, callOptions] = authorize(model, options, credentials, sink, modelHeaders?.(), outbound);
-        const observe = callOptions.onProviderStreamEvent;
-        requested = true;
-        const stream = streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
-        // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
-        const push = stream.push.bind(stream);
-        stream.push = event => {
-          if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
-          if ((event.type === "done" || event.type === "error") && sink.host) Object.assign((event.type === "done" ? event.message : event.error).usage, { providerHost: sink.host });
-          if (event.type === "done" || event.type === "error") servedTier(model, event.type === "done" ? event.message : event.error, sink.serviceTier);
-          push(event);
-        };
-        return stream;
-      }, limits, signal, onStall, event => {
-        done();
-        // Cut by the lease, not by the run: a failure the turn retries once the lease is fresh, not an abort that ends it.
-        if (event.type === "error" && cut?.signal.aborted && !options.signal?.aborted) return { type: "error", reason: "error", error: { ...event.error, stopReason: "error", errorMessage: MODEL_INTERRUPTED } };
-        if (requested && event.type === "error" && event.reason === "aborted") {
-          // OpenAI-style streams usually report input usage only at the end. Keep a server-side estimate of
-          // the actual context, including tools, so canceling cannot make a large prompt free.
-          Object.assign(event.error.usage, { estimatedInputTokens: estimate.inputTokens });
-        }
-        return event;
+    const estimate = estimateModelAttempt(model, context, options, replay?.replay.cachedTokens);
+    const call = async (credentials: Credentials) => {
+      let cachedRequest: CachedRequest | undefined;
+      const headers = modelHeaders?.();
+      const hash = (target: Model<Api>, callOptions: any) => createHash("sha256").update(JSON.stringify([
+        target.provider, target.api, target.id, target.baseUrl, target.headers, target.compat,
+        (model as { serviceTier?: string }).serviceTier, credentials, callOptions.headers, callOptions.env,
+      ])).digest("hex");
+      // Reject changed namespaces and expired work before acquiring a credit hold.
+      if (replay) {
+        const [target, prepared] = authorize(model, options, credentials, {}, headers, outbound);
+        const stillIdle = await replay.stillIdle();
+        if (hash(target, prepared) !== replay.replay.keyHash || options.sessionId !== replay.replay.sessionId ||
+          Date.now() >= replay.replay.at + replay.replay.cache.ttlMs || options.signal?.aborted || !stillIdle) throw new Error(IDLE_COMPACTION_SKIPPED);
+      }
+      return attemptStream(attemptModel(model, credentials), credentials.apiKey, replay ? "compaction" : "response", attempt, sink => {
+        const { signal, cut, done } = gatedSignal(gate, options.signal);
+        let requested = false;
+        return watchedStream(model, (watched, activity) => {
+          const [target, callOptions] = authorize(model, options, credentials, sink, headers, outbound);
+          const keyHash = idle && options.sessionId ? hash(target, callOptions) : undefined;
+          const payload = callOptions.onPayload;
+          let replayPayloadUsed = false;
+          if (idle) callOptions.onPayload = async (body: unknown, at: Model<Api>) => {
+            const final = await payload?.(body, at) ?? body;
+            const provider = (final as { provider?: { order?: unknown } } | null)?.provider;
+            const ordered = at.provider === "openrouter" && Array.isArray(provider?.order) && provider.order.length > 0;
+            if (replay) {
+              // Bedrock can retry unsupported strict tool schemas inside its adapter.
+              if (replayPayloadUsed) throw new Error(IDLE_COMPACTION_SKIPPED);
+              replayPayloadUsed = true;
+              const verified = modelIdlePayload(at.api, final, replay.replay.cache, IDLE_SUMMARY_PROMPT);
+              if (!verified || ordered || keyHash !== replay.replay.keyHash || !await replay.stillIdle() ||
+                watched.aborted || Date.now() >= replay.replay.at + replay.replay.cache.ttlMs)
+                throw new Error(IDLE_COMPACTION_SKIPPED);
+              requested = true;
+              return at.provider === "openrouter" ? { ...verified, provider: { ...provider, allow_fallbacks: false } } : verified;
+            }
+            if (capture && keyHash && options.sessionId && options.cacheRetention !== "none" && !ordered) {
+              const cache = readModelIdleCache(at.api, final);
+              cachedRequest = cache ? {
+                cache, keyHash, sessionId: options.sessionId, at: Date.now(), cachedTokens: 0, retention: options.cacheRetention,
+                route: { provider: model.provider, id: model.id, serviceTier: (model as { serviceTier?: string }).serviceTier },
+                options: idleRequestOptions(callOptions),
+              } : undefined;
+            }
+            return final;
+          };
+          const observe = callOptions.onProviderStreamEvent;
+          requested = !replay;
+          const stream = streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
+          // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
+          const push = stream.push.bind(stream);
+          stream.push = event => {
+            if (event.type === "done" && sink.cost !== undefined) Object.assign(event.message.usage, { providerCost: sink.cost, providerCreditCost: sink.credits });
+            if ((event.type === "done" || event.type === "error") && sink.host) Object.assign((event.type === "done" ? event.message : event.error).usage, { providerHost: sink.host });
+            if (event.type === "done" || event.type === "error") servedTier(model, event.type === "done" ? event.message : event.error, sink.serviceTier);
+            push(event);
+          };
+          return stream;
+        }, limits, signal, onStall, event => {
+          done();
+          // Cut by the lease, not by the run: a failure the turn retries once the lease is fresh, not an abort that ends it.
+          if (event.type === "error" && cut?.signal.aborted && !options.signal?.aborted) return { type: "error", reason: "error", error: { ...event.error, stopReason: "error", errorMessage: MODEL_INTERRUPTED } };
+          if (requested && event.type === "error" && event.reason === "aborted") {
+            // OpenAI-style streams usually report input usage only at the end. Keep a server-side estimate of
+            // the actual context, including tools, so canceling cannot make a large prompt free.
+            Object.assign(event.error.usage, { estimatedInputTokens: estimate.inputTokens });
+          }
+          return event;
+        });
+      }, estimate, onRefused, !credentials.platform && (model.provider === "cloudflare-ai-gateway" || !!credentials.baseUrl && model.provider === "openrouter"), replay ? undefined : supersede).then(stream => {
+        if (!capture) return stream;
+        const output = createAssistantMessageEventStream();
+        void (async () => {
+          try {
+            for await (const event of stream) {
+              if (event.type === "done" && cachedRequest && !options.signal?.aborted) {
+                cachedRequest.cachedTokens = Math.max(0, (event.message.usage.cacheRead ?? 0) + (event.message.usage.cacheWrite ?? 0));
+                try { await capture(cachedRequest, event.message); }
+                catch {
+                  console.error(JSON.stringify({ type: "idle_compaction_capture_failed", provider: model.provider, model: model.id }));
+                }
+              }
+              output.push(event);
+            }
+          } finally { output.end(); }
+        })();
+        return output;
       });
-    }, estimate, onRefused, !credentials.platform && (model.provider === "cloudflare-ai-gateway" || !!credentials.baseUrl && model.provider === "openrouter"), supersede);
+    };
     const start = () => {
       const credentials = perCall?.();
       return credentials ? credentials.then(call) : call({ apiKey });
