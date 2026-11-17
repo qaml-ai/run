@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 sudo apt-get -qq update
-sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends qemu-system-x86 qemu-utils qemu-block-extra busybox-static linux-image-virtual cpio zstd kmod
+sudo env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends qemu-system-x86 qemu-utils qemu-block-extra busybox-static linux-image-virtual cpio zstd kmod tcc
 version=$(ls -v /boot/vmlinuz-* | tail -1)
 version=${version#/boot/vmlinuz-}
 if ! modinfo -k "$version" 9p >/dev/null 2>&1; then

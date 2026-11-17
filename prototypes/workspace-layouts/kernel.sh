@@ -6,6 +6,10 @@ version=${kernel#/boot/vmlinuz-}
 mkdir -p "$out/root"/{dev,sys,proc,bin,mods}
 cp "${CAMELFS_BENCH_KERNEL:-$kernel}" "$out/kernel"
 cp /bin/busybox "$out/root/bin/"
+cp /usr/bin/tcc "$out/root/bin/"
+while read -r lib; do
+    cp -L --parents "$lib" "$out/root/"
+done < <(ldd /usr/bin/tcc | awk '{for(i=1;i<=NF;i++) if ($i ~ /^\//) print $i}')
 ln -s busybox "$out/root/bin/sh"
 cp "$(dirname "$0")/guest.sh" "$out/root/init"
 chmod 755 "$out/root/init"

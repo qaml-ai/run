@@ -80,6 +80,13 @@ def fixture(root, mib):
     src.mkdir(parents=True)
     (src / "hot").write_bytes(b"original\n")
     (src / "remove").write_bytes(b"move me\n")
+    includes = []
+    for i in range(128):
+        header = f"h{i}.h"
+        (src/header).write_text(f"#define VALUE_{i} {i}\n")
+        includes.append(f'#include "{header}"')
+    expression = "+".join(f"VALUE_{i}" for i in range(128))
+    (src/"compile.c").write_text("\n".join(includes)+f"\nint sum(void) {{return {expression};}}\n")
     rng = random.Random(914)
     for i in range(mib * 16):
         sub = root / "data" / f"{i%32:02}"
@@ -112,7 +119,7 @@ class Git:
             oid = self.git("hash-object", "-w", "--stdin", input=data).strip().decode()
             self.git("update-index", "--add", "--cacheinfo", mode, oid, name)
         for name in removed:
-            self.git("update-index", "--force-remove", "--", name)
+            self.git("update-index", "-z", "--index-info", input=("0 "+"0"*40+"\t"+name+"\0").encode())
         return self.commit(parent)
 
     def deliver(self, rev, exchange, mode):
@@ -226,11 +233,14 @@ def one(root, boot, out, mib, mode, server):
                     if proc.poll() is None:
                         proc.kill()
                     proc.wait()
+            verification_started=clock()
             if action != "api":
                 got = {n:h for h,n in (s.split(None,1) for s in (x/"digests").read_text().splitlines())}
                 assert got == expected[action], (got.keys() ^ expected[action].keys())
                 stage = lambda name: float((x/name).read_text())
-                stats.update(scan_s=stage("scanend")-stage("scanstart"),guest_first_s=stage("first")-stage("start"))
+                stats.update(build_s=stage("buildend")-stage("scanstart"),scan_s=stage("scanend")-stage("buildend"),guest_first_s=stage("first")-stage("start"))
+            verification_s=clock()-verification_started
+            pub_start=clock()
             new = rev
             if action in ("edit","api"):
                 if git:
@@ -240,7 +250,7 @@ def one(root, boot, out, mib, mode, server):
                     stats["qcow_object_bytes"]=(session/"rw").stat().st_size
                     new = publish(session/"rw")
                 advance("main",rev,new)
-            stats.update(total_s=clock()-t,range_bytes=server.total-start_bytes)
+            stats.update(publication_s=clock()-pub_start,verification_s=verification_s,total_s=clock()-t,range_bytes=server.total-start_bytes)
             return new,stats
     expected = {a:inputs_integrity(files,a) for a in ("edit","recover","fork")}
     t=clock()

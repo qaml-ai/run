@@ -8,7 +8,7 @@ fail() { echo "GUEST_FAILED" >/dev/console; poweroff -f; }
 trap fail EXIT
 set -eu
 for module in $(cat /load); do insmod "/mods/$module"; done
-mkdir -p /x /base /ws /scratch
+mkdir -p /x /base /ws /scratch /tmp
 mount -t 9p -o trans=virtio,version=9p2000.L,msize=524288 exchange /x
 read mode action < /x/request
 stamp() { cut -d' ' -f1 /proc/uptime > "/x/$1"; }
@@ -38,6 +38,9 @@ else
     touch /x/reached
     while [ ! -f /x/proceed ]; do sleep 0.01; done
     stamp scanstart
+    tcc -nostdinc -c src/compile.c -o /tmp/compile.o
+    test -s /tmp/compile.o
+    stamp buildend
     find data src -type f | sort | xargs sha256sum > /x/digests
     stamp scanend
     if [ "$action" = edit ]; then
