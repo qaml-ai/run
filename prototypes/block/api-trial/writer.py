@@ -143,11 +143,14 @@ def run():
                 poll_until(ready, processes)
             mounted = clock()
             value = request["value"]
+            if "expected_before" in request and rpc(vsock, "read") != request["expected_before"]:
+                raise AssertionError("guest opened a different revision")
+            sleep = request.get("sleep_after", False)
             rpc(vsock, "put " + value)
             if rpc(vsock, "read") != value:
                 raise AssertionError("Bash did not observe API write")
             edited = clock()
-            rpc(vsock, "freeze")
+            rpc(vsock, "unmount" if sleep else "freeze")
             frozen = clock()
             base, uploaded = snapshot(volume, base, dirty)
             root = volume.save_map(base)
@@ -157,10 +160,11 @@ def run():
                 time.sleep(60)
                 raise RuntimeError("fault supervisor did not kill owner")
             revision = head["revision"] + 1
-            etag = volume.publish(ref, root, revision, etag, epoch)
+            etag = volume.publish(ref, root, revision, etag, "asleep" if sleep else epoch)
             published = clock()
             head = {"map": root, "revision": revision}
-            rpc(vsock, "thaw")
+            if not sleep:
+                rpc(vsock, "thaw")
             emit(
                 ack=True,
                 value=value,
@@ -174,6 +178,8 @@ def run():
                 publish_ms=(published - staged) * 1000,
                 thaw_ms=(clock() - published) * 1000,
             )
+            if sleep:
+                return
 
 
 if __name__ == "__main__":

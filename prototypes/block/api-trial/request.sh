@@ -10,6 +10,7 @@ case "$command" in
     read) exec /bin/bash -c 'cat /workspace/src/main.py';;
     freeze) fsfreeze --freeze /workspace;;
     thaw) fsfreeze --unfreeze /workspace;;
+    unmount) umount /workspace;;
     ping) ;;
     *) exit 1;;
 esac
