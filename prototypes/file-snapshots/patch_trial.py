@@ -1,12 +1,11 @@
 """Measure one-byte writes and exercise rollback before publishing a branch."""
-import hashlib
 import json
 from pathlib import Path
 import random
 import sys
 import tempfile
 import time
-from store import CHUNK, Store, encode
+from store import CHUNK, Store
 
 
 def run(out):
@@ -17,6 +16,8 @@ def run(out):
         data = random.Random(38).randbytes(32*1024**2)
         files = [(f"src/{i}","644",str(i).encode()) for i in range(8000)]
         seed = store.commit("main",None,files+[("large","644",data)])
+        meta_sql = "select (select sum(length(data)) from pages)+(select sum(length(manifest)) from versions)"
+        metadata_before, = store.db.execute(meta_sql).fetchone()
         before = store.db.execute("select count(*),sum(length(data)) from objects").fetchone()
         def broken():
             yield ("interrupted","644",b"unpublished")
@@ -40,7 +41,7 @@ def run(out):
         restored=b"".join(cold.get(k) for k in changed["large"][2])
         assert restored==data[:CHUNK-1]+bytes([data[CHUNK-1]^255])+data[CHUNK:]
         row=dict(changed_bytes=1,new_content_bytes=after[1]-before[1],
-                 new_manifest_bytes=cold.db.execute("select length(manifest) from versions where id=?",(new,)).fetchone()[0],
+                 new_manifest_bytes=cold.db.execute(meta_sql).fetchone()[0]-metadata_before,
                  file_count=len(changed),patch_ms=elapsed*1000,rollback_verified=True)
         cold.db.close()
         (out/"patch.json").write_text(json.dumps(row,indent=2)+"\n")

@@ -32,6 +32,7 @@ class Store:
         self.db = sqlite3.connect(path,check_same_thread=False)
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS objects(id TEXT PRIMARY KEY, data BLOB NOT NULL);
+            CREATE TABLE IF NOT EXISTS pages(id TEXT PRIMARY KEY, data BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS versions(id TEXT PRIMARY KEY, manifest BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS refs(name TEXT PRIMARY KEY, version TEXT NOT NULL);
         """)
@@ -42,11 +43,20 @@ class Store:
         self.db.execute("INSERT OR IGNORE INTO objects VALUES(?,?)", (key,data))
         return key
 
-    def load(self, version):
+    def root(self, version):
         raw, = self.db.execute("SELECT manifest FROM versions WHERE id=?", (version,)).fetchone()
         if hash_bytes(raw) != version:
             raise IOError("manifest hash mismatch")
-        return json.loads(raw)["files"]
+        return json.loads(raw)["pages"]
+
+    def page(self, key):
+        row = self.db.execute("SELECT data FROM pages WHERE id=?",(key,)).fetchone()
+        if row is None or hash_bytes(row[0]) != key:
+            raise IOError("metadata page missing or corrupt")
+        return json.loads(row[0])
+
+    def load(self, version):
+        return {path:info for key in self.root(version).values() for path,info in self.page(key).items()}
 
     def patch(self, info, offset, replacement):
         mode, size, chunks = info
@@ -67,10 +77,15 @@ class Store:
             ref = self.db.execute("SELECT version FROM refs WHERE name=?", (branch,)).fetchone()
             if (ref[0] if ref else None) != parent:
                 raise ValueError("stale parent")
-            files = self.load(parent) if parent else {}
+            pages = self.root(parent) if parent else {}
+            modified = {}
             for path, mode, data in edits:
                 if not path or path != str(PurePosixPath(path)) or path.startswith("/") or ".." in PurePosixPath(path).parts or path==".":
                     raise ValueError("invalid fixture path")
+                bucket = hash_bytes(path.encode())[:2]
+                if bucket not in modified:
+                    modified[bucket] = self.page(pages[bucket]) if bucket in pages else {}
+                files = modified[bucket]
                 if mode == "delete":
                     del files[path]
                 elif mode == "patch":
@@ -79,7 +94,15 @@ class Store:
                     files[path] = self.patch(files[path],*data)
                 else:
                     files[path] = entry(mode, data, self.insert)
-            raw = encode({"parent":parent,"files":files})
+            for bucket, files in modified.items():
+                if files:
+                    page = encode(files)
+                    key = hash_bytes(page)
+                    self.db.execute("INSERT OR IGNORE INTO pages VALUES(?,?)",(key,page))
+                    pages[bucket] = key
+                else:
+                    pages.pop(bucket,None)
+            raw = encode({"parent":parent,"pages":pages})
             version = hash_bytes(raw)
             self.db.execute("INSERT OR IGNORE INTO versions VALUES(?,?)", (version,raw))
             self.db.execute("INSERT OR REPLACE INTO refs VALUES(?,?)", (branch,version))
