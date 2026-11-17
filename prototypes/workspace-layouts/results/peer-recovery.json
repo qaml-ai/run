@@ -1,0 +1,42 @@
+{
+  "mode": "hybrid",
+  "payload_mib": 4,
+  "seed_s": 0.0002556419999564241,
+  "phases": {
+    "recover": {
+      "file_delivery_bytes": 10444,
+      "prepare_s": 0.010103596000021753,
+      "first_s": 7.8033585250000215,
+      "first_range_bytes": 1393152,
+      "build_s": 0.17999999999999972,
+      "scan_s": 0.3799999999999999,
+      "guest_first_s": 0.4399999999999995,
+      "publication_s": 4.51300002168864e-06,
+      "verification_s": 0.0005799489999844809,
+      "total_s": 8.475702488000024,
+      "range_bytes": 16220672
+    },
+    "fork": {
+      "file_delivery_bytes": 10433,
+      "prepare_s": 0.00712226100006319,
+      "first_s": 7.762812193000059,
+      "first_range_bytes": 1393152,
+      "build_s": 0.1800000000000006,
+      "scan_s": 0.40999999999999925,
+      "guest_first_s": 0.4299999999999997,
+      "publication_s": 4.697000008491159e-06,
+      "verification_s": 0.0008191590000024007,
+      "total_s": 8.462817273000041,
+      "range_bytes": 16486912
+    },
+    "corrupt": {
+      "file_delivery_bytes": 10444,
+      "prepare_s": 0.010812320000013642,
+      "publication_s": 1.3399999261309858e-06,
+      "verification_s": 1.6689999711161363e-06,
+      "total_s": 8.039347022000015,
+      "range_bytes": 1659392,
+      "injected_responses": 2
+    }
+  }
+}

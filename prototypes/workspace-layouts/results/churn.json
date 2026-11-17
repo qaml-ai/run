@@ -1,0 +1,72 @@
+[
+  {
+    "edit": "one header",
+    "changed_bytes": 1,
+    "mode": "hybrid",
+    "package_bytes": 10240,
+    "prepare_s": 0.011307839999972202
+  },
+  {
+    "edit": "one header",
+    "changed_bytes": 1,
+    "mode": "git",
+    "package_bytes": 101345280,
+    "prepare_s": 0.2361813649999931
+  },
+  {
+    "edit": "one large file",
+    "changed_bytes": 1,
+    "mode": "hybrid",
+    "package_bytes": 33566720,
+    "prepare_s": 0.08261995099974229
+  },
+  {
+    "edit": "one large file",
+    "changed_bytes": 1,
+    "mode": "git",
+    "package_bytes": 101345280,
+    "prepare_s": 0.22908905499980392
+  },
+  {
+    "edit": "one percent",
+    "changed_bytes": 10,
+    "mode": "hybrid",
+    "package_bytes": 665600,
+    "prepare_s": 0.012733179999941058
+  },
+  {
+    "edit": "one percent",
+    "changed_bytes": 10,
+    "mode": "git",
+    "package_bytes": 101345280,
+    "prepare_s": 0.22687048499983575
+  },
+  {
+    "edit": "ten percent",
+    "changed_bytes": 102,
+    "mode": "hybrid",
+    "package_bytes": 6748160,
+    "prepare_s": 0.025506339999992633
+  },
+  {
+    "edit": "ten percent",
+    "changed_bytes": 102,
+    "mode": "git",
+    "package_bytes": 101345280,
+    "prepare_s": 0.22714912499986895
+  },
+  {
+    "edit": "all small files",
+    "changed_bytes": 1024,
+    "mode": "hybrid",
+    "package_bytes": 67655680,
+    "prepare_s": 0.1679628839997349
+  },
+  {
+    "edit": "all small files",
+    "changed_bytes": 1024,
+    "mode": "git",
+    "package_bytes": 101345280,
+    "prepare_s": 0.22745278499996857
+  }
+]

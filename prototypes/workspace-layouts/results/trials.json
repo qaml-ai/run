@@ -1,0 +1,742 @@
+[
+  {
+    "run": "no-fuse-final-500",
+    "source": "5571ca28",
+    "sprite": "rt-pool-6",
+    "trial": "0-git",
+    "mode": "git",
+    "payload_mib": 500,
+    "seed_s": 20.14463178899996,
+    "phases": {
+      "api": {
+        "total_s": 0.038423180000108914
+      },
+      "edit": {
+        "file_delivery_bytes": 528547840,
+        "first_s": 52.82248256399998,
+        "first_range_bytes": 0,
+        "build_s": 0.10000000000000142,
+        "scan_s": 10.200000000000003,
+        "guest_first_s": 41.35,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.07293056599996817,
+        "verification_s": 0.009499047999952381,
+        "total_s": 63.539532495,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 528547840,
+        "first_s": 47.54866522100019,
+        "first_range_bytes": 0,
+        "build_s": 0.10000000000000142,
+        "scan_s": 11.829999999999998,
+        "guest_first_s": 38.45,
+        "publication_s": 1.2799998785339994e-06,
+        "verification_s": 0.00589461399999891,
+        "total_s": 59.70065064800019,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 528547840,
+        "first_s": 42.8508192270001,
+        "first_range_bytes": 0,
+        "build_s": 0.11999999999999744,
+        "scan_s": 10.100000000000001,
+        "guest_first_s": 35.230000000000004,
+        "publication_s": 1.0700000530050602e-06,
+        "verification_s": 0.0049452139999175415,
+        "total_s": 53.239063363000014,
+        "range_bytes": 0
+      }
+    }
+  },
+  {
+    "run": "no-fuse-final-500",
+    "source": "5571ca28",
+    "sprite": "rt-pool-6",
+    "trial": "0-hybrid",
+    "mode": "hybrid",
+    "payload_mib": 500,
+    "seed_s": 32.668052859,
+    "phases": {
+      "api": {
+        "total_s": 0.0376365590000205
+      },
+      "edit": {
+        "file_delivery_bytes": 10437,
+        "first_s": 9.620741026000132,
+        "first_range_bytes": 3641856,
+        "build_s": 0.29000000000000004,
+        "scan_s": 27.75,
+        "guest_first_s": 0.3799999999999999,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.0678960029999871,
+        "verification_s": 0.007546735000005356,
+        "total_s": 38.08942376800019,
+        "range_bytes": 552018432
+      },
+      "recover": {
+        "file_delivery_bytes": 10448,
+        "first_s": 6.551343050000014,
+        "first_range_bytes": 3641856,
+        "build_s": 0.15000000000000036,
+        "scan_s": 30.21,
+        "guest_first_s": 0.3200000000000003,
+        "publication_s": 1.13999999484804e-06,
+        "verification_s": 0.005654325000023164,
+        "total_s": 37.11380491900013,
+        "range_bytes": 553075200
+      },
+      "fork": {
+        "file_delivery_bytes": 10437,
+        "first_s": 6.37793951499998,
+        "first_range_bytes": 3641856,
+        "build_s": 0.16000000000000014,
+        "scan_s": 27.379999999999995,
+        "guest_first_s": 0.3199999999999994,
+        "publication_s": 1.2700002116616815e-06,
+        "verification_s": 0.004871114000025045,
+        "total_s": 34.11291765199985,
+        "range_bytes": 553341440
+      },
+      "corrupt": {
+        "file_delivery_bytes": 10448,
+        "publication_s": 1.1199999789823778e-06,
+        "verification_s": 1.2489999789977446e-06,
+        "total_s": 7.354319517000022,
+        "range_bytes": 3908096,
+        "injected_responses": 1
+      }
+    }
+  },
+  {
+    "run": "no-fuse-controls-500",
+    "source": "f3766c63",
+    "sprite": "rt-pool-9",
+    "trial": "0-block",
+    "mode": "block",
+    "payload_mib": 500,
+    "seed_s": 6.604745192999985,
+    "phases": {
+      "api": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.03691607100006422,
+        "qcow_object_bytes": 786432,
+        "publication_s": 0.002257720999978119,
+        "verification_s": 9.900001032292494e-07,
+        "total_s": 7.452912411000057,
+        "range_bytes": 4551168
+      },
+      "edit": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.012471570999991854,
+        "first_s": 7.247209321000014,
+        "first_range_bytes": 2556016,
+        "build_s": 0.15000000000000036,
+        "scan_s": 18.06,
+        "guest_first_s": 0.13999999999999968,
+        "qcow_object_bytes": 5242880,
+        "publication_s": 0.006374885000013819,
+        "verification_s": 0.005583285000057003,
+        "total_s": 26.27616359800004,
+        "range_bytes": 547061872
+      },
+      "recover": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.015315252999926088,
+        "first_s": 7.248809779999988,
+        "first_range_bytes": 3604704,
+        "build_s": 0.14999999999999947,
+        "scan_s": 17.330000000000002,
+        "guest_first_s": 0.1299999999999999,
+        "publication_s": 8.81000005392707e-07,
+        "verification_s": 0.00513881400001992,
+        "total_s": 25.447218787999986,
+        "range_bytes": 544362720
+      },
+      "fork": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.01402575200006595,
+        "first_s": 7.096766432999971,
+        "first_range_bytes": 2556016,
+        "build_s": 0.16000000000000014,
+        "scan_s": 19.060000000000002,
+        "guest_first_s": 0.1299999999999999,
+        "publication_s": 1.150000002780871e-06,
+        "verification_s": 0.005135954000024867,
+        "total_s": 27.033862258,
+        "range_bytes": 546005104
+      }
+    }
+  },
+  {
+    "run": "no-fuse-controls-500",
+    "source": "f3766c63",
+    "sprite": "rt-pool-9",
+    "trial": "0-git",
+    "mode": "git",
+    "payload_mib": 500,
+    "seed_s": 22.432847706000018,
+    "phases": {
+      "api": {
+        "total_s": 0.030824165000012727
+      },
+      "edit": {
+        "file_delivery_bytes": 528547840,
+        "prepare_s": 0.8800143530000355,
+        "first_s": 47.607662662999985,
+        "first_range_bytes": 0,
+        "build_s": 0.10999999999999943,
+        "scan_s": 11.270000000000003,
+        "guest_first_s": 37.620000000000005,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.05650207700000465,
+        "verification_s": 0.006076675000031173,
+        "total_s": 59.340362432000006,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 528547840,
+        "prepare_s": 1.4762415399999895,
+        "first_s": 40.70210806099999,
+        "first_range_bytes": 0,
+        "build_s": 0.11999999999999744,
+        "scan_s": 11.090000000000003,
+        "guest_first_s": 32.24,
+        "publication_s": 1.1999999287581886e-06,
+        "verification_s": 0.004991114000063135,
+        "total_s": 52.12283769999999,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 528547840,
+        "prepare_s": 0.8599475070000153,
+        "first_s": 39.14865263899992,
+        "first_range_bytes": 0,
+        "build_s": 0.10999999999999943,
+        "scan_s": 11.159999999999997,
+        "guest_first_s": 31.45,
+        "publication_s": 9.000000318337698e-07,
+        "verification_s": 0.005022334000045703,
+        "total_s": 50.598333228,
+        "range_bytes": 0
+      }
+    }
+  },
+  {
+    "run": "no-fuse-controls-64",
+    "source": "f3766c63",
+    "sprite": "rt-pool-7",
+    "trial": "0-block",
+    "mode": "block",
+    "payload_mib": 64,
+    "seed_s": 0.4197241330000452,
+    "phases": {
+      "api": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.04886274500006493,
+        "qcow_object_bytes": 786432,
+        "publication_s": 0.0027342099999714264,
+        "verification_s": 9.830000635702163e-07,
+        "total_s": 7.601261168000065,
+        "range_bytes": 4223488
+      },
+      "edit": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.015300129000024754,
+        "first_s": 7.293826742999954,
+        "first_range_bytes": 2789488,
+        "build_s": 0.16999999999999993,
+        "scan_s": 2.8600000000000003,
+        "guest_first_s": 0.1299999999999999,
+        "qcow_object_bytes": 1441792,
+        "publication_s": 0.003821988000026977,
+        "verification_s": 0.0019261200000073586,
+        "total_s": 10.633619759999988,
+        "range_bytes": 81694832
+      },
+      "recover": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.021326095999938843,
+        "first_s": 7.4274613000000045,
+        "first_range_bytes": 2916576,
+        "build_s": 0.17000000000000082,
+        "scan_s": 3.1099999999999994,
+        "guest_first_s": 0.13999999999999968,
+        "publication_s": 9.620000582799548e-07,
+        "verification_s": 0.0015619829999877766,
+        "total_s": 10.940132704000007,
+        "range_bytes": 81821920
+      },
+      "fork": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.014523026999995636,
+        "first_s": 7.443688648000034,
+        "first_range_bytes": 3170416,
+        "build_s": 0.23000000000000043,
+        "scan_s": 3.37,
+        "guest_first_s": 0.14999999999999947,
+        "publication_s": 4.178999915893655e-06,
+        "verification_s": 0.0015541349999921295,
+        "total_s": 11.28444515199999,
+        "range_bytes": 82149488
+      }
+    }
+  },
+  {
+    "run": "no-fuse-controls-64",
+    "source": "f3766c63",
+    "sprite": "rt-pool-7",
+    "trial": "0-git",
+    "mode": "git",
+    "payload_mib": 64,
+    "seed_s": 2.8983210439999993,
+    "phases": {
+      "api": {
+        "total_s": 0.017459991999999147
+      },
+      "edit": {
+        "file_delivery_bytes": 67799040,
+        "prepare_s": 0.18960387300001003,
+        "first_s": 12.338378378000016,
+        "first_range_bytes": 0,
+        "build_s": 0.13000000000000078,
+        "scan_s": 1.83,
+        "guest_first_s": 4.779999999999999,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.035915188999979364,
+        "verification_s": 0.0015864220000594287,
+        "total_s": 14.56615439299992,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 67799040,
+        "prepare_s": 0.17512631299996428,
+        "first_s": 12.171749396999985,
+        "first_range_bytes": 0,
+        "build_s": 0.13000000000000078,
+        "scan_s": 1.7899999999999991,
+        "guest_first_s": 4.86,
+        "publication_s": 1.6510000477865105e-06,
+        "verification_s": 0.0018507060000274578,
+        "total_s": 14.20608102899996,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 67799040,
+        "prepare_s": 0.17728447100000722,
+        "first_s": 12.318572689000007,
+        "first_range_bytes": 0,
+        "build_s": 0.15000000000000036,
+        "scan_s": 1.6600000000000001,
+        "guest_first_s": 5.02,
+        "publication_s": 4.2550000216579065e-06,
+        "verification_s": 0.0016540320000331121,
+        "total_s": 14.240646886000036,
+        "range_bytes": 0
+      }
+    }
+  },
+  {
+    "run": "no-fuse-controls-64",
+    "source": "f3766c63",
+    "sprite": "rt-pool-7",
+    "trial": "1-block",
+    "mode": "block",
+    "payload_mib": 64,
+    "seed_s": 0.43351353500008827,
+    "phases": {
+      "api": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.018947999000033633,
+        "qcow_object_bytes": 786432,
+        "publication_s": 0.00288159399997312,
+        "verification_s": 1.6310000319208484e-06,
+        "total_s": 7.737165016000063,
+        "range_bytes": 4223488
+      },
+      "edit": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.015839717000062592,
+        "first_s": 7.598583476000044,
+        "first_range_bytes": 2789488,
+        "build_s": 0.20999999999999996,
+        "scan_s": 3.4699999999999998,
+        "guest_first_s": 0.13999999999999968,
+        "qcow_object_bytes": 1441792,
+        "publication_s": 0.0036473349999823768,
+        "verification_s": 0.0017446020000306817,
+        "total_s": 11.58075744100006,
+        "range_bytes": 82014320
+      },
+      "recover": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.01750437200007582,
+        "first_s": 7.372487988000103,
+        "first_range_bytes": 2916576,
+        "build_s": 0.1900000000000004,
+        "scan_s": 2.71,
+        "guest_first_s": 0.15000000000000036,
+        "publication_s": 1.473999986956187e-06,
+        "verification_s": 0.0012715679999928398,
+        "total_s": 10.520435543000076,
+        "range_bytes": 81826016
+      },
+      "fork": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.015072778999979164,
+        "first_s": 7.318673194999974,
+        "first_range_bytes": 2789488,
+        "build_s": 0.17999999999999972,
+        "scan_s": 3.17,
+        "guest_first_s": 0.14000000000000057,
+        "publication_s": 9.799999816095806e-07,
+        "verification_s": 0.0016743930000302498,
+        "total_s": 10.897099551999986,
+        "range_bytes": 81391728
+      }
+    }
+  },
+  {
+    "run": "no-fuse-controls-64",
+    "source": "f3766c63",
+    "sprite": "rt-pool-7",
+    "trial": "1-git",
+    "mode": "git",
+    "payload_mib": 64,
+    "seed_s": 2.849663292999935,
+    "phases": {
+      "api": {
+        "total_s": 0.02098662800005968
+      },
+      "edit": {
+        "file_delivery_bytes": 67799040,
+        "prepare_s": 0.17241928600003575,
+        "first_s": 12.799487288000023,
+        "first_range_bytes": 0,
+        "build_s": 0.13000000000000078,
+        "scan_s": 1.67,
+        "guest_first_s": 5.23,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.03949198600003001,
+        "verification_s": 0.0016831010000259994,
+        "total_s": 14.91664425800002,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 67799040,
+        "prepare_s": 0.19297972700007904,
+        "first_s": 13.824076113000046,
+        "first_range_bytes": 0,
+        "build_s": 0.15000000000000036,
+        "scan_s": 1.7200000000000006,
+        "guest_first_s": 5.45,
+        "publication_s": 3.7300000030882074e-06,
+        "verification_s": 0.0021045250000497617,
+        "total_s": 15.831374042000107,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 67799040,
+        "prepare_s": 0.21947174000001723,
+        "first_s": 12.79105607200006,
+        "first_range_bytes": 0,
+        "build_s": 0.129999999999999,
+        "scan_s": 1.6300000000000008,
+        "guest_first_s": 4.9,
+        "publication_s": 3.6590000718206284e-06,
+        "verification_s": 0.0022908659999529846,
+        "total_s": 14.690260039000009,
+        "range_bytes": 0
+      }
+    }
+  },
+  {
+    "run": "no-fuse-hybrid-64",
+    "source": "f3766c63",
+    "sprite": "rt-pool-7",
+    "trial": "0-hybrid",
+    "mode": "hybrid",
+    "payload_mib": 64,
+    "seed_s": 3.7329091070000118,
+    "phases": {
+      "api": {
+        "total_s": 0.01798201799999788
+      },
+      "edit": {
+        "file_delivery_bytes": 10434,
+        "prepare_s": 0.00859437799999796,
+        "first_s": 7.86877564699995,
+        "first_range_bytes": 3576320,
+        "build_s": 0.1900000000000004,
+        "scan_s": 4.720000000000001,
+        "guest_first_s": 0.45999999999999996,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.03298364599999104,
+        "verification_s": 0.0013622539999573746,
+        "total_s": 13.026853625000001,
+        "range_bytes": 82117120
+      },
+      "recover": {
+        "file_delivery_bytes": 10445,
+        "prepare_s": 0.008080823000000237,
+        "first_s": 9.855669911000007,
+        "first_range_bytes": 3576320,
+        "build_s": 0.17999999999999972,
+        "scan_s": 4.000000000000001,
+        "guest_first_s": 0.4400000000000004,
+        "publication_s": 4.896000064036343e-06,
+        "verification_s": 0.0018282110000882312,
+        "total_s": 14.183656363000011,
+        "range_bytes": 81850880
+      },
+      "fork": {
+        "file_delivery_bytes": 10434,
+        "prepare_s": 0.015939398999989862,
+        "first_s": 7.689186037000013,
+        "first_range_bytes": 3576320,
+        "build_s": 0.17999999999999972,
+        "scan_s": 3.750000000000001,
+        "guest_first_s": 0.41999999999999993,
+        "publication_s": 1.5519999578827992e-06,
+        "verification_s": 0.0012514600000486098,
+        "total_s": 11.731195866000007,
+        "range_bytes": 81842688
+      },
+      "corrupt": {
+        "file_delivery_bytes": 10445,
+        "prepare_s": 0.008662018999984866,
+        "publication_s": 9.399999498782563e-07,
+        "verification_s": 4.439999997885025e-06,
+        "total_s": 8.201341915000057,
+        "range_bytes": 3842560,
+        "injected_responses": 2
+      }
+    }
+  },
+  {
+    "run": "no-fuse-hybrid-64",
+    "source": "f3766c63",
+    "sprite": "rt-pool-7",
+    "trial": "1-hybrid",
+    "mode": "hybrid",
+    "payload_mib": 64,
+    "seed_s": 4.048969892000059,
+    "phases": {
+      "api": {
+        "total_s": 0.022086261000026752
+      },
+      "edit": {
+        "file_delivery_bytes": 10434,
+        "prepare_s": 0.009314372000062576,
+        "first_s": 7.763171036000017,
+        "first_range_bytes": 3576320,
+        "build_s": 0.1899999999999995,
+        "scan_s": 3.9799999999999995,
+        "guest_first_s": 0.41999999999999993,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.03277892799997062,
+        "verification_s": 0.0012847799999917697,
+        "total_s": 12.174508625000044,
+        "range_bytes": 81850880
+      },
+      "recover": {
+        "file_delivery_bytes": 10445,
+        "prepare_s": 0.009038520999979482,
+        "first_s": 7.608523820999949,
+        "first_range_bytes": 3576320,
+        "build_s": 0.21999999999999975,
+        "scan_s": 4.52,
+        "guest_first_s": 0.4399999999999995,
+        "publication_s": 9.220000265486306e-07,
+        "verification_s": 0.0010728299999982482,
+        "total_s": 12.467047447000027,
+        "range_bytes": 81871360
+      },
+      "fork": {
+        "file_delivery_bytes": 10434,
+        "prepare_s": 0.009113655999954062,
+        "first_s": 7.607641742999931,
+        "first_range_bytes": 3576320,
+        "build_s": 0.17999999999999972,
+        "scan_s": 3.920000000000001,
+        "guest_first_s": 0.40999999999999925,
+        "publication_s": 4.735999937111046e-06,
+        "verification_s": 0.0020311570000330903,
+        "total_s": 11.86716659800004,
+        "range_bytes": 81850880
+      },
+      "corrupt": {
+        "file_delivery_bytes": 10445,
+        "prepare_s": 0.019003945999997995,
+        "publication_s": 9.299999419454252e-07,
+        "verification_s": 1.1480000239316723e-06,
+        "total_s": 7.855392960000017,
+        "range_bytes": 3842560,
+        "injected_responses": 2
+      }
+    }
+  },
+  {
+    "run": "no-fuse-owner",
+    "source": "30e36be6",
+    "sprite": "rt-pool-3",
+    "trial": "0-owner",
+    "mode": "owner",
+    "payload_mib": 64,
+    "seed_s": 2.5420223470000565,
+    "phases": {
+      "api": {
+        "total_s": 0.020875279999927443
+      },
+      "edit": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.3961228690000098,
+        "first_s": 6.5609647599999334,
+        "first_range_bytes": 0,
+        "build_s": 0.33000000000000007,
+        "scan_s": 4.1,
+        "guest_first_s": 0.08000000000000007,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.03703483099980076,
+        "verification_s": 0.0011437000002842979,
+        "total_s": 11.253082568000082,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.1685804039998402,
+        "first_s": 6.940193127999919,
+        "first_range_bytes": 0,
+        "build_s": 0.3700000000000001,
+        "scan_s": 4.660000000000001,
+        "guest_first_s": 0.08000000000000007,
+        "publication_s": 1.410000095347641e-06,
+        "verification_s": 0.001129160000346019,
+        "total_s": 12.094718895999904,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.3987872400002743,
+        "first_s": 6.756951455000035,
+        "first_range_bytes": 0,
+        "build_s": 0.3099999999999996,
+        "scan_s": 4.1000000000000005,
+        "guest_first_s": 0.08000000000000007,
+        "publication_s": 1.219999830937013e-06,
+        "verification_s": 0.0010477700002411439,
+        "total_s": 11.26460355800009,
+        "range_bytes": 0
+      }
+    }
+  },
+  {
+    "run": "no-fuse-owner",
+    "source": "30e36be6",
+    "sprite": "rt-pool-3",
+    "trial": "1-owner",
+    "mode": "owner",
+    "payload_mib": 64,
+    "seed_s": 2.566380258999743,
+    "phases": {
+      "api": {
+        "total_s": 0.02187000000003536
+      },
+      "edit": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.3980473589999747,
+        "first_s": 6.587382730000172,
+        "first_range_bytes": 0,
+        "build_s": 0.33999999999999986,
+        "scan_s": 4.79,
+        "guest_first_s": 0.08999999999999986,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.03564946100004818,
+        "verification_s": 0.001037699999869801,
+        "total_s": 12.015341205000368,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.18319648499982577,
+        "first_s": 6.19920599299985,
+        "first_range_bytes": 0,
+        "build_s": 0.33000000000000007,
+        "scan_s": 4.169999999999999,
+        "guest_first_s": 0.08999999999999986,
+        "publication_s": 8.700003490957897e-07,
+        "verification_s": 0.0010681600001589686,
+        "total_s": 10.809029736999946,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.39636009900004865,
+        "first_s": 6.392210157000136,
+        "first_range_bytes": 0,
+        "build_s": 0.3200000000000003,
+        "scan_s": 3.8899999999999997,
+        "guest_first_s": 0.08000000000000007,
+        "publication_s": 1.160000010713702e-06,
+        "verification_s": 0.0011439199997766991,
+        "total_s": 10.705978305999906,
+        "range_bytes": 0
+      }
+    }
+  },
+  {
+    "run": "no-fuse-owner-500",
+    "source": "30e36be6",
+    "sprite": "rt-pool-8",
+    "trial": "0-owner",
+    "mode": "owner",
+    "payload_mib": 500,
+    "seed_s": 25.935862267000005,
+    "phases": {
+      "api": {
+        "total_s": 0.03631361099996866
+      },
+      "edit": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 0.4379443959999776,
+        "first_s": 8.062704729000018,
+        "first_range_bytes": 0,
+        "build_s": 0.40999999999999925,
+        "scan_s": 33.07000000000001,
+        "guest_first_s": 0.1200000000000001,
+        "upper_archive_bytes": 10240,
+        "publication_s": 0.06835377599998083,
+        "verification_s": 0.009973939000019527,
+        "total_s": 41.98178052999998,
+        "range_bytes": 0
+      },
+      "recover": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 1.5456053419999876,
+        "first_s": 8.79044107499999,
+        "first_range_bytes": 0,
+        "build_s": 0.3700000000000001,
+        "scan_s": 33.11,
+        "guest_first_s": 0.11000000000000032,
+        "publication_s": 5.923999992774043e-06,
+        "verification_s": 0.00941271199997118,
+        "total_s": 42.52083308599998,
+        "range_bytes": 0
+      },
+      "fork": {
+        "file_delivery_bytes": 0,
+        "prepare_s": 1.6558064910000212,
+        "first_s": 9.093934432000026,
+        "first_range_bytes": 0,
+        "build_s": 0.3700000000000001,
+        "scan_s": 35.06,
+        "guest_first_s": 0.1200000000000001,
+        "publication_s": 5.170999997972103e-06,
+        "verification_s": 0.01201652100002093,
+        "total_s": 44.800898355000015,
+        "range_bytes": 0
+      }
+    }
+  }
+]
