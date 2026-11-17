@@ -389,7 +389,7 @@ def main():
         phases.extend(records)
         if versions is not None:
             revisions[status["run"]] = versions
-    complete = all(status.get("complete") or status.get("optional") for status in statuses)
+    complete = all(status.get("complete") for status in statuses)
     print(json.dumps(dict(complete=complete, series=statuses), indent=2))
     require(complete, "planned series are incomplete")
     output = ROOT
