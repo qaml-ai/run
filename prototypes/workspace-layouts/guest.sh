@@ -16,6 +16,8 @@ stamp start
 if [ "$mode" = git ]; then
     mount -t tmpfs tmpfs /base
     tar xf /x/base.tar -C /base
+elif [ "$mode" = owner ]; then
+    mount -t 9p -o ro,trans=virtio,version=9p2000.L,msize=524288,cache=loose repo /base
 elif [ "$mode" = block ]; then
     mount -t ext4 /dev/vda /ws
 else

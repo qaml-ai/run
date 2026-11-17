@@ -189,7 +189,7 @@ def one(root, boot, out, mib, mode, server):
         os.replace(image,origin/oid)
         syncdir(origin)
         return oid
-    if mode != "git":
+    if mode in ("block","hybrid"):
         image = root/"seed.raw"
         with image.open("wb") as f:
             f.truncate((mib*2+32)*MIB)
@@ -214,6 +214,15 @@ def one(root, boot, out, mib, mode, server):
             descriptor = root/"base-descriptor"
             descriptor.write_text(json.dumps(dict(tree=git.base,object=base,verity=verity)))
             descriptor_id = publish(descriptor)
+    owner_path = root/"owner-worktree"
+    owner_index = root/"owner-index"
+    def fill_owner(rev):
+        owner_path.mkdir(exist_ok=True)
+        env=dict(os.environ,GIT_DIR=str(git.repo),GIT_WORK_TREE=str(owner_path),GIT_INDEX_FILE=str(owner_index))
+        run("git","read-tree","--reset","-u",rev,env=env,cwd=owner_path)
+        assert not (owner_path/".git").exists()
+    if mode == "owner":
+        fill_owner(git.base)
     seed = git.base if git else base
     with catalog:
         catalog.execute("insert into heads values ('main',?)",(seed,))
@@ -231,7 +240,9 @@ def one(root, boot, out, mib, mode, server):
                 pinned = json.loads(descriptor_bytes)
                 assert pinned["tree"] == git.base
                 (x/"verity").write_text(pinned["verity"])
-            if git:
+            if mode == "owner":
+                fill_owner(rev)
+            elif git:
                 git.deliver(rev,x,mode)
             delivery = sum(p.stat().st_size for p in x.iterdir() if p.name != "request")
             args = []
@@ -239,6 +250,8 @@ def one(root, boot, out, mib, mode, server):
                 fmt = "raw" if rev == base else "qcow2"
                 run("qemu-img","create","-q","-f","qcow2","-F",fmt,"-b",url+rev,session/"rw")
                 args = ["-drive",f"if=virtio,file={session}/rw,format=qcow2"]
+            elif mode == "owner":
+                args = ["-virtfs",f"local,path={owner_path},mount_tag=repo,security_model=none,readonly=on"]
             elif mode == "hybrid":
                 args = ["-drive",f"if=virtio,file={url+pinned['object']},readonly=on,format=raw"]
             log = out/(root.name+"-"+action+".log")
@@ -247,7 +260,7 @@ def one(root, boot, out, mib, mode, server):
                    "-nodefaults","-nographic","-no-reboot","-serial","stdio","-kernel",boot/"kernel",
                    "-initrd",boot/"init.gz","-append","console=ttyS0 quiet panic=1 rdinit=/init",
                    "-virtfs",f"local,path={x},mount_tag=exchange,security_model=none",*args]
-            stats = {"file_delivery_bytes":delivery}
+            stats = {"file_delivery_bytes":delivery,"prepare_s":clock()-t}
             with log.open("wb") as f:
                 proc = sp.Popen(cmd,stdout=f,stderr=sp.STDOUT)
                 try:
@@ -304,6 +317,9 @@ def one(root, boot, out, mib, mode, server):
     # Reopen catalog and start completely fresh QEMU processes with empty overlays.
     catalog.close()
     catalog=sqlite3.connect(root/"refs")
+    if mode == "owner":
+        shutil.rmtree(owner_path)
+        owner_index.unlink()
     for action,branch in (("recover","main"),("fork","fork")):
         _,rows["phases"][action]=boot_once(read(branch),action)
     if mode == "hybrid":
@@ -323,7 +339,7 @@ def main():
     p.add_argument("out",type=Path)
     p.add_argument("--mib",type=int,default=64)
     p.add_argument("--rounds",type=int,default=2)
-    p.add_argument("--modes",nargs="+",choices=("hybrid","block","git"),default=["block","git","hybrid"])
+    p.add_argument("--modes",nargs="+",choices=("hybrid","block","git","owner"),default=["block","git","hybrid"])
     args=p.parse_args()
     out=args.out.resolve()
     out.mkdir(parents=True,exist_ok=True)
