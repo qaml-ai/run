@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/qaml-ai/run/camelfsd/internal/root"
@@ -113,6 +114,9 @@ func (m *Manager) validatePackedApply(ctx context.Context, v *Mount) error {
 		p.Size <= 0 || p.RawSize <= 0 || p.Files < 0 || p.Bytes < 0 || (p.Codec != "plain" && p.Codec != "gzip") {
 		return fmt.Errorf("invalid packed apply binding")
 	}
+	if m.PackedParallel && p.Codec != "plain" {
+		return fmt.Errorf("parallel packed apply requires plain codec")
+	}
 	commit, found, err := m.objects(v.Lineage).CommitAncestry(ctx, v.Lineage, v.Parent.Commit)
 	if err != nil {
 		return err
@@ -131,11 +135,6 @@ func (m *Manager) replayPackedApply(ctx context.Context, w io.Writer, lineage, t
 		return fmt.Errorf("packed apply target changed")
 	}
 	start := time.Now()
-	source, err := store.OpenReader(ctx, store.ForLineage(m.Store, lineage), "o/"+p.Blob)
-	if err != nil {
-		return err
-	}
-	defer source.Close()
 	encoded, err := os.CreateTemp(m.Data, "packed-apply-encoded-")
 	if err != nil {
 		return err
@@ -144,7 +143,46 @@ func (m *Manager) replayPackedApply(ctx context.Context, w io.Writer, lineage, t
 	defer encoded.Close()
 	sha, git := sha256.New(), sha1.New()
 	fmt.Fprintf(git, "blob %d\x00", p.Size)
-	n, err := io.Copy(io.MultiWriter(encoded, sha, git), io.LimitReader(source, p.Size+1))
+	var n int64
+	rangeGets := 0
+	if m.PackedParallel {
+		if p.Codec != "plain" {
+			return fmt.Errorf("parallel packed apply requires plain codec")
+		}
+		const partBytes = store.BundleTargetBytes
+		var offsets []string
+		for offset := int64(0); offset < p.Size; offset += partBytes {
+			offsets = append(offsets, strconv.FormatInt(offset, 10))
+		}
+		rangeGets = len(offsets)
+		err = store.Parallel(ctx, int(applyInflightBytes/partBytes), offsets, func(value string) error {
+			offset, _ := strconv.ParseInt(value, 10, 64)
+			size := min(int64(partBytes), p.Size-offset)
+			data, err := store.ReadObjectRange(ctx, store.ForLineage(m.Store, lineage), "o/"+p.Blob, offset, size, p.Size)
+			if err != nil {
+				return err
+			}
+			_, err = encoded.WriteAt(data, offset)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if _, err = encoded.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		n, err = io.Copy(io.MultiWriter(sha, git), io.LimitReader(encoded, p.Size+1))
+	} else {
+		source, err := store.OpenReader(ctx, store.ForLineage(m.Store, lineage), "o/"+p.Blob)
+		if err != nil {
+			return err
+		}
+		n, err = io.Copy(io.MultiWriter(encoded, sha, git), io.LimitReader(source, p.Size+1))
+		closeErr := source.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -184,6 +222,6 @@ func (m *Manager) replayPackedApply(ctx context.Context, w io.Writer, lineage, t
 	}
 	_, err = io.Copy(w, body)
 	slog.Info("compute_apply_archive", "codec", p.Codec, "tree", p.Tree, "storedBytes", p.Size, "rawBytes", p.RawSize,
-		"fetchMs", fetchMs, "verifyMs", verifyMs, "sendMs", ms(start)-fetchMs-verifyMs, "error", err)
+		"parallel", m.PackedParallel, "rangeGets", rangeGets, "fetchMs", fetchMs, "verifyMs", verifyMs, "sendMs", ms(start)-fetchMs-verifyMs, "error", err)
 	return err
 }

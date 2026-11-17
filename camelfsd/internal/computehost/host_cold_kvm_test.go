@@ -76,6 +76,10 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	if packedMode != "" && packedMode != "control" && packedMode != "plain" && packedMode != "gzip" {
 		t.Fatal("CAMELFSD_KVM_PACKED_APPLY must be control, plain or gzip")
 	}
+	packedParallel := os.Getenv("CAMELFSD_KVM_PACKED_PARALLEL") == "1"
+	if packedParallel && packedMode != "plain" {
+		t.Fatal("CAMELFSD_KVM_PACKED_PARALLEL requires CAMELFSD_KVM_PACKED_APPLY=plain")
+	}
 	content := os.Getenv("CAMELFSD_KVM_CONTENT")
 	if content != "" && content != "random" && content != "source" {
 		t.Fatal("CAMELFSD_KVM_CONTENT must be random or source")
@@ -236,7 +240,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		must(os.MkdirAll(filepath.Join(data, "images"), 0700))
 		must(exec.Command("cp", "--reflink=always", guestImage, filepath.Join(data, "images", sha+".ext4")).Run())
 		cfg := kvmDaemonConfig{Data: data, Tier: strings.TrimPrefix(tier.URL, "https://"), HostID: cert.HostID, Kernel: kernel, Shape: shape,
-			Store: url, ObjectsTable: objectsTable, VirtualSize: int64(mb+1024) << 20, PackedApply: prepared}
+			Store: url, ObjectsTable: objectsTable, VirtualSize: int64(mb+1024) << 20, PackedApply: prepared, PackedParallel: packedParallel}
 		config, err := json.Marshal(cfg)
 		must(err)
 		daemon := exec.Command(os.Args[0], "-test.run=^TestKVMComputeDaemonProcess$")

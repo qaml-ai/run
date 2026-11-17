@@ -12,6 +12,15 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// ReadObjectRange reuses exact S3 range reads for the packed-apply benchmark.
+// The caller verifies the complete immutable object's digest after assembly.
+func ReadObjectRange(ctx context.Context, s Store, key string, offset, size, total int64) ([]byte, error) {
+	if !valid(fullKey(s, key)) || size <= 0 || total < size || offset < 0 || offset > total-size {
+		return nil, fmt.Errorf("invalid object range")
+	}
+	return readBundleRange(ctx, s, key, BundleRef{Offset: offset, Size: size, PackSize: total})
+}
+
 func readBundleRange(ctx context.Context, s Store, key string, ref BundleRef) ([]byte, error) {
 	switch v := s.(type) {
 	case *scoped:

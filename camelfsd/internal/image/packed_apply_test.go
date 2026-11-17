@@ -16,12 +16,17 @@ import (
 )
 
 func TestPackedApplyPrototype(t *testing.T) {
-	for _, codec := range []string{"plain", "gzip"} {
-		t.Run(codec, func(t *testing.T) {
+	for _, profile := range []string{"plain", "gzip", "plain-parallel"} {
+		t.Run(profile, func(t *testing.T) {
+			codec := strings.TrimSuffix(profile, "-parallel")
 			m, _ := unit3(t)
+			m.PackedParallel = profile == "plain-parallel"
 			ctx := t.Context()
 			repo := m.objects("l")
 			data := []byte(strings.Repeat("archived content\n", 1024))
+			if m.PackedParallel {
+				data = bytes.Repeat([]byte("archived content\n"), 600000)
+			}
 			hash := sha256Hex(data)
 			if _, err := repo.Upload(ctx, "l", hash, int64(len(data)), bytes.NewReader(data)); err != nil {
 				t.Fatal(err)
