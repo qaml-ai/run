@@ -1,3 +1,5 @@
+//go:build kvm && camelfs_medium_bundles
+
 package image
 
 import (

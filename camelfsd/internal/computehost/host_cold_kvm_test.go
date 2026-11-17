@@ -91,6 +91,16 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		return raw, err
 	}
 	objectsTable := os.Getenv("CAMELFSD_KVM_OBJECTS_TABLE")
+	mediumBundles := os.Getenv("CAMELFSD_KVM_MEDIUM_BUNDLES") == "1"
+	if mediumBundles && store.BundleMaxBlob != 1<<20 {
+		t.Fatal("medium-bundle mode requires build tags kvm,camelfs_medium_bundles")
+	}
+	if !mediumBundles && store.BundleMaxBlob != 64<<10 {
+		t.Fatal("medium-bundle benchmark build requires CAMELFSD_KVM_MEDIUM_BUNDLES=1")
+	}
+	if mediumBundles && objectsTable == "" {
+		t.Fatal("medium-bundle mode requires CAMELFSD_KVM_OBJECTS_TABLE")
+	}
 	remote, err := openBenchmarkStore(ctx, url, objectsTable, 64)
 	must(err)
 
@@ -134,7 +144,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 	mediumIDs := make([]string, 0, mb-40)
 	for i := 0; i < mb-40; i++ {
 		path := fmt.Sprintf("assets/a%04d.bin", i)
-		if objectsTable == "" {
+		if !mediumBundles {
 			blobs = append(blobs, fmt.Sprintf("%d %s", 1<<20, path))
 			continue
 		}
@@ -145,7 +155,7 @@ func coldSession(t *testing.T, url, guestImage string, mb int) {
 		sum := sha256.Sum256(raw)
 		files[path] = objects.File{SHA256: hex.EncodeToString(sum[:])}
 	}
-	if objectsTable != "" {
+	if mediumBundles {
 		must(batch.Flush(ctx))
 		locations, err := store.LocateBundlesForRestore(ctx, store.ForLineage(remote, lineage), mediumIDs)
 		must(err)
