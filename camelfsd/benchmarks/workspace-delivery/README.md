@@ -87,8 +87,8 @@ across normal daemon lifecycles would require additional implementation.
 
 The medium arm stages all synthetic assets in one bulk publication. The
 interleaved 272 MiB regression deliberately crosses bounded apply windows and
-checks memory and fetched-byte counts. Ordered checkpoint spool windows may
-have different pack locality. Run it on a Sprite without KVM devices using
+checks ordered content and fetched-byte counts across the 256 MiB apply window.
+Ordered checkpoint spool windows may have different pack locality. Run it on a Sprite without KVM devices using
 `go test -tags kvm,camelfs_medium_bundles ./internal/image -run Medium -count=1 -v`.
 
 ## Warm Git and evidence checks
