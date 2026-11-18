@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { unstable_startWorker } from "wrangler";
+import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool } from "../sdk/src/index.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -55,8 +56,9 @@ async function waitForHealth(url: string, timeoutMs = 10_000): Promise<void> {
 
 describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfsd)", () => {
   let tempDir: string;
-  let camelfsdProc: ChildProcess;
+  let camelfsdProc: ChildProcess | undefined;
   let camelfsUrl: string;
+  let camelfsSigningKey: string;
   let auxServer: Server;
   let auxUrl: string;
   let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
@@ -66,6 +68,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   before(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "camelrun-next-e2e-"));
     const keys = generateEd25519Pair();
+    const externalCamelfsUrl = process.env.CAMELFSD_TEST_URL;
+    const externalSigningKey = process.env.CAMELFSD_TEST_SIGNING_KEY;
+    assert.equal(
+      Boolean(externalCamelfsUrl),
+      Boolean(externalSigningKey),
+      "CAMELFSD_TEST_URL and CAMELFSD_TEST_SIGNING_KEY must be set together",
+    );
+
+    camelfsSigningKey = externalSigningKey ?? keys.signingSpec;
 
     // 1. Start local MCP + Webhook test HTTP server
     const auxPort = await getFreePort();
@@ -155,25 +166,29 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
     await new Promise<void>((resolve) => auxServer.listen(auxPort, "127.0.0.1", () => resolve()));
 
-    // 2. Start real compiled Go camelfsd server with Ed25519 public key verification
-    const camelfsPort = await getFreePort();
-    camelfsUrl = `http://127.0.0.1:${camelfsPort}`;
-    camelfsdProc = spawn(
-      CAMELFSD_BIN,
-      [
-        "--listen",
-        `127.0.0.1:${camelfsPort}`,
-        "--data-dir",
-        join(tempDir, "camelfs-data"),
-        "--backend",
-        "local",
-        "--vm-driver",
-        "local",
-        "--public-keys",
-        keys.publicSpec,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    // Run against either the local fixture or a dedicated Firecracker test daemon.
+    if (externalCamelfsUrl) {
+      camelfsUrl = externalCamelfsUrl;
+    } else {
+      const camelfsPort = await getFreePort();
+      camelfsUrl = `http://127.0.0.1:${camelfsPort}`;
+      camelfsdProc = spawn(
+        CAMELFSD_BIN,
+        [
+          "--listen",
+          `127.0.0.1:${camelfsPort}`,
+          "--data-dir",
+          join(tempDir, "camelfs-data"),
+          "--backend",
+          "local",
+          "--vm-driver",
+          "local",
+          "--public-keys",
+          keys.publicSpec,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    }
     await waitForHealth(`${camelfsUrl}/healthz`);
 
     // 3. Start real Cloudflare workerd via Wrangler using an isolated test config
@@ -189,7 +204,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
             ADMIN_SECRET,
             VAULT_SECRET,
             CAMELFS_URL: camelfsUrl,
-            CAMELFS_SIGNING_KEY: keys.signingSpec,
+            CAMELFS_SIGNING_KEY: camelfsSigningKey,
             CAMELFS_DEV_TOKEN: "",
             DEFAULT_MODEL: "mock/default",
           },
@@ -213,9 +228,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
   after(async () => {
     await worker?.dispose().catch(() => {});
-    if (camelfsdProc && !camelfsdProc.killed) {
-      camelfsdProc.kill("SIGTERM");
-      await new Promise((resolve) => camelfsdProc.once("exit", resolve));
+    const daemon = camelfsdProc;
+    if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
+      await new Promise<void>((resolve) => {
+        daemon.once("exit", () => resolve());
+        daemon.kill("SIGTERM");
+      });
     }
     if (auxServer) {
       await new Promise((resolve) => auxServer.close(() => resolve(undefined)));
@@ -287,7 +305,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   });
 
   it("2. camelfsd repos, file tools, persistent bash VM (cwd + env + atomic commit), and edit-while-VM-live work seamlessly", async () => {
-    const { apiKey } = await CamelRun.createTenant({
+    const { apiKey, tenantId } = await CamelRun.createTenant({
       baseUrl: workerUrl,
       adminKey: ADMIN_SECRET,
       name: "fs-vm-tenant",
@@ -354,6 +372,24 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       to: hist.commits[0]!.commit,
     });
     assert.ok(diff.changes.some((c) => c.path === "src/app.txt"));
+
+    // Stop the VM through camelfsd and edit through the public API while it sleeps.
+    const cfs = new CamelFsClient({ CAMELFS_URL: camelfsUrl, CAMELFS_SIGNING_KEY: camelfsSigningKey }, tenantId);
+    const active = await cfs.ensureVm({ lineage: repo.lineage, ref: repo.defaultRef, holder: coder.id });
+    assert.equal(active.reused, true);
+    await cfs.stopVm(active.vmId, repo.lineage);
+    await camel.repos.write(repo.repoId, { puts: [{ path: "asleep.txt", content: "edited-while-asleep" }] });
+
+    const resumed = await coder.run(
+      `Read after restart [CALL:bash {"command":"cat /workspace/asleep.txt /workspace/src/app.txt"}]`,
+    );
+    assert.equal(resumed.status, "completed");
+    assert.match(resumed.text, /edited-while-asleep/);
+    assert.match(resumed.text, /val=camel_v2/);
+    const restarted = await cfs.ensureVm({ lineage: repo.lineage, ref: repo.defaultRef, holder: coder.id });
+    assert.equal(restarted.reused, true);
+    assert.notEqual(restarted.vmId, active.vmId);
+    await cfs.stopVm(restarted.vmId, repo.lineage);
 
     await camel.close();
   });

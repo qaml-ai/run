@@ -10,6 +10,7 @@ type Code string
 
 const (
 	CodeNotFound       Code = "not_found"
+	CodeVMStopped      Code = "vm_stopped"
 	CodeCASConflict    Code = "cas_conflict"
 	CodeRefLeased      Code = "ref_leased"
 	CodeInvalidRequest Code = "invalid_request"
@@ -43,6 +44,10 @@ func NotFound(msg string) *Error {
 
 func NotFoundf(format string, args ...any) *Error {
 	return NotFound(fmt.Sprintf(format, args...))
+}
+
+func VMStopped(vmID string) *Error {
+	return &Error{Code: CodeVMStopped, Status: http.StatusGone, Message: fmt.Sprintf("vm %q has stopped", vmID)}
 }
 
 func CASConflict(msg string) *Error {

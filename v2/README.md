@@ -40,3 +40,37 @@ While the VM sleeps, a write edits only the necessary ranges of its parent ext4 
 For a v2 commit created without a disk map, make a new commit on its ref through the write API with disk storage enabled. An empty write request is sufficient to import the existing file tree onto the shared template. Existing historical commits still serve their file reads. A Firecracker start requires a commit with a disk map.
 
 To verify the native editor through the HTTP API, set `CAMELFSD_TEST_WORKSPACE_EDITOR` to the editor's absolute path and run `go test ./internal/api -run TestWorkspaceDiskHTTP -v`. To test Linux block I/O, set `CAMELFSD_TEST_NBD` to a dedicated, unused local NBD device and run `go test ./internal/workdisk -run TestKernelNBD -v` with NBD privileges.
+
+## v2 pilot
+
+Deploy from `v2/` with `worker/wrangler.pilot.jsonc`. This creates a separate
+API at `run-v2-pilot.camelai.dev` with its own Durable Objects, media bucket,
+and events queue. Start with fresh repositories. The v2 API and storage layout
+use separate data from the original pilot.
+
+On the Firecracker host, build the guest init and install it on a copy of a
+Linux ext4 rootfs with Bash and the tools needed by pilot workloads.
+
+```sh
+cd v2/camelfsd
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/camelfs-guest-init ./cmd/camelfs-guest-init
+scripts/install-guest-init.sh /path/to/base.ext4 /tmp/camelfs-guest-init /path/to/v2-rootfs.ext4
+```
+
+Run one direct Firecracker daemon for the pilot's VM table. Set
+`CAMELFSD_BACKEND=aws`, `CAMELFSD_VM_DRIVER=firecracker`, the pilot S3 bucket,
+and the `camelfs-v2-pilot-repos` and `camelfs-v2-pilot-vms` DynamoDB tables.
+Each table has string keys `PK` and `SK`. Set the kernel, v2 rootfs, template,
+editor, and NBD device paths as above. Bind the daemon to loopback and route
+`camelfs-v2-pilot.camelai.dev` to it through a Cloudflare tunnel. Set
+`CAMELFSD_PUBLIC_KEYS` to the public half of the Worker's Ed25519 signing key.
+
+Use Wrangler's `--secrets-file` for the first deployment. Supply
+`ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` through that file and
+keep the file outside the checkout. The signing key is
+`<kid>:<base64url-encoded Ed25519 seed>`. The daemon's public key uses the same
+key ID. The pilot config provides no development bearer tokens.
+
+The same end-to-end suite can target a dedicated Firecracker daemon with
+`CAMELFSD_TEST_URL` and `CAMELFSD_TEST_SIGNING_KEY`. The file and VM case
+covers a live edit, a stop, an API edit during sleep, and a read after restart.

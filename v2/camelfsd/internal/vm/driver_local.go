@@ -96,20 +96,7 @@ func (d *LocalDriver) Start(_ context.Context, spec StartSpec) (string, error) {
 		return "", err
 	}
 
-	initEnv := make(map[string]string, len(spec.Env))
-	for k, v := range spec.Env {
-		initEnv[k] = v
-	}
-
-	sess := &localVMSession{
-		vmID:         spec.VMID,
-		baseDir:      baseDir,
-		workspaceDir: workspaceDir,
-		ctrlDir:      ctrlDir,
-		envFile:      filepath.Join(ctrlDir, "env.snapshot"),
-		initEnv:      initEnv,
-		lastHostCwd:  workspaceDir,
-	}
+	sess := newLocalSession(spec.VMID, baseDir, workspaceDir, ctrlDir, spec.Env)
 	if err := sess.ensureShellLocked(); err != nil {
 		_ = os.RemoveAll(baseDir)
 		return "", err
@@ -120,6 +107,22 @@ func (d *LocalDriver) Start(_ context.Context, spec StartSpec) (string, error) {
 	d.mu.Unlock()
 
 	return "local", nil
+}
+
+func newLocalSession(vmID, baseDir, workspaceDir, ctrlDir string, env map[string]string) *localVMSession {
+	initEnv := make(map[string]string, len(env))
+	for k, v := range env {
+		initEnv[k] = v
+	}
+	return &localVMSession{
+		vmID:         vmID,
+		baseDir:      baseDir,
+		workspaceDir: workspaceDir,
+		ctrlDir:      ctrlDir,
+		envFile:      filepath.Join(ctrlDir, "env.snapshot"),
+		initEnv:      initEnv,
+		lastHostCwd:  workspaceDir,
+	}
 }
 
 func (d *LocalDriver) getSession(vmID string) (*localVMSession, error) {
@@ -442,6 +445,10 @@ func (d *LocalDriver) Exec(ctx context.Context, req DriverExecRequest) (*DriverE
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
+	return sess.execLocked(ctx, req)
+}
+
+func (sess *localVMSession) execLocked(ctx context.Context, req DriverExecRequest) (*DriverExecResult, error) {
 	if err := sess.ensureShellLocked(); err != nil {
 		return nil, err
 	}

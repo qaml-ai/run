@@ -422,7 +422,7 @@ func (m *Manager) Exec(
 		return nil, false, err
 	}
 	if vmRec.State != "running" {
-		return nil, false, apperr.InvalidRequestf("vm %q is not running (state=%s)", vmID, vmRec.State)
+		return nil, false, apperr.VMStopped(vmID)
 	}
 	if strings.TrimSpace(req.Command) == "" {
 		return nil, false, apperr.InvalidRequest("command is required")

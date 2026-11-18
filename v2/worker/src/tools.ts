@@ -636,44 +636,27 @@ export async function executeToolCall(
       ctx.saveVmSession(branch, booted.vmId, booted.leaseExpiresAt);
     }
 
+    const execRequest = {
+      execId: randomId("exec", 8),
+      command,
+      cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+      timeoutS: typeof args.timeoutS === "number" ? args.timeoutS : 60,
+      commit: {
+        author: `agent:${ctx.config.id}`,
+        message: `bash: ${command.slice(0, 72)}`,
+        skip: false,
+      },
+    };
     let execRes;
     try {
-      execRes = await cfs.execVm(session.vmId, lineage, {
-        execId: randomId("exec", 8),
-        command,
-        cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-        timeoutS: typeof args.timeoutS === "number" ? args.timeoutS : 60,
-        commit: {
-          author: `agent:${ctx.config.id}`,
-          message: `bash: ${command.slice(0, 72)}`,
-          skip: false,
-        },
-      });
+      execRes = await cfs.execVm(session.vmId, lineage, execRequest);
     } catch (err) {
-      // If VM stopped or expired on camelfsd, re-ensure once and retry
+      // A stopped VM rejects exec before running the command.
       const apiErr = extractApiError(err);
-      if (apiErr && (apiErr.status === 404 || apiErr.status === 409 || apiErr.status === 410)) {
-        const rebooted = await cfs.ensureVm({
-          lineage,
-          ref: branch,
-          holder: ctx.config.id,
-          leaseS: 600,
-        });
-        ctx.saveVmSession(branch, rebooted.vmId, rebooted.leaseExpiresAt);
-        execRes = await cfs.execVm(rebooted.vmId, lineage, {
-          execId: randomId("exec", 8),
-          command,
-          cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-          timeoutS: typeof args.timeoutS === "number" ? args.timeoutS : 60,
-          commit: {
-            author: `agent:${ctx.config.id}`,
-            message: `bash: ${command.slice(0, 72)}`,
-            skip: false,
-          },
-        });
-      } else {
-        throw err;
-      }
+      if (apiErr?.status !== 410 || apiErr.code !== "vm_stopped") throw err;
+      const booted = await cfs.ensureVm({ lineage, ref: branch, holder: ctx.config.id });
+      ctx.saveVmSession(branch, booted.vmId, booted.leaseExpiresAt);
+      execRes = await cfs.execVm(booted.vmId, lineage, execRequest);
     }
 
     ctx.recordVmMs(execRes.billableMs || execRes.durationMs || 0);
