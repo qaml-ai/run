@@ -413,21 +413,30 @@ func (s *AWSStore) ListRefs(ctx context.Context, lineage, prefix string, nowMs i
 		return nil, err
 	}
 	qExpr := "PK = :pk AND begins_with(SK, :skPrefix)"
-	out, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
+	query := &dynamodb.QueryInput{
 		TableName:              &s.reposTable,
 		KeyConditionExpression: &qExpr,
+		ConsistentRead:         aws.Bool(true),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":pk":       strVal(linPK(lineage)),
 			":skPrefix": strVal(refSK(prefix)),
 		},
-	})
-	if err != nil {
-		return nil, apperr.Internal("ddb list refs", err)
 	}
-	refs := make([]store.RefRecord, 0, len(out.Items))
-	for _, item := range out.Items {
-		refs = append(refs, itemToRef(lineage, item, nowMs))
+	refs := make([]store.RefRecord, 0)
+	for {
+		out, err := s.ddb.Query(ctx, query)
+		if err != nil {
+			return nil, apperr.Internal("ddb list refs", err)
+		}
+		for _, item := range out.Items {
+			refs = append(refs, itemToRef(lineage, item, nowMs))
+		}
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		query.ExclusiveStartKey = out.LastEvaluatedKey
 	}
+
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
 	return refs, nil
 }

@@ -164,28 +164,56 @@ func (e *Engine) ResolveCommit(ctx context.Context, lineage, refOrCommit string)
 	}
 	now := e.nowMs()
 
-	if r, err := e.store.GetRef(ctx, lineage, target, now); err == nil && r != nil {
-		c, err := e.GetCommit(ctx, r.Commit)
-		if err != nil {
-			return "", nil, err
-		}
-		return r.Commit, c, nil
-	}
+	names := []string{target}
 	if !strings.HasPrefix(target, "refs/") {
-		if r, err := e.store.GetRef(ctx, lineage, "refs/heads/"+target, now); err == nil && r != nil {
+		names = append(names, "refs/heads/"+target)
+	}
+	for _, name := range names {
+		r, err := e.store.GetRef(ctx, lineage, name, now)
+		if err == nil {
 			c, err := e.GetCommit(ctx, r.Commit)
-			if err != nil {
-				return "", nil, err
-			}
-			return r.Commit, c, nil
+			return r.Commit, c, err
+		}
+		if !apperr.IsCode(err, apperr.CodeNotFound) {
+			return "", nil, err
 		}
 	}
 	if len(target) == 64 {
-		if c, err := e.GetCommit(ctx, target); err == nil && c != nil {
-			return target, c, nil
-		}
+		c, err := e.resolveLineageCommit(ctx, lineage, target)
+		return target, c, err
 	}
 	return "", nil, apperr.NotFoundf("ref or commit %q not found in lineage %q", target, lineage)
+}
+
+// Object hashes are global. Only commits reachable from this lineage's refs are visible.
+func (e *Engine) resolveLineageCommit(ctx context.Context, lineage, target string) (*CommitObject, error) {
+	refs, err := e.ListRefs(ctx, lineage, "")
+	if err != nil {
+		return nil, err
+	}
+
+	pending := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		pending = append(pending, ref.Commit)
+	}
+	seen := make(map[string]bool)
+	for len(pending) > 0 {
+		hash := pending[0]
+		pending = pending[1:]
+		if seen[hash] {
+			continue
+		}
+		seen[hash] = true
+		commit, err := e.GetCommit(ctx, hash)
+		if err != nil {
+			return nil, err
+		}
+		if hash == target {
+			return commit, nil
+		}
+		pending = append(pending, commit.Parents...)
+	}
+	return nil, apperr.NotFoundf("commit %q not found in lineage %q", target, lineage)
 }
 
 func (e *Engine) withRefLock(ctx context.Context, lineage, ref, holder string, fn func(vmSession ActiveVMSession) error) error {
@@ -438,7 +466,7 @@ func (e *Engine) SetRef(ctx context.Context, lineage string, req SetRefRequest) 
 		if strings.TrimSpace(req.Commit) == "" {
 			return nil, apperr.InvalidRequest("commit is required when not deleting ref")
 		}
-		c, err := e.GetCommit(ctx, req.Commit)
+		c, err := e.resolveLineageCommit(ctx, lineage, req.Commit)
 		if err != nil {
 			return nil, err
 		}
