@@ -479,7 +479,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       output: capped.usage.outputTokens,
       cost: { usd: capped.usage.costUsd, source: "catalog" },
     });
-    const failures = () => receivedWebhooks.filter(({ headers }) => headers["x-camelrun-event"] === "run.failed");
+    const failures = () => receivedWebhooks.filter(({ headers, body }) =>
+      headers["x-camelrun-event"] === "run.failed" && JSON.parse(body).data.runId === capped.id);
     while (failures().length < 2 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
