@@ -9,7 +9,8 @@
   ],
   "vars": {
     "CAMELFS_URL": "https://fs-v2.camelai.dev",
-    "DEFAULT_MODEL": "openrouter/meta/muse-ember"
+    "DEFAULT_MODEL": "openrouter/meta/muse-ember",
+    "TOOL_IDENTITY_ISSUER": "https://run.camelai.com/v2"
   },
   "r2_buckets": [
     {

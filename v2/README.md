@@ -98,9 +98,10 @@ VM tables, and signing key. Run camelfsd as a system service on cgroup v2 with
 `CAMELFSD_FC_BIN`. The jailer uses UID and GID 201000 plus the assigned NBD
 device's minor number. Reserve that range on the dedicated host, and use a
 short data path such as `/nvme/v2` for the Unix sockets. Create fresh
-`ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` for the production Worker. The deploy creates its own
-Durable Objects. Bootstrap new v2 tenants and issue v2 credentials for the
-clients joining the rollout.
+`ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` for the production
+Worker. The deploy creates its own Durable Objects. Supply a separate
+`TOOL_IDENTITY_PRIVATE_JWK` secret for Camel Bots tool signing. Bootstrap new v2
+tenants and issue v2 credentials for the clients joining the rollout.
 
 Build and check the release with the v2 package's pinned Wrangler:
 
