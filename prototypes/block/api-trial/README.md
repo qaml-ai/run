@@ -2,6 +2,8 @@
 
 The API and Bash share one writable ext4 mount in a guest. Each host reads immutable 256 KiB blocks from S3 on demand and caches verified content on local NVMe. The guest replaces a file by rename. The harness reads the result through Bash, freezes ext4, uploads changed blocks and their immutable map, conditionally advances the S3 ref, thaws the guest and returns success. A new owner first changes the ownership epoch with a conditional write. Any subsequent publish by the displaced owner using its previous ETag fails.
 
+The [persistent workspace API](workspace/README.md) serves named workspaces, accepts binary file edits at caller-selected paths and executes Bash on the same disk.
+
 ## Native cold and warm timings
 
 These runs used Firecracker 1.13.1 and KVM on an EC2 m8id.xlarge with local instance-store NVMe and an S3 bucket in us-west-2. The 128 MiB workspace held 2,001 small source files and an 8 MiB random payload. Every edit replaced an existing file with a new 33-byte value, including its newline. Each started through a private RPC to the guest over vsock and was verified by a second RPC that ran Bash. The launcher waited for an explicit durable acknowledgment. This measures the experimental storage and guest path, excluding a public API gateway and authentication.

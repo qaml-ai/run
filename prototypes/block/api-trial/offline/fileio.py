@@ -53,5 +53,3 @@ def workspace_file(h, path, data=None, output=None):
         raise OSError(status, os.strerror(status), path)
     if status:
         raise OSError(f"ext4 editor rejected image or operation ({status})")
-
-

@@ -1,0 +1,81 @@
+{
+  "date_utc": "2026-11-18",
+  "implementation_commit": "0ec29fc2088f47159ee35a27c603f8d9d39b47fc",
+  "smoke": {
+    "api_host": "exe.dev",
+    "compute_host": "EC2 with local NVMe and Firecracker",
+    "different_host_caches": true,
+    "formatter_invocations_after_template_creation": 0,
+    "sleeping_put_ms": 420.45,
+    "cold_start_to_mounted_ms": 1502.17,
+    "final_revision": 7,
+    "template": "f20350220a3bf29c2b3f93a999923de62cf91e3283e7036a5a7e98ba2d7cf4ce",
+    "final_map": "b70ff12908dd2fadaef5505b4a1194e17d6fd8dea060d8b57f0b758a1f684683",
+    "payload_bytes": 262161,
+    "durable_guest_to_api": true,
+    "routed_api_to_guest": true
+  },
+  "owner_loss": {
+    "injection": "SIGKILL owner process after a live edit acknowledged at revision 8",
+    "replacement": {
+      "topology": "fresh process and cache on same EC2 compute host",
+      "map": "daef2b25c522fbb27b246845f236e4637a7e0208848818b5dea1adfca19d93c1",
+      "revision": 9,
+      "uploaded_bytes": 262144,
+      "seal_ms": 4.89
+    },
+    "stale_recover_http_status": 409,
+    "stale_s3_publish_http_status": 412,
+    "acknowledged_bytes_verified": true
+  },
+  "workload": {
+    "pairs": 1,
+    "guest_vcpus": 4,
+    "guest_ram_mib": 4096,
+    "order": "native then persistent, in the same Firecracker guest",
+    "native_output_durability": "separate local ext4 control disk; outputs not published to S3",
+    "source_and_npm_cache": "same contents, offline npm ci",
+    "rows": [
+      {
+        "label": "stage",
+        "acknowledged_ms": 1698.64,
+        "stdout": "",
+        "stderr": "",
+        "uploaded_bytes": 31195136,
+        "seal_ms": 162.64
+      },
+      {
+        "label": "native-npm",
+        "acknowledged_ms": 15882.67,
+        "stdout": "\nadded 766 packages in 15s\n",
+        "stderr": "15.609\n",
+        "uploaded_bytes": 262144,
+        "seal_ms": 64.18
+      },
+      {
+        "label": "native-tsc",
+        "acknowledged_ms": 3879.38,
+        "stdout": "319\ne5ca16974bab2ab2d6376ce8661decc1c1ee8de01ccc47f7145e152323f36535  -\n",
+        "stderr": "3.551\n",
+        "uploaded_bytes": 262144,
+        "seal_ms": 64.54
+      },
+      {
+        "label": "persistent-npm",
+        "acknowledged_ms": 49662.79,
+        "stdout": "\nadded 766 packages in 15s\n",
+        "stderr": "15.132\n",
+        "uploaded_bytes": 1026818048,
+        "seal_ms": 1614.93
+      },
+      {
+        "label": "persistent-tsc",
+        "acknowledged_ms": 4196.94,
+        "stdout": "319\ne5ca16974bab2ab2d6376ce8661decc1c1ee8de01ccc47f7145e152323f36535  -\n",
+        "stderr": "3.466\n",
+        "uploaded_bytes": 8650752,
+        "seal_ms": 269.17
+      }
+    ]
+  }
+}
