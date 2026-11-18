@@ -230,6 +230,10 @@ export class AgentHandle {
     return unwrapArray<HistoryMessage>(res, "messages", "history");
   }
 
+  importV1History(input: { source: string; messages: unknown[]; previous?: string }): Promise<{ receipt: string; count: number }> {
+    return this.transport.requestJson("PUT", `${this.basePath}/history/import`, input);
+  }
+
   async events(options?: { after?: number; runId?: string }): Promise<AgentEvent[]> {
     const res = await this.transport.requestJson("GET", `${this.basePath}/events${buildQuery({ after: options?.after ?? 0, runId: options?.runId })}`, undefined, { headers: { Accept: "application/json" } });
     return unwrapArray<unknown>(res, "events").map((x) => normalizeAgentEvent(x));

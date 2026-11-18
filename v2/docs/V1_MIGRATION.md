@@ -42,9 +42,36 @@ output.
   available for recovery. After v2 accepts new writes, reconcile its changes
   before switching a cohort back.
 
-The two clients use different run, tool, file, and voice interfaces. The v1
-SDK's server entry point verifies Camel Bots' signed tool calls. The v2 client
-needs equivalent tool identity and shared draft access before it can serve
-builder traffic. A live rollout also needs history and attachment import and a
-single credit authority that enforces the same balance, expiry, allowance and
-hold rules for both clients. The file importer covers only the workspace copy.
+## Copy text conversations
+
+With the same environment as the workspace importer, read a v1 agent's history
+and import it into an existing, unused v2 agent.
+
+```sh
+node --experimental-strip-types v2/scripts/migrate-history.ts \
+  <v1-agent-id> <v2-agent-id> [previous-receipt]
+```
+
+Keep the returned receipt. A retry of the same copy returns it again. To copy
+a changed conversation, pass the prior receipt after the source turn drains.
+The destination refuses imports after it has activity. The importer preserves
+the original messages, including sender metadata and tool records, and maps
+text and completed tool calls into v2 model context. A missing source page,
+an unanswered tool call, or an attachment makes the import fail before writing.
+
+## Runtime tool authentication
+
+Set `TOOL_IDENTITY_ISSUER` to the v2 base including `/v2` and supply
+`TOOL_IDENTITY_PRIVATE_JWK` as a Worker secret containing a separate Ed25519
+private JWK with a `kid`. The tool verifier uses that v2 base and the v2 tenant
+ID. The Worker publishes only the public JWK at `/v2/.well-known/jwks.json`.
+Set the verified bot owner and context as the agent's `toolIdentity` and
+configure its MCP server with `auth: { type: "runtime" }`, the app's audience,
+and the allowed tool names. The application still checks bot ownership and
+the agent mapping before dispatching a tool.
+
+The live canary still needs app routing, shared draft access, attachment import
+and delivery, tool-driven forms, and a common credit authority. Keep the
+existing balances, daily allowances, and expiring lots authoritative for both
+versions. Verify that each accepted call charges once and a refused call
+uses neither the provider nor the other runtime.

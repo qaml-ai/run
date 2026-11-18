@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
+import type { parseV1History } from "./history-import.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -1625,6 +1626,33 @@ export class AgentDO extends DurableObject<Env> {
     const compaction = this.buildAdapter().getLatestCompaction();
     const nextAfter = messages.length > 0 ? messages[messages.length - 1]!.seq : after;
     return { messages, compaction, nextAfter };
+  }
+
+  async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
+    this.ensureSql();
+    this.requireConfig();
+    return this.ctx.storage.transactionSync(() => {
+      const sql = this.ctx.storage.sql;
+      const current = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'").toArray()[0];
+      const imported = current ? JSON.parse(current.v) as { source: string; receipt: string } : undefined;
+      const used = sql.exec<{ used: number }>(`SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+        OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used`).one();
+      if (used.used || (!imported && sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length)) {
+        throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
+      }
+      if (imported?.source === input.source && imported.receipt === receipt) return { receipt, count: input.messages.length };
+      if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
+        throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
+      }
+      if (imported) sql.exec("DELETE FROM messages");
+      for (const [index, message] of input.messages.entries()) {
+        sql.exec("INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+          index + 1, message.role, JSON.stringify(message.content), estimateTokens(message.content.text ?? ""), message.createdAt);
+      }
+      sql.exec(`INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
+        JSON.stringify({ source: input.source, receipt }));
+      return { receipt, count: input.messages.length };
+    });
   }
 
   async compactHistory(body?: {

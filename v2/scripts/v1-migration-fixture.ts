@@ -4,6 +4,7 @@ import { AgentRuntime, nodeListener, type ToolContext } from "../../clients/node
 import { serveTools } from "../../clients/server.ts";
 import { listen, OPERATOR, runtime } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
+import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
 
 export async function rehearseSignedTools(t: TestContext, workerUrl: string, adminKey: string) {
@@ -61,6 +62,40 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   });
   const target = new CamelRun({ baseUrl: workerUrl, apiKey });
   t.after(() => target.close());
+
+  const assistant = { role: "assistant", timestamp: 2, provider: "openrouter", model: "openai/gpt-4o-mini" };
+  const seeded = await v1.call("/v1/agents", { body: { initialMessages: [
+    { role: "user", content: "Look up my fixture", timestamp: 1 },
+    { ...assistant, content: [{ type: "toolCall", name: "lookup", id: "lookup-1", arguments: { id: "fixture" } }] },
+    { role: "toolResult", toolName: "lookup", toolCallId: "lookup-1", content: [{ type: "text", text: "fixture result" }], timestamp: 3, isError: false },
+    { ...assistant, timestamp: 4, content: [{ type: "text", text: "Found the fixture" }] },
+  ] } });
+  assert.equal(seeded.status, 201, seeded.text);
+  const sourceAgent = seeded.json.id as string;
+  const history = await target.agents.upsert("migrated-history", { model: "mock/default" });
+  const copy = (previous?: string) => migrateHistory(v1.base, OPERATOR, sourceAgent, history, previous);
+  const firstCopy = await copy();
+  assert.equal(firstCopy.count, 4);
+  assert.deepEqual(await copy(), firstCopy);
+  assert.deepEqual((await history.history()).map(m => (m.content as { meta: { v1: unknown } }).meta.v1),
+    (await v1.call(`/v1/agents/${sourceAgent}/history`)).json.messages);
+  await v1.prompt(sourceAgent, "One turn while the v1 bot is still serving");
+  await assert.rejects(copy(), /history import has changed/);
+  const finalCopy = await copy(firstCopy.receipt);
+  assert.equal(finalCopy.count, 6);
+  const agentCredentials = new CamelRun({ baseUrl: workerUrl, apiKey: history.agentToken! });
+  t.after(() => agentCredentials.close());
+  await assert.rejects((await agentCredentials.agents.get(history.id)).importV1History({ source: sourceAgent, messages: [] }), /cannot perform admin/);
+  const newTurn = await history.run("Continue in v2");
+  assert.equal(newTurn.status, "completed");
+  assert.equal((await history.history()).length, 8);
+  await assert.rejects(copy(finalCopy.receipt), /already has activity/);
+
+  const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default" });
+  await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [{
+    role: "user", timestamp: 1, content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+  }] }), /unsupported role, attachment, or content block/);
+  assert.deepEqual(await attachmentHistory.history(), []);
 
   // A successful v2 write can lose its response. Recover its commit on an explicit rerun.
   let lostResponse = false;

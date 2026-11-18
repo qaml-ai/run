@@ -23,8 +23,10 @@ import {
   parseVoiceSessionAgentId,
   randomId,
   sealSecret,
+  sha256Hex,
 } from "./crypto.ts";
 import { runDecisionClassifier, type DecisionRequest } from "./decisions.ts";
+import { parseV1History } from "./history-import.ts";
 import {
   handleImageGenerateRequest,
   handleImageGetRequest,
@@ -747,6 +749,13 @@ app.get("/v2/agents/:idOrKey/history", async (c) => {
   const after = c.req.query("after") ? Number(c.req.query("after")) : 0;
   const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50;
   return c.json(await stub.getHistory({ after, limit }));
+});
+
+app.put("/v2/agents/:idOrKey/history/import", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const input = parseV1History(await c.req.json().catch(() => null));
+  const receipt = await sha256Hex(JSON.stringify([input.source, input.messages]));
+  return c.json(await stub.importV1History(input, receipt));
 });
 
 app.post("/v2/agents/:idOrKey/compact", async (c) => {

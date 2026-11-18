@@ -1,4 +1,4 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["migrate-volume.ts", "v1-migration-fixture.ts"]
+  "include": ["migrate-volume.ts", "migrate-history.ts", "v1-migration-fixture.ts"]
 }
