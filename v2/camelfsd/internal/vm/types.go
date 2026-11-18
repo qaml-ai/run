@@ -13,6 +13,16 @@ type StartSpec struct {
 	MemoryMiB int                              `json:"memoryMiB"`
 	Env       map[string]string                `json:"env,omitempty"`
 	Files     map[string]repo.MaterializedFile `json:"files,omitempty"`
+	Tree      []repo.TreeEntry                 `json:"tree,omitempty"`
+}
+
+// DriverCheckpoint carries either an O(delta) upperdir patch (Firecracker FUSE+overlayfs)
+// or a full workspace snapshot (local/remote drivers).
+type DriverCheckpoint struct {
+	Delta    bool
+	Puts     []repo.MaterializedFile
+	Deletes  []string
+	Snapshot map[string]repo.MaterializedFile
 }
 
 type DriverExecRequest struct {
@@ -40,8 +50,10 @@ type Driver interface {
 	Start(ctx context.Context, spec StartSpec) (hostID string, err error)
 	Exec(ctx context.Context, req DriverExecRequest) (*DriverExecResult, error)
 	ApplyWorkspaceOps(ctx context.Context, vmID string, ops []repo.WorkspaceFileOp) error
-	ReplaceWorkspace(ctx context.Context, vmID string, files map[string]repo.MaterializedFile) error
-	SnapshotWorkspace(ctx context.Context, vmID string) (map[string]repo.MaterializedFile, error)
+	ReadWorkspaceFile(ctx context.Context, vmID, commitHash, path string, offset, limit int64) (*repo.ReadResponse, error)
+	ListWorkspaceEntries(ctx context.Context, vmID, dirPrefix string, recursive bool, glob string) ([]repo.TreeEntry, error)
+	GrepWorkspace(ctx context.Context, vmID string, req repo.GrepRequest) ([]repo.GrepMatch, error)
+	CheckpointWorkspace(ctx context.Context, vmID string) (*DriverCheckpoint, error)
 	Stop(ctx context.Context, vmID string) error
 	Close() error
 }

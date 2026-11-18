@@ -358,18 +358,75 @@ func (d *RemoteDriver) ApplyWorkspaceOps(ctx context.Context, vmID string, ops [
 	return err
 }
 
-func (d *RemoteDriver) ReplaceWorkspace(ctx context.Context, vmID string, files map[string]repo.MaterializedFile) error {
+func (d *RemoteDriver) ReadWorkspaceFile(ctx context.Context, vmID, commitHash, path string, offset, limit int64) (*repo.ReadResponse, error) {
 	hostID, ok := d.mux.HostForVM(vmID)
 	if !ok {
-		return apperr.NotFoundf("remote host binding for VM %q not found", vmID)
+		return nil, apperr.NotFoundf("remote host binding for VM %q not found", vmID)
 	}
-	_, err := d.mux.Dispatch(ctx, hostID, "vm.replace", vmID, map[string]any{
-		"files": encodeWireFiles(files),
+	res, err := d.mux.Dispatch(ctx, hostID, "vm.read", vmID, map[string]any{
+		"commit": commitHash,
+		"path":   path,
+		"offset": offset,
+		"limit":  limit,
 	}, nil, nil)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	var out repo.ReadResponse
+	if len(res.Result) > 0 {
+		if err := json.Unmarshal(res.Result, &out); err != nil {
+			return nil, apperr.Internal("unmarshal remote read", err)
+		}
+	}
+	out.Commit = commitHash
+	return &out, nil
 }
 
-func (d *RemoteDriver) SnapshotWorkspace(ctx context.Context, vmID string) (map[string]repo.MaterializedFile, error) {
+func (d *RemoteDriver) ListWorkspaceEntries(ctx context.Context, vmID, dirPrefix string, recursive bool, glob string) ([]repo.TreeEntry, error) {
+	hostID, ok := d.mux.HostForVM(vmID)
+	if !ok {
+		return nil, apperr.NotFoundf("remote host binding for VM %q not found", vmID)
+	}
+	res, err := d.mux.Dispatch(ctx, hostID, "vm.list", vmID, map[string]any{
+		"path":      dirPrefix,
+		"recursive": recursive,
+		"glob":      glob,
+	}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []repo.TreeEntry
+	if len(res.Result) > 0 {
+		if err := json.Unmarshal(res.Result, &out); err != nil {
+			return nil, apperr.Internal("unmarshal remote list", err)
+		}
+	}
+	return out, nil
+}
+
+func (d *RemoteDriver) GrepWorkspace(ctx context.Context, vmID string, req repo.GrepRequest) ([]repo.GrepMatch, error) {
+	hostID, ok := d.mux.HostForVM(vmID)
+	if !ok {
+		return nil, apperr.NotFoundf("remote host binding for VM %q not found", vmID)
+	}
+	res, err := d.mux.Dispatch(ctx, hostID, "vm.grep", vmID, map[string]any{
+		"pattern":    req.Pattern,
+		"pathPrefix": req.PathPrefix,
+		"maxMatches": req.MaxMatches,
+	}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []repo.GrepMatch
+	if len(res.Result) > 0 {
+		if err := json.Unmarshal(res.Result, &out); err != nil {
+			return nil, apperr.Internal("unmarshal remote grep", err)
+		}
+	}
+	return out, nil
+}
+
+func (d *RemoteDriver) CheckpointWorkspace(ctx context.Context, vmID string) (*DriverCheckpoint, error) {
 	hostID, ok := d.mux.HostForVM(vmID)
 	if !ok {
 		return nil, apperr.NotFoundf("remote host binding for VM %q not found", vmID)
@@ -386,7 +443,11 @@ func (d *RemoteDriver) SnapshotWorkspace(ctx context.Context, vmID string) (map[
 			return nil, apperr.Internal("unmarshal remote snapshot", err)
 		}
 	}
-	return decodeWireFiles(payload.Files)
+	files, err := decodeWireFiles(payload.Files)
+	if err != nil {
+		return nil, err
+	}
+	return &DriverCheckpoint{Snapshot: files}, nil
 }
 
 func (d *RemoteDriver) Stop(ctx context.Context, vmID string) error {

@@ -23,8 +23,10 @@ import {
   parseVoiceSessionAgentId,
   randomId,
   sealSecret,
+  sha256Hex,
 } from "./crypto.ts";
 import { runDecisionClassifier, type DecisionRequest } from "./decisions.ts";
+import { parseV1History } from "./history-import.ts";
 import {
   handleImageGenerateRequest,
   handleImageGetRequest,
@@ -34,6 +36,7 @@ import {
 import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
+import { toolIdentityKeys } from "./tool-identity.ts";
 import {
   ApiError,
   errorResponse,
@@ -65,7 +68,9 @@ app.notFound((c) => {
 });
 
 app.get("/healthz", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
+app.get("/v2", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/health", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
+app.get("/v2/.well-known/jwks.json", (c) => c.json(toolIdentityKeys(c.env), 200, { "Cache-Control": "public, max-age=60" }));
 
 // ---- 1. Tenants, Keys, Providers, Billing & Definitions (Per-Tenant TenantDO RPC) ----
 
@@ -206,27 +211,20 @@ app.get("/v2/billing", async (c) => {
 });
 
 app.post("/v2/billing/credits", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(403, "forbidden", "Only an admin can add credits");
+  }
   const body = (await c.req.json()) as {
     tenantId?: string;
     amountUsd: number;
     refId: string;
     note?: string;
   };
-  let targetTenantId = body.tenantId?.trim() ?? "";
-
-  if (verifyAdminHeader(c.env, c.req.raw)) {
-    if (!targetTenantId) {
-      try {
-        const bearerAuth = await authenticateRequest(c.env, c.req.raw);
-        targetTenantId = bearerAuth.tenantId;
-      } catch {
-        throw new ApiError(400, "invalid_request", "`tenantId` is required with X-Admin-Key");
-      }
-    }
-  } else {
-    const auth = await authenticateRequest(c.env, c.req.raw);
-    assertTenantScope(auth);
-    targetTenantId = auth.tenantId;
+  let targetTenantId = body.tenantId?.trim();
+  if (!targetTenantId) {
+    const caller = await authenticateRequest(c.env, c.req.raw).catch(() => null);
+    if (!caller) throw new ApiError(400, "invalid_request", "`tenantId` is required with X-Admin-Key");
+    targetTenantId = caller.tenantId;
   }
 
   const amountUsd = Number(body.amountUsd);
@@ -403,20 +401,6 @@ app.post("/v2/repos/:repoId/grep", async (c) => {
   return c.json(out);
 });
 
-app.get("/v2/repos/:repoId/diff", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  assertTenantScope(auth);
-  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
-  const cfs = new CamelFsClient(c.env, auth.tenantId);
-  const from = c.req.query("from") ?? "";
-  const to = c.req.query("to") ?? repo.defaultRef;
-  if (!from) {
-    throw new ApiError(400, "invalid_request", "`from` query parameter is required");
-  }
-  const out = await cfs.diff(repo.lineage, { from, to });
-  return c.json(out);
-});
-
 app.get("/v2/repos/:repoId/history", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
@@ -474,27 +458,6 @@ app.post("/v2/repos/:repoId/restore", async (c) => {
   return c.json(out);
 });
 
-app.post("/v2/repos/:repoId/merge", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  assertTenantScope(auth);
-  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
-  const body = (await c.req.json()) as {
-    sourceRef: string;
-    targetRef?: string;
-    strategy?: "three-way" | "ff-only" | "squash";
-    message?: string;
-  };
-  const cfs = new CamelFsClient(c.env, auth.tenantId);
-  const out = await cfs.merge(repo.lineage, {
-    sourceRef: body.sourceRef,
-    targetRef: body.targetRef || repo.defaultRef,
-    strategy: body.strategy,
-    author: `tenant:${auth.tenantId}`,
-    message: body.message,
-  });
-  return c.json(out);
-});
-
 // ---- 3. Durable Keyed Agents (`/v2/agents`, Native AgentDO RPC) ----
 
 async function getAgentTarget(
@@ -536,6 +499,11 @@ app.put("/v2/agents/:key", async (c) => {
   }
 
   const input = (await c.req.json().catch(() => ({}))) as AgentUpsertInput;
+  const identity = input.toolIdentity;
+  if (identity !== undefined && (!identity || typeof identity.subject !== "string" || !identity.subject.trim() ||
+    (identity.context !== undefined && (!identity.context || typeof identity.context !== "object" || Array.isArray(identity.context))))) {
+    throw new ApiError(400, "invalid_tool_identity", "Tool identity needs a subject and optional context object");
+  }
   const candidateAgentId = randomId("agt", 8);
   const minted = await mintAgentToken(creds.tenantId, candidateAgentId);
   const candidateSealedToken = await sealSecret(minted.token, c.env.VAULT_SECRET);
@@ -592,6 +560,7 @@ app.put("/v2/agents/:key", async (c) => {
         definition: input.definition,
         tools: input.tools ?? defCfg?.tools,
         mcpServers: input.mcpServers ?? defCfg?.mcpServers,
+        toolIdentity: identity,
         builtins: input.builtins ?? defCfg?.builtins,
         queue: queueCfg,
         repoId: prep.repoId,
@@ -703,7 +672,7 @@ app.post("/v2/agents/:idOrKey/runs", async (c) => {
 
 app.get("/v2/agents/:idOrKey/runs/:runId", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
-  return c.json(await stub.getRun(c.req.param("runId")));
+  return c.json(await stub.getRun(c.req.param("runId"), c.req.query("by") === "idempotency-key"));
 });
 
 app.post("/v2/agents/:idOrKey/abort", async (c) => {
@@ -723,7 +692,8 @@ app.get("/v2/agents/:idOrKey/events", async (c) => {
       signal: c.req.raw.signal,
     });
   }
-  const after = c.req.query("after") ? Number(c.req.query("after")) : 0;
+  const cursor = c.req.query("after");
+  const after = cursor === "latest" ? "latest" : cursor ? Number(cursor) : 0;
   const runId = c.req.query("runId") || null;
   return c.json(await stub.getEvents({ after, runId }));
 });
@@ -735,9 +705,22 @@ app.get("/v2/agents/:idOrKey/ws", async (c) => {
 
 app.get("/v2/agents/:idOrKey/history", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
-  const after = c.req.query("after") ? Number(c.req.query("after")) : 0;
+  const afterParam = c.req.query("after");
+  const beforeParam = c.req.query("before");
+  const before = beforeParam === "latest" ? Number.MAX_SAFE_INTEGER : beforeParam === undefined ? undefined : Number(beforeParam);
+  if (before !== undefined && (afterParam !== undefined || !Number.isSafeInteger(before) || before < 1)) {
+    throw new ApiError(400, "invalid_request", "Use either after or before, where before is a positive sequence or latest");
+  }
+  const after = afterParam ? Number(afterParam) : 0;
   const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50;
-  return c.json(await stub.getHistory({ after, limit }));
+  return c.json(await stub.getHistory({ after, limit, before }));
+});
+
+app.put("/v2/agents/:idOrKey/history/import", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const input = parseV1History(await c.req.json().catch(() => null));
+  const receipt = await sha256Hex(JSON.stringify([input.source, input.messages]));
+  return c.json(await stub.importV1History(input, receipt));
 });
 
 app.post("/v2/agents/:idOrKey/compact", async (c) => {
@@ -759,13 +742,18 @@ app.post("/v2/agents/:idOrKey/fork", async (c) => {
 });
 
 app.post("/v2/agents/:idOrKey/inputs/:inputId", async (c) => {
-  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "input");
+  const { auth, stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "input");
   const body = (await c.req.json().catch(() => ({}))) as {
     approved?: boolean;
     answer?: unknown;
     wait?: boolean;
   };
-  return c.json(await stub.respondToInput(c.req.param("inputId"), body));
+  return c.json(await stub.respondToInput(c.req.param("inputId"), body, auth.kind === "tenant"));
+});
+
+app.get("/v2/agents/:idOrKey/inputs", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
+  return c.json({ runs: await stub.getRunsWithPendingInputs() });
 });
 
 app.post("/v2/agents/:idOrKey/schedules", async (c) => {

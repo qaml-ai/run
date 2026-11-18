@@ -15,9 +15,12 @@ import (
 type ObjectKind string
 
 const (
-	KindBlob   ObjectKind = "blob"
-	KindTree   ObjectKind = "tree"
-	KindCommit ObjectKind = "commit"
+	KindBlob        ObjectKind = "blob"
+	KindTree        ObjectKind = "tree"
+	KindCommit      ObjectKind = "commit"
+	KindDiskMap     ObjectKind = "disk-map"
+	KindDiskChunk   ObjectKind = "disk-chunk"
+	KindExecReceipt ObjectKind = "exec-receipt"
 )
 
 type LineageRecord struct {
@@ -55,12 +58,13 @@ type SetRefParams struct {
 }
 
 type LeaseRefParams struct {
-	Lineage string
-	Ref     string
-	Holder  string
-	TTLMs   int64
-	Release bool
-	NowMs   int64
+	Lineage       string
+	Ref           string
+	Holder        string
+	TTLMs         int64
+	Release       bool
+	ExpectedEpoch int64 // For release, only clear the matching lease.
+	NowMs         int64
 }
 
 type LeaseResult struct {
@@ -71,6 +75,8 @@ type LeaseResult struct {
 	Epoch     int64  `json:"epoch"`
 	ExpiresAt int64  `json:"expiresAt"`
 }
+
+const VMStateLost = "lost"
 
 type VMRecord struct {
 	VMID            string            `json:"vmId"`
@@ -97,6 +103,15 @@ type ExecReceipt struct {
 	ExecID       string
 	ResponseJSON []byte
 	CreatedAt    int64
+}
+
+// CompleteExecParams publishes the receipt and updated VM together. The ref
+// advances in the same transaction when VM.HeadCommit differs from BaseCommit.
+type CompleteExecParams struct {
+	VM         *VMRecord
+	BaseCommit string
+	Tree       string
+	Receipt    ExecReceipt
 }
 
 type HostRecord struct {
@@ -129,14 +144,14 @@ type RepoStore interface {
 
 type VMStore interface {
 	GetRunningVMByRef(ctx context.Context, lineage, ref string) (*VMRecord, error)
-	ListRunningVMs(ctx context.Context) ([]*VMRecord, error)
+	ListRunningVMs(ctx context.Context, consistent bool) ([]*VMRecord, error)
 	ListRunningVMsByLineage(ctx context.Context, lineage string) ([]*VMRecord, error)
 	CreateRunningVM(ctx context.Context, vm *VMRecord) error
 	GetVM(ctx context.Context, vmID string) (*VMRecord, error)
 	UpdateVM(ctx context.Context, vm *VMRecord) error
 
 	GetExecReceipt(ctx context.Context, vmID, execID string) (*ExecReceipt, error)
-	PutExecReceipt(ctx context.Context, r *ExecReceipt) error
+	CompleteExec(ctx context.Context, p CompleteExecParams) error
 
 	UpsertHost(ctx context.Context, h *HostRecord) error
 	GetHost(ctx context.Context, hostID string) (*HostRecord, error)

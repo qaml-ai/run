@@ -9,12 +9,17 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { unstable_startWorker } from "wrangler";
+import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool } from "../sdk/src/index.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
 const ADMIN_SECRET = "test-admin-secret-v2";
 const VAULT_SECRET = "test-vault-secret-32-bytes-minimum!!";
+// Load the optional Node fixture before registering tests so its database cleanup runs after the suite.
+const migrationFixture = process.env.CAMELRUN_TEST_V1_MIGRATION === "1"
+  ? await import(new URL("../scripts/v1-migration-fixture.ts", import.meta.url).href)
+  : undefined;
 
 async function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -55,17 +60,32 @@ async function waitForHealth(url: string, timeoutMs = 10_000): Promise<void> {
 
 describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfsd)", () => {
   let tempDir: string;
-  let camelfsdProc: ChildProcess;
+  let camelfsdProc: ChildProcess | undefined;
   let camelfsUrl: string;
+  let camelfsSigningKey: string;
   let auxServer: Server;
   let auxUrl: string;
   let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
   let workerUrl: string;
+  let failNextExec = false;
+  let vmBootRequests = 0;
+  type ProviderMessage = { role: string; content: unknown; tool_call_id?: string };
+  let lastProviderMessages: ProviderMessage[] | undefined;
+  let lastProviderOptions: Record<string, unknown> | undefined;
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
 
   before(async () => {
     tempDir = mkdtempSync(join(tmpdir(), "camelrun-next-e2e-"));
     const keys = generateEd25519Pair();
+    const externalCamelfsUrl = process.env.CAMELFSD_TEST_URL;
+    const externalSigningKey = process.env.CAMELFSD_TEST_SIGNING_KEY;
+    assert.equal(
+      Boolean(externalCamelfsUrl),
+      Boolean(externalSigningKey),
+      "CAMELFSD_TEST_URL and CAMELFSD_TEST_SIGNING_KEY must be set together",
+    );
+
+    camelfsSigningKey = externalSigningKey ?? keys.signingSpec;
 
     // 1. Start local MCP + Webhook test HTTP server
     const auxPort = await getFreePort();
@@ -74,6 +94,28 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
       const rawBody = Buffer.concat(chunks).toString("utf8");
+
+      if (req.url?.startsWith("/camelfs/")) {
+        const path = req.url.slice("/camelfs".length);
+        if (req.method === "POST" && path === "/v1/vms") vmBootRequests++;
+        if (failNextExec && req.method === "POST" && path.endsWith("/exec")) {
+          failNextExec = false;
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { code: "daemon_disconnected", message: "daemon disconnect probe" } }));
+          return;
+        }
+        const upstream = await fetch(camelfsUrl + path, {
+          method: req.method,
+          headers: {
+            Authorization: req.headers.authorization ?? "",
+            "Content-Type": req.headers["content-type"] ?? "application/json",
+          },
+          body: rawBody || undefined,
+        });
+        res.writeHead(upstream.status, { "Content-Type": "application/json" });
+        res.end(await upstream.text());
+        return;
+      }
 
       if (req.url === "/mcp" && req.method === "POST") {
         const rpc = JSON.parse(rawBody) as { id: number | string; method: string; params?: Record<string, unknown> };
@@ -125,8 +167,11 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       if (req.url === "/v1/chat/completions" && req.method === "POST") {
         const body = JSON.parse(rawBody) as {
           model?: string;
-          messages?: Array<{ role: string; content: unknown }>;
+          messages?: ProviderMessage[];
+          provider?: Record<string, unknown>;
         };
+        lastProviderMessages = body.messages;
+        lastProviderOptions = body.provider;
         const lastMsg = body.messages?.[body.messages.length - 1];
         const replyText = `SSE upstream (${body.model ?? "unknown"}) saw ${body.messages?.length ?? 0} messages (last role=${lastMsg?.role ?? "none"})`;
         res.writeHead(200, {
@@ -155,28 +200,34 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
     await new Promise<void>((resolve) => auxServer.listen(auxPort, "127.0.0.1", () => resolve()));
 
-    // 2. Start real compiled Go camelfsd server with Ed25519 public key verification
-    const camelfsPort = await getFreePort();
-    camelfsUrl = `http://127.0.0.1:${camelfsPort}`;
-    camelfsdProc = spawn(
-      CAMELFSD_BIN,
-      [
-        "--listen",
-        `127.0.0.1:${camelfsPort}`,
-        "--data-dir",
-        join(tempDir, "camelfs-data"),
-        "--backend",
-        "local",
-        "--vm-driver",
-        "local",
-        "--public-keys",
-        keys.publicSpec,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    // Run against either the local fixture or a dedicated Firecracker test daemon.
+    if (externalCamelfsUrl) {
+      camelfsUrl = externalCamelfsUrl;
+    } else {
+      const camelfsPort = await getFreePort();
+      camelfsUrl = `http://127.0.0.1:${camelfsPort}`;
+      camelfsdProc = spawn(
+        CAMELFSD_BIN,
+        [
+          "--listen",
+          `127.0.0.1:${camelfsPort}`,
+          "--data-dir",
+          join(tempDir, "camelfs-data"),
+          "--backend",
+          "local",
+          "--vm-driver",
+          "local",
+          "--public-keys",
+          keys.publicSpec,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+    }
     await waitForHealth(`${camelfsUrl}/healthz`);
 
     // 3. Start real Cloudflare workerd via Wrangler using an isolated test config
+    const workerPort = await getFreePort();
+    const toolKey = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
     const baseConfig = JSON.parse(readFileSync(join(ROOT, "worker/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
     const testConfigPath = join(tempDir, "wrangler.test.jsonc");
     writeFileSync(
@@ -188,17 +239,18 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
           vars: {
             ADMIN_SECRET,
             VAULT_SECRET,
-            CAMELFS_URL: camelfsUrl,
-            CAMELFS_SIGNING_KEY: keys.signingSpec,
+            CAMELFS_URL: auxUrl + "/camelfs",
+            CAMELFS_SIGNING_KEY: camelfsSigningKey,
             CAMELFS_DEV_TOKEN: "",
             DEFAULT_MODEL: "mock/default",
+            TOOL_IDENTITY_ISSUER: `http://127.0.0.1:${workerPort}/v2`,
+            TOOL_IDENTITY_PRIVATE_JWK: JSON.stringify({ ...toolKey, kid: "tool-fixture" }),
           },
         },
         null,
         2,
       ),
     );
-    const workerPort = await getFreePort();
     worker = await unstable_startWorker({
       config: testConfigPath,
       dev: {
@@ -213,9 +265,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
   after(async () => {
     await worker?.dispose().catch(() => {});
-    if (camelfsdProc && !camelfsdProc.killed) {
-      camelfsdProc.kill("SIGTERM");
-      await new Promise((resolve) => camelfsdProc.once("exit", resolve));
+    const daemon = camelfsdProc;
+    if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
+      await new Promise<void>((resolve) => {
+        daemon.once("exit", () => resolve());
+        daemon.kill("SIGTERM");
+      });
     }
     if (auxServer) {
       await new Promise((resolve) => auxServer.close(() => resolve(undefined)));
@@ -225,7 +280,19 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     }
   });
 
+  it("moves three v1 bot drafts through the v2 client", { skip: !migrationFixture }, async (t) => {
+    await migrationFixture.rehearseMigration(t, workerUrl, ADMIN_SECRET);
+  });
+
+  it("authenticates v2 calls with the Camel Bots tool verifier", { skip: !migrationFixture }, async (t) => {
+    await migrationFixture.rehearseSignedTools(t, workerUrl, ADMIN_SECRET);
+  });
+
   it("1. tenants, API keys, billing credits, and scoped agent tokens enforce boundaries", async () => {
+    const version = await fetch(`${workerUrl}/v2`);
+    assert.equal(version.status, 200);
+    assert.deepEqual(await version.json(), { ok: true, service: "camelrun-worker-v2" });
+
     const created = await CamelRun.createTenant({
       baseUrl: workerUrl,
       adminKey: ADMIN_SECRET,
@@ -286,8 +353,40 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await scopedClient.close();
   });
 
+  it("isolates pilot credits by tenant and requires admin authorization to grant them", async (t) => {
+    const provision = (name: string, initialCreditsUsd: number) =>
+      CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name, initialCreditsUsd });
+    const pilot = await provision("Funded pilot account", 1);
+    const other = await provision("Unfunded pilot account", 0);
+    const funded = new CamelRun({ baseUrl: workerUrl, apiKey: pilot.apiKey });
+    const unfunded = new CamelRun({ baseUrl: workerUrl, apiKey: other.apiKey });
+    t.after(() => { funded.close(); unfunded.close(); });
+
+    const grant = { amountUsd: 1, refId: "pilot-grant" };
+    const unauthorized = await fetch(`${workerUrl}/v2/billing/credits`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${other.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(grant),
+    });
+    assert.equal(unauthorized.status, 403);
+    await unfunded.providers.set("openrouter", { apiKey: "fake-provider-key", baseUrl: auxUrl + "/v1" });
+    const builder = await unfunded.agents.upsert("pilot-builder", { model: "openrouter/meta/muse-ember" });
+    const beforeDispatch = lastProviderMessages;
+    await assert.rejects(builder.run("Unfunded"), (error: unknown) =>
+      error instanceof CamelRunError && error.code === "insufficient_credits");
+    assert.equal(lastProviderMessages, beforeDispatch);
+    assert.equal((await unfunded.billing.get()).balanceUsd, 0);
+
+    assert.equal((await unfunded.billing.addCredits({ ...grant, adminKey: ADMIN_SECRET })).balanceUsd, 1);
+    assert.equal((await unfunded.billing.addCredits({ ...grant, adminKey: ADMIN_SECRET })).balanceUsd, 1);
+    const run = await builder.run("Funded");
+    assert.match(run.text, /SSE upstream/);
+    assert.ok((await unfunded.billing.get()).balanceUsd < 1);
+    assert.equal((await funded.billing.get()).balanceUsd, 1);
+  });
+
   it("2. camelfsd repos, file tools, persistent bash VM (cwd + env + atomic commit), and edit-while-VM-live work seamlessly", async () => {
-    const { apiKey } = await CamelRun.createTenant({
+    const { apiKey, tenantId } = await CamelRun.createTenant({
       baseUrl: workerUrl,
       adminKey: ADMIN_SECRET,
       name: "fs-vm-tenant",
@@ -349,11 +448,40 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const hist = await camel.repos.history(repo.repoId, { limit: 10 });
     assert.ok(hist.commits.length >= 4, `expected >= 4 commits, got ${hist.commits.length}`);
 
-    const diff = await camel.repos.diff(repo.repoId, {
-      from: hist.commits[hist.commits.length - 1]!.commit,
-      to: hist.commits[0]!.commit,
-    });
-    assert.ok(diff.changes.some((c) => c.path === "src/app.txt"));
+    // Stop the VM through camelfsd and edit through the public API while it sleeps.
+    const cfs = new CamelFsClient({ CAMELFS_URL: camelfsUrl, CAMELFS_SIGNING_KEY: camelfsSigningKey }, tenantId);
+    const active = await cfs.ensureVm({ lineage: repo.lineage, ref: repo.defaultRef, holder: coder.id });
+    assert.equal(active.reused, true);
+    const liveLs = await camel.repos.ls(repo.repoId, { recursive: true });
+    assert.ok(liveLs.entries.some((e) => e.path === "src/app.txt"));
+    await cfs.stopVm(active.vmId, repo.lineage);
+    await camel.repos.write(repo.repoId, { puts: [{ path: "asleep.txt", content: "edited-while-asleep" }] });
+
+    const resumed = await coder.run(
+      `Read after restart [CALL:bash {"command":"cat asleep.txt src/app.txt","cwd":"/workspace"}]`,
+    );
+    assert.equal(resumed.status, "completed");
+    assert.match(resumed.text, /edited-while-asleep/);
+    assert.match(resumed.text, /val=camel_v2/);
+    const restarted = await cfs.ensureVm({ lineage: repo.lineage, ref: repo.defaultRef, holder: coder.id });
+    assert.equal(restarted.reused, true);
+    assert.notEqual(restarted.vmId, active.vmId);
+
+    const bootsBeforeFailure = vmBootRequests;
+    failNextExec = true;
+    const interrupted = await coder.run(
+      'Disconnect [CALL:bash {"command":"touch ambiguous.txt"}]',
+    );
+    assert.match(interrupted.text, /daemon disconnect probe/);
+    assert.equal(vmBootRequests, bootsBeforeFailure, "an ambiguous exec must not trigger a replay");
+    await assert.rejects(camel.repos.read(repo.repoId, { path: "ambiguous.txt" }));
+
+    const afterDisconnect = await coder.run(
+      'Check workspace [CALL:bash {"command":"cat asleep.txt"}]',
+    );
+    assert.match(afterDisconnect.text, /edited-while-asleep/);
+    assert.equal(vmBootRequests, bootsBeforeFailure + 1, "the next bash call should refresh the VM");
+    await cfs.stopVm(restarted.vmId, repo.lineage);
 
     await camel.close();
   });
@@ -450,11 +578,19 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(paused.status, "input_required");
     assert.equal(refunded, false);
     assert.equal(paused.inputs.length, 1);
+    const runHeaders = { Authorization: "Bearer " + apiKey };
+    const getPending = async () => {
+      const response = await fetch(`${workerUrl}/v2/agents/${billingAgent.id}/inputs`, { headers: runHeaders });
+      assert.equal(response.status, 200);
+      return await response.json() as { runs: Array<{ id: string }> };
+    };
+    assert.deepEqual((await getPending()).runs.map(run => run.id), [paused.id]);
 
     const resumed = await billingAgent.answerInput(paused.inputs[0]!.id, { approved: true });
     assert.equal(resumed.status, "completed");
     assert.equal(refunded, true);
     assert.match(resumed.text, /45/);
+    assert.deepEqual((await getPending()).runs, []);
 
     // Also test ask_human question -> answer -> completion
     const asked = await billingAgent.run(`Ask deploy window [CALL:ask_human {"question":"Deploy now?"}]`);
@@ -503,11 +639,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const idem1 = await agent.run("Count once", { idempotencyKey: "idem-key-1" });
     const idem2 = await agent.run("Count once", { idempotencyKey: "idem-key-1" });
     assert.equal(idem1.id, idem2.id);
+    assert.equal((await agent.getRunByKey("idem-key-1")).id, idem1.id);
 
     // Compaction summarizes history while preserving full /history
     await agent.compact();
     const history = await agent.history();
     assert.ok(history.length >= 4);
+    const latest = await agent.history({ before: "latest", limit: 2 });
+    assert.deepEqual(latest, history.slice(-2));
+    assert.deepEqual(await agent.history({ before: latest[0]!.seq!, limit: 2 }), history.slice(-4, -2));
 
     // Fork creates an independent agent + forked camelfs repo
     const forked = await agent.fork({ key: "lead-agent-fork" });
@@ -527,6 +667,45 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(afterReset.status, "completed");
 
     await camel.close();
+  });
+
+  it("auto-compacts imported history without splitting a tool call from any of its results", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "compaction-tenant", initialCreditsUsd: 1,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    try {
+      await camel.providers.set("openrouter", { apiKey: "test-compaction-key", baseUrl: `${auxUrl}/v1` });
+      const agent = await camel.agents.upsert("imported-agent", { model: "openrouter/test/context-compaction" });
+      const timestamp = Date.now();
+      const textBlock = (text: string) => ({ type: "text", text });
+      const assistant = (text: string) => ({ role: "assistant", content: [textBlock(text)], timestamp });
+      const user = (content: string) => ({ role: "user", content, timestamp });
+      const toolResult = (id: string) => ({
+        role: "toolResult", content: [textBlock(id)], toolCallId: id, toolName: "lookup", timestamp,
+      });
+      const messages = [
+        user("Earlier context. ".repeat(21_000)), assistant("Prior reply"), user("Use both lookups"),
+        { role: "assistant", content: ["call_one", "call_two"].map(id => ({ type: "toolCall", id, name: "lookup", arguments: {} })), timestamp },
+        toolResult("call_one"), toolResult("call_two"), assistant("Both found"), user("Thanks"), assistant("Of course"),
+      ];
+      await agent.importV1History({ source: "imported-v1", messages });
+
+      const run = await agent.run("Continue from my history");
+      assert.equal(run.status, "completed");
+      assert.deepEqual(lastProviderMessages?.map(message => message.role), [
+        "system", "assistant", "tool", "tool", "assistant", "user", "assistant", "user",
+      ]);
+      assert.deepEqual(lastProviderMessages?.filter(message => message.role === "tool").map(message => message.tool_call_id),
+        ["call_one", "call_two"]);
+      assert.match(String(lastProviderMessages?.[0]?.content), /summary \(up to message #3\)/);
+      assert.equal(lastProviderMessages?.at(-1)?.content, "Continue from my history");
+      const history = (await agent.history()).map(row => row.content as { text?: string; meta?: { v1?: unknown } });
+      assert.deepEqual(history.slice(0, messages.length).map(content => content.meta?.v1), messages);
+      assert.equal(history[messages.length]?.text, "Continue from my history");
+    } finally {
+      await camel.close();
+    }
   });
 
   it("6. sub-agent delegation and deterministic replay-cached QuickJS workflows", async () => {
@@ -763,6 +942,49 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(sseRun.usage.outputTokens, 10);
     // 18 * $0.10/1M + 10 * $0.50/1M = $0.0000068
     assert.equal(sseRun.usage.costUsd, 0.0000068);
+    assert.deepEqual(lastProviderOptions, { data_collection: "deny" });
+
+    const assets = await camel.repos.create({ name: "attachments" });
+    const originalImage = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmfQAAAAASUVORK5CYII=";
+    const attachedVersion = await camel.repos.write(assets.repoId, {
+      puts: [
+        { path: "notes.txt", content: "Original notes" },
+        { path: "image.png", base64: originalImage },
+      ],
+    });
+    await camel.repos.write(assets.repoId, {
+      puts: [{ path: "notes.txt", content: "Revised notes" }],
+      deletes: ["image.png"],
+    });
+    const attachmentAgent = await camel.agents.upsert("attachment-agent", {
+      definition: "sse-assistant",
+      repoId: assets.repoId,
+    });
+    const files = [
+      { path: "notes.txt", commit: attachedVersion.commit, contentType: "text/plain" },
+      { path: "image.png", commit: attachedVersion.commit, contentType: "image/png" },
+    ];
+    const stream = attachmentAgent.stream("Use these specific revisions", { files });
+    for await (const event of stream) assert.ok(event.type);
+    assert.equal((await stream.result).status, "completed");
+    assert.deepEqual(lastProviderMessages?.at(-1)?.content, [
+      { type: "text", text: [
+        "Use these specific revisions",
+        `Workspace attachment "notes.txt" at commit ${attachedVersion.commit} (text/plain, 14 bytes).`,
+        `Workspace attachment "image.png" at commit ${attachedVersion.commit} (image/png, ${Buffer.from(originalImage, "base64").length} bytes).`,
+      ].join("\n") },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${originalImage}` } },
+    ]);
+    assert.equal((await camel.repos.read(assets.repoId, { at: attachedVersion.commit, path: "notes.txt" })).content, "Original notes");
+    const history = await attachmentAgent.history();
+    assert.deepEqual(
+      (history[0]?.content as { files: Array<{ path: string; commit: string }> }).files.map(({ path, commit }) => ({ path, commit })),
+      files.map(({ path, commit }) => ({ path, commit })),
+    );
+    await assert.rejects(attachmentAgent.run("Use this file", {
+      files: [{ ...files[0]!, path: "missing.txt" }],
+    }), /Attachment missing.txt is missing/);
+    assert.equal((await attachmentAgent.history()).length, history.length);
 
     // Schedules CRUD
     const sched = await sseAgent.schedules.create({

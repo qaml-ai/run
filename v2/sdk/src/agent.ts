@@ -3,7 +3,7 @@ import { ToolSession, type ToolEventSubscriber } from "./tools.ts";
 import {
   CamelRunError, type AgentEvent, type AgentSchedule, type AgentSummary, type HistoryMessage,
   type LocalTool, type ResponseLike, type RunOptions, type RunRecord, type ScheduleCreateInput,
-  type WebSocketConstructorLike, type WorkflowRunResult,
+  type V1HistoryImport, type WebSocketConstructorLike, type WorkflowRunResult,
 } from "./types.ts";
 
 export interface AgentTransport {
@@ -116,7 +116,7 @@ export class AgentHandle {
     const wait = options?.wait ?? true;
     let rec = await this.transport.requestJson<RunRecord<TOutput>>(
       "POST", `${this.basePath}/runs`,
-      { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
       { signal: options?.signal },
     );
     if (wait) {
@@ -138,11 +138,11 @@ export class AgentHandle {
   async submit<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "wait">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
-      { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
       { signal: options?.signal });
   }
 
-  async steer<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "whileRunning">): Promise<RunRecord<TOutput>> {
+  async steer<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "whileRunning" | "files">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
       { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: "steer", ...(options?.wait !== undefined ? { wait: options.wait } : {}), outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
@@ -216,6 +216,10 @@ export class AgentHandle {
     return this.transport.requestJson("GET", `${this.basePath}/runs/${encodeURIComponent(runId)}`);
   }
 
+  getRunByKey<TOutput = unknown>(idempotencyKey: string): Promise<RunRecord<TOutput>> {
+    return this.transport.requestJson("GET", `${this.basePath}/runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`);
+  }
+
   abort(options?: { keepQueued?: boolean }): Promise<{ aborted: boolean; [key: string]: unknown }> {
     return this.transport.requestJson("POST", `${this.basePath}/abort`, { keepQueued: options?.keepQueued });
   }
@@ -225,9 +229,13 @@ export class AgentHandle {
     return this.transport.requestJson("POST", `${this.basePath}/inputs/${encodeURIComponent(inputId)}`, payload);
   }
 
-  async history(options?: { after?: number; limit?: number }): Promise<HistoryMessage[]> {
-    const res = await this.transport.requestJson("GET", `${this.basePath}/history${buildQuery({ after: options?.after, limit: options?.limit })}`);
+  async history(options?: { after?: number; before?: number | "latest"; limit?: number }): Promise<HistoryMessage[]> {
+    const res = await this.transport.requestJson("GET", `${this.basePath}/history${buildQuery({ after: options?.after, before: options?.before, limit: options?.limit })}`);
     return unwrapArray<HistoryMessage>(res, "messages", "history");
+  }
+
+  importV1History(input: V1HistoryImport): Promise<{ receipt: string; count: number }> {
+    return this.transport.requestJson("PUT", `${this.basePath}/history/import`, input);
   }
 
   async events(options?: { after?: number; runId?: string }): Promise<AgentEvent[]> {

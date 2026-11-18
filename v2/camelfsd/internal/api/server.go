@@ -54,9 +54,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/lineages/{lineage}/ls", s.handleLs)
 	s.mux.HandleFunc("POST /v1/lineages/{lineage}/grep", s.handleGrep)
 	s.mux.HandleFunc("GET /v1/lineages/{lineage}/history", s.handleHistory)
-	s.mux.HandleFunc("GET /v1/lineages/{lineage}/diff", s.handleDiff)
 	s.mux.HandleFunc("POST /v1/lineages/{lineage}/restore", s.handleRestore)
-	s.mux.HandleFunc("POST /v1/lineages/{lineage}/merge", s.handleMerge)
 
 	// Session VM endpoints
 	s.mux.HandleFunc("POST /v1/vms", s.handleBootVM)
@@ -95,18 +93,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, err error) {
 	if ae, ok := apperr.As(err); ok {
-		if len(ae.Conflicts) > 0 {
-			writeJSON(w, ae.Status, map[string]any{
-				"commit":    "",
-				"tree":      "",
-				"conflicts": ae.Conflicts,
-				"error": errorBody{
-					Code:    ae.Code,
-					Message: ae.Message,
-				},
-			})
-			return
-		}
 		writeJSON(w, ae.Status, errorEnvelope{
 			Error: errorBody{
 				Code:    ae.Code,
@@ -409,21 +395,6 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
-	lineage := r.PathValue("lineage")
-	if _, err := s.authenticate(r, auth.ScopeRepoRead, lineage); err != nil {
-		writeError(w, err)
-		return
-	}
-	q := r.URL.Query()
-	res, err := s.repo.Diff(r.Context(), lineage, q.Get("from"), q.Get("to"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
-}
-
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	lineage := r.PathValue("lineage")
 	if _, err := s.authenticate(r, auth.ScopeRepoWrite, lineage); err != nil {
@@ -436,25 +407,6 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.repo.Restore(r.Context(), lineage, req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
-}
-
-func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
-	lineage := r.PathValue("lineage")
-	if _, err := s.authenticate(r, auth.ScopeRepoWrite, lineage); err != nil {
-		writeError(w, err)
-		return
-	}
-	var req repo.MergeRequest
-	if err := decodeJSONBody(r, &req, false); err != nil {
-		writeError(w, err)
-		return
-	}
-	res, err := s.repo.Merge(r.Context(), lineage, req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -521,7 +473,7 @@ func writeSSEEvent(w io.Writer, flusher http.Flusher, event string, payload any)
 
 func (s *Server) handleExecVM(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("vmId")
-	vmInfo, err := s.authorizeExistingVM(r, vmID, false)
+	_, err := s.authorizeExistingVM(r, vmID, false)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -544,13 +496,6 @@ func (s *Server) handleExecVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
-		return
-	}
-
-	// If VM is stopped and no cached receipt exists, allow Exec to fail before SSE headers if stopped.
-	// Note: if execId matches an existing receipt on a stopped VM, Exec still returns the receipt!
-	if vmInfo.State != "running" && req.ExecID == "" {
-		writeError(w, apperr.InvalidRequestf("vm %q is not running", vmID))
 		return
 	}
 

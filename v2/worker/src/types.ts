@@ -16,6 +16,8 @@ export interface Env {
   CAMELFS_URL: string;
   CAMELFS_SIGNING_KEY?: string;
   CAMELFS_DEV_TOKEN?: string;
+  TOOL_IDENTITY_ISSUER?: string;
+  TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;
   OPENAI_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
@@ -57,6 +59,14 @@ export interface McpServerSpec {
   name: string;
   url: string;
   headers?: Record<string, string>;
+  auth?: { type: "runtime" };
+  audience?: string;
+  allowTools?: string[];
+}
+
+export interface ToolIdentity {
+  subject: string;
+  context?: Record<string, unknown>;
 }
 
 export interface QueueModeConfig {
@@ -78,6 +88,7 @@ export interface AgentConfig {
   definition?: string | null;
   tools: CustomToolSpec[];
   mcpServers: McpServerSpec[];
+  toolIdentity?: ToolIdentity;
   builtins: BuiltinSuite[];
   queue: QueueModeConfig;
   repoId: string | null;
@@ -96,6 +107,7 @@ export interface AgentUpsertInput {
   definition?: string;
   tools?: CustomToolSpec[];
   mcpServers?: McpServerSpec[];
+  toolIdentity?: ToolIdentity;
   builtins?: BuiltinSuite[];
   queue?: Partial<QueueModeConfig>;
   repoId?: string | null;
@@ -151,6 +163,8 @@ export interface RunErrorShape {
 export interface RunRecord {
   id: string;
   agentId: string;
+  idempotencyKey: string | null;
+  startedAt: number;
   status: RunStatus;
   text: string;
   output: unknown;
@@ -162,8 +176,20 @@ export interface RunRecord {
   error: RunErrorShape | null;
 }
 
+export interface RunFile {
+  path: string;
+  commit: string;
+  contentType: string;
+}
+
+export interface StoredRunFile extends RunFile {
+  lineage: string;
+  size: number;
+}
+
 export interface StartRunInput {
   prompt: string;
+  files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
   wait?: boolean;
@@ -189,6 +215,7 @@ export interface ToolCallInvocation {
 
 export interface StoredMessageContent {
   text?: string;
+  files?: StoredRunFile[];
   toolCalls?: ToolCallInvocation[];
   toolCallId?: string;
   toolName?: string;

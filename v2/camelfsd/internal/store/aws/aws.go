@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -412,21 +413,30 @@ func (s *AWSStore) ListRefs(ctx context.Context, lineage, prefix string, nowMs i
 		return nil, err
 	}
 	qExpr := "PK = :pk AND begins_with(SK, :skPrefix)"
-	out, err := s.ddb.Query(ctx, &dynamodb.QueryInput{
+	query := &dynamodb.QueryInput{
 		TableName:              &s.reposTable,
 		KeyConditionExpression: &qExpr,
+		ConsistentRead:         aws.Bool(true),
 		ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
 			":pk":       strVal(linPK(lineage)),
 			":skPrefix": strVal(refSK(prefix)),
 		},
-	})
-	if err != nil {
-		return nil, apperr.Internal("ddb list refs", err)
 	}
-	refs := make([]store.RefRecord, 0, len(out.Items))
-	for _, item := range out.Items {
-		refs = append(refs, itemToRef(lineage, item, nowMs))
+	refs := make([]store.RefRecord, 0)
+	for {
+		out, err := s.ddb.Query(ctx, query)
+		if err != nil {
+			return nil, apperr.Internal("ddb list refs", err)
+		}
+		for _, item := range out.Items {
+			refs = append(refs, itemToRef(lineage, item, nowMs))
+		}
+		if len(out.LastEvaluatedKey) == 0 {
+			break
+		}
+		query.ExclusiveStartKey = out.LastEvaluatedKey
 	}
+
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
 	return refs, nil
 }
@@ -571,7 +581,8 @@ func (s *AWSStore) SetRef(ctx context.Context, p store.SetRefParams) (*store.Ref
 
 func (s *AWSStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*store.LeaseResult, error) {
 	curOut, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.reposTable,
+		TableName:      &s.reposTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(linPK(p.Lineage)),
 			"SK": strVal(refSK(p.Ref)),
@@ -589,6 +600,9 @@ func (s *AWSStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*store
 	curEpoch := getInt64(curOut.Item, "leaseEpoch")
 	curExpiry := getInt64(curOut.Item, "leaseExpiresAt")
 
+	if p.Release && p.ExpectedEpoch > 0 && (curHolder != p.Holder || curEpoch != p.ExpectedEpoch) {
+		return &store.LeaseResult{Ref: p.Ref, Commit: commit, Tree: tree, Holder: curHolder, Epoch: curEpoch, ExpiresAt: curExpiry}, nil
+	}
 	if curHolder != "" && curExpiry > p.NowMs && curHolder != p.Holder {
 		return nil, apperr.RefLeasedf("ref %q is currently leased by %q", p.Ref, curHolder)
 	}
@@ -596,17 +610,23 @@ func (s *AWSStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*store
 	cond := "attribute_exists(PK) AND (leaseHolder = :empty OR leaseExpiresAt <= :now OR leaseHolder = :holder)"
 	if p.Release {
 		upd := "SET leaseHolder = :empty, leaseExpiresAt = :zero"
+		values := map[string]ddbtypes.AttributeValue{
+			":empty":  strVal(""),
+			":zero":   numVal(0),
+			":holder": strVal(p.Holder),
+		}
+		if p.ExpectedEpoch > 0 {
+			cond = "leaseHolder = :holder AND leaseEpoch = :epoch"
+			values[":epoch"] = numVal(p.ExpectedEpoch)
+		} else {
+			values[":now"] = numVal(p.NowMs)
+		}
 		_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-			TableName:           &s.reposTable,
-			Key:                 map[string]ddbtypes.AttributeValue{"PK": strVal(linPK(p.Lineage)), "SK": strVal(refSK(p.Ref))},
-			UpdateExpression:    &upd,
-			ConditionExpression: &cond,
-			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":empty":  strVal(""),
-				":zero":   numVal(0),
-				":now":    numVal(p.NowMs),
-				":holder": strVal(p.Holder),
-			},
+			TableName:                 &s.reposTable,
+			Key:                       map[string]ddbtypes.AttributeValue{"PK": strVal(linPK(p.Lineage)), "SK": strVal(refSK(p.Ref))},
+			UpdateExpression:          &upd,
+			ConditionExpression:       &cond,
+			ExpressionAttributeValues: values,
 		})
 		if err != nil {
 			if isConditionalCheckFailed(err) {
@@ -718,7 +738,8 @@ func itemToVM(item map[string]ddbtypes.AttributeValue) *store.VMRecord {
 
 func (s *AWSStore) GetRunningVMByRef(ctx context.Context, lineage, ref string) (*store.VMRecord, error) {
 	ptrOut, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.vmsTable,
+		TableName:      &s.vmsTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(activeVMPK(lineage)),
 			"SK": strVal(refSK(ref)),
@@ -747,10 +768,11 @@ func (s *AWSStore) GetRunningVMByRef(ctx context.Context, lineage, ref string) (
 	return vm, nil
 }
 
-func (s *AWSStore) ListRunningVMs(ctx context.Context) ([]*store.VMRecord, error) {
+func (s *AWSStore) ListRunningVMs(ctx context.Context, consistent bool) ([]*store.VMRecord, error) {
 	filt := "SK = :meta AND #st = :running"
-	out, err := s.ddb.Scan(ctx, &dynamodb.ScanInput{
+	pages := dynamodb.NewScanPaginator(s.ddb, &dynamodb.ScanInput{
 		TableName:        &s.vmsTable,
+		ConsistentRead:   aws.Bool(consistent),
 		FilterExpression: &filt,
 		ExpressionAttributeNames: map[string]string{
 			"#st": "state",
@@ -760,13 +782,16 @@ func (s *AWSStore) ListRunningVMs(ctx context.Context) ([]*store.VMRecord, error
 			":running": strVal("running"),
 		},
 	})
-	if err != nil {
-		return nil, apperr.Internal("ddb scan running vms", err)
-	}
 	var res []*store.VMRecord
-	for _, it := range out.Items {
-		if strings.HasPrefix(getStr(it, "PK"), "VM#") {
-			res = append(res, itemToVM(it))
+	for pages.HasMorePages() {
+		out, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, apperr.Internal("ddb scan running vms", err)
+		}
+		for _, it := range out.Items {
+			if strings.HasPrefix(getStr(it, "PK"), "VM#") {
+				res = append(res, itemToVM(it))
+			}
 		}
 	}
 	return res, nil
@@ -834,7 +859,8 @@ func (s *AWSStore) CreateRunningVM(ctx context.Context, vm *store.VMRecord) erro
 
 func (s *AWSStore) GetVM(ctx context.Context, vmID string) (*store.VMRecord, error) {
 	out, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.vmsTable,
+		TableName:      &s.vmsTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(vmPK(vmID)),
 			"SK": strVal("META"),
@@ -850,33 +876,44 @@ func (s *AWSStore) GetVM(ctx context.Context, vmID string) (*store.VMRecord, err
 }
 
 func (s *AWSStore) UpdateVM(ctx context.Context, vm *store.VMRecord) error {
-	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &s.vmsTable,
-		Item:      vmToItem(vm),
+	if vm.State == "running" {
+		_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: &s.vmsTable,
+			Item:      vmToItem(vm),
+		})
+		if err != nil {
+			return apperr.Internal("ddb update running vm", err)
+		}
+		return nil
+	}
+
+	cond := "attribute_not_exists(PK) OR vmId = :vmId"
+	_, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []ddbtypes.TransactWriteItem{
+			{Put: &ddbtypes.Put{TableName: &s.vmsTable, Item: vmToItem(vm)}},
+			{Delete: &ddbtypes.Delete{
+				TableName:           &s.vmsTable,
+				ConditionExpression: &cond,
+				Key: map[string]ddbtypes.AttributeValue{
+					"PK": strVal(activeVMPK(vm.Lineage)),
+					"SK": strVal(refSK(vm.Ref)),
+				},
+				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+					":vmId": strVal(vm.VMID),
+				},
+			}},
+		},
 	})
 	if err != nil {
-		return apperr.Internal("ddb update vm", err)
-	}
-	if vm.State != "running" {
-		cond := "vmId = :vmId"
-		_, _ = s.ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName:           &s.vmsTable,
-			ConditionExpression: &cond,
-			Key: map[string]ddbtypes.AttributeValue{
-				"PK": strVal(activeVMPK(vm.Lineage)),
-				"SK": strVal(refSK(vm.Ref)),
-			},
-			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":vmId": strVal(vm.VMID),
-			},
-		})
+		return apperr.Internal("ddb retire vm", err)
 	}
 	return nil
 }
 
 func (s *AWSStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*store.ExecReceipt, error) {
 	out, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.vmsTable,
+		TableName:      &s.vmsTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(vmPK(vmID)),
 			"SK": strVal(execSK(execID)),
@@ -889,10 +926,19 @@ func (s *AWSStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*st
 		return nil, nil
 	}
 	var payload []byte
-	if b, ok := out.Item["responseJson"].(*ddbtypes.AttributeValueMemberB); ok {
+	if hash := getStr(out.Item, "responseHash"); hash != "" {
+		kind, data, err := s.GetObject(ctx, hash)
+		if err != nil {
+			return nil, apperr.Internal("load exec receipt object", err)
+		}
+		if kind != store.KindExecReceipt {
+			return nil, apperr.Internal("unexpected exec receipt object kind", nil)
+		}
+		payload = data
+	} else if b, ok := out.Item["responseJson"].(*ddbtypes.AttributeValueMemberB); ok {
 		payload = b.Value
-	} else if sv := getStr(out.Item, "responseJson"); sv != "" {
-		payload = []byte(sv)
+	} else {
+		payload = []byte(getStr(out.Item, "responseJson"))
 	}
 	return &store.ExecReceipt{
 		VMID:         vmID,
@@ -902,18 +948,68 @@ func (s *AWSStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*st
 	}, nil
 }
 
-func (s *AWSStore) PutExecReceipt(ctx context.Context, r *store.ExecReceipt) error {
-	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &s.vmsTable,
-		Item: map[string]ddbtypes.AttributeValue{
-			"PK":           strVal(vmPK(r.VMID)),
-			"SK":           strVal(execSK(r.ExecID)),
-			"responseJson": &ddbtypes.AttributeValueMemberB{Value: r.ResponseJSON},
-			"createdAt":    numVal(r.CreatedAt),
-		},
-	})
-	if err != nil {
-		return apperr.Internal("ddb put exec receipt", err)
+func (s *AWSStore) CompleteExec(ctx context.Context, p store.CompleteExecParams) error {
+	vm := p.VM
+	receipt := p.Receipt
+	item := map[string]ddbtypes.AttributeValue{
+		"PK":        strVal(vmPK(vm.VMID)),
+		"SK":        strVal(execSK(receipt.ExecID)),
+		"createdAt": numVal(receipt.CreatedAt),
+	}
+	// DynamoDB limits each item to 400 KiB. Leave room for the keys and
+	// metadata, and stage larger results as immutable objects.
+	if len(receipt.ResponseJSON) > 390*1024 {
+		hash, err := s.PutObject(ctx, vm.Lineage, store.KindExecReceipt, receipt.ResponseJSON)
+		if err != nil {
+			return apperr.Internal("stage exec receipt object", err)
+		}
+		item["responseHash"] = strVal(hash)
+	} else {
+		item["responseJson"] = &ddbtypes.AttributeValueMemberB{Value: receipt.ResponseJSON}
+	}
+
+	items := []ddbtypes.TransactWriteItem{
+		{Put: &ddbtypes.Put{
+			TableName:           &s.vmsTable,
+			Item:                item,
+			ConditionExpression: aws.String("attribute_not_exists(PK)"),
+		}},
+		{Put: &ddbtypes.Put{
+			TableName:                &s.vmsTable,
+			Item:                     vmToItem(vm),
+			ConditionExpression:      aws.String("#state = :running AND headCommit = :base AND leaseEpoch = :epoch"),
+			ExpressionAttributeNames: map[string]string{"#state": "state"},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":running": strVal("running"),
+				":base":    strVal(p.BaseCommit),
+				":epoch":   numVal(vm.LeaseEpoch),
+			},
+		}},
+	}
+	refKey := map[string]ddbtypes.AttributeValue{"PK": strVal(linPK(vm.Lineage)), "SK": strVal(refSK(vm.Ref))}
+	refCondition := aws.String("#commit = :base AND leaseHolder = :holder AND leaseEpoch = :epoch")
+	refNames := map[string]string{"#commit": "commit"}
+	refValues := map[string]ddbtypes.AttributeValue{
+		":base": strVal(p.BaseCommit), ":holder": strVal(vm.Holder), ":epoch": numVal(vm.LeaseEpoch),
+	}
+	if vm.HeadCommit == p.BaseCommit {
+		items = append(items, ddbtypes.TransactWriteItem{ConditionCheck: &ddbtypes.ConditionCheck{
+			TableName: &s.reposTable, Key: refKey, ConditionExpression: refCondition,
+			ExpressionAttributeNames: refNames, ExpressionAttributeValues: refValues,
+		}})
+	} else {
+		refNames["#tree"] = "tree"
+		refValues[":head"], refValues[":tree"], refValues[":now"] = strVal(vm.HeadCommit), strVal(p.Tree), numVal(receipt.CreatedAt)
+		items = append(items, ddbtypes.TransactWriteItem{Update: &ddbtypes.Update{
+			TableName: &s.reposTable, Key: refKey, ConditionExpression: refCondition,
+			UpdateExpression:         aws.String("SET #commit = :head, #tree = :tree, updatedAt = :now"),
+			ExpressionAttributeNames: refNames, ExpressionAttributeValues: refValues,
+		}})
+	}
+	if _, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: items}); err != nil {
+		// This is an uncertain exec outcome for the caller even if a
+		// condition failed. The command has already reached the guest.
+		return apperr.Internal("ddb complete exec", err)
 	}
 	return nil
 }

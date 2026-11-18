@@ -1,4 +1,6 @@
+import { CamelFsClient } from "./camelfs.ts";
 import { randomId } from "./crypto.ts";
+import { loadConversationImages, type ModelImage } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
@@ -8,12 +10,15 @@ import {
   type LlmToolSchema,
   type ModelStreamChunk,
   type ProviderCredentials,
+  type StoredRunFile,
   type ToolCallInvocation,
 } from "./types.ts";
 
 export interface ConversationMessage {
   role: ChatRole;
   text?: string;
+  files?: StoredRunFile[];
+  images?: ModelImage[];
   toolCalls?: ToolCallInvocation[];
   toolCallId?: string;
   toolName?: string;
@@ -274,6 +279,14 @@ export async function* streamModelResponse(
     req.prefetchedProvider,
   );
 
+  if (endpoint.protocol !== "mock" && req.messages.some((message) => message.files?.length)) {
+    const images = await loadConversationImages(new CamelFsClient(req.env, req.tenantId), req.messages);
+    req = {
+      ...req,
+      messages: req.messages.map((message, index) => ({ ...message, images: images.get(index) })),
+    };
+  }
+
   switch (endpoint.protocol) {
     case "mock":
       yield* streamMockModel(endpoint.modelId, req);
@@ -379,6 +392,10 @@ function buildResponsesUrl(baseUrl: string): string {
   return `${baseUrl}/v1/responses`;
 }
 
+function imageDataUrl(image: ModelImage): string {
+  return `data:${image.contentType};base64,${image.base64}`;
+}
+
 async function* streamOpenAiChat(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -410,7 +427,10 @@ async function* streamOpenAiChat(
     } else {
       apiMessages.push({
         role: m.role,
-        content: m.text ?? "",
+        content: m.images?.length ? [
+          { type: "text", text: m.text ?? "" },
+          ...m.images.map((image) => ({ type: "image_url", image_url: { url: imageDataUrl(image) } })),
+        ] : m.text ?? "",
       });
     }
   }
@@ -421,6 +441,7 @@ async function* streamOpenAiChat(
     stream: true,
     stream_options: { include_usage: true },
   };
+  if (endpoint.providerName === "openrouter") payload.provider = { data_collection: "deny" };
   if (req.temperature !== undefined) payload.temperature = req.temperature;
   if (req.maxOutputTokens !== undefined) payload.max_tokens = req.maxOutputTokens;
 
@@ -608,7 +629,10 @@ async function* streamOpenAiResponses(
     } else {
       inputItems.push({
         role: m.role,
-        content: m.text ?? "",
+        content: m.images?.length ? [
+          { type: "input_text", text: m.text ?? "" },
+          ...m.images.map((image) => ({ type: "input_image", image_url: imageDataUrl(image), detail: "auto" })),
+        ] : m.text ?? "",
       });
     }
   }
@@ -786,7 +810,13 @@ async function* streamAnthropicMessages(
     } else {
       messages.push({
         role: "user",
-        content: m.text ?? "",
+        content: m.images?.length ? [
+          { type: "text", text: m.text ?? "" },
+          ...m.images.map((image) => ({
+            type: "image",
+            source: { type: "base64", media_type: image.contentType, data: image.base64 },
+          })),
+        ] : m.text ?? "",
       });
     }
   }
@@ -966,7 +996,10 @@ async function* streamGeminiContent(
     } else {
       contents.push({
         role: "user",
-        parts: [{ text: m.text ?? "" }],
+        parts: [
+          { text: m.text ?? "" },
+          ...(m.images ?? []).map((image) => ({ inlineData: { mimeType: image.contentType, data: image.base64 } })),
+        ],
       });
     }
   }

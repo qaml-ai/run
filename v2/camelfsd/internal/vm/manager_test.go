@@ -2,6 +2,8 @@ package vm_test
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ import (
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/vm"
 )
 
-func newTestVMStack(t *testing.T, reaperInterval time.Duration) (*repo.Engine, *vm.Manager) {
+func newTestVMStack(t *testing.T, reaperInterval time.Duration) (*repo.Engine, *vm.Manager, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := localstore.Open(dir)
@@ -34,12 +36,12 @@ func newTestVMStack(t *testing.T, reaperInterval time.Duration) (*repo.Engine, *
 		_ = mgr.Close()
 		_ = st.Close()
 	})
-	return eng, mgr
+	return eng, mgr, dir
 }
 
 func TestVMPersistentShellTimeoutAndIdleReaper(t *testing.T) {
 	ctx := context.Background()
-	eng, mgr := newTestVMStack(t, 40*time.Millisecond)
+	eng, mgr, _ := newTestVMStack(t, 40*time.Millisecond)
 
 	lin, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{Lineage: "lin_vm_unit"})
 	if err != nil {
@@ -105,8 +107,12 @@ func TestVMPersistentShellTimeoutAndIdleReaper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec 2: %v", err)
 	}
-	if !ex2.Commit.Changed || len(ex2.Commit.FilesChanged) != 1 || ex2.Commit.FilesChanged[0] != "pkg/core/result.txt" {
+	if !ex2.Commit.Changed {
 		t.Fatalf("expected atomic commit of pkg/core/result.txt, got %+v", ex2.Commit)
+	}
+	resRead, err := eng.Read(ctx, lin.Lineage, repo.ReadParams{At: "refs/heads/main", Path: "pkg/core/result.txt"})
+	if err != nil || *resRead.Content != "secret_42\n" {
+		t.Fatalf("expected live VM read of pkg/core/result.txt, got %+v err=%v", resRead, err)
 	}
 
 	// Verify idempotency by execId: re-running exec_2 with a destructive command returns cached receipt without executing!
@@ -185,5 +191,58 @@ func TestVMPersistentShellTimeoutAndIdleReaper(t *testing.T) {
 		Puts:   []repo.WritePut{{Path: "after_reap.txt", Content: "lease was released!\n"}},
 	}); err != nil {
 		t.Fatalf("expected ref lease to be released after reap, got %v", err)
+	}
+}
+
+func TestExecReceiptFailureRollsBackWorkspace(t *testing.T) {
+	ctx := t.Context()
+	eng, mgr, dir := newTestVMStack(t, time.Hour)
+	lin, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{Lineage: "lin_exec_rollback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := vm.BootVMRequest{Lineage: lin.Lineage, Ref: lin.DefaultRef, Holder: "agent"}
+	first, err := mgr.BootOrReuse(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", filepath.Join(dir, "camelfs.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_exec_receipt BEFORE INSERT ON exec_receipts
+		WHEN NEW.exec_id = 'fail' BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	failed := vm.ExecRequest{ExecID: "fail", Command: "printf dirty > uncommitted.txt"}
+	if _, _, err := mgr.Exec(ctx, first.VMID, failed, nil, nil); err == nil || !strings.Contains(err.Error(), "injected receipt failure") {
+		t.Fatalf("expected receipt write error, got %v", err)
+	}
+	head, _, err := eng.ResolveCommit(ctx, lin.Lineage, lin.DefaultRef)
+	if err != nil || head != lin.Commit {
+		t.Fatalf("failed exec moved the ref to %q: %v", head, err)
+	}
+	if _, _, err := mgr.Exec(ctx, first.VMID, failed, nil, nil); !apperr.IsCode(err, apperr.CodeVMLost) {
+		t.Fatalf("expected old exec to report vm_lost, got %v", err)
+	}
+
+	second, err := mgr.BootOrReuse(ctx, req)
+	if err != nil || second.VMID == first.VMID {
+		t.Fatalf("expected a fresh VM, got %+v: %v", second, err)
+	}
+	execReq := vm.ExecRequest{ExecID: "success", Command: "test ! -e uncommitted.txt && printf saved > committed.txt"}
+	result, cached, err := mgr.Exec(ctx, second.VMID, execReq, nil, nil)
+	if err != nil || cached || result.ExitCode != 0 || !result.Commit.Changed {
+		t.Fatalf("expected successful checkpoint in fresh VM, got %+v cached=%v: %v", result, cached, err)
+	}
+	head, _, err = eng.ResolveCommit(ctx, lin.Lineage, lin.DefaultRef)
+	if err != nil || head != result.Commit.Commit {
+		t.Fatalf("committed exec did not publish matching ref %q: %v", head, err)
+	}
+	replayed, cached, err := mgr.Exec(ctx, second.VMID, execReq, nil, nil)
+	if err != nil || !cached || replayed.Commit.Commit != head {
+		t.Fatalf("expected matching durable receipt, got %+v cached=%v: %v", replayed, cached, err)
 	}
 }

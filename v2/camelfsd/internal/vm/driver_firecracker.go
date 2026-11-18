@@ -5,15 +5,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,35 +25,51 @@ import (
 
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/apperr"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/repo"
+	"github.com/qaml-ai/camelrun-next/camelfsd/internal/store"
+)
+
+const (
+	firecrackerHost  = "firecracker"
+	guestBlobPort    = 10001
+	maxBlobFetchSize = 512 * 1024 * 1024
 )
 
 type FirecrackerConfig struct {
-	DataDir          string
-	FirecrackerBin   string
-	KernelImagePath  string
-	RootfsImagePath  string
-	WorkspaceSizeMiB int
-	VsockPort        int
+	DataDir         string
+	FirecrackerBin  string
+	JailerBin       string
+	KernelImagePath string
+	RootfsImagePath string
+	GetBlob         func(ctx context.Context, hash string) ([]byte, error)
+	VsockPort       int
+}
+
+type fcVMFiles struct {
+	kernel string
+	rootfs string
+	vsock  string
 }
 
 type fcVMSession struct {
 	mu           sync.Mutex
 	vmID         string
 	baseDir      string
-	workspaceDir string
-	ext4Path     string
 	apiSockPath  string
 	vsockUDSPath string
+	blobSockLn   net.Listener
 	guestCID     uint32
 	cmd          *exec.Cmd
 	waitCh       chan struct{}
 }
 
-// FirecrackerDriver boots isolated Firecracker microVMs on Linux with a host-materialized
-// ext4 /workspace block device and communicates with the guest's persistent bash agent over vsock.
+// FirecrackerDriver mounts repo workspaces lazily inside Firecracker guests via FUSE + overlayfs
+// over virtio-vsock, with zero host ext4/NBD devices.
 type FirecrackerDriver struct {
 	cfg      FirecrackerConfig
 	rootDir  string
+	jailDir  string
+	cgroup   string
+	lock     *os.File
 	mu       sync.RWMutex
 	nextCID  uint32
 	sessions map[string]*fcVMSession
@@ -59,22 +79,107 @@ func NewFirecrackerDriver(cfg FirecrackerConfig) (*FirecrackerDriver, error) {
 	if cfg.FirecrackerBin == "" {
 		cfg.FirecrackerBin = "firecracker"
 	}
-	if cfg.WorkspaceSizeMiB <= 0 {
-		cfg.WorkspaceSizeMiB = 512
+	if cfg.GetBlob == nil {
+		return nil, fmt.Errorf("firecracker driver requires a GetBlob store callback")
 	}
 	if cfg.VsockPort <= 0 {
 		cfg.VsockPort = 10000
 	}
-	rootDir := filepath.Join(cfg.DataDir, "firecracker-vms")
+	rootDir, err := filepath.Abs(filepath.Join(cfg.DataDir, "firecracker-vms"))
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir firecracker vms dir: %w", err)
+	}
+	var jailDir, cgroup string
+	if cfg.JailerBin != "" {
+		cgroup, err = firecrackerServiceCgroup()
+		if err != nil {
+			return nil, err
+		}
+		for _, bin := range []*string{&cfg.FirecrackerBin, &cfg.JailerBin} {
+			p, err := exec.LookPath(*bin)
+			if err != nil {
+				return nil, err
+			}
+			p, err = filepath.Abs(p)
+			if err != nil {
+				return nil, err
+			}
+			// The jailer names its directory after the resolved executable.
+			*bin, err = filepath.EvalSymlinks(p)
+			if err != nil {
+				return nil, err
+			}
+		}
+		jailDir = filepath.Join(rootDir, filepath.Base(cfg.FirecrackerBin))
+	}
+	lock, err := os.OpenFile(filepath.Join(rootDir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open Firecracker data directory lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("lock Firecracker data directory: %w", err)
 	}
 	return &FirecrackerDriver{
 		cfg:      cfg,
 		rootDir:  rootDir,
+		jailDir:  jailDir,
+		cgroup:   cgroup,
+		lock:     lock,
 		nextCID:  100,
 		sessions: make(map[string]*fcVMSession),
 	}, nil
+}
+
+// Recover retires orphaned Firecracker sessions owned by a previous daemon.
+func (d *FirecrackerDriver) Recover(ctx context.Context, st store.Store) error {
+	running, err := st.ListRunningVMs(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, rec := range running {
+		if rec.HostID != firecrackerHost {
+			continue
+		}
+		if err := retireLostVM(ctx, st, rec); err != nil {
+			return err
+		}
+		log.Printf("camelfsd: retired lost Firecracker VM %s", rec.VMID)
+	}
+
+	if err := removeLostVMDirs(d.rootDir, "vm_"); err != nil {
+		return err
+	}
+	if d.jailDir != "" {
+		return removeLostVMDirs(d.jailDir, "vm-")
+	}
+	return nil
+}
+
+func removeLostVMDirs(dir, prefix string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		id, ok := strings.CutPrefix(entry.Name(), prefix)
+		if !entry.IsDir() || !ok || len(id) != 24 {
+			continue
+		}
+		if _, err := hex.DecodeString(id); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("remove scratch directory for lost VM %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (d *FirecrackerDriver) allocCID() uint32 {
@@ -82,16 +187,6 @@ func (d *FirecrackerDriver) allocCID() uint32 {
 	defer d.mu.Unlock()
 	d.nextCID++
 	return d.nextCID
-}
-
-func buildExt4FromDir(ctx context.Context, srcDir, imgPath string, sizeMiB int) error {
-	sizeSpec := fmt.Sprintf("%dM", sizeMiB)
-	cmd := exec.CommandContext(ctx, "mkfs.ext4", "-F", "-q", "-d", srcDir, imgPath, sizeSpec)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("mkfs.ext4 failed: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 func fcPutJSON(ctx context.Context, hc *http.Client, path string, body any) error {
@@ -134,65 +229,150 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 	}
 
 	baseDir := filepath.Join(d.rootDir, spec.VMID)
-	workspaceDir := filepath.Join(baseDir, "workspace")
-	ext4Path := filepath.Join(baseDir, "workspace.ext4")
-	rootfsCopy := filepath.Join(baseDir, "rootfs.ext4")
-	apiSock := filepath.Join(baseDir, "fc.sock")
-	vsockUDS := filepath.Join(baseDir, "vsock.sock")
+	vmDir := baseDir
+	jailID := "vm-" + strings.TrimPrefix(spec.VMID, "vm_")
+	if d.jailDir != "" {
+		if err := os.MkdirAll(d.jailDir, 0700); err != nil {
+			return "", apperr.Internal("mkdir Firecracker jail directory", err)
+		}
+		baseDir = filepath.Join(d.jailDir, jailID)
+		vmDir = filepath.Join(baseDir, "root")
+	}
+	rootfsCopy := filepath.Join(vmDir, "rootfs.ext4")
+	apiSock := filepath.Join(vmDir, "fc.sock")
+	vsockUDS := filepath.Join(vmDir, "vsock.sock")
+	blobSock := fmt.Sprintf("%s_%d", vsockUDS, guestBlobPort)
+	if len(blobSock) >= 108 {
+		return "", apperr.InvalidRequest("Firecracker socket path is too long. Use a shorter data directory")
+	}
 
-	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
-		return "", apperr.Internal("mkdir fc workspace", err)
+	if err := os.Mkdir(baseDir, 0700); err != nil {
+		return "", apperr.Internal("mkdir Firecracker VM", err)
 	}
-	// Materialize /workspace on the host BEFORE building the ext4 image and booting Firecracker.
-	if err := repo.WriteMaterializedFilesToDir(workspaceDir, spec.Files); err != nil {
-		_ = os.RemoveAll(baseDir)
-		return "", err
-	}
-	if err := buildExt4FromDir(ctx, workspaceDir, ext4Path, d.cfg.WorkspaceSizeMiB); err != nil {
-		_ = os.RemoveAll(baseDir)
-		return "", apperr.Internal("build workspace ext4 image", err)
+	started := false
+	defer func() {
+		if !started {
+			_ = os.RemoveAll(baseDir)
+		}
+	}()
+	if d.jailDir != "" {
+		if err := os.Mkdir(vmDir, 0700); err != nil {
+			return "", apperr.Internal("mkdir Firecracker jail root", err)
+		}
 	}
 	if err := copyFileReflinkOrCopy(d.cfg.RootfsImagePath, rootfsCopy); err != nil {
-		_ = os.RemoveAll(baseDir)
 		return "", apperr.Internal("stage rootfs image", err)
 	}
 
-	cid := d.allocCID()
+	// Listen on <vsockUDS>_10001 so the guest's lazy FUSE layer can fetch blobs on demand.
+	blobLn, err := net.Listen("unix", blobSock)
+	if err != nil {
+		return "", apperr.Internal("listen Firecracker host blob socket", err)
+	}
+	defer func() {
+		if !started {
+			_ = blobLn.Close()
+		}
+	}()
+	go d.serveBlobSocket(blobLn)
+
+	guestCID := d.allocCID()
+	files := fcVMFiles{kernel: d.cfg.KernelImagePath, rootfs: rootfsCopy, vsock: vsockUDS}
 	cmd := exec.Command(d.cfg.FirecrackerBin, "--api-sock", apiSock)
-	cmd.Dir = baseDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	waitCh := make(chan struct{})
-	if err := cmd.Start(); err != nil {
-		_ = os.RemoveAll(baseDir)
+	cmd.Dir = vmDir
+	if d.jailDir != "" {
+		uid := 201000 + int(guestCID)
+		if err := prepareFirecrackerJail(vmDir, d.cfg.KernelImagePath, rootfsCopy, uid); err != nil {
+			return "", apperr.Internal("prepare Firecracker jail", err)
+		}
+		if err := os.Chown(blobSock, uid, uid); err != nil {
+			return "", apperr.Internal("chown Firecracker blob socket", err)
+		}
+		files = fcVMFiles{kernel: "/kernel", rootfs: "/rootfs.ext4", vsock: "/vsock.sock"}
+		uidStr := strconv.Itoa(uid)
+		cmd = exec.Command(d.cfg.JailerBin, "--id", jailID, "--exec-file", d.cfg.FirecrackerBin,
+			"--uid", uidStr, "--gid", uidStr, "--chroot-base-dir", d.rootDir,
+			"--cgroup-version", "2", "--parent-cgroup", d.cgroup, "--", "--api-sock", "/fc.sock")
+	}
+	cmd.Stderr = os.Stderr
+	waitCh, err := launchFirecracker(cmd)
+	if err != nil {
 		return "", apperr.Internal("launch firecracker", err)
 	}
-	go func() {
-		_ = cmd.Wait()
-		close(waitCh)
-	}()
 
 	sess := &fcVMSession{
 		vmID:         spec.VMID,
 		baseDir:      baseDir,
-		workspaceDir: workspaceDir,
-		ext4Path:     ext4Path,
 		apiSockPath:  apiSock,
 		vsockUDSPath: vsockUDS,
-		guestCID:     cid,
+		blobSockLn:   blobLn,
+		guestCID:     guestCID,
 		cmd:          cmd,
 		waitCh:       waitCh,
 	}
 
-	if err := d.configureAndBoot(ctx, sess, rootfsCopy, spec); err != nil {
+	if err := d.configureAndBoot(ctx, sess, files, spec); err != nil {
 		sess.kill()
-		_ = os.RemoveAll(baseDir)
+		log.Printf("camelfsd: configure Firecracker VM %s: %v", spec.VMID, err)
 		return "", apperr.Internal("configure firecracker microVM", err)
 	}
 
 	d.mu.Lock()
 	d.sessions[spec.VMID] = sess
 	d.mu.Unlock()
-	return "firecracker", nil
+	started = true
+	return firecrackerHost, nil
+}
+
+func (d *FirecrackerDriver) serveBlobSocket(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go serveBlobConn(conn, d.cfg.GetBlob)
+	}
+}
+
+func serveBlobConn(conn net.Conn, getBlob func(ctx context.Context, hash string) ([]byte, error)) {
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	var hdr [9]byte
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		hash := strings.TrimSpace(line)
+		if hash == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		data, bErr := getBlob(ctx, hash)
+		cancel()
+		if bErr != nil {
+			msg := []byte(bErr.Error())
+			hdr[0] = 1
+			binary.BigEndian.PutUint64(hdr[1:9], uint64(len(msg)))
+			if _, wErr := conn.Write(hdr[:]); wErr != nil {
+				return
+			}
+			if _, wErr := conn.Write(msg); wErr != nil {
+				return
+			}
+			continue
+		}
+		hdr[0] = 0
+		binary.BigEndian.PutUint64(hdr[1:9], uint64(len(data)))
+		if _, wErr := conn.Write(hdr[:]); wErr != nil {
+			return
+		}
+		if len(data) > 0 {
+			if _, wErr := conn.Write(data); wErr != nil {
+				return
+			}
+		}
+	}
 }
 
 func copyFileReflinkOrCopy(src, dst string) error {
@@ -214,14 +394,19 @@ func copyFileReflinkOrCopy(src, dst string) error {
 	return err
 }
 
-func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSession, rootfsPath string, spec StartSpec) error {
-	// Wait up to 3s for Firecracker API socket to appear.
+func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSession, files fcVMFiles, spec StartSpec) error {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sess.apiSockPath); err == nil {
 			break
 		}
-		time.Sleep(15 * time.Millisecond)
+		select {
+		case <-sess.waitCh:
+			return fmt.Errorf("Firecracker exited before creating its API socket")
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(15 * time.Millisecond):
+		}
 	}
 
 	hc := newUnixHTTPClient(sess.apiSockPath)
@@ -242,23 +427,15 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 		return err
 	}
 	if err := fcPutJSON(ctx, hc, "/boot-source", map[string]any{
-		"kernel_image_path": d.cfg.KernelImagePath,
-		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/camelfs-guest-init",
+		"kernel_image_path": files.kernel,
+		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw devtmpfs.mount=1 init=/sbin/camelfs-guest-init",
 	}); err != nil {
 		return err
 	}
 	if err := fcPutJSON(ctx, hc, "/drives/rootfs", map[string]any{
 		"drive_id":       "rootfs",
-		"path_on_host":   rootfsPath,
+		"path_on_host":   files.rootfs,
 		"is_root_device": true,
-		"is_read_only":   false,
-	}); err != nil {
-		return err
-	}
-	if err := fcPutJSON(ctx, hc, "/drives/workspace", map[string]any{
-		"drive_id":       "workspace",
-		"path_on_host":   sess.ext4Path,
-		"is_root_device": false,
 		"is_read_only":   false,
 	}); err != nil {
 		return err
@@ -266,7 +443,7 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 	if err := fcPutJSON(ctx, hc, "/vsock", map[string]any{
 		"vsock_id":  "vsock0",
 		"guest_cid": sess.guestCID,
-		"uds_path":  sess.vsockUDSPath,
+		"uds_path":  files.vsock,
 	}); err != nil {
 		return err
 	}
@@ -276,8 +453,32 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 		return err
 	}
 
+	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		conn, _, err := d.dialGuestVsock(readyCtx, sess)
+		if err == nil {
+			_ = conn.Close()
+			break
+		}
+		select {
+		case <-readyCtx.Done():
+			return fmt.Errorf("workspace guest did not become ready: %w", err)
+		case <-sess.waitCh:
+			return fmt.Errorf("firecracker exited before workspace was ready")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// Send only tree metadata (zero blobs); guest FUSE fetches file bytes lazily over port 10001.
+	if err := d.vsockRPC(readyCtx, sess, map[string]any{
+		"op":   "mount_fuse",
+		"tree": spec.Tree,
+	}, nil, nil, nil); err != nil {
+		return err
+	}
 	if len(spec.Env) > 0 {
-		_ = d.vsockRPC(ctx, sess, map[string]any{
+		return d.vsockRPC(readyCtx, sess, map[string]any{
 			"op":  "init_env",
 			"env": spec.Env,
 		}, nil, nil, nil)
@@ -285,19 +486,25 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 	return nil
 }
 
-type vsockStreamFrame struct {
-	Type     string                        `json:"type"` // stdout | stderr | result | snapshot | error
-	Chunk    string                        `json:"chunk,omitempty"`
-	ExitCode int                           `json:"exitCode,omitempty"`
-	Cwd      string                        `json:"cwd,omitempty"`
-	TimedOut bool                          `json:"timedOut,omitempty"`
-	Files    map[string]vsockWireFileEntry `json:"files,omitempty"`
-	Error    string                        `json:"error,omitempty"`
+type guestDeltaPut struct {
+	Path   string `json:"path"`
+	Mode   int    `json:"mode"`
+	Base64 string `json:"base64,omitempty"`
 }
 
-type vsockWireFileEntry struct {
-	Mode   int    `json:"mode"`
-	Base64 string `json:"base64"`
+type vsockStreamFrame struct {
+	Type      string             `json:"type"` // stdout | stderr | result | read | list | grep | delta | ok | error
+	Chunk     string             `json:"chunk,omitempty"`
+	ExitCode  int                `json:"exitCode,omitempty"`
+	Cwd       string             `json:"cwd,omitempty"`
+	TimedOut  bool               `json:"timedOut,omitempty"`
+	Read      *repo.ReadResponse `json:"read,omitempty"`
+	Entries   []repo.TreeEntry   `json:"entries,omitempty"`
+	Matches   []repo.GrepMatch   `json:"matches,omitempty"`
+	Puts      []guestDeltaPut    `json:"puts,omitempty"`
+	Deletes   []string           `json:"deletes,omitempty"`
+	ErrorCode string             `json:"errorCode,omitempty"`
+	Error     string             `json:"error,omitempty"`
 }
 
 func (d *FirecrackerDriver) dialGuestVsock(ctx context.Context, sess *fcVMSession) (net.Conn, *bufio.Reader, error) {
@@ -305,6 +512,9 @@ func (d *FirecrackerDriver) dialGuestVsock(ctx context.Context, sess *fcVMSessio
 	conn, err := dialer.DialContext(ctx, "unix", sess.vsockUDSPath)
 	if err != nil {
 		return nil, nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 	connectCmd := fmt.Sprintf("CONNECT %d\n", d.cfg.VsockPort)
 	if _, err := io.WriteString(conn, connectCmd); err != nil {
@@ -346,7 +556,7 @@ func (d *FirecrackerDriver) vsockRPC(
 		return err
 	}
 
-	var stdoutBuf, stderrBuf strings.Builder
+	var stdoutBuf strings.Builder
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
@@ -359,13 +569,18 @@ func (d *FirecrackerDriver) vsockRPC(
 						onStdout(frame.Chunk)
 					}
 				case "stderr":
-					stderrBuf.WriteString(frame.Chunk)
 					if onStderr != nil {
 						onStderr(frame.Chunk)
 					}
 				case "error":
+					switch apperr.Code(frame.ErrorCode) {
+					case apperr.CodeNotFound:
+						return apperr.NotFound(frame.Error)
+					case apperr.CodeInvalidRequest:
+						return apperr.InvalidRequest(frame.Error)
+					}
 					return errors.New(frame.Error)
-				case "result", "snapshot", "ok":
+				case "result", "read", "list", "grep", "delta", "ok":
 					if outFinal != nil {
 						*outFinal = frame
 						if outFinal.Chunk == "" {
@@ -378,7 +593,7 @@ func (d *FirecrackerDriver) vsockRPC(
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil
+				return io.ErrUnexpectedEOF
 			}
 			return err
 		}
@@ -470,9 +685,6 @@ func (d *FirecrackerDriver) ApplyWorkspaceOps(ctx context.Context, vmID string, 
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
-	if err := repo.ApplyOpsToDir(sess.workspaceDir, ops); err != nil {
-		return err
-	}
 	type wireOp struct {
 		Kind   string `json:"kind"`
 		Path   string `json:"path"`
@@ -491,28 +703,7 @@ func (d *FirecrackerDriver) ApplyWorkspaceOps(ctx context.Context, vmID string, 
 	return d.vsockRPC(ctx, sess, map[string]any{"op": "apply_ops", "ops": wOps}, nil, nil, nil)
 }
 
-func (d *FirecrackerDriver) ReplaceWorkspace(ctx context.Context, vmID string, files map[string]repo.MaterializedFile) error {
-	sess, err := d.getSession(vmID)
-	if err != nil {
-		return err
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-
-	if err := repo.WriteMaterializedFilesToDir(sess.workspaceDir, files); err != nil {
-		return err
-	}
-	wireFiles := make(map[string]vsockWireFileEntry, len(files))
-	for p, mf := range files {
-		wireFiles[p] = vsockWireFileEntry{
-			Mode:   mf.Mode,
-			Base64: base64.StdEncoding.EncodeToString(mf.Data),
-		}
-	}
-	return d.vsockRPC(ctx, sess, map[string]any{"op": "replace_workspace", "files": wireFiles}, nil, nil, nil)
-}
-
-func (d *FirecrackerDriver) SnapshotWorkspace(ctx context.Context, vmID string) (map[string]repo.MaterializedFile, error) {
+func (d *FirecrackerDriver) ReadWorkspaceFile(ctx context.Context, vmID, commitHash, path string, offset, limit int64) (*repo.ReadResponse, error) {
 	sess, err := d.getSession(vmID)
 	if err != nil {
 		return nil, err
@@ -521,39 +712,112 @@ func (d *FirecrackerDriver) SnapshotWorkspace(ctx context.Context, vmID string) 
 	defer sess.mu.Unlock()
 
 	var frame vsockStreamFrame
-	if err := d.vsockRPC(ctx, sess, map[string]any{"op": "snapshot_workspace"}, nil, nil, &frame); err != nil {
-		return nil, apperr.Internal("firecracker snapshot workspace", err)
+	if err := d.vsockRPC(ctx, sess, map[string]any{
+		"op":     "read_file",
+		"path":   path,
+		"offset": offset,
+		"limit":  limit,
+	}, nil, nil, &frame); err != nil {
+		return nil, err
 	}
-	out := make(map[string]repo.MaterializedFile, len(frame.Files))
-	for p, wf := range frame.Files {
-		raw, err := base64.StdEncoding.DecodeString(wf.Base64)
-		if err != nil {
-			return nil, apperr.Internal("decode guest file base64", err)
+	if frame.Read == nil {
+		return nil, apperr.Internal("missing read response from guest", nil)
+	}
+	frame.Read.Commit = commitHash
+	return frame.Read, nil
+}
+
+func (d *FirecrackerDriver) ListWorkspaceEntries(ctx context.Context, vmID, dirPrefix string, recursive bool, glob string) ([]repo.TreeEntry, error) {
+	sess, err := d.getSession(vmID)
+	if err != nil {
+		return nil, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	var frame vsockStreamFrame
+	if err := d.vsockRPC(ctx, sess, map[string]any{
+		"op":        "list_files",
+		"path":      dirPrefix,
+		"recursive": recursive,
+		"glob":      glob,
+	}, nil, nil, &frame); err != nil {
+		return nil, err
+	}
+	if frame.Entries == nil {
+		return []repo.TreeEntry{}, nil
+	}
+	return frame.Entries, nil
+}
+
+func (d *FirecrackerDriver) GrepWorkspace(ctx context.Context, vmID string, req repo.GrepRequest) ([]repo.GrepMatch, error) {
+	sess, err := d.getSession(vmID)
+	if err != nil {
+		return nil, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	var frame vsockStreamFrame
+	if err := d.vsockRPC(ctx, sess, map[string]any{
+		"op":         "grep_files",
+		"pattern":    req.Pattern,
+		"path":       req.PathPrefix,
+		"maxMatches": req.MaxMatches,
+	}, nil, nil, &frame); err != nil {
+		return nil, err
+	}
+	if frame.Matches == nil {
+		return []repo.GrepMatch{}, nil
+	}
+	return frame.Matches, nil
+}
+
+func (d *FirecrackerDriver) CheckpointWorkspace(ctx context.Context, vmID string) (*DriverCheckpoint, error) {
+	sess, err := d.getSession(vmID)
+	if err != nil {
+		return nil, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	var frame vsockStreamFrame
+	if err := d.vsockRPC(ctx, sess, map[string]any{"op": "collect_delta"}, nil, nil, &frame); err != nil {
+		return nil, apperr.Internal("collect firecracker overlay delta", err)
+	}
+	puts := make([]repo.MaterializedFile, 0, len(frame.Puts))
+	for _, p := range frame.Puts {
+		var data []byte
+		if p.Base64 != "" {
+			data, err = base64.StdEncoding.DecodeString(p.Base64)
+			if err != nil {
+				return nil, apperr.Internal("decode guest delta payload", err)
+			}
 		}
-		mode := wf.Mode
+		mode := p.Mode
 		if mode == 0 {
 			mode = repo.DefaultFileMode
 		}
-		out[p] = repo.MaterializedFile{Path: p, Mode: mode, Data: raw}
+		puts = append(puts, repo.MaterializedFile{Path: p.Path, Mode: mode, Data: data})
 	}
-	// Mirror guest state back to host workspace dir.
-	_ = repo.WriteMaterializedFilesToDir(sess.workspaceDir, out)
-	return out, nil
+	return &DriverCheckpoint{
+		Delta:   true,
+		Puts:    puts,
+		Deletes: frame.Deletes,
+	}, nil
 }
 
 func (s *fcVMSession) kill() {
+	if s.blobSockLn != nil {
+		_ = s.blobSockLn.Close()
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
-		pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
-		if err == nil && pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			_ = s.cmd.Process.Kill()
-		}
+		_ = s.cmd.Process.Kill()
 		<-s.waitCh
 	}
 }
 
-func (d *FirecrackerDriver) Stop(_ context.Context, vmID string) error {
+func (d *FirecrackerDriver) Stop(ctx context.Context, vmID string) error {
 	d.mu.Lock()
 	sess, ok := d.sessions[vmID]
 	if ok {
@@ -565,9 +829,11 @@ func (d *FirecrackerDriver) Stop(_ context.Context, vmID string) error {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
+	umountCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	_ = d.vsockRPC(umountCtx, sess, map[string]any{"op": "unmount"}, nil, nil, nil)
+	cancel()
 	sess.kill()
-	_ = os.RemoveAll(sess.baseDir)
-	return nil
+	return os.RemoveAll(sess.baseDir)
 }
 
 func (d *FirecrackerDriver) Close() error {
@@ -577,8 +843,9 @@ func (d *FirecrackerDriver) Close() error {
 		ids = append(ids, id)
 	}
 	d.mu.Unlock()
+	var err error
 	for _, id := range ids {
-		_ = d.Stop(context.Background(), id)
+		err = errors.Join(err, d.Stop(context.Background(), id))
 	}
-	return nil
+	return errors.Join(err, d.lock.Close())
 }

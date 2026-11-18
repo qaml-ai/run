@@ -1,9 +1,10 @@
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
-import { discoverMcpTools, invokeMcpTool, type DiscoveredMcpTool } from "./mcp.ts";
+import { discoverMcpTools, invokeMcpTool, McpInputRequired, type DiscoveredMcpTool, type McpInputResponse } from "./mcp.ts";
 import { runCodemodeScript } from "./sandbox.ts";
 import { getTenantStub } from "./tenant-do.ts";
+import type { ToolApproval } from "./tool-identity.ts";
 import {
   ApiError,
   extractApiError,
@@ -16,17 +17,30 @@ import {
 } from "./types.ts";
 import { executeAgentWorkflow } from "./workflows.ts";
 
+type McpBinding = {
+  url: string;
+  audience?: string;
+  subject: string;
+};
+
+export type PausedMcpInput = McpBinding & (
+  | { mode: "approval" }
+  | { mode: "form" | "url"; key: string; sealedState?: string }
+);
+
 export class PauseForInputSignal extends Error {
   readonly kind: "approval" | "question";
   readonly toolCallId: string;
   readonly toolName: string;
   readonly promptPayload: Record<string, unknown>;
+  readonly mcpInput?: PausedMcpInput;
 
   constructor(opts: {
     kind: "approval" | "question";
     toolCallId: string;
     toolName: string;
     promptPayload: Record<string, unknown>;
+    mcpInput?: PausedMcpInput;
   }) {
     super(`Paused for human ${opts.kind}`);
     this.name = "PauseForInputSignal";
@@ -34,6 +48,7 @@ export class PauseForInputSignal extends Error {
     this.toolCallId = opts.toolCallId;
     this.toolName = opts.toolName;
     this.promptPayload = opts.promptPayload;
+    this.mcpInput = opts.mcpInput;
   }
 }
 
@@ -42,11 +57,15 @@ export interface ToolExecutionContext {
   config: AgentConfig;
   runId: string;
   approvedToolCallIds: Set<string>;
+  approval?: ToolApproval;
+  mcpBinding?: McpBinding;
+  mcpInput?: McpInputResponse;
   codemodeDepth?: number;
   signal?: AbortSignal;
   ensureAgentRepo(): Promise<{ repoId: string; lineage: string; branch: string }>;
   getVmSession(branch: string): { vmId: string; leaseExpiresAt: number } | null;
   saveVmSession(branch: string, vmId: string, leaseExpiresAt: number): void;
+  clearVmSession(branch: string, vmId: string): void;
   recordFilesChanged(files: string[]): void;
   recordVmMs(ms: number): void;
   invokeWebSocketTool(name: string, args: Record<string, unknown>, callId: string): Promise<unknown>;
@@ -75,11 +94,12 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
   files: [
     {
       name: "read_file",
-      description: "Read file contents from the agent repository.",
+      description: "Read file contents from the agent repository, optionally at an attachment’s commit.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "Relative file path in the repo" },
+          at: { type: "string", description: "Ref or commit of the file version to read" },
           offset: { type: "number" },
           limit: { type: "number" },
         },
@@ -171,18 +191,6 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
           message: { type: "string" },
         },
         required: ["targetCommit"],
-      },
-    },
-    {
-      name: "repo_diff",
-      description: "Compute diff between two commits or refs in the repository.",
-      parameters: {
-        type: "object",
-        properties: {
-          from: { type: "string" },
-          to: { type: "string" },
-        },
-        required: ["from", "to"],
       },
     },
     {
@@ -351,6 +359,7 @@ export interface BuiltToolCatalog {
 
 export async function buildToolCatalog(
   config: AgentConfig,
+  env: Env,
   signal?: AbortSignal,
 ): Promise<BuiltToolCatalog> {
   const schemas: LlmToolSchema[] = [];
@@ -378,7 +387,7 @@ export async function buildToolCatalog(
     }
   }
 
-  const mcpTools = await discoverMcpTools(config.mcpServers ?? [], signal);
+  const mcpTools = await discoverMcpTools(env, config, signal);
   for (const mt of mcpTools) {
     if (seen.has(mt.qualifiedName)) continue;
     seen.add(mt.qualifiedName);
@@ -410,22 +419,28 @@ export async function executeToolCall(
     });
   }
 
-  // 2. Custom tools (HTTP webhook OR attached WebSocket SDK tool)
   const custom = catalog.customByName.get(toolName);
-  if (custom) {
-    if (custom.requiresApproval && !ctx.approvedToolCallIds.has(callId)) {
-      throw new PauseForInputSignal({
-        kind: "approval",
-        toolCallId: callId,
-        toolName,
-        promptPayload: {
-          tool: toolName,
-          args,
-          message: `Approve execution of tool '${toolName}'?`,
-        },
-      });
-    }
+  const mcpTool = catalog.mcpByName.get(toolName);
+  const subject = ctx.config.toolIdentity?.subject ?? ctx.config.id;
+  if (ctx.mcpBinding && (!mcpTool?.server.auth || ctx.mcpBinding.url !== mcpTool.server.url ||
+      ctx.mcpBinding.audience !== mcpTool.server.audience || ctx.mcpBinding.subject !== subject)) {
+    throw new Error(`MCP tool '${toolName}' changed while waiting for input`);
+  }
+  if (custom?.requiresApproval && !ctx.approvedToolCallIds.has(callId)) {
+    throw new PauseForInputSignal({
+      kind: "approval",
+      toolCallId: callId,
+      toolName,
+      promptPayload: {
+        tool: toolName,
+        args,
+        message: `Approve execution of tool '${toolName}'?`,
+      },
+    });
+  }
 
+  // 2. Custom tools (HTTP webhook OR attached WebSocket SDK tool)
+  if (custom) {
     if (custom.url) {
       const res = await fetch(custom.url, {
         method: "POST",
@@ -465,9 +480,34 @@ export async function executeToolCall(
   }
 
   // 3. Remote MCP tools
-  const mcpTool = catalog.mcpByName.get(toolName);
   if (mcpTool) {
-    return invokeMcpTool(mcpTool, args, ctx.signal);
+    const approval = ctx.approvedToolCallIds.has(callId) ? ctx.approval : undefined;
+    const { url, audience } = mcpTool.server;
+    try {
+      return await invokeMcpTool(mcpTool, args, { env: ctx.env, agent: ctx.config, call: { runId: ctx.runId, callId, approval } }, ctx.signal, ctx.mcpInput);
+    } catch (error) {
+      if (!(error instanceof McpInputRequired)) throw error;
+      if (ctx.codemodeDepth) throw new Error(`MCP tool '${toolName}' must be called directly to request input`);
+      if (error.input.method === "agent-runtime/approval") {
+        if (approval) throw new Error(`MCP tool '${toolName}' requested approval again`);
+        throw new PauseForInputSignal({
+          kind: "approval",
+          toolCallId: callId,
+          toolName,
+          promptPayload: { tool: toolName, args, message: `Approve execution of tool '${toolName}'?` },
+          mcpInput: { url, audience, subject, mode: "approval" },
+        });
+      }
+      const sealedState = error.requestState === undefined ? undefined : await sealSecret(error.requestState, ctx.env.VAULT_SECRET);
+      const elicitation = error.input.params;
+      throw new PauseForInputSignal({
+        kind: "question",
+        toolCallId: callId,
+        toolName,
+        promptPayload: { tool: toolName, question: elicitation.message, elicitation },
+        mcpInput: { key: error.key, url, audience, subject, sealedState, mode: elicitation.mode },
+      });
+    }
   }
 
   // 4. Built-in Repo File tools
@@ -480,7 +520,6 @@ export async function executeToolCall(
     toolName === "delete_file" ||
     toolName === "repo_checkpoint" ||
     toolName === "repo_restore" ||
-    toolName === "repo_diff" ||
     toolName === "repo_history"
   ) {
     const { repoId, lineage, branch } = await ctx.ensureAgentRepo();
@@ -603,13 +642,6 @@ export async function executeToolCall(
       return out;
     }
 
-    if (toolName === "repo_diff") {
-      return cfs.diff(lineage, {
-        from: String(args.from ?? ""),
-        to: String(args.to ?? branch),
-      });
-    }
-
     if (toolName === "repo_history") {
       return cfs.history(lineage, {
         ref: branch,
@@ -636,44 +668,32 @@ export async function executeToolCall(
       ctx.saveVmSession(branch, booted.vmId, booted.leaseExpiresAt);
     }
 
+    const execRequest = {
+      execId: randomId("exec", 8),
+      command,
+      cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+      timeoutS: typeof args.timeoutS === "number" ? args.timeoutS : 60,
+      commit: {
+        author: `agent:${ctx.config.id}`,
+        message: `bash: ${command.slice(0, 72)}`,
+        skip: false,
+      },
+    };
     let execRes;
     try {
-      execRes = await cfs.execVm(session.vmId, lineage, {
-        execId: randomId("exec", 8),
-        command,
-        cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-        timeoutS: typeof args.timeoutS === "number" ? args.timeoutS : 60,
-        commit: {
-          author: `agent:${ctx.config.id}`,
-          message: `bash: ${command.slice(0, 72)}`,
-          skip: false,
-        },
-      });
+      execRes = await cfs.execVm(session.vmId, lineage, execRequest);
     } catch (err) {
-      // If VM stopped or expired on camelfsd, re-ensure once and retry
       const apiErr = extractApiError(err);
-      if (apiErr && (apiErr.status === 404 || apiErr.status === 409 || apiErr.status === 410)) {
-        const rebooted = await cfs.ensureVm({
-          lineage,
-          ref: branch,
-          holder: ctx.config.id,
-          leaseS: 600,
-        });
-        ctx.saveVmSession(branch, rebooted.vmId, rebooted.leaseExpiresAt);
-        execRes = await cfs.execVm(rebooted.vmId, lineage, {
-          execId: randomId("exec", 8),
-          command,
-          cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-          timeoutS: typeof args.timeoutS === "number" ? args.timeoutS : 60,
-          commit: {
-            author: `agent:${ctx.config.id}`,
-            message: `bash: ${command.slice(0, 72)}`,
-            skip: false,
-          },
-        });
-      } else {
+      if (!apiErr || apiErr.status >= 500 || apiErr.code === "vm_lost") {
+        // The command may have reached the guest. Refresh the VM on the next call.
+        ctx.clearVmSession(branch, session.vmId);
         throw err;
       }
+      // A stopped VM rejects exec before running the command.
+      if (apiErr?.status !== 410 || apiErr.code !== "vm_stopped") throw err;
+      const booted = await cfs.ensureVm({ lineage, ref: branch, holder: ctx.config.id });
+      ctx.saveVmSession(branch, booted.vmId, booted.leaseExpiresAt);
+      execRes = await cfs.execVm(booted.vmId, lineage, execRequest);
     }
 
     ctx.recordVmMs(execRes.billableMs || execRes.durationMs || 0);

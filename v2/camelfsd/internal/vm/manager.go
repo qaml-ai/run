@@ -3,6 +3,8 @@ package vm
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -115,25 +117,70 @@ type liveVMSessionAdapter struct {
 	vmRec *store.VMRecord
 }
 
-func (a *liveVMSessionAdapter) ApplyOps(ctx context.Context, ops []repo.WorkspaceFileOp, newHeadCommit string) error {
-	if err := a.mgr.driver.ApplyWorkspaceOps(ctx, a.vmRec.VMID, ops); err != nil {
-		return err
-	}
+func (a *liveVMSessionAdapter) ApplyOps(ctx context.Context, ops []repo.WorkspaceFileOp) error {
+	return a.mgr.driver.ApplyWorkspaceOps(ctx, a.vmRec.VMID, ops)
+}
+
+func (a *liveVMSessionAdapter) UpdateHead(ctx context.Context, newHeadCommit string) error {
 	a.vmRec.HeadCommit = newHeadCommit
 	a.vmRec.LastActiveAt = a.mgr.nowMs()
 	return a.mgr.store.UpdateVM(ctx, a.vmRec)
 }
 
-func (a *liveVMSessionAdapter) ReplaceTree(ctx context.Context, files map[string]repo.MaterializedFile, newHeadCommit string) error {
-	if err := a.mgr.driver.ReplaceWorkspace(ctx, a.vmRec.VMID, files); err != nil {
-		return err
-	}
-	a.vmRec.HeadCommit = newHeadCommit
-	a.vmRec.LastActiveAt = a.mgr.nowMs()
-	return a.mgr.store.UpdateVM(ctx, a.vmRec)
+func (a *liveVMSessionAdapter) StopForRestore(ctx context.Context) error {
+	return a.mgr.stopWithoutCommitLocked(ctx, a.vmRec.VMID)
 }
 
-// WithRefWriteLock implements repo.VMCoordinator so /write, /restore, /merge, and /refs
+type liveVMReaderAdapter struct {
+	mgr   *Manager
+	vmRec *store.VMRecord
+}
+
+func (a *liveVMReaderAdapter) HeadCommit() string {
+	return a.vmRec.HeadCommit
+}
+
+func (a *liveVMReaderAdapter) ReadFile(ctx context.Context, path string, offset, limit int64) (*repo.ReadResponse, error) {
+	return a.mgr.driver.ReadWorkspaceFile(ctx, a.vmRec.VMID, a.vmRec.HeadCommit, path, offset, limit)
+}
+
+func (a *liveVMReaderAdapter) ListEntries(ctx context.Context, dirPrefix string, recursive bool, glob string) ([]repo.TreeEntry, error) {
+	return a.mgr.driver.ListWorkspaceEntries(ctx, a.vmRec.VMID, dirPrefix, recursive, glob)
+}
+
+func (a *liveVMReaderAdapter) Grep(ctx context.Context, req repo.GrepRequest) ([]repo.GrepMatch, error) {
+	return a.mgr.driver.GrepWorkspace(ctx, a.vmRec.VMID, req)
+}
+
+// WithRefReadVM routes read-only API calls directly to the running VM on (lineage, ref) if active.
+func (m *Manager) WithRefReadVM(ctx context.Context, lineage, ref string, fn func(reader repo.LiveVMReader) error) (bool, error) {
+	refLk := m.getRefLock(lineage, ref)
+	refLk.Lock()
+	defer refLk.Unlock()
+
+	running, err := m.store.GetRunningVMByRef(ctx, lineage, ref)
+	if err != nil {
+		return false, err
+	}
+	if running == nil {
+		return false, nil
+	}
+
+	vmLk := m.getVMLock(running.VMID)
+	vmLk.Lock()
+	defer vmLk.Unlock()
+
+	fresh, err := m.store.GetVM(ctx, running.VMID)
+	if err != nil {
+		return false, err
+	}
+	if fresh.State != "running" {
+		return false, nil
+	}
+	return true, fn(&liveVMReaderAdapter{mgr: m, vmRec: fresh})
+}
+
+// WithRefWriteLock implements repo.VMCoordinator so /write, /restore, and /refs
 // serialize cleanly with active VM sessions on (lineage, ref) and synchronize /workspace directly
 // when held by the same holder.
 func (m *Manager) WithRefWriteLock(
@@ -158,8 +205,11 @@ func (m *Manager) WithRefWriteLock(
 	if running.LeaseExpiresAt <= now && running.Holder != holder {
 		vmLk := m.getVMLock(running.VMID)
 		vmLk.Lock()
-		_, _ = m.stopLocked(ctx, running.VMID)
+		_, err := m.stopLocked(ctx, running.VMID)
 		vmLk.Unlock()
+		if err != nil {
+			return err
+		}
 		return fn(nil)
 	}
 
@@ -173,7 +223,10 @@ func (m *Manager) WithRefWriteLock(
 
 	// Re-read VM record under vmLk in case state or headCommit changed.
 	fresh, err := m.store.GetVM(ctx, running.VMID)
-	if err != nil || fresh.State != "running" {
+	if err != nil {
+		return err
+	}
+	if fresh.State != "running" {
 		return fn(nil)
 	}
 	return fn(&liveVMSessionAdapter{mgr: m, vmRec: fresh})
@@ -283,8 +336,11 @@ func (m *Manager) BootOrReuse(ctx context.Context, req BootVMRequest) (*BootVMRe
 			// Expired VM held by previous holder: stop & reap cleanly first.
 			vmLk := m.getVMLock(existing.VMID)
 			vmLk.Lock()
-			_, _ = m.stopLocked(ctx, existing.VMID)
+			_, err := m.stopLocked(ctx, existing.VMID)
 			vmLk.Unlock()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -298,26 +354,22 @@ func (m *Manager) BootOrReuse(ctx context.Context, req BootVMRequest) (*BootVMRe
 		return nil, err
 	}
 
-	// Load files from head commit to materialize /workspace BEFORE starting VM session.
-	_, files, err := m.repo.LoadCommitFiles(ctx, leaseRes.Commit)
-	if err != nil {
-		_, _ = m.repo.LeaseRef(ctx, lineage, repo.LeaseRequest{Ref: ref, Holder: holder, Release: true})
-		return nil, err
-	}
-
 	vmID := store.RandomID("vm")
-	hostID, err := m.driver.Start(ctx, StartSpec{
-		VMID:      vmID,
-		VCPUs:     vcpus,
-		MemoryMiB: memMiB,
-		Env:       req.Env,
-		Files:     files,
-	})
+	spec := StartSpec{VMID: vmID, VCPUs: vcpus, MemoryMiB: memMiB, Env: req.Env}
+	if _, firecracker := m.driver.(*FirecrackerDriver); firecracker {
+		_, spec.Tree, err = m.repo.LoadCommitTree(ctx, leaseRes.Commit)
+	} else {
+		_, spec.Files, err = m.repo.LoadCommitFiles(ctx, leaseRes.Commit)
+	}
+	var hostID string
+	if err == nil {
+		hostID, err = m.driver.Start(ctx, spec)
+	}
 	if err != nil {
 		_, _ = m.repo.LeaseRef(ctx, lineage, repo.LeaseRequest{Ref: ref, Holder: holder, Release: true})
 		return nil, err
 	}
-	if hostID != "" && hostID != "local" && hostID != "firecracker" {
+	if hostID != "" && hostID != "local" && hostID != firecrackerHost {
 		m.hostMux.BindVMHost(vmID, hostID)
 	}
 
@@ -409,17 +461,17 @@ func (m *Manager) Exec(
 	if err != nil {
 		return nil, false, err
 	}
+	if vmRec.State == store.VMStateLost {
+		return nil, false, apperr.VMLost(vmID)
+	}
 	if vmRec.State != "running" {
-		return nil, false, apperr.InvalidRequestf("vm %q is not running (state=%s)", vmID, vmRec.State)
+		return nil, false, apperr.VMStopped(vmID)
 	}
 	if strings.TrimSpace(req.Command) == "" {
 		return nil, false, apperr.InvalidRequest("command is required")
 	}
 
 	startTime := time.Now()
-	vmRec.LastActiveAt = m.nowMs()
-	_ = m.store.UpdateVM(ctx, vmRec)
-
 	drvRes, err := m.driver.Exec(ctx, DriverExecRequest{
 		VMID:     vmID,
 		ExecID:   execID,
@@ -434,17 +486,41 @@ func (m *Manager) Exec(
 		return nil, false, err
 	}
 
-	durationMs := time.Since(startTime).Milliseconds()
-	if durationMs < 1 {
-		durationMs = 1
+	resp, err := m.completeExec(ctx, vmRec, execID, req, drvRes, time.Since(startTime))
+	if err != nil {
+		// The guest may have changed its disk. Discard that VM so a later
+		// command or clean stop cannot publish an unfinished checkpoint.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		return nil, false, apperr.Internal("finalize exec", errors.Join(err, m.discardExecVM(cleanup, vmID)))
 	}
+	return resp, false, nil
+}
+
+func (m *Manager) checkpointWorkspaceLocked(ctx context.Context, vmRec *store.VMRecord, baseCommit, author, message string) (*repo.WorkspaceCommitResult, error) {
+	cp, err := m.driver.CheckpointWorkspace(ctx, vmRec.VMID)
+	if err != nil {
+		return nil, err
+	}
+	if cp.Delta {
+		return m.repo.ApplyWorkspaceDelta(ctx, vmRec.Lineage, baseCommit, author, message, cp.Puts, cp.Deletes)
+	}
+	return m.repo.PrepareWorkspaceSnapshot(ctx, vmRec.Lineage, baseCommit, author, message, cp.Snapshot)
+}
+
+func (m *Manager) completeExec(
+	ctx context.Context, vmRec *store.VMRecord, execID string, req ExecRequest,
+	drvRes *DriverExecResult, elapsed time.Duration,
+) (*ExecResponse, error) {
+	durationMs := max(elapsed.Milliseconds(), 1)
+	baseCommit := vmRec.HeadCommit
 
 	var commitRes repo.WorkspaceCommitResult
 	skipCommit := req.Commit != nil && req.Commit.Skip
 	if skipCommit {
 		headObj, err := m.repo.GetCommit(ctx, vmRec.HeadCommit)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		commitRes = repo.WorkspaceCommitResult{
 			Changed:      false,
@@ -453,10 +529,6 @@ func (m *Manager) Exec(
 			FilesChanged: []string{},
 		}
 	} else {
-		snapshot, err := m.driver.SnapshotWorkspace(ctx, vmID)
-		if err != nil {
-			return nil, false, err
-		}
 		author := "agent:" + vmRec.Holder
 		msg := "bash: " + truncateCmd(req.Command, 72)
 		if req.Commit != nil {
@@ -467,34 +539,18 @@ func (m *Manager) Exec(
 				msg = req.Commit.Message
 			}
 		}
-		cr, err := m.repo.CommitSnapshotIfChanged(
-			ctx,
-			vmRec.Lineage,
-			vmRec.Ref,
-			vmRec.Holder,
-			vmRec.LeaseEpoch,
-			vmRec.HeadCommit,
-			author,
-			msg,
-			snapshot,
-		)
+		cr, err := m.checkpointWorkspaceLocked(ctx, vmRec, baseCommit, author, msg)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		commitRes = *cr
-		if commitRes.Changed {
-			vmRec.HeadCommit = commitRes.Commit
-		}
 	}
 
 	now := m.nowMs()
-	billableMs := durationMs
+	vmRec.HeadCommit = commitRes.Commit
 	vmRec.LastActiveAt = now
 	vmRec.TotalDurationMs += durationMs
-	vmRec.BilledMs += billableMs
-	if err := m.store.UpdateVM(ctx, vmRec); err != nil {
-		return nil, false, err
-	}
+	vmRec.BilledMs += durationMs
 
 	resp := &ExecResponse{
 		ExecID:     execID,
@@ -504,18 +560,58 @@ func (m *Manager) Exec(
 		Cwd:        drvRes.Cwd,
 		TimedOut:   drvRes.TimedOut,
 		DurationMs: durationMs,
-		BillableMs: billableMs,
+		BillableMs: durationMs,
 		Commit:     commitRes,
 	}
-	if raw, err := json.Marshal(resp); err == nil {
-		_ = m.store.PutExecReceipt(ctx, &store.ExecReceipt{
-			VMID:         vmID,
-			ExecID:       execID,
-			ResponseJSON: raw,
-			CreatedAt:    now,
-		})
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return nil, apperr.Internal("marshal exec receipt", err)
 	}
-	return resp, false, nil
+	if err := m.store.CompleteExec(ctx, store.CompleteExecParams{
+		VM: vmRec, BaseCommit: baseCommit, Tree: commitRes.Tree,
+		Receipt: store.ExecReceipt{VMID: vmRec.VMID, ExecID: execID, ResponseJSON: raw, CreatedAt: now},
+	}); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (m *Manager) discardExecVM(ctx context.Context, vmID string) error {
+	stopErr := m.driver.Stop(ctx, vmID)
+	rec, err := m.store.GetVM(ctx, vmID)
+	if err != nil {
+		return errors.Join(stopErr, err)
+	}
+	if rec.State != "running" {
+		return stopErr
+	}
+	return errors.Join(stopErr, retireLostVM(ctx, m.store, rec))
+}
+
+func retireLostVM(ctx context.Context, st store.Store, rec *store.VMRecord) error {
+	lease, err := st.LeaseRef(ctx, store.LeaseRefParams{
+		Lineage: rec.Lineage, Ref: rec.Ref, Holder: rec.Holder,
+		Release: true, ExpectedEpoch: rec.LeaseEpoch, NowMs: time.Now().UnixMilli(),
+	})
+	if err != nil && !apperr.IsCode(err, apperr.CodeNotFound) {
+		return fmt.Errorf("release lease for lost VM %s: %w", rec.VMID, err)
+	}
+	// Completion checks the same ref lease, so any in-flight transaction
+	// has either won by now or cannot commit. Reload the VM after releasing
+	// the lease to retain the winning transaction's accounting and head.
+	fresh, err := st.GetVM(ctx, rec.VMID)
+	if err != nil {
+		return fmt.Errorf("read lost VM %s: %w", rec.VMID, err)
+	}
+	if lease != nil && fresh.HeadCommit == rec.HeadCommit {
+		fresh.HeadCommit = lease.Commit
+	}
+	fresh.LeaseExpiresAt = 0
+	fresh.State = store.VMStateLost
+	if err := st.UpdateVM(ctx, fresh); err != nil {
+		return fmt.Errorf("retire lost VM %s: %w", rec.VMID, err)
+	}
+	return nil
 }
 
 func (m *Manager) RenewLease(ctx context.Context, vmID string, req RenewLeaseRequest) (*RenewLeaseResponse, error) {
@@ -572,6 +668,15 @@ func (m *Manager) Stop(ctx context.Context, vmID string) (*StopVMResponse, error
 }
 
 func (m *Manager) stopLocked(ctx context.Context, vmID string) (*StopVMResponse, error) {
+	return m.stopInternalLocked(ctx, vmID, true)
+}
+
+func (m *Manager) stopWithoutCommitLocked(ctx context.Context, vmID string) error {
+	_, err := m.stopInternalLocked(ctx, vmID, false)
+	return err
+}
+
+func (m *Manager) stopInternalLocked(ctx context.Context, vmID string, commitWorkspace bool) (*StopVMResponse, error) {
 	vmRec, err := m.store.GetVM(ctx, vmID)
 	if err != nil {
 		return nil, err
@@ -579,30 +684,36 @@ func (m *Manager) stopLocked(ctx context.Context, vmID string) (*StopVMResponse,
 	if vmRec.State != "running" {
 		return &StopVMResponse{
 			VMID:       vmRec.VMID,
-			State:      "stopped",
+			State:      vmRec.State,
 			Commit:     vmRec.HeadCommit,
 			UnbilledMs: 0,
 		}, nil
 	}
 
-	// Commit any dirty uncommitted /workspace files before stopping the VM.
-	if snapshot, snapErr := m.driver.SnapshotWorkspace(ctx, vmID); snapErr == nil {
-		if cr, commitErr := m.repo.CommitSnapshotIfChanged(
-			ctx,
-			vmRec.Lineage,
-			vmRec.Ref,
-			vmRec.Holder,
-			vmRec.LeaseEpoch,
-			vmRec.HeadCommit,
-			"agent:"+vmRec.Holder,
-			"vm stop: final workspace sync",
-			snapshot,
-		); commitErr == nil && cr.Changed {
+	if commitWorkspace {
+		cr, err := m.checkpointWorkspaceLocked(ctx, vmRec, vmRec.HeadCommit,
+			"agent:"+vmRec.Holder, "vm stop: final workspace sync")
+		if err != nil {
+			return nil, err
+		}
+		if cr.Changed {
+			_, err := m.store.SetRef(ctx, store.SetRefParams{
+				Lineage: vmRec.Lineage, Ref: vmRec.Ref, Holder: vmRec.Holder,
+				ExpectedEpoch: vmRec.LeaseEpoch, ExpectedCommit: vmRec.HeadCommit,
+				Commit: cr.Commit, Tree: cr.Tree, NowMs: m.nowMs(),
+			})
+			if err != nil {
+				return nil, err
+			}
 			vmRec.HeadCommit = cr.Commit
+			if err := m.store.UpdateVM(ctx, vmRec); err != nil {
+				return nil, err
+			}
 		}
 	}
-
-	_ = m.driver.Stop(ctx, vmID)
+	if err := m.driver.Stop(ctx, vmID); err != nil {
+		return nil, err
+	}
 	_, _ = m.repo.LeaseRef(ctx, vmRec.Lineage, repo.LeaseRequest{
 		Ref:     vmRec.Ref,
 		Holder:  vmRec.Holder,
@@ -665,7 +776,7 @@ func (m *Manager) reaperLoop(ctx context.Context, interval time.Duration) {
 }
 
 func (m *Manager) reapOnce(ctx context.Context) {
-	running, err := m.store.ListRunningVMs(ctx)
+	running, err := m.store.ListRunningVMs(ctx, false)
 	if err != nil {
 		return
 	}

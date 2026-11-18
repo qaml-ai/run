@@ -6,7 +6,7 @@ import {
   type ChannelInfo, type CreatedTenant, type CreateTenantOptions, type CreateTokenInput,
   type DecisionRequest, type DecisionResult, type DefinitionConfig, type FetchLike,
   type GenerateImageInput, type ImageRecord, type LocalTool, type ProviderConfig, type RepoCommit,
-  type RepoDiffChange, type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
+  type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
   type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SpeechInput,
   type SpeechResult, type StatelessRunOptions, type TenantInfo, type TranscribeInput,
   type TranscriptionResult, type VoiceSession, type WebhookEndpoint, type WebSocketConstructorLike,
@@ -108,7 +108,7 @@ export class CamelRun {
   readonly billing = {
     get: (): Promise<BillingInfo> => this.requestJson("GET", "/v2/billing"),
     addCredits: ({ adminKey, refId, ...rest }: AddCreditsInput): Promise<{ balanceUsd: number }> =>
-      this.requestJson("POST", "/v2/billing/credits", { ...rest, refId: refId ?? crypto.randomUUID() }, adminKey ? { headers: { "X-Admin-Key": adminKey } } : undefined),
+      this.requestJson("POST", "/v2/billing/credits", { ...rest, refId: refId ?? crypto.randomUUID() }, { headers: { "X-Admin-Key": adminKey } }),
   };
 
   readonly definitions = {
@@ -130,6 +130,8 @@ export class CamelRun {
       const resolvedPuts = puts ?? (path ? [{ path, content, base64, mode }] : undefined);
       return this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/write`, { ...rest, ...(resolvedPuts ? { puts: resolvedPuts } : {}) });
     },
+    restore: (repoId: string, input: { targetCommit: string; ref?: string; message?: string }): Promise<{ commit: string; tree: string }> =>
+      this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/restore`, input),
     ls: async (repoId: string, options?: { at?: string; path?: string; recursive?: boolean; glob?: string }): Promise<{ commit: string; entries: RepoEntry[] }> => {
       const q = buildQuery({ at: options?.at, path: options?.path, recursive: options?.recursive !== undefined ? (options.recursive ? 1 : 0) : undefined, glob: options?.glob });
       const res = await this.requestJson<unknown>("GET", `/v2/repos/${encodeURIComponent(repoId)}/ls${q}`);
@@ -137,8 +139,6 @@ export class CamelRun {
     },
     grep: (repoId: string, input: { pattern: string; at?: string; pathPrefix?: string; maxMatches?: number }): Promise<{ commit: string; matches: RepoGrepMatch[] }> =>
       this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/grep`, input),
-    diff: (repoId: string, options: { from: string; to: string }): Promise<{ fromCommit: string; toCommit: string; changes: RepoDiffChange[] }> =>
-      this.requestJson("GET", `/v2/repos/${encodeURIComponent(repoId)}/diff${buildQuery(options)}`),
     history: async (repoId: string, options?: { ref?: string; limit?: number }): Promise<{ commits: RepoCommit[] }> => {
       const res = await this.requestJson<unknown>("GET", `/v2/repos/${encodeURIComponent(repoId)}/history${buildQuery(options ?? {})}`);
       return Array.isArray(res) ? { commits: res as RepoCommit[] } : (res as { commits: RepoCommit[] });

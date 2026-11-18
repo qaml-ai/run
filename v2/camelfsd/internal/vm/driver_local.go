@@ -96,20 +96,7 @@ func (d *LocalDriver) Start(_ context.Context, spec StartSpec) (string, error) {
 		return "", err
 	}
 
-	initEnv := make(map[string]string, len(spec.Env))
-	for k, v := range spec.Env {
-		initEnv[k] = v
-	}
-
-	sess := &localVMSession{
-		vmID:         spec.VMID,
-		baseDir:      baseDir,
-		workspaceDir: workspaceDir,
-		ctrlDir:      ctrlDir,
-		envFile:      filepath.Join(ctrlDir, "env.snapshot"),
-		initEnv:      initEnv,
-		lastHostCwd:  workspaceDir,
-	}
+	sess := newLocalSession(spec.VMID, baseDir, workspaceDir, ctrlDir, spec.Env)
 	if err := sess.ensureShellLocked(); err != nil {
 		_ = os.RemoveAll(baseDir)
 		return "", err
@@ -120,6 +107,22 @@ func (d *LocalDriver) Start(_ context.Context, spec StartSpec) (string, error) {
 	d.mu.Unlock()
 
 	return "local", nil
+}
+
+func newLocalSession(vmID, baseDir, workspaceDir, ctrlDir string, env map[string]string) *localVMSession {
+	initEnv := make(map[string]string, len(env))
+	for k, v := range env {
+		initEnv[k] = v
+	}
+	return &localVMSession{
+		vmID:         vmID,
+		baseDir:      baseDir,
+		workspaceDir: workspaceDir,
+		ctrlDir:      ctrlDir,
+		envFile:      filepath.Join(ctrlDir, "env.snapshot"),
+		initEnv:      initEnv,
+		lastHostCwd:  workspaceDir,
+	}
 }
 
 func (d *LocalDriver) getSession(vmID string) (*localVMSession, error) {
@@ -271,6 +274,8 @@ func (p *localShellProc) killProcessGroup() {
 	<-p.waitCh
 }
 
+const defaultShellPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 const persistentBashLoop = `
 if [ -f "$__CAMELFS_ENV_FILE" ]; then
   source "$__CAMELFS_ENV_FILE" >/dev/null 2>&1 || true
@@ -321,7 +326,7 @@ func (s *localVMSession) ensureShellLocked() error {
 		"__CAMELFS_ENV_FILE": s.envFile,
 	}
 	if envMap["PATH"] == "" {
-		envMap["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		envMap["PATH"] = defaultShellPath
 	}
 	for k, v := range s.initEnv {
 		envMap[k] = v
@@ -442,6 +447,10 @@ func (d *LocalDriver) Exec(ctx context.Context, req DriverExecRequest) (*DriverE
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
+	return sess.execLocked(ctx, req)
+}
+
+func (sess *localVMSession) execLocked(ctx context.Context, req DriverExecRequest) (*DriverExecResult, error) {
 	if err := sess.ensureShellLocked(); err != nil {
 		return nil, err
 	}
@@ -592,24 +601,48 @@ func (d *LocalDriver) ApplyWorkspaceOps(_ context.Context, vmID string, ops []re
 	return repo.ApplyOpsToDir(sess.workspaceDir, ops)
 }
 
-func (d *LocalDriver) ReplaceWorkspace(_ context.Context, vmID string, files map[string]repo.MaterializedFile) error {
-	sess, err := d.getSession(vmID)
-	if err != nil {
-		return err
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return repo.WriteMaterializedFilesToDir(sess.workspaceDir, files)
-}
-
-func (d *LocalDriver) SnapshotWorkspace(_ context.Context, vmID string) (map[string]repo.MaterializedFile, error) {
+func (d *LocalDriver) ReadWorkspaceFile(_ context.Context, vmID, commitHash, relPath string, offset, limit int64) (*repo.ReadResponse, error) {
 	sess, err := d.getSession(vmID)
 	if err != nil {
 		return nil, err
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return repo.ScanDirFiles(sess.workspaceDir)
+	return repo.DirReadFile(sess.workspaceDir, commitHash, relPath, offset, limit)
+}
+
+func (d *LocalDriver) ListWorkspaceEntries(_ context.Context, vmID, dirPrefix string, recursive bool, glob string) ([]repo.TreeEntry, error) {
+	sess, err := d.getSession(vmID)
+	if err != nil {
+		return nil, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return repo.DirListEntries(sess.workspaceDir, dirPrefix, recursive, glob)
+}
+
+func (d *LocalDriver) GrepWorkspace(_ context.Context, vmID string, req repo.GrepRequest) ([]repo.GrepMatch, error) {
+	sess, err := d.getSession(vmID)
+	if err != nil {
+		return nil, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return repo.DirGrepFiles(sess.workspaceDir, req)
+}
+
+func (d *LocalDriver) CheckpointWorkspace(_ context.Context, vmID string) (*DriverCheckpoint, error) {
+	sess, err := d.getSession(vmID)
+	if err != nil {
+		return nil, err
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	files, err := repo.ScanDirFiles(sess.workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+	return &DriverCheckpoint{Snapshot: files}, nil
 }
 
 func (d *LocalDriver) Stop(_ context.Context, vmID string) error {

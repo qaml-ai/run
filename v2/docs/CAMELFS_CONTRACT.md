@@ -1,6 +1,6 @@
 # `camelfsd` v2 Wire Contract (`worker` <-> `camelfsd`)
 
-`camelfsd` is a standalone Go service providing **Git-backed content-addressable repositories** (lineages, refs, leases, commits, trees, blobs, diff/merge/grep) and **session VMs** (persistent bash shells over `/workspace` with atomic post-command commits).
+`camelfsd` is a standalone Go service providing **Git-backed content-addressable repositories** (lineages, refs, leases, commits, trees, blobs, grep) and **session VMs** (persistent bash shells over `/workspace` with atomic post-command commits).
 
 ---
 
@@ -111,26 +111,16 @@ Atomic multi-file write/delete/move producing a commit on `ref`.
 { "commits": [{ "commit": "<sha256>", "tree": "<sha256>", "parents": ["<sha256>"], "author": "agent:agt_123", "message": "...", "createdAt": 1763400000000 }] }
 ```
 
-### `GET /v1/lineages/{lineage}/diff?from=<refOrCommit>&to=<refOrCommit>`
-- Response `200`:
-```json
-{ "fromCommit": "<sha256>", "toCommit": "<sha256>", "changes": [{ "path": "src/index.ts", "kind": "added", "oldHash": "", "newHash": "<sha256>", "patch": "+console.log(1)\n" }] }
-```
-
 ### `POST /v1/lineages/{lineage}/restore`
 - Request: `{ "ref": "refs/heads/main", "targetCommit": "<sha256>", "holder"?: "agt_123", "author": "agent:agt_123", "message": "restore" }`
-- Response `200`: `{ "commit": "<sha256>", "tree": "<sha256>" }` (also updates live VM `/workspace` if held by `holder`).
-
-### `POST /v1/lineages/{lineage}/merge`
-- Request: `{ "sourceRef": "refs/heads/feat", "targetRef": "refs/heads/main", "strategy": "three-way | ff-only | squash", "holder"?: "agt_123", "author": "workflow", "message": "merge feat" }`
-- Response `200` (or `409` on conflict): `{ "commit": "<sha256>", "tree": "<sha256>", "conflicts": [] }`
+- Response `200`: `{ "commit": "<sha256>", "tree": "<sha256>" }` (also updates live VM `/workspace` or stops/replaces active Firecracker session if held by `holder`).
 
 ---
 
 ## 3. Session VM Endpoints (1 VM per `(lineage, ref)`, Atomic Exec + Commit)
 
 ### `POST /v1/vms`
-Finds the running VM for `(lineage, ref)` (if `holder` matches) or boots one with `/workspace` materialized on the host from `ref`'s head commit.
+Finds the running VM for `(lineage, ref)` when `holder` matches, or starts one from the ref's head commit. The direct Firecracker driver sends the commit's file tree metadata to the guest, which mounts a lazy read-only FUSE lowerdir (fetching blobs on demand over virtio-vsock) under a writable `overlayfs` at `/workspace`. The local and outbound host drivers receive the file tree.
 - Request:
 ```json
 {
@@ -159,7 +149,7 @@ Finds the running VM for `(lineage, ref)` (if `holder` matches) or boots one wit
 ```
 
 ### `POST /v1/vms/{vmId}/exec`
-Runs `command` in the VM's **persistent bash shell** (preserving `cwd` and exported environment variables across calls!) and **atomically commits any `/workspace` changes** to `ref` before returning. Idempotent by `execId`.
+Runs `command` in the VM's **persistent bash shell** (preserving `cwd` and exported environment variables across calls!) and publishes any `/workspace` changes, updated VM accounting, and the execution receipt in one transaction before returning. Idempotent by `execId`.
 - Request:
 ```json
 {
@@ -192,16 +182,21 @@ Runs `command` in the VM's **persistent bash shell** (preserving `cwd` and expor
 }
 ```
 
+A replay with an existing execution receipt returns that receipt. An exec against a
+lost VM without a receipt returns HTTP 410 with code `vm_lost`. The interrupted
+command may have run. A new boot starts from the last committed workspace.
+
 ### `POST /v1/vms/{vmId}/lease`
 - Request: `{ "leaseS": 600 }`
 - Response `200`: `{ "vmId": "vm_...", "state": "running", "leaseExpiresAt": 1763400600000 }`
 
 ### `POST /v1/vms/{vmId}/stop`
-Commits any uncommitted `/workspace` edits, releases the ref lease, and stops the VM.
+Commits any uncommitted `/workspace` edits on a running VM, releases the ref lease, and stops it.
+If the VM was lost, returns its `lost` state and the last committed workspace.
 - Response `200`: `{ "vmId": "vm_...", "state": "stopped", "commit": "<sha256>", "unbilledMs": 120 }`
 
 ### `GET /v1/vms/{vmId}`
-- Response `200`: `{ "vmId": "vm_...", "lineage": "lin_...", "ref": "refs/heads/main", "holder": "agt_123", "state": "running | stopped", "headCommit": "<sha256>", "leaseExpiresAt": 1763400600000 }`
+- Response `200`: `{ "vmId": "vm_...", "lineage": "lin_...", "ref": "refs/heads/main", "holder": "agt_123", "state": "running | stopped | lost", "headCommit": "<sha256>", "leaseExpiresAt": 1763400600000 }`
 
 ---
 

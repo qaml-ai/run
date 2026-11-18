@@ -22,11 +22,11 @@ type TreeEntry struct {
 	Type string `json:"type"`
 	Size int64  `json:"size"`
 	Mode int    `json:"mode"`
-	Hash string `json:"hash"`
+	Hash string `json:"hash,omitempty"`
 }
 
 type CommitObject struct {
-	Tree      string   `json:"tree"`
+	Tree      string   `json:"tree,omitempty"`
 	Parents   []string `json:"parents"`
 	Author    string   `json:"author"`
 	Message   string   `json:"message"`
@@ -35,7 +35,7 @@ type CommitObject struct {
 
 type HistoryCommit struct {
 	Commit    string   `json:"commit"`
-	Tree      string   `json:"tree"`
+	Tree      string   `json:"tree,omitempty"`
 	Parents   []string `json:"parents"`
 	Author    string   `json:"author"`
 	Message   string   `json:"message"`
@@ -51,7 +51,7 @@ type CreateLineageResponse struct {
 	Lineage    string `json:"lineage"`
 	DefaultRef string `json:"defaultRef"`
 	Commit     string `json:"commit"`
-	Tree       string `json:"tree"`
+	Tree       string `json:"tree,omitempty"`
 }
 
 type ForkRequest struct {
@@ -65,7 +65,7 @@ type ForkResponse struct {
 	Lineage string `json:"lineage"`
 	Ref     string `json:"ref"`
 	Commit  string `json:"commit"`
-	Tree    string `json:"tree"`
+	Tree    string `json:"tree,omitempty"`
 }
 
 type SetRefRequest struct {
@@ -79,7 +79,7 @@ type SetRefRequest struct {
 type SetRefResponse struct {
 	Ref    string `json:"ref"`
 	Commit string `json:"commit"`
-	Tree   string `json:"tree"`
+	Tree   string `json:"tree,omitempty"`
 }
 
 type LeaseRequest struct {
@@ -114,7 +114,7 @@ type WriteRequest struct {
 
 type WriteResponse struct {
 	Commit     string   `json:"commit"`
-	Tree       string   `json:"tree"`
+	Tree       string   `json:"tree,omitempty"`
 	Changed    []string `json:"changed"`
 	TotalBytes int64    `json:"totalBytes"`
 }
@@ -171,20 +171,6 @@ type HistoryResponse struct {
 	Commits []HistoryCommit `json:"commits"`
 }
 
-type DiffChange struct {
-	Path    string `json:"path"`
-	Kind    string `json:"kind"` // added | modified | deleted
-	OldHash string `json:"oldHash"`
-	NewHash string `json:"newHash"`
-	Patch   string `json:"patch"`
-}
-
-type DiffResponse struct {
-	FromCommit string       `json:"fromCommit"`
-	ToCommit   string       `json:"toCommit"`
-	Changes    []DiffChange `json:"changes"`
-}
-
 type RestoreRequest struct {
 	Ref          string `json:"ref"`
 	TargetCommit string `json:"targetCommit"`
@@ -195,22 +181,7 @@ type RestoreRequest struct {
 
 type RestoreResponse struct {
 	Commit string `json:"commit"`
-	Tree   string `json:"tree"`
-}
-
-type MergeRequest struct {
-	SourceRef string `json:"sourceRef"`
-	TargetRef string `json:"targetRef"`
-	Strategy  string `json:"strategy"` // three-way | ff-only | squash
-	Holder    string `json:"holder,omitempty"`
-	Author    string `json:"author,omitempty"`
-	Message   string `json:"message,omitempty"`
-}
-
-type MergeResponse struct {
-	Commit    string   `json:"commit"`
-	Tree      string   `json:"tree"`
-	Conflicts []string `json:"conflicts"`
+	Tree   string `json:"tree,omitempty"`
 }
 
 // WorkspaceFileOp represents a direct file mutation to apply to a live VM's /workspace.
@@ -222,22 +193,38 @@ type WorkspaceFileOp struct {
 	Mode int
 }
 
-// ActiveVMSession allows repo mutations to synchronize directly with an active running VM
-// owned by the same holder on (lineage, ref).
-type ActiveVMSession interface {
-	ApplyOps(ctx context.Context, ops []WorkspaceFileOp, newHeadCommit string) error
-	ReplaceTree(ctx context.Context, files map[string]MaterializedFile, newHeadCommit string) error
-}
-
 type MaterializedFile struct {
 	Path string
 	Mode int
 	Data []byte
 }
 
-// VMCoordinator coordinates ref mutations and lineage deletions with active VM sessions.
+type WorkspaceCommitResult struct {
+	Changed      bool     `json:"changed"`
+	Commit       string   `json:"commit"`
+	Tree         string   `json:"tree,omitempty"`
+	FilesChanged []string `json:"filesChanged"`
+}
+
+// ActiveVMSession synchronizes repo mutations with an active running VM held by the same holder.
+type ActiveVMSession interface {
+	ApplyOps(ctx context.Context, ops []WorkspaceFileOp) error
+	UpdateHead(ctx context.Context, newHeadCommit string) error
+	StopForRestore(ctx context.Context) error
+}
+
+// LiveVMReader reads directly from an active running VM on (lineage, ref).
+type LiveVMReader interface {
+	HeadCommit() string
+	ReadFile(ctx context.Context, path string, offset, limit int64) (*ReadResponse, error)
+	ListEntries(ctx context.Context, dirPrefix string, recursive bool, glob string) ([]TreeEntry, error)
+	Grep(ctx context.Context, req GrepRequest) ([]GrepMatch, error)
+}
+
+// VMCoordinator coordinates ref reads, writes, and lineage deletions with active VM sessions.
 type VMCoordinator interface {
 	WithRefWriteLock(ctx context.Context, lineage, ref, holder string, fn func(vmSession ActiveVMSession) error) error
+	WithRefReadVM(ctx context.Context, lineage, ref string, fn func(reader LiveVMReader) error) (handled bool, err error)
 	StopLineageVMs(ctx context.Context, lineage string) error
 }
 

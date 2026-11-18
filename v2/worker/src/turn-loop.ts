@@ -1,17 +1,20 @@
 import { CamelFsClient } from "./camelfs.ts";
-import { randomId } from "./crypto.ts";
+import { openSecret, randomId } from "./crypto.ts";
 import {
   calculateCostUsd,
   getModelContextWindow,
   streamModelResponse,
   type ConversationMessage,
 } from "./providers.ts";
+import { verifyRunFiles } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
+import type { ToolApproval } from "./tool-identity.ts";
 import {
   buildToolCatalog,
   executeToolCall,
   PauseForInputSignal,
   type BuiltToolCatalog,
+  type PausedMcpInput,
   type ToolExecutionContext,
 } from "./tools.ts";
 import {
@@ -24,6 +27,7 @@ import {
   type PendingInputView,
   type ProviderCredentials,
   type RunRecord,
+  type RunFile,
   type RunUsage,
   type StoredMessage,
   type ToolCallInvocation,
@@ -35,6 +39,8 @@ export interface PausedTurnState {
   maxSteps: number;
   outputSchema: Record<string, unknown> | null;
   approvedToolCallIds: string[];
+  approval?: ToolApproval;
+  mcpInput?: PausedMcpInput;
   currentToolCall: ToolCallInvocation;
   remainingToolCalls: ToolCallInvocation[];
   accText: string;
@@ -100,9 +106,16 @@ export function buildConversationMessages(
     });
   }
   for (const m of stored) {
+    const files = m.content.files;
+    const text = files?.length
+      ? [m.content.text, ...files.map((file) =>
+          `Workspace attachment ${JSON.stringify(file.path)} at commit ${file.commit} (${file.contentType}, ${file.size} bytes).`),
+        ].filter(Boolean).join("\n")
+      : m.content.text;
     out.push({
       role: m.role,
-      text: m.content.text,
+      text,
+      files,
       toolCalls: m.content.toolCalls,
       toolCallId: m.content.toolCallId,
       toolName: m.content.toolName,
@@ -112,21 +125,23 @@ export function buildConversationMessages(
   return out;
 }
 
+/** Keep tool calls and all their results on the same side of a context boundary. */
+export function contextCutoff(messages: readonly Pick<StoredMessage, "role">[], keepLast: number): number {
+  let cutoff = messages.length - Math.min(messages.length, Math.max(0, Math.trunc(keepLast) || 0));
+  while (cutoff > 0 && messages[cutoff]?.role === "tool") cutoff--;
+  return cutoff;
+}
+
 export async function performCompaction(
   adapter: TurnStorageAdapter,
-  options?: { customSummary?: string; keepLast?: number },
+  options?: { customSummary?: string; keepLast?: number; signal?: AbortSignal },
 ): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
   const config = adapter.getConfig();
   const prev = adapter.getLatestCompaction();
   const allActive = adapter.listMessagesAfter(prev?.upToSeq ?? 0);
 
   const keepLast = Math.max(0, options?.keepLast ?? 0);
-  const toCompact =
-    keepLast > 0 && allActive.length > keepLast
-      ? allActive.slice(0, allActive.length - keepLast)
-      : keepLast > 0
-        ? []
-        : allActive;
+  const toCompact = allActive.slice(0, contextCutoff(allActive, keepLast));
 
   if (toCompact.length === 0 && !options?.customSummary) {
     return {
@@ -136,16 +151,12 @@ export async function performCompaction(
     };
   }
 
-  const targetSeq =
-    toCompact.length > 0
-      ? toCompact[toCompact.length - 1]!.seq
-      : allActive.length > 0
-        ? allActive[allActive.length - 1]!.seq
-        : (prev?.upToSeq ?? 0);
+  const targetSeq = toCompact.at(-1)?.seq ?? prev?.upToSeq ?? 0;
 
   let summary = options?.customSummary?.trim() ?? "";
   if (!summary) {
     const msgs = buildConversationMessages(prev, toCompact);
+    msgs.push({ role: "user", text: "Summarize the conversation above." });
     let generated = "";
     for await (const chunk of streamModelResponse({
       env: adapter.env,
@@ -155,12 +166,15 @@ export async function performCompaction(
         "Summarize the conversation history concisely, preserving key decisions, file paths, facts, and open tasks.",
       messages: msgs,
       purpose: "compaction",
+      signal: options?.signal,
     })) {
       if (chunk.type === "text_delta") {
         generated += chunk.delta;
       }
     }
-    summary = generated.trim() || "Conversation compacted.";
+    options?.signal?.throwIfAborted();
+    summary = generated.trim();
+    if (!summary) throw new ApiError(502, "empty_compaction", "The model returned no conversation summary");
   }
 
   adapter.insertCompaction(targetSeq, summary);
@@ -305,6 +319,7 @@ export async function runAgentTurn(
   params: {
     runId: string;
     prompt: string;
+    files: Array<{ lineage: string; file: RunFile }>;
     outputSchema: Record<string, unknown> | null;
     maxSteps: number;
     signal: AbortSignal;
@@ -320,7 +335,7 @@ export async function runAgentTurn(
       params.prefetchedBalanceUsd !== undefined
         ? params.prefetchedBalanceUsd
         : (await getTenantStub(adapter.env, config.tenantId).getProfile())?.balanceUsd;
-    if (balanceUsd !== undefined && balanceUsd <= -0.0001) {
+    if (balanceUsd !== undefined && balanceUsd <= 0) {
       const err = { code: "insufficient_credits", message: "Tenant credit balance is exhausted" };
       adapter.updateRunState(params.runId, { status: "failed", error: err, ended: true });
       adapter.emitEvent(params.runId, "run_failed", err);
@@ -328,21 +343,25 @@ export async function runAgentTurn(
     }
   }
 
-  // Auto-compact before starting if stored message tokens exceed model-aware threshold
+  const files = params.files.length
+    ? await verifyRunFiles(new CamelFsClient(adapter.env, config.tenantId), params.files)
+    : undefined;
+
+  adapter.appendMessage(params.runId, "user", { text: params.prompt, files });
+  adapter.updateRunState(params.runId, { status: "running" });
+  adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt });
+
+  // Count only prior messages and keep the new prompt along with the recent history.
   const autoCompactThreshold = Math.min(
     256_000,
     Math.floor(getModelContextWindow(config.model) * 0.6),
   );
   const prevCompaction = adapter.getLatestCompaction();
   const existingMsgs = adapter.listMessagesAfter(prevCompaction?.upToSeq ?? 0);
-  const estTotal = existingMsgs.reduce((acc, m) => acc + m.tokensEst, 0);
-  if (estTotal > autoCompactThreshold && existingMsgs.length > 6) {
-    await performCompaction(adapter, { keepLast: 4 });
+  const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
+  if (estTotal > autoCompactThreshold && existingMsgs.length > 7) {
+    await performCompaction(adapter, { keepLast: 5, signal: params.signal });
   }
-
-  adapter.appendMessage(params.runId, "user", { text: params.prompt });
-  adapter.updateRunState(params.runId, { status: "running" });
-  adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt });
 
   return continueTurnLoop(adapter, {
     runId: params.runId,
@@ -366,6 +385,8 @@ export async function resumePausedTurn(
     runId: string;
     paused: PausedTurnState;
     decision: {
+      input: string;
+      at: number;
       kind: "approval" | "question";
       approved: boolean;
       answer: unknown;
@@ -387,7 +408,7 @@ export async function resumePausedTurn(
   });
 
   const config = adapter.getConfig();
-  const catalog = await buildToolCatalog(config, params.signal);
+  const catalog = await buildToolCatalog(config, adapter.env, params.signal);
   const toolCtx = adapter.makeToolContext(
     runId,
     approvedSet,
@@ -401,7 +422,44 @@ export async function resumePausedTurn(
   );
 
   const tc = paused.currentToolCall;
-  if (decision.kind === "question") {
+  if ((paused.mcpInput && decision.kind === "question") || (decision.kind === "approval" && decision.approved)) {
+    if (decision.kind === "approval") {
+      approvedSet.add(tc.id);
+    }
+    if (paused.mcpInput) {
+      toolCtx.mcpBinding = paused.mcpInput;
+      if (paused.mcpInput.mode === "approval") {
+        toolCtx.approval = { input: decision.input, at: decision.at, by: { id: paused.mcpInput.subject } };
+      } else {
+        const { key, sealedState, mode } = paused.mcpInput;
+        toolCtx.approval = paused.approval;
+        toolCtx.mcpInput = {
+          key,
+          requestState: sealedState === undefined ? undefined : await openSecret(sealedState, adapter.env.VAULT_SECRET),
+          response: decision.approved
+            ? { action: "accept", ...(mode === "form" ? { content: decision.answer } : {}) }
+            : { action: "decline" },
+        };
+      }
+    }
+    const pausedAgain = await runSingleToolAndRecord({
+      adapter,
+      runId,
+      tc,
+      remainingAfterThis: paused.remainingToolCalls,
+      catalog,
+      toolCtx,
+      approvedSet,
+      stepIndex: paused.stepIndex,
+      maxSteps: paused.maxSteps,
+      outputSchema: paused.outputSchema,
+      accText: paused.accText,
+      toolCallsSummary,
+      filesChangedSet,
+      usage,
+    });
+    if (pausedAgain) return adapter.getRunRecord(runId);
+  } else if (decision.kind === "question") {
     if (!decision.approved) {
       toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
       adapter.appendMessage(runId, "tool", {
@@ -423,46 +481,14 @@ export async function resumePausedTurn(
       });
     }
   } else {
-    // Tool approval
-    if (!decision.approved) {
-      toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
-      adapter.appendMessage(runId, "tool", {
-        toolCallId: tc.id,
-        toolName: tc.name,
-        isError: true,
-        text: JSON.stringify({
-          error: `Tool '${tc.name}' was denied by human reviewer`,
-          reason: decision.answer ?? null,
-        }),
-      });
-      adapter.emitEvent(runId, "tool_call_end", {
-        callId: tc.id,
-        name: tc.name,
-        ok: false,
-        denied: true,
-      });
-    } else {
-      approvedSet.add(tc.id);
-      const pausedAgain = await runSingleToolAndRecord({
-        adapter,
-        runId,
-        tc,
-        remainingAfterThis: paused.remainingToolCalls,
-        catalog,
-        toolCtx,
-        approvedSet,
-        stepIndex: paused.stepIndex,
-        maxSteps: paused.maxSteps,
-        outputSchema: paused.outputSchema,
-        accText: paused.accText,
-        toolCallsSummary,
-        filesChangedSet,
-        usage,
-      });
-      if (pausedAgain) {
-        return adapter.getRunRecord(runId);
-      }
-    }
+    toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
+    adapter.appendMessage(runId, "tool", {
+      toolCallId: tc.id,
+      toolName: tc.name,
+      isError: true,
+      text: JSON.stringify({ error: `The user declined tool '${tc.name}'`, reason: decision.answer ?? null }),
+    });
+    adapter.emitEvent(runId, "tool_call_end", { callId: tc.id, name: tc.name, ok: false, denied: true });
   }
 
   return continueTurnLoop(adapter, {
@@ -529,6 +555,8 @@ async function runSingleToolAndRecord(opts: {
         maxSteps: opts.maxSteps,
         outputSchema: opts.outputSchema,
         approvedToolCallIds: [...opts.approvedSet],
+        approval: toolCtx.approval,
+        mcpInput: err.mcpInput,
         currentToolCall: tc,
         remainingToolCalls: opts.remainingAfterThis,
         accText: opts.accText,
@@ -601,7 +629,7 @@ async function continueTurnLoop(
 
   try {
     const config = adapter.getConfig();
-    const catalog = await buildToolCatalog(config, state.signal);
+    const catalog = await buildToolCatalog(config, adapter.env, state.signal);
     const toolCtx = adapter.makeToolContext(
       runId,
       approvedToolCallIds,

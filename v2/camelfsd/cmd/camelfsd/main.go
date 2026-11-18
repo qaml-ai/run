@@ -36,11 +36,11 @@ func main() {
 		ddbReposTable = flag.String("ddb-repos-table", envOr("CAMELFSD_DDB_REPOS_TABLE", "camelfs-repos"), "DynamoDB table for lineages, refs, and leases")
 		ddbVMsTable   = flag.String("ddb-vms-table", envOr("CAMELFSD_DDB_VMS_TABLE", "camelfs-vms"), "DynamoDB table for VM sessions, exec receipts, and hosts")
 
-		fcBin          = flag.String("firecracker-bin", envOr("CAMELFSD_FC_BIN", "firecracker"), "Path to firecracker binary")
-		fcKernel       = flag.String("firecracker-kernel", os.Getenv("CAMELFSD_FC_KERNEL"), "Path to Firecracker guest kernel image")
-		fcRootfs       = flag.String("firecracker-rootfs", os.Getenv("CAMELFSD_FC_ROOTFS"), "Path to Firecracker guest rootfs ext4 image")
-		fcWorkspaceMiB = flag.Int("firecracker-workspace-mib", 512, "Size in MiB for Firecracker /workspace ext4 image")
-		fcVsockPort    = flag.Int("firecracker-vsock-port", 10000, "Guest agent vsock port inside Firecracker microVM")
+		fcBin       = flag.String("firecracker-bin", envOr("CAMELFSD_FC_BIN", "firecracker"), "Path to firecracker binary")
+		fcJailer    = flag.String("firecracker-jailer", os.Getenv("CAMELFSD_FC_JAILER"), "Path to the matching Firecracker jailer")
+		fcKernel    = flag.String("firecracker-kernel", os.Getenv("CAMELFSD_FC_KERNEL"), "Path to Firecracker guest kernel image")
+		fcRootfs    = flag.String("firecracker-rootfs", os.Getenv("CAMELFSD_FC_ROOTFS"), "Path to Firecracker guest rootfs ext4 image")
+		fcVsockPort = flag.Int("firecracker-vsock-port", 10000, "Guest agent vsock port inside Firecracker microVM")
 	)
 	flag.Parse()
 
@@ -80,6 +80,8 @@ func main() {
 
 	hostMux := vm.NewHostMux(st, time.Now)
 
+	repoEngine := repo.NewEngine(st, time.Now)
+
 	var drv vm.Driver
 	switch *vmDriverName {
 	case "local":
@@ -88,24 +90,28 @@ func main() {
 			log.Fatalf("camelfsd: init local VM driver: %v", err)
 		}
 	case "firecracker":
-		drv, err = vm.NewFirecrackerDriver(vm.FirecrackerConfig{
-			DataDir:          *dataDir,
-			FirecrackerBin:   *fcBin,
-			KernelImagePath:  *fcKernel,
-			RootfsImagePath:  *fcRootfs,
-			WorkspaceSizeMiB: *fcWorkspaceMiB,
-			VsockPort:        *fcVsockPort,
+		fc, err := vm.NewFirecrackerDriver(vm.FirecrackerConfig{
+			DataDir:         *dataDir,
+			FirecrackerBin:  *fcBin,
+			JailerBin:       *fcJailer,
+			KernelImagePath: *fcKernel,
+			RootfsImagePath: *fcRootfs,
+			GetBlob:         repoEngine.GetBlob,
+			VsockPort:       *fcVsockPort,
 		})
 		if err != nil {
 			log.Fatalf("camelfsd: init firecracker VM driver: %v", err)
 		}
+		if err := fc.Recover(ctx, st); err != nil {
+			log.Fatalf("camelfsd: recover firecracker VMs: %v", err)
+		}
+		drv = fc
 	case "remote":
 		drv = vm.NewRemoteDriver(hostMux)
 	default:
 		log.Fatalf("camelfsd: unsupported --vm-driver %q (expected local|firecracker|remote)", *vmDriverName)
 	}
 
-	repoEngine := repo.NewEngine(st, time.Now)
 	vmMgr := vm.NewManager(vm.ManagerConfig{
 		Store:   st,
 		Repo:    repoEngine,

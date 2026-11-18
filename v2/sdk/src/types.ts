@@ -74,13 +74,20 @@ export interface BillingUsageEntry {
   [key: string]: unknown;
 }
 export interface BillingInfo { balanceUsd: number; monthlyCapUsd: number | null; usage: BillingUsageEntry[]; }
-export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey?: string; }
+export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey: string; }
 
 export type BuiltinCategory =
   | "files" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
   | (string & {});
 
-export interface McpServerConfig { name: string; url: string; headers?: Record<string, string>; }
+export interface McpServerConfig {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  auth?: { type: "runtime" };
+  audience?: string;
+  allowTools?: string[];
+}
 
 export interface ToolDefinition {
   name: string;
@@ -103,6 +110,7 @@ export interface AgentConfig {
   definition?: string;
   tools?: Array<ToolDefinition | LocalTool<any, any>>;
   mcpServers?: McpServerConfig[];
+  toolIdentity?: { subject: string; context?: Record<string, unknown> };
   builtins?: BuiltinCategory[];
   queue?: QueueConfig;
   repoId?: string | null;
@@ -111,7 +119,7 @@ export interface AgentConfig {
   idleTtlSeconds?: number;
   dreaming?: DreamingConfig;
 }
-export type DefinitionConfig = Omit<AgentConfig, "tools" | "definition"> & { name?: string; tools?: ToolDefinition[]; };
+export type DefinitionConfig = Omit<AgentConfig, "tools" | "definition" | "toolIdentity"> & { name?: string; tools?: ToolDefinition[]; };
 export interface AgentDefinition extends DefinitionConfig { slug: string; createdAt?: number; updatedAt?: number; }
 
 export interface AgentSummary {
@@ -137,7 +145,22 @@ export interface AgentSummary {
 
 export type RunStatus = "queued" | "running" | "input_required" | "completed" | "failed" | "cancelled";
 
+/** A file already written to the agent's repository. */
+export interface RunFile {
+  path: string;
+  commit: string;
+  contentType: string;
+}
+
+export interface V1HistoryImport {
+  source: string;
+  messages: unknown[];
+  previous?: string;
+  attachments?: Array<{ messageIndex: number; files: RunFile[] }>;
+}
+
 export interface RunOptions {
+  files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
   wait?: boolean;
@@ -173,6 +196,8 @@ export interface RunUsage { inputTokens: number; outputTokens: number; costUsd: 
 export interface RunRecord<TOutput = unknown> {
   id: string;
   agentId: string;
+  idempotencyKey: string | null;
+  startedAt: number;
   status: RunStatus;
   text: string;
   output: TOutput | null;
@@ -215,7 +240,6 @@ export interface RepoWriteInput {
 export interface RepoWriteResult { commit: string; tree: string; changed: string[]; totalBytes: number; }
 export interface RepoReadResult { commit: string; path: string; size: number; mode: number; binary: boolean; content: string | null; base64: string | null; }
 export interface RepoGrepMatch { path: string; line: number; column: number; text: string; }
-export interface RepoDiffChange { path: string; kind: "added" | "modified" | "deleted" | (string & {}); oldHash: string; newHash: string; patch: string; }
 export interface RepoCommit { commit: string; tree: string; parents: string[]; author: string; message: string; createdAt: number; }
 
 export interface DecisionRequest<TChoice extends string = string> { input: string; choices: readonly TChoice[]; instructions?: string; model?: string; }

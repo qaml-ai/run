@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
+import type { parseV1History } from "./history-import.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -8,6 +9,7 @@ import {
   type ToolExecutionContext,
 } from "./tools.ts";
 import {
+  contextCutoff,
   performCompaction,
   performDreamConsolidation,
   resumePausedTurn,
@@ -28,13 +30,16 @@ import {
   type RpcStub,
   type RunRecord,
   type RunStatus,
+  type RunFile,
   type RunUsage,
   type ScheduleRecord,
   type StartRunHints,
   type StartRunInput,
   type StoredMessage,
+  type StoredMessageContent,
   type ToolCallSummary,
 } from "./types.ts";
+import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
 import { enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
@@ -126,6 +131,10 @@ export class AgentDO extends DurableObject<Env> {
         ended_at INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, started_at ASC);
+      CREATE TABLE IF NOT EXISTS run_files (
+        run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+        files_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS steers (
         id TEXT PRIMARY KEY,
         run_id TEXT,
@@ -458,6 +467,9 @@ export class AgentDO extends DurableObject<Env> {
           leaseExpiresAt,
         );
         void this.scheduleNextAlarm();
+      },
+      clearVmSession: (branch, vmId) => {
+        this.ctx.storage.sql.exec("DELETE FROM vm_session WHERE branch = ?1 AND vm_id = ?2", branch, vmId);
       },
       recordFilesChanged: onFilesChanged,
       recordVmMs: onVmMs,
@@ -848,6 +860,8 @@ export class AgentDO extends DurableObject<Env> {
     return {
       id: row.id,
       agentId: cfg.id,
+      idempotencyKey: row.idempotency_key,
+      startedAt: row.started_at,
       status: row.status as RunStatus,
       text: row.text,
       output: row.output_json ? JSON.parse(row.output_json) : null,
@@ -927,6 +941,11 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
+    const files = parseRunFiles(body.files);
+    if (files.length > 0 && (whileRunning === "steer" || !cfg.lineage)) {
+      throw new ApiError(400, "invalid_attachments", "Attachments require a queued turn and a configured repository");
+    }
+
     // Mid-turn steering when a run is currently executing!
     if (whileRunning === "steer" && this.activeRunId) {
       this.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
@@ -984,18 +1003,27 @@ export class AgentDO extends DurableObject<Env> {
       this.preRunHints.set(runId, hints);
     }
     const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at)
-       VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8)`,
-      runId,
-      idempotencyKey,
-      whileRunning,
-      prompt,
-      body.outputSchema ? JSON.stringify(body.outputSchema) : null,
-      JSON.stringify(emptyUsage()),
-      maxSteps,
-      now,
-    );
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at)
+         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8)`,
+        runId,
+        idempotencyKey,
+        whileRunning,
+        prompt,
+        body.outputSchema ? JSON.stringify(body.outputSchema) : null,
+        JSON.stringify(emptyUsage()),
+        maxSteps,
+        now,
+      );
+      if (files.length > 0) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO run_files (run_id, files_json) VALUES (?1, ?2)`,
+          runId,
+          JSON.stringify({ lineage: cfg.lineage, files }),
+        );
+      }
+    });
 
     this.recordAndBroadcastEvent(runId, "run_queued", {
       runId,
@@ -1118,10 +1146,21 @@ export class AgentDO extends DurableObject<Env> {
         slotAcquired = true;
       }
 
+      const files: Array<{ lineage: string; file: RunFile }> = [];
+      for (const id of [runId, ...batchedFollowerIds]) {
+        const row = this.ctx.storage.sql
+          .exec<{ files_json: string }>(`SELECT files_json FROM run_files WHERE run_id = ?1`, id)
+          .toArray()[0];
+        if (!row) continue;
+        const queued = JSON.parse(row.files_json) as { lineage: string; files: RunFile[] };
+        for (const file of queued.files) files.push({ lineage: queued.lineage, file });
+      }
+
       const adapter = this.buildAdapter();
       const finalRecord = await runAgentTurn(adapter, {
         runId,
         prompt,
+        files,
         outputSchema,
         maxSteps,
         signal: abortController.signal,
@@ -1410,6 +1449,7 @@ export class AgentDO extends DurableObject<Env> {
           : (existing?.definition ?? null),
       tools: incoming.tools ?? existing?.tools ?? [],
       mcpServers: incoming.mcpServers ?? existing?.mcpServers ?? [],
+      toolIdentity: incoming.toolIdentity ?? existing?.toolIdentity,
       builtins: incoming.builtins ?? existing?.builtins ?? [],
       queue: {
         mode: incoming.queue?.mode ?? existing?.queue.mode ?? "each",
@@ -1511,6 +1551,7 @@ export class AgentDO extends DurableObject<Env> {
       definition: cfg.definition,
       tools: cfg.tools,
       mcpServers: cfg.mcpServers,
+      toolIdentity: cfg.toolIdentity,
       builtins: cfg.builtins,
       queue: cfg.queue,
       repoId: cfg.repoId,
@@ -1536,9 +1577,25 @@ export class AgentDO extends DurableObject<Env> {
     return this.enqueueOrRunInternal(body, hints);
   }
 
-  async getRun(runId: string): Promise<RunRecord> {
+  async getRun(runId: string, byIdempotencyKey = false): Promise<RunRecord> {
     this.ensureSql();
+    if (byIdempotencyKey) {
+      const row = this.ctx.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM runs WHERE idempotency_key = ?1", runId,
+      ).toArray()[0];
+      if (!row) throw new ApiError(404, "run_not_found", "No run for that idempotency key");
+      return this.materializeRunRecord(row.id);
+    }
     return this.materializeRunRecord(runId);
+  }
+
+  async getRunsWithPendingInputs(): Promise<RunRecord[]> {
+    this.ensureSql();
+    const rows = this.ctx.storage.sql.exec<{ run_id: string }>(
+      "SELECT DISTINCT run_id FROM inputs WHERE status = 'pending' AND expires_at > ?1",
+      Date.now(),
+    ).toArray();
+    return rows.map(row => this.materializeRunRecord(row.run_id));
   }
 
   async abortRuns(body?: { keepQueued?: boolean }): Promise<{
@@ -1574,16 +1631,23 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   async getEvents(opts?: {
-    after?: number;
+    after?: number | "latest";
     runId?: string | null;
   }): Promise<{ events: AgentEventRecord[]; nextAfter: number }> {
+    if (opts?.after === "latest") {
+      this.ensureSql();
+      const row = opts.runId
+        ? this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events WHERE run_id = ?1", opts.runId).one()
+        : this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events").one();
+      return { events: [], nextAfter: row.seq ?? 0 };
+    }
     const after = Math.max(0, Number(opts?.after ?? 0));
     const events = this.fetchStoredEvents(after, opts?.runId ?? null);
     const nextAfter = events.length > 0 ? events[events.length - 1]!.seq : after;
     return { events, nextAfter };
   }
 
-  async getHistory(opts?: { after?: number; limit?: number }): Promise<{
+  async getHistory(opts?: { after?: number; before?: number; limit?: number }): Promise<{
     messages: Array<{
       seq: number;
       runId: string | null;
@@ -1594,10 +1658,13 @@ export class AgentDO extends DurableObject<Env> {
     }>;
     compaction: { id: string; upToSeq: number; summary: string } | null;
     nextAfter: number;
+    nextBefore?: number | null;
   }> {
     this.ensureSql();
     const after = Math.max(0, Number(opts?.after ?? 0));
     const limit = Math.max(1, Math.min(500, Number(opts?.limit ?? 50)));
+    const before = opts?.before;
+    const newest = before !== undefined;
     const rows = this.ctx.storage.sql
       .exec<{
         seq: number;
@@ -1606,8 +1673,14 @@ export class AgentDO extends DurableObject<Env> {
         content_json: string;
         tokens_est: number;
         created_at: number;
-      }>(`SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2`, after, limit)
+      }>(newest
+        ? "SELECT * FROM messages WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
+        : "SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+        newest ? before : after, newest ? limit + 1 : limit)
       .toArray();
+    const hasOlder = newest && rows.length > limit;
+    if (hasOlder) rows.pop();
+    if (newest) rows.reverse();
 
     const messages = rows.map((r) => ({
       seq: r.seq,
@@ -1618,8 +1691,51 @@ export class AgentDO extends DurableObject<Env> {
       createdAt: r.created_at,
     }));
     const compaction = this.buildAdapter().getLatestCompaction();
-    const nextAfter = messages.length > 0 ? messages[messages.length - 1]!.seq : after;
-    return { messages, compaction, nextAfter };
+    const nextAfter = messages.at(-1)?.seq ?? after;
+    return { messages, compaction, nextAfter, ...(newest ? { nextBefore: hasOlder ? rows[0]!.seq : null } : {}) };
+  }
+
+  async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
+    this.ensureSql();
+    const config = this.requireConfig();
+    const messages: StoredMessageContent[] = [];
+    const cfs = new CamelFsClient(this.env, config.tenantId);
+    for (const { content, attachments } of input.messages) {
+      if (!attachments) {
+        messages.push(content);
+        continue;
+      }
+      const lineage = config.lineage;
+      if (!lineage) throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
+      const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })));
+      messages.push({ ...content, files });
+    }
+    return this.ctx.storage.transactionSync(() => {
+      if (this.requireConfig().lineage !== config.lineage) {
+        throw new ApiError(409, "history_import_conflict", "The v2 destination repository changed during import");
+      }
+      const sql = this.ctx.storage.sql;
+      const current = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'").toArray()[0];
+      const imported = current ? JSON.parse(current.v) as { source: string; receipt: string } : undefined;
+      const used = sql.exec<{ used: number }>(`SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+        OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used`).one();
+      if (used.used || (!imported && sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length)) {
+        throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
+      }
+      if (imported?.source === input.source && imported.receipt === receipt) return { receipt, count: input.messages.length };
+      if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
+        throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
+      }
+      if (imported) sql.exec("DELETE FROM messages");
+      for (const [index, message] of input.messages.entries()) {
+        const content = messages[index]!;
+        sql.exec("INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+          index + 1, message.role, JSON.stringify(content), estimateTokens(content.text ?? ""), message.createdAt);
+      }
+      sql.exec(`INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
+        JSON.stringify({ source: input.source, receipt }));
+      return { receipt, count: input.messages.length };
+    });
   }
 
   async compactHistory(body?: {
@@ -1640,13 +1756,10 @@ export class AgentDO extends DurableObject<Env> {
     this.ensureSql();
     const keepLast = Math.max(0, Number(body?.keepLast ?? 0));
     const allRows = this.ctx.storage.sql
-      .exec<{ seq: number }>(`SELECT seq FROM messages ORDER BY seq ASC`)
+      .exec<{ seq: number; role: StoredMessage["role"] }>(`SELECT seq, role FROM messages ORDER BY seq ASC`)
       .toArray();
-    const cutoffIdx =
-      keepLast > 0 && allRows.length > keepLast
-        ? allRows.length - keepLast - 1
-        : allRows.length - 1;
-    const upToSeq = cutoffIdx >= 0 ? allRows[cutoffIdx]!.seq : 0;
+    const cutoff = contextCutoff(allRows, keepLast);
+    const upToSeq = allRows[cutoff - 1]?.seq ?? 0;
     const summary = body?.summary?.trim() ?? "";
 
     if (keepLast === 0 && !summary) {
@@ -1787,6 +1900,7 @@ export class AgentDO extends DurableObject<Env> {
   async respondToInput(
     inputId: string,
     body?: { approved?: boolean; answer?: unknown; wait?: boolean },
+    trustedResponder = false,
   ): Promise<RunRecord> {
     this.ensureSql();
     const rows = this.ctx.storage.sql
@@ -1822,7 +1936,21 @@ export class AgentDO extends DurableObject<Env> {
       throw new ApiError(500, "missing_turn_state", "Paused turn state missing");
     }
 
-    const approved = body?.approved !== undefined ? Boolean(body.approved) : true;
+    if (body?.approved !== undefined && typeof body.approved !== "boolean") {
+      throw new ApiError(400, "invalid_approval", "The approval decision must be a boolean");
+    }
+    if (inp.kind === "approval" && body?.approved === undefined) {
+      throw new ApiError(400, "invalid_approval", "Approve or decline the tool explicitly");
+    }
+    const approved = body?.approved ?? true;
+    const pausedState = JSON.parse(inp.pending_turn_json) as PausedTurnState;
+    if (pausedState.mcpInput && !trustedResponder) {
+      throw new ApiError(403, "forbidden", "A tenant credential must respond to signed tool inputs");
+    }
+    if (approved && pausedState.mcpInput?.mode === "form" && (!body?.answer || typeof body.answer !== "object" || Array.isArray(body.answer))) {
+      throw new ApiError(400, "invalid_approval", "Answer the tool form with an object");
+    }
+    const answeredAt = Date.now();
     const newStatus = approved ? "answered" : "denied";
     this.ctx.storage.sql.exec(
       `UPDATE inputs SET status = ?1, answer_json = ?2 WHERE id = ?3`,
@@ -1830,8 +1958,8 @@ export class AgentDO extends DurableObject<Env> {
       JSON.stringify(body?.answer ?? approved),
       inputId,
     );
+    this.recordAndBroadcastEvent(inp.run_id, "input_resolved", { id: inputId, status: newStatus });
 
-    const pausedState = JSON.parse(inp.pending_turn_json) as PausedTurnState;
     const wait = body?.wait !== undefined ? Boolean(body.wait) : true;
 
     const resumeWork = (async () => {
@@ -1849,6 +1977,8 @@ export class AgentDO extends DurableObject<Env> {
           runId: inp.run_id,
           paused: pausedState,
           decision: {
+            input: inputId,
+            at: answeredAt,
             kind: inp.kind,
             approved,
             answer: body?.answer,
@@ -1964,7 +2094,7 @@ export class AgentDO extends DurableObject<Env> {
       ? `wf:${body.idempotencyKey.trim()}`
       : `wf:${workflowId}`;
     const cfg = this.requireConfig();
-    const catalog = await buildToolCatalog(cfg);
+    const catalog = await buildToolCatalog(cfg, this.env);
     const toolCtx = this.createToolExecutionContext(
       workflowId,
       new Set(),
@@ -2151,7 +2281,7 @@ export class AgentDO extends DurableObject<Env> {
       throw new ApiError(400, "invalid_request", "`name` is required");
     }
     const cfg = this.requireConfig();
-    const catalog = await buildToolCatalog(cfg);
+    const catalog = await buildToolCatalog(cfg, this.env);
     const callId = body.callId || randomId("vt", 6);
     const toolCtx = this.createToolExecutionContext(
       callId,
