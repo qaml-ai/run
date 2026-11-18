@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import tempfile
+import time
 from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -53,7 +54,7 @@ class Active:
             work = Path(self.stack.enter_context(tempfile.TemporaryDirectory(dir=folder)))
             self.head, self.tag, self.epoch = disk.claim(host, previous_owner)
             self.base = mapping(disk.volume, self.head)
-            self.sock, self.dirty = self.stack.enter_context(boot(work, disk.cache, self.base))
+            self.sock, self.dirty = self.stack.enter_context(boot(work, disk.cache, self.base, track_changes=True))
         except BaseException:
             self.stack.close()
             # No VM request succeeded at this point. Return an originally clean
@@ -71,17 +72,28 @@ class Active:
     def checkpoint(self, sleep=False):
         # Freeze keeps open descriptors valid across ordinary commands. Sleep
         # publishes a clean unmount for the userspace filesystem editor.
+        start = time.monotonic()
         rpc(self.sock, "unmount" if sleep else "freeze")
-        blocks, uploaded = snapshot(self.disk.volume, self.base, self.dirty)
+        # Rotate the changed-block set while ext4 is quiescent. Subsequent
+        # writes copy any block still linked from this sealed checkpoint.
+        parent = self.dirty.parent
+        with tempfile.TemporaryDirectory(dir=parent) as spool:
+            sealed = Path(spool) / "blocks"
+            pending = parent / "pending"
+            pending.rename(sealed)
+            pending.mkdir()
+            if not sleep:
+                rpc(self.sock, "thaw")
+            sealed_ms = (time.monotonic() - start) * 1000
+            blocks, uploaded = snapshot(self.disk.volume, self.base, sealed)
         root = self.disk.volume.save_map(blocks)
         rev = self.head["revision"] + 1
         self.tag = self.disk.volume.publish(self.disk.ref, root, rev, self.tag,
                                            "asleep" if sleep else self.epoch)
         self.base = blocks
         self.head = {"map": root, "revision": rev}
-        if not sleep:
-            rpc(self.sock, "thaw")
-        return {"map": root, "revision": rev, "uploaded_bytes": uploaded}
+        return {"map": root, "revision": rev, "uploaded_bytes": uploaded,
+                "seal_ms": round(sealed_ms, 2)}
 
     def close(self):
         self.stack.close()

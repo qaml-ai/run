@@ -47,7 +47,7 @@ def rpc(path, command):
 
 
 @contextmanager
-def boot(folder, cache, base):
+def boot(folder, cache, base, track_changes=False):
     nbd = os.environ["TRIAL_NBD"]
     bound = Path("/sys/class/block") / Path(nbd).name / "pid"
     if bound.exists():
@@ -67,6 +67,10 @@ def boot(folder, cache, base):
                 TRIAL_CACHE=str(cache),
                 TRIAL_DIRTY=str(dirty),
             )
+            if track_changes:
+                pending = folder / "pending"
+                pending.mkdir()
+                env["TRIAL_PENDING"] = str(pending)
             nbd_sock = folder / "nbd.sock"
 
             def launch(args, **kwargs):
@@ -122,6 +126,12 @@ def boot(folder, cache, base):
                     }
                 ],
             }
+            # The developer workload fixture needs Node, its offline package
+            # cache and a native ext4 control on a separate disposable drive.
+            if toolbox := os.environ.get("TRIAL_TOOLBOX"):
+                cfg["machine-config"] = {"vcpu_count": 4, "mem_size_mib": 4096}
+                cfg["drives"].append({"drive_id": "toolbox", "path_on_host": toolbox,
+                                      "is_root_device": False, "is_read_only": False})
             config = folder / "firecracker.json"
             config.write_text(json.dumps(cfg))
             launch(["firecracker", "--no-api", "--config-file", config])

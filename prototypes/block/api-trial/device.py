@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tempfile
 import sys
 from pathlib import Path
@@ -13,12 +14,15 @@ API_VERSION = 2
 
 
 def open(readonly):
-    return (
+    handle = (
         json.loads(Path(os.environ["TRIAL_MAP"]).read_bytes()),
         Path(os.environ["TRIAL_CACHE"]),
         Path(os.environ["TRIAL_DIRTY"]),
         Volume(),
     )
+    if pending := os.environ.get("TRIAL_PENDING"):
+        return (*handle, Path(pending))
+    return handle
 
 
 def get_size(h):
@@ -26,7 +30,7 @@ def get_size(h):
 
 
 def block(h, index):
-    blocks, cache, dirty, volume = h
+    blocks, cache, dirty, volume = h[:4]
     path = dirty / str(index)
     if path.exists():
         data = path.read_bytes()
@@ -73,6 +77,20 @@ def pwrite(h, buf, offset, flags):
         path = h[2] / str(index)
         if not path.exists():
             path.write_bytes(block(h, index))
+        if len(h) == 5:
+            mark = h[4] / path.name
+            if not mark.exists():
+                # A checkpoint may still be uploading the old inode. Its hard
+                # link stays immutable while this writer starts the next version.
+                if path.stat().st_nlink > 1:
+                    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as new:
+                        tmp = Path(new.name)
+                    try:
+                        shutil.copyfile(path, tmp)
+                        tmp.replace(path)
+                    finally:
+                        tmp.unlink(missing_ok=True)
+                os.link(path, mark)
         with path.open("r+b") as f:
             f.seek(start)
             f.write(buf[done : done + n])

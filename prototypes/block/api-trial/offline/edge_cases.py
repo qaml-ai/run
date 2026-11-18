@@ -9,6 +9,7 @@ from pathlib import Path
 
 from trial import CHUNK, library_edit
 from fileio import workspace_file
+import device
 from volume import digest
 
 
@@ -83,6 +84,19 @@ def run(folder):
             f.seek(int(path.name) * CHUNK)
             f.write(path.read_bytes())
     sp.run(["e2fsck", "-fn", image], check=True, capture_output=True)
+    # A guest can overwrite a block as soon as the host seals its previous
+    # version. The checkpoint's bytes must stay immutable throughout upload.
+    h = view(image, folder / "seal")
+    pending = folder / "seal" / "pending"
+    pending.mkdir()
+    active = (*h, pending)
+    device.pwrite(active, b"first", 0, 0)
+    pending.rename(pending.with_name("uploading"))
+    pending.mkdir()
+    device.pwrite(active, b"later", 0, 0)
+    device.pwrite(active, b"again", 0, 0)
+    assert (pending.with_name("uploading") / "0").read_bytes()[:5] == b"first"
+    assert (pending / "0").read_bytes()[:5] == b"again"
     h = view(image, folder / "bad")
     h[3][h[0][0]] = bytes(CHUNK)
     try:
