@@ -653,7 +653,8 @@ export async function executeToolCall(
       execRes = await cfs.execVm(session.vmId, lineage, execRequest);
     } catch (err) {
       const apiErr = extractApiError(err);
-      if (apiErr?.status === 410 && apiErr.code === "vm_lost") {
+      if (!apiErr || apiErr.status >= 500 || apiErr.code === "vm_lost") {
+        // The command may have reached the guest. Refresh the VM on the next call.
         ctx.clearVmSession(branch, session.vmId);
         throw err;
       }

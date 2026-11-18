@@ -63,6 +63,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let auxUrl: string;
   let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
   let workerUrl: string;
+  let failNextExec = false;
+  let vmBootRequests = 0;
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
 
   before(async () => {
@@ -85,6 +87,28 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
       const rawBody = Buffer.concat(chunks).toString("utf8");
+
+      if (req.url?.startsWith("/camelfs/")) {
+        const path = req.url.slice("/camelfs".length);
+        if (req.method === "POST" && path === "/v1/vms") vmBootRequests++;
+        if (failNextExec && req.method === "POST" && path.endsWith("/exec")) {
+          failNextExec = false;
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: { code: "daemon_disconnected", message: "daemon disconnect probe" } }));
+          return;
+        }
+        const upstream = await fetch(camelfsUrl + path, {
+          method: req.method,
+          headers: {
+            Authorization: req.headers.authorization ?? "",
+            "Content-Type": req.headers["content-type"] ?? "application/json",
+          },
+          body: rawBody || undefined,
+        });
+        res.writeHead(upstream.status, { "Content-Type": "application/json" });
+        res.end(await upstream.text());
+        return;
+      }
 
       if (req.url === "/mcp" && req.method === "POST") {
         const rpc = JSON.parse(rawBody) as { id: number | string; method: string; params?: Record<string, unknown> };
@@ -203,7 +227,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
           vars: {
             ADMIN_SECRET,
             VAULT_SECRET,
-            CAMELFS_URL: camelfsUrl,
+            CAMELFS_URL: auxUrl + "/camelfs",
             CAMELFS_SIGNING_KEY: camelfsSigningKey,
             CAMELFS_DEV_TOKEN: "",
             DEFAULT_MODEL: "mock/default",
@@ -393,6 +417,21 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const restarted = await cfs.ensureVm({ lineage: repo.lineage, ref: repo.defaultRef, holder: coder.id });
     assert.equal(restarted.reused, true);
     assert.notEqual(restarted.vmId, active.vmId);
+
+    const bootsBeforeFailure = vmBootRequests;
+    failNextExec = true;
+    const interrupted = await coder.run(
+      'Disconnect [CALL:bash {"command":"touch ambiguous.txt"}]',
+    );
+    assert.match(interrupted.text, /daemon disconnect probe/);
+    assert.equal(vmBootRequests, bootsBeforeFailure, "an ambiguous exec must not trigger a replay");
+    await assert.rejects(camel.repos.read(repo.repoId, { path: "ambiguous.txt" }));
+
+    const afterDisconnect = await coder.run(
+      'Check workspace [CALL:bash {"command":"cat asleep.txt"}]',
+    );
+    assert.match(afterDisconnect.text, /edited-while-asleep/);
+    assert.equal(vmBootRequests, bootsBeforeFailure + 1, "the next bash call should refresh the VM");
     await cfs.stopVm(restarted.vmId, repo.lineage);
 
     await camel.close();
