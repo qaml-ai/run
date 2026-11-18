@@ -373,7 +373,7 @@ export async function runAgentTurn(
   adapter.appendMessage(params.runId, "user", {
     text: params.prompt,
     files,
-    ...(params.actor ? { meta: { actor: params.actor } } : {}),
+    ...(params.actor ? { meta: { actor: params.actor, requestId: adapter.getRunRecord(params.runId).idempotencyKey } } : {}),
   });
   adapter.updateRunState(params.runId, { status: "running" });
   adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt, ...(params.actor ? { actor: params.actor } : {}) });

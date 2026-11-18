@@ -635,6 +635,11 @@ app.delete("/v2/agents/:idOrKey", async (c) => {
   return c.json({ deleted: true });
 });
 
+app.put("/v2/agents/:idOrKey/repo", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  return c.json(await stub.ensureAgentRepository());
+});
+
 app.post("/v2/agents/:idOrKey/runs", async (c) => {
   const creds = await parseRequestCredentials(c.env, c.req.raw);
   if (creds.kind === "admin") {
