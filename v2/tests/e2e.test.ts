@@ -381,7 +381,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await camel.repos.write(repo.repoId, { puts: [{ path: "asleep.txt", content: "edited-while-asleep" }] });
 
     const resumed = await coder.run(
-      `Read after restart [CALL:bash {"command":"cat /workspace/asleep.txt /workspace/src/app.txt"}]`,
+      `Read after restart [CALL:bash {"command":"cat asleep.txt src/app.txt","cwd":"/workspace"}]`,
     );
     assert.equal(resumed.status, "completed");
     assert.match(resumed.text, /edited-while-asleep/);
