@@ -47,6 +47,7 @@ export interface ToolExecutionContext {
   ensureAgentRepo(): Promise<{ repoId: string; lineage: string; branch: string }>;
   getVmSession(branch: string): { vmId: string; leaseExpiresAt: number } | null;
   saveVmSession(branch: string, vmId: string, leaseExpiresAt: number): void;
+  clearVmSession(branch: string, vmId: string): void;
   recordFilesChanged(files: string[]): void;
   recordVmMs(ms: number): void;
   invokeWebSocketTool(name: string, args: Record<string, unknown>, callId: string): Promise<unknown>;
@@ -651,8 +652,12 @@ export async function executeToolCall(
     try {
       execRes = await cfs.execVm(session.vmId, lineage, execRequest);
     } catch (err) {
-      // A stopped VM rejects exec before running the command.
       const apiErr = extractApiError(err);
+      if (apiErr?.status === 410 && apiErr.code === "vm_lost") {
+        ctx.clearVmSession(branch, session.vmId);
+        throw err;
+      }
+      // A stopped VM rejects exec before running the command.
       if (apiErr?.status !== 410 || apiErr.code !== "vm_stopped") throw err;
       const booted = await cfs.ensureVm({ lineage, ref: branch, holder: ctx.config.id });
       ctx.saveVmSession(branch, booted.vmId, booted.leaseExpiresAt);

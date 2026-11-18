@@ -329,7 +329,7 @@ func (m *Manager) BootOrReuse(ctx context.Context, req BootVMRequest) (*BootVMRe
 		_, _ = m.repo.LeaseRef(ctx, lineage, repo.LeaseRequest{Ref: ref, Holder: holder, Release: true})
 		return nil, err
 	}
-	if hostID != "" && hostID != "local" && hostID != "firecracker" {
+	if hostID != "" && hostID != "local" && hostID != firecrackerHost {
 		m.hostMux.BindVMHost(vmID, hostID)
 	}
 
@@ -420,6 +420,9 @@ func (m *Manager) Exec(
 	vmRec, err := m.store.GetVM(ctx, vmID)
 	if err != nil {
 		return nil, false, err
+	}
+	if vmRec.State == store.VMStateLost {
+		return nil, false, apperr.VMLost(vmID)
 	}
 	if vmRec.State != "running" {
 		return nil, false, apperr.VMStopped(vmID)
@@ -591,7 +594,7 @@ func (m *Manager) stopLocked(ctx context.Context, vmID string) (*StopVMResponse,
 	if vmRec.State != "running" {
 		return &StopVMResponse{
 			VMID:       vmRec.VMID,
-			State:      "stopped",
+			State:      vmRec.State,
 			Commit:     vmRec.HeadCommit,
 			UnbilledMs: 0,
 		}, nil
@@ -678,7 +681,7 @@ func (m *Manager) reaperLoop(ctx context.Context, interval time.Duration) {
 }
 
 func (m *Manager) reapOnce(ctx context.Context) {
-	running, err := m.store.ListRunningVMs(ctx)
+	running, err := m.store.ListRunningVMs(ctx, false)
 	if err != nil {
 		return
 	}

@@ -11,6 +11,7 @@ type Code string
 const (
 	CodeNotFound       Code = "not_found"
 	CodeVMStopped      Code = "vm_stopped"
+	CodeVMLost         Code = "vm_lost"
 	CodeCASConflict    Code = "cas_conflict"
 	CodeRefLeased      Code = "ref_leased"
 	CodeInvalidRequest Code = "invalid_request"
@@ -48,6 +49,13 @@ func NotFoundf(format string, args ...any) *Error {
 
 func VMStopped(vmID string) *Error {
 	return &Error{Code: CodeVMStopped, Status: http.StatusGone, Message: fmt.Sprintf("vm %q has stopped", vmID)}
+}
+
+func VMLost(vmID string) *Error {
+	return &Error{
+		Code: CodeVMLost, Status: http.StatusGone,
+		Message: fmt.Sprintf("vm %q was lost. An interrupted command may have run. A new VM starts from the last committed workspace", vmID),
+	}
 }
 
 func CASConflict(msg string) *Error {

@@ -115,7 +115,7 @@ func main() {
 			log.Fatalf("camelfsd: init local VM driver: %v", err)
 		}
 	case "firecracker":
-		drv, err = vm.NewFirecrackerDriver(vm.FirecrackerConfig{
+		fc, err := vm.NewFirecrackerDriver(vm.FirecrackerConfig{
 			DataDir:         *dataDir,
 			FirecrackerBin:  *fcBin,
 			KernelImagePath: *fcKernel,
@@ -127,6 +127,10 @@ func main() {
 		if err != nil {
 			log.Fatalf("camelfsd: init firecracker VM driver: %v", err)
 		}
+		if err := fc.Recover(ctx, st); err != nil {
+			log.Fatalf("camelfsd: recover firecracker VMs: %v", err)
+		}
+		drv = fc
 	case "remote":
 		drv = vm.NewRemoteDriver(hostMux)
 	default:

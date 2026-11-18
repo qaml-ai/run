@@ -195,9 +195,20 @@ func (d *memDDB) TransactWriteItems(_ context.Context, p *dynamodb.TransactWrite
 		}
 	}
 	for _, ti := range p.TransactItems {
+		if del := ti.Delete; del != nil && del.ConditionExpression != nil {
+			current := d.tbl(*del.TableName)[itemKey(del.Key)]
+			if current != nil && *current["vmId"].(*ddbtypes.AttributeValueMemberS) != *del.ExpressionAttributeValues[":vmId"].(*ddbtypes.AttributeValueMemberS) {
+				return nil, &ddbtypes.ConditionalCheckFailedException{}
+			}
+		}
+	}
+	for _, ti := range p.TransactItems {
 		if ti.Put != nil {
 			t := d.tbl(*ti.Put.TableName)
 			t[itemKey(ti.Put.Item)] = cloneItem(ti.Put.Item)
+		}
+		if del := ti.Delete; del != nil {
+			delete(d.tbl(*del.TableName), itemKey(del.Key))
 		}
 	}
 	return &dynamodb.TransactWriteItemsOutput{}, nil
@@ -286,6 +297,22 @@ func TestAWSStoreTwoTableAndS3Backend(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PutExecReceipt: %v", err)
 	}
+	// Recovery can replace the VM on a ref while retaining the previous VM's receipts.
+	vm1.State = store.VMStateLost
+	if err := st.UpdateVM(ctx, vm1); err != nil {
+		t.Fatalf("retire lost VM: %v", err)
+	}
+	if err := st.CreateRunningVM(ctx, &vm2); err != nil {
+		t.Fatalf("boot after retiring lost VM: %v", err)
+	}
+	if err := st.UpdateVM(ctx, vm1); err == nil {
+		t.Fatal("retiring the old VM after replacement must not clear the active pointer")
+	}
+	current, err := st.GetRunningVMByRef(ctx, vm2.Lineage, vm2.Ref)
+	if err != nil || current == nil || current.VMID != vm2.VMID {
+		t.Fatalf("expected the replacement to remain active, got %+v err=%v", current, err)
+	}
+
 	rcpt, err := st.GetExecReceipt(ctx, "vm_1", "exec_1")
 	if err != nil || rcpt == nil || string(rcpt.ResponseJSON) != `{"exitCode":0}` {
 		t.Fatalf("GetExecReceipt mismatch: %+v err=%v", rcpt, err)

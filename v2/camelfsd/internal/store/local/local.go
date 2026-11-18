@@ -595,6 +595,9 @@ func (s *LocalStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*sto
 		return nil, apperr.Internal("query ref for lease", err)
 	}
 
+	if p.Release && p.ExpectedEpoch > 0 && (curHolder != p.Holder || curEpoch != p.ExpectedEpoch) {
+		return &store.LeaseResult{Ref: p.Ref, Commit: commit, Tree: tree, Holder: curHolder, Epoch: curEpoch, ExpiresAt: curExpiry}, nil
+	}
 	if curHolder != "" && curExpiry > p.NowMs && curHolder != p.Holder {
 		return nil, apperr.RefLeasedf("ref %q is currently leased by %q", p.Ref, curHolder)
 	}
@@ -699,7 +702,7 @@ func (s *LocalStore) GetRunningVMByRef(ctx context.Context, lineage, ref string)
 	return vm, nil
 }
 
-func (s *LocalStore) ListRunningVMs(ctx context.Context) ([]*store.VMRecord, error) {
+func (s *LocalStore) ListRunningVMs(ctx context.Context, _ bool) ([]*store.VMRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+vmColumns+` FROM vms WHERE state = 'running'`)
 	if err != nil {
 		return nil, apperr.Internal("list running vms", err)

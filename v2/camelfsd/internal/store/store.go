@@ -57,12 +57,13 @@ type SetRefParams struct {
 }
 
 type LeaseRefParams struct {
-	Lineage string
-	Ref     string
-	Holder  string
-	TTLMs   int64
-	Release bool
-	NowMs   int64
+	Lineage       string
+	Ref           string
+	Holder        string
+	TTLMs         int64
+	Release       bool
+	ExpectedEpoch int64 // For release, only clear the matching lease.
+	NowMs         int64
 }
 
 type LeaseResult struct {
@@ -73,6 +74,8 @@ type LeaseResult struct {
 	Epoch     int64  `json:"epoch"`
 	ExpiresAt int64  `json:"expiresAt"`
 }
+
+const VMStateLost = "lost"
 
 type VMRecord struct {
 	VMID            string            `json:"vmId"`
@@ -131,7 +134,7 @@ type RepoStore interface {
 
 type VMStore interface {
 	GetRunningVMByRef(ctx context.Context, lineage, ref string) (*VMRecord, error)
-	ListRunningVMs(ctx context.Context) ([]*VMRecord, error)
+	ListRunningVMs(ctx context.Context, consistent bool) ([]*VMRecord, error)
 	ListRunningVMsByLineage(ctx context.Context, lineage string) ([]*VMRecord, error)
 	CreateRunningVM(ctx context.Context, vm *VMRecord) error
 	GetVM(ctx context.Context, vmID string) (*VMRecord, error)

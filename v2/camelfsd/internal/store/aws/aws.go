@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -571,7 +572,8 @@ func (s *AWSStore) SetRef(ctx context.Context, p store.SetRefParams) (*store.Ref
 
 func (s *AWSStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*store.LeaseResult, error) {
 	curOut, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.reposTable,
+		TableName:      &s.reposTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(linPK(p.Lineage)),
 			"SK": strVal(refSK(p.Ref)),
@@ -589,6 +591,9 @@ func (s *AWSStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*store
 	curEpoch := getInt64(curOut.Item, "leaseEpoch")
 	curExpiry := getInt64(curOut.Item, "leaseExpiresAt")
 
+	if p.Release && p.ExpectedEpoch > 0 && (curHolder != p.Holder || curEpoch != p.ExpectedEpoch) {
+		return &store.LeaseResult{Ref: p.Ref, Commit: commit, Tree: tree, Holder: curHolder, Epoch: curEpoch, ExpiresAt: curExpiry}, nil
+	}
 	if curHolder != "" && curExpiry > p.NowMs && curHolder != p.Holder {
 		return nil, apperr.RefLeasedf("ref %q is currently leased by %q", p.Ref, curHolder)
 	}
@@ -596,17 +601,23 @@ func (s *AWSStore) LeaseRef(ctx context.Context, p store.LeaseRefParams) (*store
 	cond := "attribute_exists(PK) AND (leaseHolder = :empty OR leaseExpiresAt <= :now OR leaseHolder = :holder)"
 	if p.Release {
 		upd := "SET leaseHolder = :empty, leaseExpiresAt = :zero"
+		values := map[string]ddbtypes.AttributeValue{
+			":empty":  strVal(""),
+			":zero":   numVal(0),
+			":holder": strVal(p.Holder),
+		}
+		if p.ExpectedEpoch > 0 {
+			cond = "leaseHolder = :holder AND leaseEpoch = :epoch"
+			values[":epoch"] = numVal(p.ExpectedEpoch)
+		} else {
+			values[":now"] = numVal(p.NowMs)
+		}
 		_, err := s.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-			TableName:           &s.reposTable,
-			Key:                 map[string]ddbtypes.AttributeValue{"PK": strVal(linPK(p.Lineage)), "SK": strVal(refSK(p.Ref))},
-			UpdateExpression:    &upd,
-			ConditionExpression: &cond,
-			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":empty":  strVal(""),
-				":zero":   numVal(0),
-				":now":    numVal(p.NowMs),
-				":holder": strVal(p.Holder),
-			},
+			TableName:                 &s.reposTable,
+			Key:                       map[string]ddbtypes.AttributeValue{"PK": strVal(linPK(p.Lineage)), "SK": strVal(refSK(p.Ref))},
+			UpdateExpression:          &upd,
+			ConditionExpression:       &cond,
+			ExpressionAttributeValues: values,
 		})
 		if err != nil {
 			if isConditionalCheckFailed(err) {
@@ -718,7 +729,8 @@ func itemToVM(item map[string]ddbtypes.AttributeValue) *store.VMRecord {
 
 func (s *AWSStore) GetRunningVMByRef(ctx context.Context, lineage, ref string) (*store.VMRecord, error) {
 	ptrOut, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.vmsTable,
+		TableName:      &s.vmsTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(activeVMPK(lineage)),
 			"SK": strVal(refSK(ref)),
@@ -747,10 +759,11 @@ func (s *AWSStore) GetRunningVMByRef(ctx context.Context, lineage, ref string) (
 	return vm, nil
 }
 
-func (s *AWSStore) ListRunningVMs(ctx context.Context) ([]*store.VMRecord, error) {
+func (s *AWSStore) ListRunningVMs(ctx context.Context, consistent bool) ([]*store.VMRecord, error) {
 	filt := "SK = :meta AND #st = :running"
-	out, err := s.ddb.Scan(ctx, &dynamodb.ScanInput{
+	pages := dynamodb.NewScanPaginator(s.ddb, &dynamodb.ScanInput{
 		TableName:        &s.vmsTable,
+		ConsistentRead:   aws.Bool(consistent),
 		FilterExpression: &filt,
 		ExpressionAttributeNames: map[string]string{
 			"#st": "state",
@@ -760,13 +773,16 @@ func (s *AWSStore) ListRunningVMs(ctx context.Context) ([]*store.VMRecord, error
 			":running": strVal("running"),
 		},
 	})
-	if err != nil {
-		return nil, apperr.Internal("ddb scan running vms", err)
-	}
 	var res []*store.VMRecord
-	for _, it := range out.Items {
-		if strings.HasPrefix(getStr(it, "PK"), "VM#") {
-			res = append(res, itemToVM(it))
+	for pages.HasMorePages() {
+		out, err := pages.NextPage(ctx)
+		if err != nil {
+			return nil, apperr.Internal("ddb scan running vms", err)
+		}
+		for _, it := range out.Items {
+			if strings.HasPrefix(getStr(it, "PK"), "VM#") {
+				res = append(res, itemToVM(it))
+			}
 		}
 	}
 	return res, nil
@@ -834,7 +850,8 @@ func (s *AWSStore) CreateRunningVM(ctx context.Context, vm *store.VMRecord) erro
 
 func (s *AWSStore) GetVM(ctx context.Context, vmID string) (*store.VMRecord, error) {
 	out, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.vmsTable,
+		TableName:      &s.vmsTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(vmPK(vmID)),
 			"SK": strVal("META"),
@@ -850,33 +867,44 @@ func (s *AWSStore) GetVM(ctx context.Context, vmID string) (*store.VMRecord, err
 }
 
 func (s *AWSStore) UpdateVM(ctx context.Context, vm *store.VMRecord) error {
-	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &s.vmsTable,
-		Item:      vmToItem(vm),
+	if vm.State == "running" {
+		_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: &s.vmsTable,
+			Item:      vmToItem(vm),
+		})
+		if err != nil {
+			return apperr.Internal("ddb update running vm", err)
+		}
+		return nil
+	}
+
+	cond := "attribute_not_exists(PK) OR vmId = :vmId"
+	_, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []ddbtypes.TransactWriteItem{
+			{Put: &ddbtypes.Put{TableName: &s.vmsTable, Item: vmToItem(vm)}},
+			{Delete: &ddbtypes.Delete{
+				TableName:           &s.vmsTable,
+				ConditionExpression: &cond,
+				Key: map[string]ddbtypes.AttributeValue{
+					"PK": strVal(activeVMPK(vm.Lineage)),
+					"SK": strVal(refSK(vm.Ref)),
+				},
+				ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+					":vmId": strVal(vm.VMID),
+				},
+			}},
+		},
 	})
 	if err != nil {
-		return apperr.Internal("ddb update vm", err)
-	}
-	if vm.State != "running" {
-		cond := "vmId = :vmId"
-		_, _ = s.ddb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-			TableName:           &s.vmsTable,
-			ConditionExpression: &cond,
-			Key: map[string]ddbtypes.AttributeValue{
-				"PK": strVal(activeVMPK(vm.Lineage)),
-				"SK": strVal(refSK(vm.Ref)),
-			},
-			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
-				":vmId": strVal(vm.VMID),
-			},
-		})
+		return apperr.Internal("ddb retire vm", err)
 	}
 	return nil
 }
 
 func (s *AWSStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*store.ExecReceipt, error) {
 	out, err := s.ddb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: &s.vmsTable,
+		TableName:      &s.vmsTable,
+		ConsistentRead: aws.Bool(true),
 		Key: map[string]ddbtypes.AttributeValue{
 			"PK": strVal(vmPK(vmID)),
 			"SK": strVal(execSK(execID)),

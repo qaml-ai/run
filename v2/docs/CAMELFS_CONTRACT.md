@@ -192,16 +192,21 @@ Runs `command` in the VM's **persistent bash shell** (preserving `cwd` and expor
 }
 ```
 
+A replay with an existing execution receipt returns that receipt. An exec against a
+lost VM without a receipt returns HTTP 410 with code `vm_lost`. The interrupted
+command may have run. A new boot starts from the last committed workspace.
+
 ### `POST /v1/vms/{vmId}/lease`
 - Request: `{ "leaseS": 600 }`
 - Response `200`: `{ "vmId": "vm_...", "state": "running", "leaseExpiresAt": 1763400600000 }`
 
 ### `POST /v1/vms/{vmId}/stop`
-Commits any uncommitted `/workspace` edits, releases the ref lease, and stops the VM.
+Commits any uncommitted `/workspace` edits on a running VM, releases the ref lease, and stops it.
+If the VM was lost, returns its `lost` state and the last committed workspace.
 - Response `200`: `{ "vmId": "vm_...", "state": "stopped", "commit": "<sha256>", "unbilledMs": 120 }`
 
 ### `GET /v1/vms/{vmId}`
-- Response `200`: `{ "vmId": "vm_...", "lineage": "lin_...", "ref": "refs/heads/main", "holder": "agt_123", "state": "running | stopped", "headCommit": "<sha256>", "leaseExpiresAt": 1763400600000 }`
+- Response `200`: `{ "vmId": "vm_...", "lineage": "lin_...", "ref": "refs/heads/main", "holder": "agt_123", "state": "running | stopped | lost", "headCommit": "<sha256>", "leaseExpiresAt": 1763400600000 }`
 
 ---
 

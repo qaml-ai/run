@@ -521,7 +521,7 @@ func writeSSEEvent(w io.Writer, flusher http.Flusher, event string, payload any)
 
 func (s *Server) handleExecVM(w http.ResponseWriter, r *http.Request) {
 	vmID := r.PathValue("vmId")
-	vmInfo, err := s.authorizeExistingVM(r, vmID, false)
+	_, err := s.authorizeExistingVM(r, vmID, false)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -544,13 +544,6 @@ func (s *Server) handleExecVM(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, res)
-		return
-	}
-
-	// If VM is stopped and no cached receipt exists, allow Exec to fail before SSE headers if stopped.
-	// Note: if execId matches an existing receipt on a stopped VM, Exec still returns the receipt!
-	if vmInfo.State != "running" && req.ExecID == "" {
-		writeError(w, apperr.InvalidRequestf("vm %q is not running", vmID))
 		return
 	}
 

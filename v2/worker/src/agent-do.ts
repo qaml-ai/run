@@ -459,6 +459,9 @@ export class AgentDO extends DurableObject<Env> {
         );
         void this.scheduleNextAlarm();
       },
+      clearVmSession: (branch, vmId) => {
+        this.ctx.storage.sql.exec("DELETE FROM vm_session WHERE branch = ?1 AND vm_id = ?2", branch, vmId);
+      },
       recordFilesChanged: onFilesChanged,
       recordVmMs: onVmMs,
       hasWebSocketTool: (name: string) => this.findSocketForTool(name) !== null,

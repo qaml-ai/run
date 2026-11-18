@@ -107,7 +107,7 @@ export interface CamelFsVmInfo {
   lineage: string;
   ref: string;
   holder: string;
-  state: "running" | "stopped";
+  state: "running" | "stopped" | "lost";
   headCommit: string;
   reused?: boolean;
   leaseExpiresAt: number;

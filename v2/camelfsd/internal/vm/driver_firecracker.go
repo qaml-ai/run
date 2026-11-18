@@ -22,8 +22,11 @@ import (
 
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/apperr"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/repo"
+	"github.com/qaml-ai/camelrun-next/camelfsd/internal/store"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/workdisk"
 )
+
+const firecrackerHost = "firecracker"
 
 type FirecrackerConfig struct {
 	DataDir         string
@@ -53,6 +56,7 @@ type fcVMSession struct {
 type FirecrackerDriver struct {
 	cfg      FirecrackerConfig
 	rootDir  string
+	lock     *os.File
 	mu       sync.RWMutex
 	nextCID  uint32
 	sessions map[string]*fcVMSession
@@ -75,12 +79,66 @@ func NewFirecrackerDriver(cfg FirecrackerConfig) (*FirecrackerDriver, error) {
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir firecracker vms dir: %w", err)
 	}
+	lock, err := os.OpenFile(filepath.Join(rootDir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open Firecracker data directory lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("lock Firecracker data directory: %w", err)
+	}
 	return &FirecrackerDriver{
 		cfg:      cfg,
 		rootDir:  rootDir,
+		lock:     lock,
 		nextCID:  100,
 		sessions: make(map[string]*fcVMSession),
 	}, nil
+}
+
+// Recover retires the direct Firecracker sessions owned by the previous
+// daemon. Call it before serving requests, with one direct daemon per VM table.
+func (d *FirecrackerDriver) Recover(ctx context.Context, st store.Store) error {
+	running, err := st.ListRunningVMs(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, rec := range running {
+		if rec.HostID != firecrackerHost {
+			continue
+		}
+		lease, err := st.LeaseRef(ctx, store.LeaseRefParams{
+			Lineage: rec.Lineage, Ref: rec.Ref, Holder: rec.Holder,
+			Release: true, ExpectedEpoch: rec.LeaseEpoch, NowMs: time.Now().UnixMilli(),
+		})
+		if err != nil && !apperr.IsCode(err, apperr.CodeNotFound) {
+			return fmt.Errorf("release lease for lost VM %s: %w", rec.VMID, err)
+		}
+		if lease != nil {
+			rec.HeadCommit = lease.Commit
+		}
+		rec.LeaseExpiresAt = 0
+		rec.State = store.VMStateLost
+		if err := st.UpdateVM(ctx, rec); err != nil {
+			return fmt.Errorf("retire lost VM %s: %w", rec.VMID, err)
+		}
+		log.Printf("camelfsd: retired lost Firecracker VM %s", rec.VMID)
+	}
+
+	entries, err := os.ReadDir(d.rootDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || len(name) != 27 || !strings.HasPrefix(name, "vm_") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(d.rootDir, name)); err != nil {
+			return fmt.Errorf("remove scratch directory for lost VM %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (d *FirecrackerDriver) allocCID() uint32 {
@@ -169,15 +227,10 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 	cid := d.allocCID()
 	cmd := exec.Command(d.cfg.FirecrackerBin, "--api-sock", apiSock)
 	cmd.Dir = baseDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	waitCh := make(chan struct{})
-	if err := cmd.Start(); err != nil {
+	waitCh, err := launchFirecracker(cmd)
+	if err != nil {
 		return "", apperr.Internal("launch firecracker", err)
 	}
-	go func() {
-		_ = cmd.Wait()
-		close(waitCh)
-	}()
 
 	sess := &fcVMSession{
 		vmID:         spec.VMID,
@@ -201,7 +254,7 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 	d.sessions[spec.VMID] = sess
 	d.mu.Unlock()
 	started = true
-	return "firecracker", nil
+	return firecrackerHost, nil
 }
 
 func copyFileReflinkOrCopy(src, dst string) error {
@@ -564,12 +617,7 @@ func (d *FirecrackerDriver) SnapshotWorkspace(ctx context.Context, vmID string) 
 
 func (s *fcVMSession) kill() {
 	if s.cmd != nil && s.cmd.Process != nil {
-		pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
-		if err == nil && pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		} else {
-			_ = s.cmd.Process.Kill()
-		}
+		_ = s.cmd.Process.Kill()
 		<-s.waitCh
 	}
 }
@@ -597,8 +645,9 @@ func (d *FirecrackerDriver) Close() error {
 		ids = append(ids, id)
 	}
 	d.mu.Unlock()
+	var err error
 	for _, id := range ids {
-		_ = d.Stop(context.Background(), id)
+		err = errors.Join(err, d.Stop(context.Background(), id))
 	}
-	return nil
+	return errors.Join(err, d.lock.Close())
 }

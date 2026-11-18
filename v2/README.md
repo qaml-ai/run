@@ -71,6 +71,13 @@ keep the file outside the checkout. The signing key is
 `<kid>:<base64url-encoded Ed25519 seed>`. The daemon's public key uses the same
 key ID. The pilot config provides no development bearer tokens.
 
+Run one direct Firecracker daemon per VM table, with a stable data directory and
+dedicated NBD devices. A daemon exit kills its child microVMs. At startup,
+camelfsd retires their VM records and releases the matching ref leases before
+serving requests. Interrupted commands surface an error and the next VM opens
+the last committed workspace. To replace a host, stop or fence the old host
+before starting the replacement against its tables.
+
 The same end-to-end suite can target a dedicated Firecracker daemon with
 `CAMELFSD_TEST_URL` and `CAMELFSD_TEST_SIGNING_KEY`. The file and VM case
 covers a live edit, a stop, an API edit during sleep, and a read after restart.
