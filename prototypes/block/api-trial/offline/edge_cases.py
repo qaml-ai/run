@@ -1,5 +1,6 @@
 """Exercise the userspace ext4 editor on real local images, including allocation and refusal."""
 
+import io
 import json
 import os
 import subprocess as sp
@@ -7,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from trial import CHUNK, library_edit
+from fileio import workspace_file
 from volume import digest
 
 
@@ -62,6 +64,25 @@ def run(folder):
             sp.check_output(["debugfs", "-R", "cat /other", image], stderr=sp.DEVNULL)
             == b"intact"
         )
+    h = view(image, folder / "paths")
+    new_path = "new dir/deep/file.bin"
+    payload = os.urandom(CHUNK + 1)
+    workspace_file(h, new_path, payload)
+    output = io.BytesIO()
+    workspace_file(h, new_path, output=output)
+    assert output.getvalue() == payload
+    try:
+        workspace_file(h, "../outside", b"wrong")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("traversal accepted")
+    # Reopen the resulting disk with independent filesystem tooling.
+    with image.open("r+b") as f:
+        for path in h[2].iterdir():
+            f.seek(int(path.name) * CHUNK)
+            f.write(path.read_bytes())
+    sp.run(["e2fsck", "-fn", image], check=True, capture_output=True)
     h = view(image, folder / "bad")
     h[3][h[0][0]] = bytes(CHUNK)
     try:

@@ -84,6 +84,7 @@ def snapshot(volume, base, dirty_dir):
     blocks = base.copy()
     new = {}
     known = set(base)
+    uploaded = 0
     for path in dirty_dir.iterdir():
         i = int(path.name)
         data = path.read_bytes()
@@ -92,6 +93,12 @@ def snapshot(volume, base, dirty_dir):
         key = digest(data) if any(data) else None
         blocks[i] = key
         if key and key not in known:
+            known.add(key)
             new[key] = data
-    volume.save_blocks(new)
-    return blocks, len(new) * CHUNK
+            uploaded += CHUNK
+            if len(new) == 8:
+                volume.save_blocks(new)
+                new.clear()
+    if new:
+        volume.save_blocks(new)
+    return blocks, uploaded

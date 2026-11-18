@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 import sys
 from pathlib import Path
 
@@ -28,7 +29,10 @@ def block(h, index):
     blocks, cache, dirty, volume = h
     path = dirty / str(index)
     if path.exists():
-        return path.read_bytes()
+        data = path.read_bytes()
+        if len(data) != CHUNK:
+            raise OSError("incomplete dirty block")
+        return data
     key = blocks[index]
     if key is None:
         return bytes(CHUNK)
@@ -39,9 +43,14 @@ def block(h, index):
             raise OSError("NVMe cache integrity error")
     else:
         data = volume.read_object("blocks", key)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(path)
+        with tempfile.NamedTemporaryFile(dir=cache, delete=False) as tmp:
+            name = Path(tmp.name)
+            try:
+                tmp.write(data)
+                tmp.flush()
+                name.replace(path)
+            finally:
+                name.unlink(missing_ok=True)
     if len(data) != CHUNK:
         raise OSError("bad chunk size")
     return data

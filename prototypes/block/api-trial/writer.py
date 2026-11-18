@@ -1,6 +1,7 @@
 """One isolated owner serving test requests from its supervisor over stdin/stdout."""
 
 import json
+from contextlib import ExitStack, contextmanager
 import os
 import socket
 import subprocess as sp
@@ -45,9 +46,8 @@ def rpc(path, command):
     return result
 
 
-def run():
-    volume = Volume()
-    folder, cache, ref = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+@contextmanager
+def boot(folder, cache, base):
     nbd = os.environ["TRIAL_NBD"]
     bound = Path("/sys/class/block") / Path(nbd).name / "pid"
     if bound.exists():
@@ -57,90 +57,112 @@ def run():
     dirty.mkdir()
     cache.mkdir(exist_ok=True)
     processes = []
-    emit(ready=True)
     with (folder / "backend.log").open("wb") as log:
+        try:
+            mapping = folder / "map.json"
+            mapping.write_text(json.dumps(base))
+            env = dict(
+                os.environ,
+                TRIAL_MAP=str(mapping),
+                TRIAL_CACHE=str(cache),
+                TRIAL_DIRTY=str(dirty),
+            )
+            nbd_sock = folder / "nbd.sock"
+
+            def launch(args, **kwargs):
+                process = sp.Popen(
+                    ["setpriv", "--pdeathsig", "SIGKILL", "--", *args],
+                    stdout=log, stderr=log, stdin=sp.DEVNULL, **kwargs
+                )
+                processes.append(process)
+                return process
+
+            launch(
+                [
+                    os.environ["NBDKIT"],
+                    "-f",
+                    "-U",
+                    nbd_sock,
+                    "--threads",
+                    "1",
+                    os.environ["NBDKIT_PYTHON"],
+                    HERE / "device.py",
+                ],
+                env=env,
+            )
+            poll_until(nbd_sock.exists, processes)
+            launch(["nbd-client", "-unix", nbd_sock, nbd, "-nofork", "-nonetlink"])
+            size = len(base) * CHUNK
+            poll_until(
+                lambda expected=size: (
+                    bound.exists()
+                    and int((bound.parent / "size").read_text()) * 512 == expected
+                ),
+                processes,
+            )
+            with open(nbd, "rb", buffering=0) as device:
+                if device.seek(0, 2) != len(base) * CHUNK:
+                    raise OSError("host block capacity mismatch")
+            cfg = {
+                "boot-source": {
+                    "kernel_image_path": os.environ["TRIAL_KERNEL"],
+                    "initrd_path": os.environ["TRIAL_INITRD"],
+                    "boot_args": "console=ttyS0 panic=1 reboot=k pci=off rdinit=/init",
+                },
+                "machine-config": {"vcpu_count": 1, "mem_size_mib": 192},
+                "vsock": {"guest_cid": 19, "uds_path": str(vsock)},
+                "drives": [
+                    {
+                        "drive_id": "workspace",
+                        "path_on_host": nbd,
+                        "is_root_device": False,
+                        "is_read_only": False,
+                        "cache_type": "Writeback",
+                        "io_engine": "Sync",
+                    }
+                ],
+            }
+            config = folder / "firecracker.json"
+            config.write_text(json.dumps(cfg))
+            launch(["firecracker", "--no-api", "--config-file", config])
+
+            def ready():
+                try:
+                    return rpc(vsock, "ping") == "OK"
+                except (OSError, ConnectionError):
+                    return False
+
+            poll_until(ready, processes)
+            yield vsock, dirty
+        finally:
+            for process in reversed(processes):
+                if process.args[4] == "nbd-client" and process.poll() is None and bound.exists():
+                    sp.run(["nbd-client", "-d", nbd], check=True, stdout=log, stderr=log)
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except sp.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+
+
+def run():
+    volume = Volume()
+    folder, cache, ref = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+    emit(ready=True)
+    with ExitStack() as stack:
+        cold = True
         for line in sys.stdin:
             request = json.loads(line)
             t = clock()
-            cold = not processes
             if cold:
                 head, etag = volume.head(ref)
                 epoch = uuid.uuid4().hex
                 etag = volume.publish(ref, head["map"], head["revision"], etag, epoch)
                 base = json.loads(volume.read_object("maps", head["map"]))
-                mapping = folder / "map.json"
-                mapping.write_text(json.dumps(base))
-                env = dict(
-                    os.environ,
-                    TRIAL_MAP=str(mapping),
-                    TRIAL_CACHE=str(cache),
-                    TRIAL_DIRTY=str(dirty),
-                )
-                nbd_sock = folder / "nbd.sock"
-
-                def launch(args, **kwargs):
-                    process = sp.Popen(
-                        args, stdout=log, stderr=log, stdin=sp.DEVNULL, **kwargs
-                    )
-                    processes.append(process)
-                    return process
-
-                launch(
-                    [
-                        os.environ["NBDKIT"],
-                        "-f",
-                        "-U",
-                        nbd_sock,
-                        "--threads",
-                        "1",
-                        os.environ["NBDKIT_PYTHON"],
-                        HERE / "device.py",
-                    ],
-                    env=env,
-                )
-                poll_until(nbd_sock.exists, processes)
-                launch(["nbd-client", "-unix", nbd_sock, nbd, "-nofork", "-nonetlink"])
-                size = len(base) * CHUNK
-                poll_until(
-                    lambda expected=size: (
-                        bound.exists()
-                        and int((bound.parent / "size").read_text()) * 512 == expected
-                    ),
-                    processes,
-                )
-                with open(nbd, "rb", buffering=0) as device:
-                    if device.seek(0, 2) != len(base) * CHUNK:
-                        raise OSError("host block capacity mismatch")
-                cfg = {
-                    "boot-source": {
-                        "kernel_image_path": os.environ["TRIAL_KERNEL"],
-                        "initrd_path": os.environ["TRIAL_INITRD"],
-                        "boot_args": "console=ttyS0 panic=1 reboot=k pci=off rdinit=/init",
-                    },
-                    "machine-config": {"vcpu_count": 1, "mem_size_mib": 192},
-                    "vsock": {"guest_cid": 19, "uds_path": str(vsock)},
-                    "drives": [
-                        {
-                            "drive_id": "workspace",
-                            "path_on_host": nbd,
-                            "is_root_device": False,
-                            "is_read_only": False,
-                            "cache_type": "Writeback",
-                            "io_engine": "Sync",
-                        }
-                    ],
-                }
-                config = folder / "firecracker.json"
-                config.write_text(json.dumps(cfg))
-                launch(["firecracker", "--no-api", "--config-file", config])
-
-                def ready():
-                    try:
-                        return rpc(vsock, "ping") == "OK"
-                    except (OSError, ConnectionError):
-                        return False
-
-                poll_until(ready, processes)
+                vsock, dirty = stack.enter_context(boot(folder, cache, base))
+                cold = False
             mounted = clock()
             value = request["value"]
             if "expected_before" in request and rpc(vsock, "read") != request["expected_before"]:

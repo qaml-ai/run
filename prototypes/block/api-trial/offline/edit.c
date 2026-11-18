@@ -1,4 +1,4 @@
-/* A single trusted fixture edit. The caller owns a private copy-on-write block view. */
+/* Each call owns a private block view. Failed transactions discard that view. */
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -59,36 +59,105 @@ static struct struct_io_manager manager = {
     .write_blk64=write64, .write_byte=write_bytes, .flush=flush
 };
 
-errcode_t replace_fixture(transfer_fn io, const char *data, unsigned size)
+typedef int (*output_fn)(const void *, unsigned);
+
+static errcode_t create_file(ext2_filsys fs, ext2_ino_t parent, const char *name,
+                             ext2_ino_t *ino)
+{
+    struct ext2_inode inode = {0};
+    inode.i_mode = LINUX_S_IFREG | 0644;
+    inode.i_links_count = 1;
+    inode.i_atime = inode.i_ctime = inode.i_mtime = time(NULL);
+    errcode_t err = ext2fs_new_inode(fs, parent, inode.i_mode, NULL, ino);
+    if (err) return err;
+    err = ext2fs_write_new_inode(fs, *ino, &inode);
+    if (err) return err;
+    ext2fs_inode_alloc_stats2(fs, *ino, 1, 0);
+    err = ext2fs_link(fs, parent, name, *ino, EXT2_FT_REG_FILE);
+    if (err == EXT2_ET_DIR_NO_SPACE) {
+        err = ext2fs_expand_dir(fs, parent);
+        if (!err) err = ext2fs_link(fs, parent, name, *ino, EXT2_FT_REG_FILE);
+    }
+    return err;
+}
+
+/* Walk individual directory entries without following symlinks. */
+static errcode_t resolve(ext2_filsys fs, char *path, int create, ext2_ino_t *out)
+{
+    ext2_ino_t parent = EXT2_ROOT_INO;
+    while (*path) {
+        char *next = strchr(path, '/');
+        if (next) *next++ = 0;
+        size_t len = strlen(path);
+        if (!len || len > EXT2_NAME_LEN || !strcmp(path, ".") || !strcmp(path, "..")) return EINVAL;
+        ext2_ino_t ino;
+        errcode_t err = ext2fs_lookup(fs, parent, path, len, NULL, &ino);
+        if (err == EXT2_ET_FILE_NOT_FOUND && create) {
+            if (!next) return create_file(fs, parent, path, out);
+            err = ext2fs_mkdir(fs, parent, 0, path);
+            if (err == EXT2_ET_DIR_NO_SPACE) {
+                err = ext2fs_expand_dir(fs, parent);
+                if (!err) err = ext2fs_mkdir(fs, parent, 0, path);
+            }
+            if (!err) err = ext2fs_lookup(fs, parent, path, len, NULL, &ino);
+        }
+        if (err == EXT2_ET_FILE_NOT_FOUND) return ENOENT;
+        if (err) return err;
+        if (!next) { *out = ino; return 0; }
+        err = ext2fs_check_directory(fs, ino);
+        if (err) return err == EXT2_ET_NO_DIRECTORY ? ENOTDIR : err;
+        parent = ino;
+        path = next;
+    }
+    return EINVAL;
+}
+
+errcode_t workspace_file(transfer_fn io, const char *path, int writing,
+                         const char *data, size_t size, output_fn output)
 {
     ext2_filsys fs = NULL;
     ext2_file_t file = NULL;
     ext2_ino_t ino;
     struct ext2_inode inode;
-    unsigned written = 0;
+    char *parts = strdup(path);
+    if (!parts) return ENOMEM;
     transfer = io;
-    errcode_t err = ext2fs_open("snapshot", EXT2_FLAG_RW | EXT2_FLAG_64BITS, 0, 0, &manager, &fs);
+    errcode_t err = ext2fs_open("workspace", EXT2_FLAG_64BITS | (writing ? EXT2_FLAG_RW : 0),
+                                0, 0, &manager, &fs);
     if (err) goto done;
     if (fs->super->s_state != EXT2_VALID_FS || fs->super->s_last_orphan ||
         ext2fs_has_feature_journal_needs_recovery(fs->super) || ext2fs_has_feature_orphan_present(fs->super)) {
         err = EUCLEAN;
         goto done;
     }
-    err = ext2fs_namei(fs, EXT2_ROOT_INO, EXT2_ROOT_INO, "/src/main.py", &ino);
+    if (writing && (err = ext2fs_read_bitmaps(fs))) goto done;
+    err = resolve(fs, parts, writing, &ino);
     if (err) goto done;
     err = ext2fs_read_inode(fs, ino, &inode);
     if (err) goto done;
-    if (!LINUX_S_ISREG(inode.i_mode) || inode.i_links_count != 1) { err = EINVAL; goto done; }
-    err = ext2fs_read_bitmaps(fs);
+    if (!LINUX_S_ISREG(inode.i_mode) || (writing && inode.i_links_count != 1)) { err = EINVAL; goto done; }
+    err = ext2fs_file_open(fs, ino, writing ? EXT2_FILE_WRITE : 0, &file);
     if (err) goto done;
-    err = ext2fs_file_open(fs, ino, EXT2_FILE_WRITE, &file);
-    if (err) goto done;
-    err = ext2fs_file_write(file, data, size, &written);
-    if (!err && written != size) err = EIO;
-    if (!err) err = ext2fs_file_set_size2(file, size);
+    if (writing) {
+        for (size_t pos = 0; pos < size;) {
+            unsigned n = size - pos > 65536 ? 65536 : size - pos;
+            unsigned written = 0;
+            err = ext2fs_file_write(file, data + pos, n, &written);
+            if (err || written != n) { if (!err) err = EIO; break; }
+            pos += n;
+        }
+        if (!err) err = ext2fs_file_set_size2(file, size);
+    } else {
+        unsigned n;
+        char buf[65536];
+        do {
+            err = ext2fs_file_read(file, buf, sizeof(buf), &n);
+            if (!err && n) err = output(buf, n);
+        } while (!err && n);
+    }
     errcode_t closed = ext2fs_file_close(file);
     if (!err) err = closed;
-    if (err) goto done;
+    if (err || !writing) goto done;
     err = ext2fs_read_inode(fs, ino, &inode);
     if (err) goto done;
     inode.i_mtime = inode.i_ctime = time(NULL);
@@ -97,5 +166,6 @@ errcode_t replace_fixture(transfer_fn io, const char *data, unsigned size)
 done:
     if (fs) ext2fs_free(fs);
     transfer = NULL;
+    free(parts);
     return err;
 }

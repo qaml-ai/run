@@ -8,6 +8,7 @@ case "$command" in
         mv /workspace/src/.edit /workspace/src/main.py
         ;;
     read) exec /bin/bash -c 'cat /workspace/src/main.py';;
+    file) exec /bin/workspace-file;;
     freeze) fsfreeze --freeze /workspace;;
     thaw) fsfreeze --unfreeze /workspace;;
     unmount) umount /workspace;;

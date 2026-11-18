@@ -1,7 +1,5 @@
 """Compare two private offline ext4 editors against the same sleeping S3-backed volume."""
 
-import ctypes as ct
-import errno
 import fcntl
 import json
 import os
@@ -16,42 +14,14 @@ from botocore.exceptions import ClientError
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
-import device
+from fileio import workspace_file
 from run import receive, seed
 from volume import CHUNK, Volume, snapshot
 from writer import poll_until
 
 clock = time.perf_counter
-Transfer = ct.CFUNCTYPE(ct.c_int, ct.c_int, ct.c_ulonglong, ct.c_size_t, ct.c_void_p)
-
-
 def library_edit(h, data):
-    lib = ct.CDLL(str(HERE / "edit.so"))
-    lib.replace_fixture.argtypes = [Transfer, ct.c_char_p, ct.c_uint]
-    lib.replace_fixture.restype = ct.c_long
-    errors = []
-
-    @Transfer
-    def transfer(write, offset, size, pointer):
-        try:
-            if offset + size > device.get_size(h):
-                raise ValueError("invalid ext4 IO range")
-            if write:
-                device.pwrite(h, ct.string_at(pointer, size), offset, 0)
-            else:
-                buf = bytearray(size)
-                device.pread(h, buf, offset, 0)
-                ct.memmove(pointer, bytes(buf), size)
-            return 0
-        except Exception as error:  # noqa: BLE001 - exceptions cannot cross a ctypes callback.
-            errors.append(error)
-            return errno.EIO
-
-    status = lib.replace_fixture(transfer, data, len(data))
-    if errors:
-        raise errors[0]
-    if status:
-        raise OSError(f"ext4 editor rejected image or operation ({status})")
+    workspace_file(h, "src/main.py", data)
 
 
 def kernel_edit(h, data):
