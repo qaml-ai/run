@@ -18,7 +18,7 @@ let sink = (line: string) => console.log(line);
 let metricService: string | undefined;
 /**
  * The ServiceName dimension of every line (AGENT_SERVICE_NAME): the deployment's, so the process's, set by its entry
- * point (server.ts, agent-child.ts). Nodes sharing a process (a simulation) share it.
+ * point (server.ts, agent-child.ts). Nodes in the same process share it.
  */
 export function setMetricService(service: string | undefined) {
   metricService = service;

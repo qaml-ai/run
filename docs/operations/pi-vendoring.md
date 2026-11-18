@@ -48,7 +48,7 @@ published to npm. The self-host image is the runtime image, which has Pi install
    versions (below), and new dependencies (their licenses must be permissive, see `CONTRIBUTING.md`).
 3. `npm run typecheck`, then the Pi suites one file at a time (`pi-durable-*`, `agent-host`, `compaction`,
    `landed-compaction`, `close-turn-at-load`, `history-pages`, `stream-deltas`, `loop-reliability`), then `npm test`
-   and `AGENT_HOSTING=inline npm test`, and `npm run sim` when recovery changed.
+   and `AGENT_HOSTING=inline npm test`.
 4. Open a PR with the sha, the upstream changes that matter to us, and a release note in `docs/operations/unreleased/`.
 
 ## Our patches
