@@ -252,7 +252,7 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 	}
 	if err := fcPutJSON(ctx, hc, "/boot-source", map[string]any{
 		"kernel_image_path": d.cfg.KernelImagePath,
-		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/camelfs-guest-init",
+		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw devtmpfs.mount=1 init=/sbin/camelfs-guest-init",
 	}); err != nil {
 		return err
 	}

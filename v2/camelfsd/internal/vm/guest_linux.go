@@ -49,7 +49,6 @@ func ServeFirecrackerGuest() error {
 		fs     string
 		flags  uintptr
 	}{
-		{"devtmpfs", "/dev", "devtmpfs", unix.MS_NOSUID},
 		{"proc", "/proc", "proc", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV},
 		{"sysfs", "/sys", "sysfs", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV},
 		{"/dev/vdb", guestWorkspace, "ext4", unix.MS_NOSUID | unix.MS_NODEV},
