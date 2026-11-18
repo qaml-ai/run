@@ -163,6 +163,7 @@ export interface RunErrorShape {
 export interface RunRecord {
   id: string;
   agentId: string;
+  actor?: string;
   idempotencyKey: string | null;
   startedAt: number;
   status: RunStatus;

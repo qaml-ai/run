@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
+import { calculateCostUsd } from "./providers.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -27,6 +28,7 @@ import {
   type AgentEventRecord,
   type Env,
   type PendingInputView,
+  type QueueMessagePayload,
   type RpcStub,
   type RunRecord,
   type RunStatus,
@@ -40,7 +42,7 @@ import {
   type ToolCallSummary,
 } from "./types.ts";
 import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
-import { enqueueWebhookEvent } from "./webhooks.ts";
+import { deliverWebhookMessage, enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
 interface WsAttachment {
@@ -150,6 +152,13 @@ export class AgentDO extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq ASC);
+      CREATE TABLE IF NOT EXISTS usage_deliveries (
+        id TEXT PRIMARY KEY,
+        message_json TEXT NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_usage_deliveries_due ON usage_deliveries(next_attempt_at);
       CREATE TABLE IF NOT EXISTS inputs (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -436,6 +445,38 @@ export class AgentDO extends DurableObject<Env> {
       },
       getRunRecord: (runId) => this.materializeRunRecord(runId),
       getRunSpendLimit: (runId) => this.runSpendLimit(runId),
+      recordModelUsage: async (runId, kind, input, output, usage) => {
+        const actor = this.runActor(runId);
+        if (!actor) return;
+        const cfg = this.requireConfig();
+        const now = Date.now();
+        const event: Extract<QueueMessagePayload, { kind: "webhook" }> = {
+          kind: "webhook",
+          tenantId: cfg.tenantId,
+          eventType: "usage.recorded",
+          eventId: randomId("evt", 16),
+          createdAt: now,
+          payload: {
+            agentId: cfg.id,
+            runId,
+            actor,
+            context: cfg.toolIdentity?.context,
+            model: cfg.model,
+            kind,
+            input,
+            output,
+            cost: { usd: calculateCostUsd(cfg.model, input, output), source: "catalog" },
+          },
+        };
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec("UPDATE runs SET usage_json = ? WHERE id = ?", JSON.stringify(usage), runId);
+          this.ctx.storage.sql.exec(
+            "INSERT INTO usage_deliveries (id, message_json, next_attempt_at) VALUES (?, ?, ?)",
+            event.eventId, JSON.stringify(event), now,
+          );
+        });
+        await this.scheduleNextAlarm();
+      },
       makeToolContext: (runId, approvedSet, onFilesChanged, onVmMs, signal) =>
         this.createToolExecutionContext(runId, approvedSet, onFilesChanged, onVmMs, signal),
     };
@@ -822,6 +863,7 @@ export class AgentDO extends DurableObject<Env> {
     const rows = this.ctx.storage.sql
       .exec<{
         id: string;
+        actor: string | null;
         idempotency_key: string | null;
         status: string;
         while_running: string;
@@ -874,6 +916,7 @@ export class AgentDO extends DurableObject<Env> {
     return {
       id: row.id,
       agentId: cfg.id,
+      ...(row.actor ? { actor: row.actor } : {}),
       idempotencyKey: row.idempotency_key,
       startedAt: row.started_at,
       status: row.status as RunStatus,
@@ -1286,6 +1329,11 @@ export class AgentDO extends DurableObject<Env> {
     const now = Date.now();
     const candidates: number[] = [];
 
+    const usage = this.ctx.storage.sql.exec<{ due: number | null }>(
+      "SELECT MIN(next_attempt_at) AS due FROM usage_deliveries",
+    ).one();
+    if (usage.due !== null) candidates.push(usage.due);
+
     // 1. Next due schedule
     const schedRows = this.ctx.storage.sql
       .exec<{ next_due_at: number }>(
@@ -1420,7 +1468,31 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
-    await this.scheduleNextAlarm();
+    try {
+      await this.deliverDueUsage(now);
+    } finally {
+      await this.scheduleNextAlarm();
+    }
+  }
+
+  private async deliverDueUsage(now: number): Promise<void> {
+    const deliveries = this.ctx.storage.sql.exec<{ id: string; message_json: string; attempts: number }>(
+      "SELECT id, message_json, attempts FROM usage_deliveries WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 10",
+      now,
+    ).toArray();
+    await Promise.all(deliveries.map(async ({ id, message_json, attempts }) => {
+      try {
+        await deliverWebhookMessage(this.env, JSON.parse(message_json));
+        this.ctx.storage.sql.exec("DELETE FROM usage_deliveries WHERE id = ?", id);
+      } catch (error) {
+        console.error("Usage webhook delivery failed", { id, error });
+        const delay = 1_000 * 2 ** Math.min(attempts, 8);
+        this.ctx.storage.sql.exec(
+          "UPDATE usage_deliveries SET attempts = attempts + 1, next_attempt_at = ? WHERE id = ?",
+          Date.now() + delay, id,
+        );
+      }
+    }));
   }
 
   private fetchStoredEvents(afterSeq: number, runIdFilter: string | null): AgentEventRecord[] {
@@ -1937,7 +2009,7 @@ export class AgentDO extends DurableObject<Env> {
 
   async respondToInput(
     inputId: string,
-    body?: { approved?: boolean; answer?: unknown; wait?: boolean },
+    body?: { approved?: boolean; answer?: unknown; wait?: boolean; actor?: string },
     trustedResponder = false,
   ): Promise<RunRecord> {
     this.ensureSql();
@@ -1958,6 +2030,10 @@ export class AgentDO extends DurableObject<Env> {
     const inp = rows[0];
     if (!inp) {
       throw new ApiError(404, "input_not_found", `Input '${inputId}' not found`);
+    }
+    const actor = this.runActor(inp.run_id);
+    if (actor && (!trustedResponder || body?.actor !== actor)) {
+      throw new ApiError(403, "input_actor_mismatch", "Only the run's actor can respond to its inputs");
     }
     if (inp.status !== "pending") {
       throw new ApiError(

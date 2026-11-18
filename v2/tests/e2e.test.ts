@@ -175,6 +175,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         return;
       }
 
+      if (req.url === "/usage-webhook" && req.method === "POST") {
+        const delivery = req.headers["x-camelrun-delivery"];
+        const retry = receivedWebhooks.some(({ headers }) => headers["x-camelrun-delivery"] === delivery);
+        receivedWebhooks.push({ headers: req.headers, body: rawBody });
+        res.writeHead(retry ? 204 : 503);
+        res.end();
+        return;
+      }
+
       if (req.url === "/v1/chat/completions" && req.method === "POST") {
         const body = JSON.parse(rawBody) as {
           model?: string;
@@ -409,9 +418,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
     t.after(() => camel.close());
     await camel.providers.set("openrouter", { apiKey: "test-spend", baseUrl: `${auxUrl}/v1` });
+    await camel.webhooks.create({ url: `${auxUrl}/usage-webhook`, events: ["usage.recorded"] });
+    const context = { org: "org-test", workspace: "workspace-test", thread: "thread-test" };
     const agent = await camel.agents.upsert("per-run-spend", {
       model: "openrouter/meta/muse-ember",
       queue: { mode: "batch", windowMs: 100 },
+      toolIdentity: { subject: "owner", context },
     });
     const beforeZero = lastProviderMessages;
     const zero = await agent.run("no budget", { spendLimitUsd: 0, throwOnError: false });
@@ -427,7 +439,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
     const [normal, capped] = await Promise.all([
       agent.run("uncapped batch member"),
-      agent.run("capped batch member", { spendLimitUsd: 0.00000001, idempotencyKey: "capped", throwOnError: false }),
+      agent.run("capped batch member", {
+        actor: "sender",
+        spendLimitUsd: 0.00000001,
+        idempotencyKey: "capped",
+        throwOnError: false,
+      }),
     ]);
     assert.equal(normal.status, "completed");
     assert.equal(capped.batchedInto, null);
@@ -438,6 +455,30 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const retried = await agent.run("retry with larger budget", { spendLimitUsd: 1, idempotencyKey: "capped", throwOnError: false });
     assert.equal(retried.id, capped.id);
     assert.deepEqual(retried.error, capped.error);
+
+    const deadline = Date.now() + 10_000;
+    const usageDeliveries = () => receivedWebhooks.filter(({ headers }) => headers["x-camelrun-event"] === "usage.recorded");
+    while (usageDeliveries().length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const [first, second] = usageDeliveries();
+    assert.ok(first && second, "expected usage delivery and retry");
+    assert.equal(first.body, second.body);
+    const event = JSON.parse(second.body);
+    assert.equal(first.headers["x-camelrun-delivery"], event.id);
+    assert.equal(second.headers["x-camelrun-delivery"], event.id);
+    assert.match(String(second.headers["x-camelrun-signature"]), /v1=[0-9a-f]{64}/);
+    assert.deepEqual(event.data, {
+      agentId: agent.id,
+      runId: capped.id,
+      actor: "sender",
+      context,
+      model: "openrouter/meta/muse-ember",
+      kind: "response",
+      input: capped.usage.inputTokens,
+      output: capped.usage.outputTokens,
+      cost: { usd: capped.usage.costUsd, source: "catalog" },
+    });
   });
 
   it("binds signed tools to the run's actor and queues a steer from another actor", async (t) => {
@@ -684,7 +725,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       builtins: ["human"],
     });
 
-    const paused = await billingAgent.run(`Refund user [CALL:issueRefund {"amount":45}]`);
+    const paused = await billingAgent.run(`Refund user [CALL:issueRefund {"amount":45}]`, { actor: "sender" });
     assert.equal(paused.status, "input_required");
     assert.equal(refunded, false);
     assert.equal(paused.inputs.length, 1);
@@ -696,7 +737,14 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     };
     assert.deepEqual((await getPending()).runs.map(run => run.id), [paused.id]);
 
-    const resumed = await billingAgent.answerInput(paused.inputs[0]!.id, { approved: true });
+    const inputId = paused.inputs[0]!.id;
+    assert.equal(paused.actor, "sender");
+    for (const actor of [undefined, "different-sender"]) {
+      await assert.rejects(billingAgent.answerInput(inputId, { approved: true, actor }), (error) =>
+        error instanceof CamelRunError && error.code === "input_actor_mismatch");
+    }
+    assert.equal(refunded, false);
+    const resumed = await billingAgent.answerInput(inputId, { approved: true, actor: "sender" });
     assert.equal(resumed.status, "completed");
     assert.equal(refunded, true);
     assert.match(resumed.text, /45/);
@@ -1003,11 +1051,13 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
     // Wait briefly for EVENTS_QUEUE batch delivery to hit our webhook endpoint
     const whDeadline = Date.now() + 3_000;
-    while (receivedWebhooks.length === 0 && Date.now() < whDeadline) {
+    const runDelivery = () => receivedWebhooks.find(({ headers }) => headers["x-camelrun-event"] === "run.completed");
+    while (!runDelivery() && Date.now() < whDeadline) {
       await new Promise((r) => setTimeout(r, 50));
     }
-    assert.ok(receivedWebhooks.length >= 1, "expected signed webhook delivery from Cloudflare Queue");
-    const sigHeader = receivedWebhooks[0]!.headers["x-camelrun-signature"];
+    const delivered = runDelivery();
+    assert.ok(delivered, "expected signed webhook delivery from Cloudflare Queue");
+    const sigHeader = delivered.headers["x-camelrun-signature"];
     assert.equal(typeof sigHeader, "string");
     assert.match(String(sigHeader), /v1=[0-9a-f]{64}/);
 

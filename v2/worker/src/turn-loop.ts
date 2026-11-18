@@ -86,6 +86,13 @@ export interface TurnStorageAdapter {
   ): void;
   getRunRecord(runId: string): RunRecord;
   getRunSpendLimit(runId: string): number | null;
+  recordModelUsage(
+    runId: string,
+    kind: "response" | "compaction",
+    input: number,
+    output: number,
+    cumulative: RunUsage,
+  ): Promise<void>;
   makeToolContext(
     runId: string,
     approvedToolCallIds: Set<string>,
@@ -135,7 +142,12 @@ export function contextCutoff(messages: readonly Pick<StoredMessage, "role">[], 
 
 export async function performCompaction(
   adapter: TurnStorageAdapter,
-  options?: { customSummary?: string; keepLast?: number; signal?: AbortSignal; usage?: RunUsage },
+  options?: {
+    customSummary?: string;
+    keepLast?: number;
+    signal?: AbortSignal;
+    run?: { id: string; usage: RunUsage };
+  },
 ): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
   const config = adapter.getConfig();
   const prev = adapter.getLatestCompaction();
@@ -171,10 +183,12 @@ export async function performCompaction(
     })) {
       if (chunk.type === "text_delta") {
         generated += chunk.delta;
-      } else if (chunk.type === "done" && options?.usage) {
-        options.usage.inputTokens += chunk.inputTokens;
-        options.usage.outputTokens += chunk.outputTokens;
-        options.usage.costUsd = calculateCostUsd(config.model, options.usage.inputTokens, options.usage.outputTokens, options.usage.vmMs);
+      } else if (chunk.type === "done" && options?.run) {
+        const { id, usage } = options.run;
+        usage.inputTokens += chunk.inputTokens;
+        usage.outputTokens += chunk.outputTokens;
+        usage.costUsd = calculateCostUsd(config.model, usage.inputTokens, usage.outputTokens, usage.vmMs);
+        await adapter.recordModelUsage(id, "compaction", chunk.inputTokens, chunk.outputTokens, usage);
       }
     }
     options?.signal?.throwIfAborted();
@@ -374,7 +388,11 @@ export async function runAgentTurn(
   const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
   if (estTotal > autoCompactThreshold && existingMsgs.length > 7) {
     try {
-      await performCompaction(adapter, { keepLast: 5, signal: params.signal, ...(spendLimit === null ? {} : { usage }) });
+      await performCompaction(adapter, {
+        keepLast: 5,
+        signal: params.signal,
+        run: spendLimit !== null || params.actor ? { id: params.runId, usage } : undefined,
+      });
     } finally {
       if (spendLimit !== null) adapter.updateRunState(params.runId, { usage });
     }
@@ -682,7 +700,7 @@ async function continueTurnLoop(
     // Finish any remaining tool calls from a resumed turn before calling the model again
     if (state.pendingToolQueue.length > 0) {
       for (let i = 0; i < state.pendingToolQueue.length; i++) {
-        if (state.signal.aborted) {
+        if (state.signal.aborted && chunk.type !== "done") {
           throw new ApiError(499, "cancelled", "Run aborted");
         }
         const tc = state.pendingToolQueue[i]!;
@@ -779,8 +797,10 @@ async function continueTurnLoop(
             usage.outputTokens,
             usage.vmMs,
           );
+          await adapter.recordModelUsage(runId, "response", chunk.inputTokens, chunk.outputTokens, usage);
         }
       }
+      state.signal.throwIfAborted();
 
       if (stepText) {
         accText = stepText;

@@ -224,7 +224,7 @@ export class AgentHandle {
     return this.transport.requestJson("POST", `${this.basePath}/abort`, { keepQueued: options?.keepQueued });
   }
 
-  async answerInput<TOutput = unknown>(inputId: string, payload: { approved?: boolean; answer?: unknown; wait?: boolean }): Promise<RunRecord<TOutput>> {
+  async answerInput<TOutput = unknown>(inputId: string, payload: { approved?: boolean; answer?: unknown; wait?: boolean; actor?: string }): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/inputs/${encodeURIComponent(inputId)}`, payload);
   }

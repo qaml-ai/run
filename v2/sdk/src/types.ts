@@ -196,6 +196,7 @@ export interface RunToolCall { id: string; name: string; ok: boolean; }
 export interface RunUsage { inputTokens: number; outputTokens: number; costUsd: number; vmMs: number; }
 
 export interface RunRecord<TOutput = unknown> {
+  actor?: string;
   id: string;
   agentId: string;
   idempotencyKey: string | null;

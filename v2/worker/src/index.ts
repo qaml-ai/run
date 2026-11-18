@@ -750,7 +750,11 @@ app.post("/v2/agents/:idOrKey/inputs/:inputId", async (c) => {
     approved?: boolean;
     answer?: unknown;
     wait?: boolean;
+    actor?: string;
   };
+  if (body.actor !== undefined && auth.kind !== "tenant") {
+    throw new ApiError(403, "forbidden", "A tenant credential is required to set the input actor");
+  }
   return c.json(await stub.respondToInput(c.req.param("inputId"), body, auth.kind === "tenant"));
 });
 
