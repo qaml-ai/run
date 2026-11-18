@@ -22,25 +22,15 @@ npm run test:ts
 See [docs/API_V2.md](docs/API_V2.md) and [docs/CAMELFS_CONTRACT.md](docs/CAMELFS_CONTRACT.md) for wire protocols.
 See [Moving Camel Bots to v2](docs/V1_MIGRATION.md) for the volume importer and cutover sequence.
 
-## Persistent Firecracker workspaces
+## Persistent Firecracker workspaces (Lazy FUSE + OverlayFS)
 
-The Worker uses the existing camelFS API. For `--vm-driver=firecracker`, v2 camelfsd stores a disk map in each repository commit. The AWS backend stores the map and the disk's content-addressed 256 KiB chunks in S3. The ref update publishes the tree and disk together.
+The Worker uses the existing camelFS API (`KindTree` + `KindBlob` in local or S3 storage). For `--vm-driver=firecracker`, there is no host ext4 image, no `libext2fs` editor, and no host NBD block device:
 
-Provision one empty ext4 template and compile the workspace editor on Linux with the e2fsprogs development headers. For example, on Ubuntu with `libext2fs-dev` installed:
+- On VM start, `camelfsd` sends only the commit's `Tree` metadata to `camelfs-guest-init` over virtio-vsock (`port 10000`).
+- `camelfs-guest-init` mounts a read-only metadata-cached FUSE `lowerdir` (which lazily fetches immutable blobs on demand from the host over vsock `port 10001`) under a writable Linux `overlayfs` at `/workspace` (backed by guest `tmpfs`).
+- On `exec` checkpoints, `camelfs-guest-init` walks only the `overlayfs` `upperdir` (`O(changed files)`), returning incremental puts/deletes without freezing ext4 or scanning unchanged files.
 
-```sh
-cd v2/camelfsd
-cc -O2 -Wall -Wextra -Werror tools/workspace-editor/edit.c -lext2fs -o /opt/camelfs-workspace-editor
-mkfs.ext4 -F /var/lib/camelfsd/empty-workspace.ext4 512M
-```
-
-Configure camelfsd with `--workspace-template /var/lib/camelfsd/empty-workspace.ext4`, `--workspace-editor /opt/camelfs-workspace-editor`, and `--workspace-nbd /dev/nbd0,/dev/nbd1`. The daemon needs access to the kernel's NBD driver and one dedicated NBD device per running Firecracker guest. The guest rootfs must mount the workspace drive at `/workspace` and serve the existing v2 vsock protocol. Use absolute paths for the Firecracker kernel and rootfs.
-
-While the VM sleeps, a write edits only the necessary ranges of its parent ext4 image with libext2fs. A start loads the committed map and fetches chunks on demand. A live file write is also sent to the running guest. Guest commands still use the v2 file snapshot protocol, and camelfsd applies changed regular files from that snapshot to the persistent disk. This keeps the repository history and disk in sync. Guest-only directory metadata, symlinks, and other state outside the repository tree are outside that checkpoint contract.
-
-For a v2 commit created without a disk map, make a new commit on its ref through the write API with disk storage enabled. An empty write request is sufficient to import the existing file tree onto the shared template. Existing historical commits still serve their file reads. A Firecracker start requires a commit with a disk map.
-
-To verify the native editor through the HTTP API, set `CAMELFSD_TEST_WORKSPACE_EDITOR` to the editor's absolute path and run `go test ./internal/api -run TestWorkspaceDiskHTTP -v`. To test Linux block I/O, set `CAMELFSD_TEST_NBD` to a dedicated, unused local NBD device and run `go test ./internal/workdisk -run TestKernelNBD -v` with NBD privileges.
+The guest kernel requires `CONFIG_FUSE_FS` and `CONFIG_OVERLAY_FS`, and `/workspace` mutations during a single VM session must fit in guest memory/scratch. Use absolute paths for `--firecracker-kernel` and `--firecracker-rootfs`.
 
 ## v2 pilot
 
@@ -61,8 +51,8 @@ scripts/install-guest-init.sh /path/to/base.ext4 /tmp/camelfs-guest-init /path/t
 Run one direct Firecracker daemon for the pilot's VM table. Set
 `CAMELFSD_BACKEND=aws`, `CAMELFSD_VM_DRIVER=firecracker`, the pilot S3 bucket,
 and the `camelfs-v2-pilot-repos` and `camelfs-v2-pilot-vms` DynamoDB tables.
-Each table has string keys `PK` and `SK`. Set the kernel, v2 rootfs, template,
-editor, and NBD device paths as above. Bind the daemon to loopback and route
+Each table has string keys `PK` and `SK`. Set `--firecracker-kernel` and
+`--firecracker-rootfs` (no workspace template, editor, or NBD devices needed). Bind the daemon to loopback and route
 `camelfs-v2-pilot.camelai.dev` to it through a Cloudflare tunnel. Set
 `CAMELFSD_PUBLIC_KEYS` to the public half of the Worker's Ed25519 signing key.
 
@@ -72,8 +62,8 @@ keep the file outside the checkout. The signing key is
 `<kid>:<base64url-encoded Ed25519 seed>`. The daemon's public key uses the same
 key ID. The pilot config provides no development bearer tokens.
 
-Run one direct Firecracker daemon per VM table, with a stable data directory and
-dedicated NBD devices. A daemon exit kills its child microVMs. At startup,
+Run one direct Firecracker daemon per VM table, with a stable data directory.
+A daemon exit kills its child microVMs. At startup,
 camelfsd retires their VM records and releases the matching ref leases before
 serving requests. Interrupted commands surface an error and the next VM opens
 the last committed workspace. To replace a host, stop or fence the old host
@@ -95,8 +85,8 @@ Create the production R2 bucket and queue named in the configuration. Set up
 VM tables, and signing key. Run camelfsd as a system service on cgroup v2 with
 `KillMode=control-group` and `Restart=on-failure`. Set
 `CAMELFSD_FC_JAILER=/usr/local/bin/jailer` using the same Firecracker release as
-`CAMELFSD_FC_BIN`. The jailer uses UID and GID 201000 plus the assigned NBD
-device's minor number. Reserve that range on the dedicated host, and use a
+`CAMELFSD_FC_BIN`. The jailer uses UID and GID 201000 plus the VM's allocated
+guest CID. Reserve that range on the dedicated host, and use a
 short data path such as `/nvme/v2` for the Unix sockets. Create fresh
 `ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` for the production
 Worker. The deploy creates its own Durable Objects. Supply a separate

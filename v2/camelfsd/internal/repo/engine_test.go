@@ -22,7 +22,7 @@ func newTestRepoEngine(t *testing.T) *repo.Engine {
 	return repo.NewEngine(st, time.Now)
 }
 
-func TestRepoLifecycleWriteReadLsGrepDiffRestore(t *testing.T) {
+func TestRepoLifecycleWriteReadLsGrepRestore(t *testing.T) {
 	ctx := context.Background()
 	eng := newTestRepoEngine(t)
 
@@ -87,6 +87,9 @@ func TestRepoLifecycleWriteReadLsGrepDiffRestore(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Write 2: %v", err)
+	}
+	if w2.Commit == "" || w2.Commit == w1.Commit {
+		t.Fatalf("expected new commit from Write 2, got %+v", w2)
 	}
 
 	// Read text with offset & limit.
@@ -153,24 +156,6 @@ func TestRepoLifecycleWriteReadLsGrepDiffRestore(t *testing.T) {
 		t.Fatalf("unexpected grep matches: %+v", grepRes.Matches)
 	}
 
-	// Diff between w1 and w2.
-	diffRes, err := eng.Diff(ctx, lin.Lineage, w1.Commit, w2.Commit)
-	if err != nil {
-		t.Fatalf("Diff: %v", err)
-	}
-	if len(diffRes.Changes) != 4 { // a.txt deleted, docs/b.txt added, old.txt deleted, src/app.ts modified
-		t.Fatalf("expected 4 diff changes, got %+v", diffRes.Changes)
-	}
-	foundMod := false
-	for _, ch := range diffRes.Changes {
-		if ch.Path == "src/app.ts" && ch.Kind == "modified" && strings.Contains(ch.Patch, "-export const x = 1;") && strings.Contains(ch.Patch, "+export const x = 2;") {
-			foundMod = true
-		}
-	}
-	if !foundMod {
-		t.Fatalf("expected unified patch for src/app.ts in %+v", diffRes.Changes)
-	}
-
 	// History check.
 	hist, err := eng.History(ctx, lin.Lineage, "refs/heads/main", 10)
 	if err != nil {
@@ -195,115 +180,21 @@ func TestRepoLifecycleWriteReadLsGrepDiffRestore(t *testing.T) {
 	}
 }
 
-func TestRepoThreeWayMergeForkAndLeaseFencing(t *testing.T) {
+func TestRepoForkAndLeaseFencing(t *testing.T) {
 	ctx := context.Background()
 	eng := newTestRepoEngine(t)
 
-	lin, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{Lineage: "lin_merge_test"})
+	lin, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{Lineage: "lin_fork_test"})
 	if err != nil {
 		t.Fatalf("CreateLineage: %v", err)
 	}
 
-	// Base commit with multi-line shared file.
-	baseWrite, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
-		Ref: "refs/heads/main",
-		Puts: []repo.WritePut{
-			{Path: "shared.txt", Content: "line1\nline2\nline3\nline4\nline5\n"},
-			{Path: "conflict.txt", Content: "alpha\nbeta\n"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("base write: %v", err)
-	}
-
-	// Create feature branch at baseWrite.Commit.
-	if _, err := eng.SetRef(ctx, lin.Lineage, repo.SetRefRequest{
-		Ref:    "refs/heads/feat",
-		Commit: baseWrite.Commit,
-	}); err != nil {
-		t.Fatalf("create branch feat: %v", err)
-	}
-
-	// Edit top of shared.txt on main, and bottom of shared.txt + new file on feat (clean 3-way merge!).
-	if _, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
-		Ref: "refs/heads/main",
-		Puts: []repo.WritePut{
-			{Path: "shared.txt", Content: "LINE_ONE_MAIN\nline2\nline3\nline4\nline5\n"},
-			{Path: "main_only.txt", Content: "from main\n"},
-		},
-	}); err != nil {
-		t.Fatalf("write main: %v", err)
-	}
-	if _, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
-		Ref: "refs/heads/feat",
-		Puts: []repo.WritePut{
-			{Path: "shared.txt", Content: "line1\nline2\nline3\nline4\nLINE_FIVE_FEAT\n"},
-			{Path: "feat_only.txt", Content: "from feat\n"},
-		},
-	}); err != nil {
-		t.Fatalf("write feat: %v", err)
-	}
-
-	// ff-only must fail because main and feat diverged.
-	if _, err := eng.Merge(ctx, lin.Lineage, repo.MergeRequest{
-		SourceRef: "refs/heads/feat",
-		TargetRef: "refs/heads/main",
-		Strategy:  "ff-only",
-	}); !apperr.IsCode(err, apperr.CodeCASConflict) {
-		t.Fatalf("expected cas_conflict for diverged ff-only merge, got %v", err)
-	}
-
-	// Three-way merge succeeds cleanly, combining non-overlapping edits in shared.txt!
-	mRes, err := eng.Merge(ctx, lin.Lineage, repo.MergeRequest{
-		SourceRef: "refs/heads/feat",
-		TargetRef: "refs/heads/main",
-		Strategy:  "three-way",
-		Author:    "workflow",
-		Message:   "merge feat",
-	})
-	if err != nil {
-		t.Fatalf("three-way merge: %v", err)
-	}
-	if len(mRes.Conflicts) != 0 {
-		t.Fatalf("expected 0 conflicts, got %v", mRes.Conflicts)
-	}
-	mergedShared, err := eng.Read(ctx, lin.Lineage, repo.ReadParams{At: "refs/heads/main", Path: "shared.txt"})
-	if err != nil {
-		t.Fatalf("read merged shared.txt: %v", err)
-	}
-	wantShared := "LINE_ONE_MAIN\nline2\nline3\nline4\nLINE_FIVE_FEAT\n"
-	if *mergedShared.Content != wantShared {
-		t.Fatalf("unexpected merged content:\ngot:  %q\nwant: %q", *mergedShared.Content, wantShared)
-	}
-
-	// Now create a conflicting edit on conflict-branch and verify 409 conflicts list!
-	if _, err := eng.SetRef(ctx, lin.Lineage, repo.SetRefRequest{
-		Ref:    "refs/heads/conflict-br",
-		Commit: mRes.Commit,
-	}); err != nil {
-		t.Fatalf("create conflict-br: %v", err)
-	}
+	wantShared := "LINE_ONE_MAIN\nline2\n"
 	if _, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
 		Ref:  "refs/heads/main",
-		Puts: []repo.WritePut{{Path: "conflict.txt", Content: "alpha-main\nbeta\n"}},
+		Puts: []repo.WritePut{{Path: "shared.txt", Content: wantShared}},
 	}); err != nil {
-		t.Fatalf("edit conflict on main: %v", err)
-	}
-	if _, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
-		Ref:  "refs/heads/conflict-br",
-		Puts: []repo.WritePut{{Path: "conflict.txt", Content: "alpha-branch\nbeta\n"}},
-	}); err != nil {
-		t.Fatalf("edit conflict on conflict-br: %v", err)
-	}
-
-	_, err = eng.Merge(ctx, lin.Lineage, repo.MergeRequest{
-		SourceRef: "refs/heads/conflict-br",
-		TargetRef: "refs/heads/main",
-		Strategy:  "three-way",
-	})
-	ae, ok := apperr.As(err)
-	if !ok || ae.Status != 409 || len(ae.Conflicts) != 1 || ae.Conflicts[0] != "conflict.txt" {
-		t.Fatalf("expected 409 conflict on conflict.txt, got %v", err)
+		t.Fatalf("write main: %v", err)
 	}
 
 	// Lease fencing check: acquire lease as agt_owner, verify monotonic epoch and 409 ref_leased for agt_intruder.
@@ -381,5 +272,65 @@ func TestCommitLookupRequiresLineageHistory(t *testing.T) {
 		Ref: "refs/heads/version", Commit: original.Commit,
 	}); !apperr.IsCode(err, apperr.CodeNotFound) {
 		t.Fatalf("expected ref targeting a commit outside lineage history to be rejected, got %v", err)
+	}
+}
+
+func TestApplyWorkspaceDeltaAndLoadCommitTree(t *testing.T) {
+	ctx := context.Background()
+	st, err := localstore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open local store: %v", err)
+	}
+	defer st.Close()
+
+	eng := repo.NewEngine(st, time.Now)
+	lin, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{Lineage: "lin_delta", TenantID: "ten_1"})
+	if err != nil {
+		t.Fatalf("CreateLineage: %v", err)
+	}
+	w1, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
+		Ref: "refs/heads/main",
+		Puts: []repo.WritePut{
+			{Path: "keep.txt", Content: "keep"},
+			{Path: "drop.txt", Content: "drop"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	_, entries, err := eng.LoadCommitTree(ctx, w1.Commit)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("LoadCommitTree expected 2 entries, got %+v (%v)", entries, err)
+	}
+
+	noop, err := eng.ApplyWorkspaceDelta(ctx, lin.Lineage, w1.Commit, "agent:1", "noop", nil, nil)
+	if err != nil || noop.Changed || noop.Commit != w1.Commit {
+		t.Fatalf("expected noop delta unchanged, got %+v (%v)", noop, err)
+	}
+
+	d1, err := eng.ApplyWorkspaceDelta(
+		ctx,
+		lin.Lineage,
+		w1.Commit,
+		"agent:1",
+		"overlay delta",
+		[]repo.MaterializedFile{{Path: "added.sh", Mode: repo.ExecFileMode, Data: []byte("#!/bin/sh\n")}},
+		[]string{"drop.txt"},
+	)
+	if err != nil || !d1.Changed || d1.Commit == w1.Commit {
+		t.Fatalf("expected changed delta commit, got %+v (%v)", d1, err)
+	}
+	if len(d1.FilesChanged) != 2 || d1.FilesChanged[0] != "added.sh" || d1.FilesChanged[1] != "drop.txt" {
+		t.Fatalf("expected FilesChanged [added.sh drop.txt], got %+v", d1.FilesChanged)
+	}
+	_, nextEntries, err := eng.LoadCommitTree(ctx, d1.Commit)
+	if err != nil || len(nextEntries) != 2 {
+		t.Fatalf("expected 2 entries after delta, got %+v (%v)", nextEntries, err)
+	}
+	for _, ent := range nextEntries {
+		if ent.Path == "drop.txt" {
+			t.Fatalf("drop.txt should have been deleted by delta: %+v", nextEntries)
+		}
 	}
 }

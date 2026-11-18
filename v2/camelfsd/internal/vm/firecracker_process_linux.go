@@ -6,11 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 func launchFirecracker(cmd *exec.Cmd) (chan struct{}, error) {
@@ -59,32 +56,16 @@ func firecrackerServiceCgroup() (string, error) {
 	return "", fmt.Errorf("the Firecracker jailer requires a cgroup v2 systemd service with KillMode=control-group")
 }
 
-func prepareFirecrackerJail(dir, kernel, rootfs, nbd string) (string, error) {
-	var disk unix.Stat_t
-	if err := unix.Stat(nbd, &disk); err != nil {
-		return "", err
-	}
-	if disk.Mode&unix.S_IFMT != unix.S_IFBLK {
-		return "", fmt.Errorf("workspace device %s is not a block device", nbd)
-	}
-	// Each attached NBD has a distinct minor number on the host.
-	uid := 201000 + int(unix.Minor(uint64(disk.Rdev)))
+func prepareFirecrackerJail(dir, kernel, rootfs string, uid int) error {
 	if err := os.Chown(rootfs, uid, uid); err != nil {
-		return "", err
+		return err
 	}
 	kernelCopy := filepath.Join(dir, "kernel")
 	if err := copyFileReflinkOrCopy(kernel, kernelCopy); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.Chmod(kernelCopy, 0444); err != nil {
-		return "", err
+		return err
 	}
-	device := filepath.Join(dir, "workspace.nbd")
-	if err := unix.Mknod(device, unix.S_IFBLK|0600, int(disk.Rdev)); err != nil {
-		return "", err
-	}
-	if err := os.Chown(device, uid, uid); err != nil {
-		return "", err
-	}
-	return strconv.Itoa(uid), nil
+	return os.Chown(kernelCopy, uid, uid)
 }

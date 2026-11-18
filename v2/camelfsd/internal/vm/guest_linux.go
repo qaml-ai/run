@@ -1,9 +1,13 @@
 package vm
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,40 +15,90 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/qaml-ai/camelrun-next/camelfsd/internal/apperr"
+	"github.com/qaml-ai/camelrun-next/camelfsd/internal/fuseoverlay"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/repo"
 )
 
 const guestWorkspace = "/workspace"
 
-type guestFile struct {
-	Mode int    `json:"mode"`
-	Data []byte `json:"base64"`
-}
-
 type guestRequest struct {
-	Op       string
-	Command  string
-	Cwd      string
-	TimeoutS int
-	Env      map[string]string
-	Ops      []struct {
-		Kind string
-		Path string
-		From string
-		Mode int
-		// JSON decodes byte slices from the existing base64 wire field.
-		Data []byte `json:"base64"`
-	}
-	Files map[string]guestFile
+	Op         string            `json:"op"`
+	Command    string            `json:"command,omitempty"`
+	Cwd        string            `json:"cwd,omitempty"`
+	TimeoutS   int               `json:"timeoutS,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Tree       []repo.TreeEntry  `json:"tree,omitempty"`
+	Path       string            `json:"path,omitempty"`
+	Offset     int64             `json:"offset,omitempty"`
+	Limit      int64             `json:"limit,omitempty"`
+	Recursive  bool              `json:"recursive,omitempty"`
+	Glob       string            `json:"glob,omitempty"`
+	Pattern    string            `json:"pattern,omitempty"`
+	MaxMatches int               `json:"maxMatches,omitempty"`
+	Ops        []struct {
+		Kind string `json:"kind"`
+		Path string `json:"path"`
+		From string `json:"from,omitempty"`
+		Mode int    `json:"mode,omitempty"`
+		Data []byte `json:"base64,omitempty"`
+	} `json:"ops,omitempty"`
 }
 
-// ServeFirecrackerGuest mounts the workspace before listening for host commands.
-// Only the Firecracker host can reach the listener. Commands run inside the VM.
+type guestRuntime struct {
+	session *localVMSession
+	ctrlDir string
+	fuse    *fuseoverlay.MountSession
+	tracker *fuseoverlay.DeltaTracker
+}
+
+type vsockBlobClient struct {
+	port uint32
+}
+
+func (c *vsockBlobClient) FetchBlob(ctx context.Context, hash string) ([]byte, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("vsock blob socket: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), "vsock-blob")
+	defer f.Close()
+
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: c.port}); err != nil {
+		return nil, fmt.Errorf("connect host blob port %d: %w", c.port, err)
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = f.SetDeadline(dl)
+	}
+	if _, err := io.WriteString(f, hash+"\n"); err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(f)
+	var hdr [9]byte
+	if _, err := io.ReadFull(br, hdr[:]); err != nil {
+		return nil, err
+	}
+	size := binary.BigEndian.Uint64(hdr[1:9])
+	if size > maxBlobFetchSize {
+		return nil, fmt.Errorf("blob %s exceeds max size (%d)", hash, size)
+	}
+	buf := make([]byte, int(size))
+	if size > 0 {
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return nil, err
+		}
+	}
+	if hdr[0] != 0 {
+		return nil, fmt.Errorf("host blob error for %s: %s", hash, string(buf))
+	}
+	return buf, nil
+}
+
+// ServeFirecrackerGuest mounts /proc and /sys as PID 1 and listens on AF_VSOCK for host commands.
 func ServeFirecrackerGuest() error {
 	if os.Getpid() != 1 {
 		return fmt.Errorf("guest init must run as PID 1")
 	}
-	// The kernel starts PID 1 without a shell environment.
 	if os.Getenv("PATH") == "" {
 		if err := os.Setenv("PATH", defaultShellPath); err != nil {
 			return err
@@ -61,7 +115,6 @@ func ServeFirecrackerGuest() error {
 	}{
 		{"proc", "/proc", "proc", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV},
 		{"sysfs", "/sys", "sysfs", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV},
-		{"/dev/vdb", guestWorkspace, "ext4", unix.MS_NOSUID | unix.MS_NODEV},
 	} {
 		if err := os.MkdirAll(mount.target, 0755); err != nil {
 			return err
@@ -71,12 +124,18 @@ func ServeFirecrackerGuest() error {
 		}
 	}
 
+	_ = os.MkdirAll("/run", 0755)
+	_ = os.MkdirAll(guestWorkspace, 0755)
 	ctrlDir, err := os.MkdirTemp("/run", "camelfs-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(ctrlDir)
-	session := newLocalSession("guest", ctrlDir, guestWorkspace, ctrlDir, nil)
+
+	rt := &guestRuntime{
+		ctrlDir: ctrlDir,
+		session: newLocalSession("guest", ctrlDir, guestWorkspace, ctrlDir, nil),
+	}
 
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
@@ -102,31 +161,73 @@ func ServeFirecrackerGuest() error {
 			continue
 		}
 		file := os.NewFile(uintptr(conn), "vsock")
-		serveGuestRequest(file, session)
+		serveGuestRequest(file, rt)
 		_ = file.Close()
 	}
 }
 
-func serveGuestRequest(conn *os.File, session *localVMSession) {
+func serveGuestRequest(conn *os.File, rt *guestRuntime) {
 	var req guestRequest
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
 		return
 	}
 	send := json.NewEncoder(conn).Encode
-	if err := runGuestRequest(req, session, send); err != nil {
-		_ = send(vsockStreamFrame{Type: "error", Error: err.Error()})
+	if err := runGuestRequest(req, rt, send); err != nil {
+		frame := vsockStreamFrame{Type: "error", Error: err.Error()}
+		if ae, ok := apperr.As(err); ok {
+			frame.ErrorCode = string(ae.Code)
+		}
+		_ = send(frame)
 	}
 }
 
-func runGuestRequest(req guestRequest, session *localVMSession, send func(any) error) error {
+func runGuestRequest(req guestRequest, rt *guestRuntime, send func(any) error) error {
 	switch req.Op {
+	case "mount_fuse":
+		if rt.fuse != nil {
+			break
+		}
+		stateDir := filepath.Join(rt.ctrlDir, "overlay")
+		if err := os.MkdirAll(stateDir, 0755); err != nil {
+			return err
+		}
+		// Back upperdir/workdir with guest tmpfs for native-RAM write throughput (best-effort fallback to /run).
+		_ = unix.Mount("tmpfs", stateDir, "tmpfs", 0, "size=50%")
+
+		manifest := make([]fuseoverlay.TreeEntry, 0, len(req.Tree))
+		basePaths := make([]string, 0, len(req.Tree))
+		for _, ent := range req.Tree {
+			basePaths = append(basePaths, ent.Path)
+			mode := fuseoverlay.S_IFREG | uint32(ent.Mode&0o777)
+			if ent.Type == "dir" {
+				mode = fuseoverlay.S_IFDIR | 0o755
+			}
+			manifest = append(manifest, fuseoverlay.TreeEntry{
+				Path:     ent.Path,
+				Mode:     mode,
+				Size:     uint64(ent.Size),
+				BlobHash: ent.Hash,
+			})
+		}
+		mnt, err := fuseoverlay.Mount(
+			context.Background(),
+			manifest,
+			&vsockBlobClient{port: guestBlobPort},
+			fuseoverlay.ServerConfig{},
+			stateDir,
+			guestWorkspace,
+		)
+		if err != nil {
+			return err
+		}
+		rt.fuse = mnt
+		rt.tracker = fuseoverlay.NewDeltaTracker(mnt.UpperDir, basePaths, nil)
 	case "init_env":
-		if session.proc != nil {
+		if rt.session.proc != nil {
 			return fmt.Errorf("guest shell already initialized")
 		}
-		session.initEnv = req.Env
+		rt.session.initEnv = req.Env
 	case "exec":
-		// The shell drains stdout and stderr on separate goroutines.
 		var writeMu sync.Mutex
 		var writeErr error
 		stream := func(kind, chunk string) {
@@ -136,7 +237,7 @@ func runGuestRequest(req guestRequest, session *localVMSession, send func(any) e
 				writeErr = send(vsockStreamFrame{Type: kind, Chunk: chunk})
 			}
 		}
-		out, err := session.execLocked(context.Background(), DriverExecRequest{
+		out, err := rt.session.execLocked(context.Background(), DriverExecRequest{
 			Command: req.Command, Cwd: req.Cwd, TimeoutS: req.TimeoutS, Env: req.Env,
 			OnStdout: func(chunk string) { stream("stdout", chunk) },
 			OnStderr: func(chunk string) { stream("stderr", chunk) },
@@ -152,42 +253,84 @@ func runGuestRequest(req guestRequest, session *localVMSession, send func(any) e
 		ops := make([]repo.WorkspaceFileOp, 0, len(req.Ops))
 		for _, op := range req.Ops {
 			if !validGuestPath(op.Path) || (op.Kind == "move" && !validGuestPath(op.From)) {
-				return fmt.Errorf("invalid workspace operation path")
+				return apperr.InvalidRequest("invalid workspace operation path")
 			}
 			switch op.Kind {
 			case "put", "move", "delete":
 			default:
-				return fmt.Errorf("unknown workspace operation %q", op.Kind)
+				return apperr.InvalidRequestf("unknown workspace operation %q", op.Kind)
 			}
 			ops = append(ops, repo.WorkspaceFileOp{Kind: op.Kind, Path: op.Path, From: op.From, Mode: op.Mode, Data: op.Data})
 		}
 		if err := repo.ApplyOpsToDir(guestWorkspace, ops); err != nil {
 			return err
 		}
-	case "replace_workspace":
-		files := make(map[string]repo.MaterializedFile, len(req.Files))
-		for p, f := range req.Files {
-			if !validGuestPath(p) {
-				return fmt.Errorf("invalid workspace file path")
+		if rt.tracker != nil {
+			syncOps := make([]fuseoverlay.SyncOp, 0, len(req.Ops))
+			for _, op := range req.Ops {
+				syncOps = append(syncOps, fuseoverlay.SyncOp{Kind: op.Kind, Path: op.Path, From: op.From})
 			}
-			files[p] = repo.MaterializedFile{Path: p, Mode: f.Mode, Data: f.Data}
+			if err := rt.tracker.SyncOps(syncOps); err != nil {
+				return err
+			}
 		}
-		if err := repo.WriteMaterializedFilesToDir(guestWorkspace, files); err != nil {
-			return err
+	case "collect_delta":
+		if rt.tracker == nil {
+			return send(vsockStreamFrame{Type: "delta"})
 		}
-	case "snapshot_workspace":
-		files, err := repo.ScanDirFiles(guestWorkspace)
+		delta, err := rt.tracker.Collect()
 		if err != nil {
 			return err
 		}
-		wireFiles := make(map[string]guestFile, len(files))
-		for p, f := range files {
-			wireFiles[p] = guestFile{Mode: f.Mode, Data: f.Data}
+		puts := make([]guestDeltaPut, 0, len(delta.Puts))
+		for _, p := range delta.Puts {
+			if p.Mode&fuseoverlay.S_IFMT != fuseoverlay.S_IFREG {
+				continue
+			}
+			mode := repo.DefaultFileMode
+			if p.Mode&0o111 != 0 {
+				mode = repo.ExecFileMode
+			}
+			puts = append(puts, guestDeltaPut{
+				Path:   p.Path,
+				Mode:   mode,
+				Base64: base64.StdEncoding.EncodeToString(p.Data),
+			})
 		}
-		return send(struct {
-			Type  string               `json:"type"`
-			Files map[string]guestFile `json:"files"`
-		}{Type: "snapshot", Files: wireFiles})
+		return send(vsockStreamFrame{Type: "delta", Puts: puts, Deletes: delta.Deletes})
+	case "read_file":
+		resp, err := repo.DirReadFile(guestWorkspace, "", req.Path, req.Offset, req.Limit)
+		if err != nil {
+			return err
+		}
+		return send(vsockStreamFrame{Type: "read", Read: resp})
+	case "list_files":
+		entries, err := repo.DirListEntries(guestWorkspace, req.Path, req.Recursive, req.Glob)
+		if err != nil {
+			return err
+		}
+		return send(vsockStreamFrame{Type: "list", Entries: entries})
+	case "grep_files":
+		matches, err := repo.DirGrepFiles(guestWorkspace, repo.GrepRequest{
+			Pattern:    req.Pattern,
+			PathPrefix: req.Path,
+			MaxMatches: req.MaxMatches,
+		})
+		if err != nil {
+			return err
+		}
+		return send(vsockStreamFrame{Type: "grep", Matches: matches})
+	case "unmount":
+		if rt.session.proc != nil {
+			rt.session.proc.killProcessGroup()
+			rt.session.proc = nil
+		}
+		unix.Sync()
+		if rt.fuse != nil {
+			err := rt.fuse.Close()
+			rt.fuse = nil
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown guest operation %q", req.Op)
 	}

@@ -88,20 +88,6 @@ export interface CamelFsCommitInfo {
   createdAt: number;
 }
 
-export interface CamelFsDiffChange {
-  path: string;
-  kind: "added" | "modified" | "deleted";
-  oldHash: string;
-  newHash: string;
-  patch: string;
-}
-
-export interface CamelFsDiffResponse {
-  fromCommit: string;
-  toCommit: string;
-  changes: CamelFsDiffChange[];
-}
-
 export interface CamelFsVmInfo {
   vmId: string;
   lineage: string;
@@ -380,17 +366,6 @@ export class CamelFsClient {
     });
   }
 
-  async diff(
-    lineage: string,
-    params: { from: string; to: string },
-  ): Promise<CamelFsDiffResponse> {
-    return this.request("GET", `/v1/lineages/${encodeURIComponent(lineage)}/diff`, {
-      lineage,
-      scopes: ["repo:read"],
-      query: params,
-    });
-  }
-
   async restore(
     lineage: string,
     req: { ref: string; targetCommit: string; holder?: string; author?: string; message?: string },
@@ -399,24 +374,6 @@ export class CamelFsClient {
       lineage,
       scopes: ["repo:write"],
       body: req,
-    });
-  }
-
-  async merge(
-    lineage: string,
-    req: {
-      sourceRef: string;
-      targetRef: string;
-      strategy?: "three-way" | "ff-only" | "squash";
-      holder?: string;
-      author?: string;
-      message?: string;
-    },
-  ): Promise<{ commit: string; tree: string; conflicts: string[] }> {
-    return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/merge`, {
-      lineage,
-      scopes: ["repo:write"],
-      body: { strategy: "three-way", ...req },
     });
   }
 

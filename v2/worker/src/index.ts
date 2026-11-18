@@ -401,20 +401,6 @@ app.post("/v2/repos/:repoId/grep", async (c) => {
   return c.json(out);
 });
 
-app.get("/v2/repos/:repoId/diff", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  assertTenantScope(auth);
-  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
-  const cfs = new CamelFsClient(c.env, auth.tenantId);
-  const from = c.req.query("from") ?? "";
-  const to = c.req.query("to") ?? repo.defaultRef;
-  if (!from) {
-    throw new ApiError(400, "invalid_request", "`from` query parameter is required");
-  }
-  const out = await cfs.diff(repo.lineage, { from, to });
-  return c.json(out);
-});
-
 app.get("/v2/repos/:repoId/history", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
@@ -469,27 +455,6 @@ app.post("/v2/repos/:repoId/restore", async (c) => {
     message: body.message || "restore",
   });
   void tenantStub.updateRepoCommit(repo.repoId, out.commit).catch(() => {});
-  return c.json(out);
-});
-
-app.post("/v2/repos/:repoId/merge", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  assertTenantScope(auth);
-  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
-  const body = (await c.req.json()) as {
-    sourceRef: string;
-    targetRef?: string;
-    strategy?: "three-way" | "ff-only" | "squash";
-    message?: string;
-  };
-  const cfs = new CamelFsClient(c.env, auth.tenantId);
-  const out = await cfs.merge(repo.lineage, {
-    sourceRef: body.sourceRef,
-    targetRef: body.targetRef || repo.defaultRef,
-    strategy: body.strategy,
-    author: `tenant:${auth.tenantId}`,
-    message: body.message,
-  });
   return c.json(out);
 });
 

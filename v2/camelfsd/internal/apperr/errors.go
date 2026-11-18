@@ -21,11 +21,10 @@ const (
 )
 
 type Error struct {
-	Code      Code
-	Status    int
-	Message   string
-	Conflicts []string
-	Err       error
+	Code    Code
+	Status  int
+	Message string
+	Err     error
 }
 
 func (e *Error) Error() string {
@@ -64,15 +63,6 @@ func CASConflict(msg string) *Error {
 
 func CASConflictf(format string, args ...any) *Error {
 	return CASConflict(fmt.Sprintf(format, args...))
-}
-
-func MergeConflict(conflicts []string) *Error {
-	return &Error{
-		Code:      CodeCASConflict,
-		Status:    http.StatusConflict,
-		Message:   "merge conflict",
-		Conflicts: conflicts,
-	}
 }
 
 func RefLeased(msg string) *Error {

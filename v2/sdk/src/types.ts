@@ -240,7 +240,6 @@ export interface RepoWriteInput {
 export interface RepoWriteResult { commit: string; tree: string; changed: string[]; totalBytes: number; }
 export interface RepoReadResult { commit: string; path: string; size: number; mode: number; binary: boolean; content: string | null; base64: string | null; }
 export interface RepoGrepMatch { path: string; line: number; column: number; text: string; }
-export interface RepoDiffChange { path: string; kind: "added" | "modified" | "deleted" | (string & {}); oldHash: string; newHash: string; patch: string; }
 export interface RepoCommit { commit: string; tree: string; parents: string[]; author: string; message: string; createdAt: number; }
 
 export interface DecisionRequest<TChoice extends string = string> { input: string; choices: readonly TChoice[]; instructions?: string; model?: string; }

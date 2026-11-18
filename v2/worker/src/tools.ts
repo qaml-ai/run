@@ -194,18 +194,6 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
       },
     },
     {
-      name: "repo_diff",
-      description: "Compute diff between two commits or refs in the repository.",
-      parameters: {
-        type: "object",
-        properties: {
-          from: { type: "string" },
-          to: { type: "string" },
-        },
-        required: ["from", "to"],
-      },
-    },
-    {
       name: "repo_history",
       description: "List recent commits on the current repository branch.",
       parameters: {
@@ -532,7 +520,6 @@ export async function executeToolCall(
     toolName === "delete_file" ||
     toolName === "repo_checkpoint" ||
     toolName === "repo_restore" ||
-    toolName === "repo_diff" ||
     toolName === "repo_history"
   ) {
     const { repoId, lineage, branch } = await ctx.ensureAgentRepo();
@@ -653,13 +640,6 @@ export async function executeToolCall(
         .updateRepoCommit(repoId, out.commit)
         .catch(() => {});
       return out;
-    }
-
-    if (toolName === "repo_diff") {
-      return cfs.diff(lineage, {
-        from: String(args.from ?? ""),
-        to: String(args.to ?? branch),
-      });
     }
 
     if (toolName === "repo_history") {

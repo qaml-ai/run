@@ -448,16 +448,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const hist = await camel.repos.history(repo.repoId, { limit: 10 });
     assert.ok(hist.commits.length >= 4, `expected >= 4 commits, got ${hist.commits.length}`);
 
-    const diff = await camel.repos.diff(repo.repoId, {
-      from: hist.commits[hist.commits.length - 1]!.commit,
-      to: hist.commits[0]!.commit,
-    });
-    assert.ok(diff.changes.some((c) => c.path === "src/app.txt"));
-
     // Stop the VM through camelfsd and edit through the public API while it sleeps.
     const cfs = new CamelFsClient({ CAMELFS_URL: camelfsUrl, CAMELFS_SIGNING_KEY: camelfsSigningKey }, tenantId);
     const active = await cfs.ensureVm({ lineage: repo.lineage, ref: repo.defaultRef, holder: coder.id });
     assert.equal(active.reused, true);
+    const liveLs = await camel.repos.ls(repo.repoId, { recursive: true });
+    assert.ok(liveLs.entries.some((e) => e.path === "src/app.txt"));
     await cfs.stopVm(active.vmId, repo.lineage);
     await camel.repos.write(repo.repoId, { puts: [{ path: "asleep.txt", content: "edited-while-asleep" }] });
 

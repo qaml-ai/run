@@ -6,7 +6,7 @@ import {
   type ChannelInfo, type CreatedTenant, type CreateTenantOptions, type CreateTokenInput,
   type DecisionRequest, type DecisionResult, type DefinitionConfig, type FetchLike,
   type GenerateImageInput, type ImageRecord, type LocalTool, type ProviderConfig, type RepoCommit,
-  type RepoDiffChange, type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
+  type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
   type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SpeechInput,
   type SpeechResult, type StatelessRunOptions, type TenantInfo, type TranscribeInput,
   type TranscriptionResult, type VoiceSession, type WebhookEndpoint, type WebSocketConstructorLike,
@@ -139,8 +139,6 @@ export class CamelRun {
     },
     grep: (repoId: string, input: { pattern: string; at?: string; pathPrefix?: string; maxMatches?: number }): Promise<{ commit: string; matches: RepoGrepMatch[] }> =>
       this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/grep`, input),
-    diff: (repoId: string, options: { from: string; to: string }): Promise<{ fromCommit: string; toCommit: string; changes: RepoDiffChange[] }> =>
-      this.requestJson("GET", `/v2/repos/${encodeURIComponent(repoId)}/diff${buildQuery(options)}`),
     history: async (repoId: string, options?: { ref?: string; limit?: number }): Promise<{ commits: RepoCommit[] }> => {
       const res = await this.requestJson<unknown>("GET", `/v2/repos/${encodeURIComponent(repoId)}/history${buildQuery(options ?? {})}`);
       return Array.isArray(res) ? { commits: res as RepoCommit[] } : (res as { commits: RepoCommit[] });

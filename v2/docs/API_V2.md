@@ -31,7 +31,7 @@ Standard error envelope:
 ### Repos (`/v2/repos`)
 - `POST /v2/repos`: `{ name? }` -> `{ repoId, lineage, defaultRef: "refs/heads/main", commit }`
 - `GET /v2/repos` / `GET /v2/repos/:repoId` / `DELETE /v2/repos/:repoId`
-- `GET /v2/repos/:repoId/files?at=&path=` / `POST /v2/repos/:repoId/write` / `GET /v2/repos/:repoId/ls` / `POST /v2/repos/:repoId/grep` / `GET /v2/repos/:repoId/diff` / `GET /v2/repos/:repoId/history`
+- `GET /v2/repos/:repoId/files?at=&path=` / `POST /v2/repos/:repoId/write` / `GET /v2/repos/:repoId/ls` / `POST /v2/repos/:repoId/grep` / `POST /v2/repos/:repoId/restore` / `GET /v2/repos/:repoId/history`
 
 ### Durable Keyed Agents (`/v2/agents`)
 - `PUT /v2/agents/:key` (`upsert`):

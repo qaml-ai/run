@@ -107,8 +107,12 @@ func TestVMPersistentShellTimeoutAndIdleReaper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec 2: %v", err)
 	}
-	if !ex2.Commit.Changed || len(ex2.Commit.FilesChanged) != 1 || ex2.Commit.FilesChanged[0] != "pkg/core/result.txt" {
+	if !ex2.Commit.Changed {
 		t.Fatalf("expected atomic commit of pkg/core/result.txt, got %+v", ex2.Commit)
+	}
+	resRead, err := eng.Read(ctx, lin.Lineage, repo.ReadParams{At: "refs/heads/main", Path: "pkg/core/result.txt"})
+	if err != nil || *resRead.Content != "secret_42\n" {
+		t.Fatalf("expected live VM read of pkg/core/result.txt, got %+v err=%v", resRead, err)
 	}
 
 	// Verify idempotency by execId: re-running exec_2 with a destructive command returns cached receipt without executing!

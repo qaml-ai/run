@@ -17,13 +17,11 @@ import (
 
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/apperr"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/store"
-	"github.com/qaml-ai/camelrun-next/camelfsd/internal/workdisk"
 )
 
 type Engine struct {
 	store store.Store
 	vm    VMCoordinator
-	disks *workdisk.Disks
 	nowFn func() time.Time
 }
 
@@ -31,19 +29,12 @@ func NewEngine(st store.Store, nowFn func() time.Time) *Engine {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
-	return &Engine{
-		store: st,
-		nowFn: nowFn,
-	}
+	return &Engine{store: st, nowFn: nowFn}
 }
 
-func (e *Engine) SetVMCoordinator(vm VMCoordinator) {
-	e.vm = vm
-}
+func (e *Engine) SetVMCoordinator(vm VMCoordinator) { e.vm = vm }
 
-func (e *Engine) nowMs() int64 {
-	return e.nowFn().UnixMilli()
-}
+func (e *Engine) nowMs() int64 { return e.nowFn().UnixMilli() }
 
 func (e *Engine) PutBlob(ctx context.Context, lineage string, data []byte) (string, error) {
 	return e.store.PutObject(ctx, lineage, store.KindBlob, data)
@@ -88,6 +79,9 @@ func (e *Engine) PutTreeMap(ctx context.Context, lineage string, m map[string]Tr
 }
 
 func (e *Engine) GetTree(ctx context.Context, hash string) ([]TreeEntry, error) {
+	if hash == "" {
+		return []TreeEntry{}, nil
+	}
 	kind, data, err := e.store.GetObject(ctx, hash)
 	if err != nil {
 		return nil, err
@@ -118,13 +112,6 @@ func (e *Engine) GetTreeMap(ctx context.Context, hash string) (map[string]TreeEn
 }
 
 func (e *Engine) PutCommit(ctx context.Context, lineage string, c CommitObject) (string, error) {
-	if e.disks != nil && c.Disk == "" {
-		var err error
-		c.Disk, err = e.prepareDisk(ctx, lineage, c)
-		if err != nil {
-			return "", err
-		}
-	}
 	if c.Parents == nil {
 		c.Parents = []string{}
 	}
@@ -151,6 +138,24 @@ func (e *Engine) GetCommit(ctx context.Context, hash string) (*CommitObject, err
 		c.Parents = []string{}
 	}
 	return &c, nil
+}
+
+// resolveRefName returns the canonical ref name when at targets a branch/ref rather than a raw commit SHA.
+func (e *Engine) resolveRefName(ctx context.Context, lineage, at string) string {
+	target := strings.TrimSpace(at)
+	if target == "" {
+		return DefaultRef
+	}
+	now := e.nowMs()
+	if r, err := e.store.GetRef(ctx, lineage, target, now); err == nil && r != nil {
+		return r.Name
+	}
+	if !strings.HasPrefix(target, "refs/") && len(target) != 64 {
+		if r, err := e.store.GetRef(ctx, lineage, "refs/heads/"+target, now); err == nil && r != nil {
+			return r.Name
+		}
+	}
+	return ""
 }
 
 // ResolveCommit resolves a ref name ("refs/heads/main"), short branch ("main"), or commit SHA-256.
@@ -237,7 +242,6 @@ func (e *Engine) CreateLineage(ctx context.Context, req CreateLineageRequest) (*
 		tenant = "default"
 	}
 
-	// Fast path if lineage already exists.
 	if existing, err := e.store.GetLineage(ctx, lineage); err == nil && existing != nil {
 		ref, err := e.store.GetRef(ctx, lineage, existing.DefaultRef, e.nowMs())
 		if err != nil {
@@ -252,12 +256,12 @@ func (e *Engine) CreateLineage(ctx context.Context, req CreateLineageRequest) (*
 	}
 
 	now := e.nowMs()
-	emptyTree, err := e.PutTree(ctx, lineage, nil)
+	initTree, err := e.PutTree(ctx, lineage, nil)
 	if err != nil {
 		return nil, err
 	}
 	initCommit, err := e.PutCommit(ctx, lineage, CommitObject{
-		Tree:      emptyTree,
+		Tree:      initTree,
 		Parents:   []string{},
 		Author:    "system",
 		Message:   "initial commit",
@@ -279,7 +283,7 @@ func (e *Engine) CreateLineage(ctx context.Context, req CreateLineageRequest) (*
 			Lineage:   lineage,
 			Name:      DefaultRef,
 			Commit:    initCommit,
-			Tree:      emptyTree,
+			Tree:      initTree,
 			UpdatedAt: now,
 		},
 	)
@@ -326,19 +330,7 @@ func (e *Engine) collectReachableObjects(ctx context.Context, rootCommit string)
 		if err != nil {
 			return nil, err
 		}
-		if c.Disk != "" && !seenObjects[c.Disk] {
-			if e.disks == nil {
-				return nil, apperr.Internal("workspace disk storage is disabled", nil)
-			}
-			hashes, err := e.disks.Reachable(ctx, c.Disk)
-			if err != nil {
-				return nil, err
-			}
-			for _, hash := range hashes {
-				seenObjects[hash] = true
-			}
-		}
-		if !seenObjects[c.Tree] {
+		if c.Tree != "" && !seenObjects[c.Tree] {
 			seenObjects[c.Tree] = true
 			entries, err := e.GetTree(ctx, c.Tree)
 			if err != nil {
@@ -411,17 +403,12 @@ func (e *Engine) ForkLineage(ctx context.Context, sourceLineage string, tenantID
 		tenantID = srcLin.TenantID
 	}
 	now := e.nowMs()
-	defaultRef := DefaultRef
-	if targetRef != "" {
-		defaultRef = targetRef
-	}
-
 	_, _, created, err := e.store.CreateLineageIfAbsent(
 		ctx,
 		store.LineageRecord{
 			Lineage:    targetLineage,
 			TenantID:   tenantID,
-			DefaultRef: defaultRef,
+			DefaultRef: targetRef,
 			CreatedAt:  now,
 		},
 		store.RefRecord{
@@ -490,13 +477,7 @@ func (e *Engine) SetRef(ctx context.Context, lineage string, req SetRefRequest) 
 			return err
 		}
 		if vmSession != nil && !req.Delete {
-			files, err := e.loadMaterializedTree(ctx, treeHash)
-			if err != nil {
-				return err
-			}
-			if err := vmSession.ReplaceTree(ctx, files, req.Commit); err != nil {
-				return err
-			}
+			return vmSession.StopForRestore(ctx)
 		}
 		return nil
 	})
@@ -536,14 +517,11 @@ func (e *Engine) LeaseRef(ctx context.Context, lineage string, req LeaseRequest)
 
 func decodePutPayload(p WritePut) ([]byte, error) {
 	if p.Base64 != "" {
-		raw := strings.TrimSpace(p.Base64)
-		if b, err := base64.StdEncoding.DecodeString(raw); err == nil {
-			return b, nil
+		b, err := base64.StdEncoding.DecodeString(p.Base64)
+		if err != nil {
+			return nil, apperr.InvalidRequestf("invalid base64 payload for %q: %v", p.Path, err)
 		}
-		if b, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(raw, "=")); err == nil {
-			return b, nil
-		}
-		return nil, apperr.InvalidRequestf("invalid base64 payload for path %q", p.Path)
+		return b, nil
 	}
 	return []byte(p.Content), nil
 }
@@ -567,7 +545,6 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 		msg = "write"
 	}
 
-	// Pre-validate and decode payloads before acquiring locks.
 	type decodedPut struct {
 		path string
 		data []byte
@@ -616,6 +593,27 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 		moves = append(moves, normMove{from: fromPath, to: toPath})
 	}
 
+	var totalBytes int64
+	changed := make([]string, 0, len(puts)+len(deletes)+2*len(moves))
+	seenChanged := map[string]bool{}
+	addChanged := func(p string) {
+		if !seenChanged[p] {
+			seenChanged[p] = true
+			changed = append(changed, p)
+		}
+	}
+	for _, p := range puts {
+		totalBytes += int64(len(p.data))
+		addChanged(p.path)
+	}
+	for _, d := range deletes {
+		addChanged(d)
+	}
+	for _, m := range moves {
+		addChanged(m.from)
+		addChanged(m.to)
+	}
+
 	var out WriteResponse
 	err := e.withRefLock(ctx, lineage, refName, req.Holder, func(vmSession ActiveVMSession) error {
 		now := e.nowMs()
@@ -630,12 +628,21 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 			return apperr.CASConflictf("expected commit %q on ref %q, got %q", req.ExpectedCommit, refName, curRef.Commit)
 		}
 
+		vmOps := make([]WorkspaceFileOp, 0, len(moves)+len(deletes)+len(puts))
+		for _, mv := range moves {
+			vmOps = append(vmOps, WorkspaceFileOp{Kind: "move", From: mv.from, Path: mv.to})
+		}
+		for _, delPath := range deletes {
+			vmOps = append(vmOps, WorkspaceFileOp{Kind: "delete", Path: delPath})
+		}
+		for _, put := range puts {
+			vmOps = append(vmOps, WorkspaceFileOp{Kind: "put", Path: put.path, Data: put.data, Mode: put.mode})
+		}
+
 		treeMap, err := e.GetTreeMap(ctx, curRef.Tree)
 		if err != nil {
 			return err
 		}
-
-		var vmOps []WorkspaceFileOp
 		for _, mv := range moves {
 			srcEnt, ok := treeMap[mv.from]
 			if !ok {
@@ -644,21 +651,15 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 			delete(treeMap, mv.from)
 			srcEnt.Path = mv.to
 			treeMap[mv.to] = srcEnt
-			vmOps = append(vmOps, WorkspaceFileOp{Kind: "move", From: mv.from, Path: mv.to})
 		}
-
 		for _, delPath := range deletes {
 			delete(treeMap, delPath)
-			vmOps = append(vmOps, WorkspaceFileOp{Kind: "delete", Path: delPath})
 		}
-
-		var totalBytes int64
 		for _, put := range puts {
 			blobHash, err := e.PutBlob(ctx, lineage, put.data)
 			if err != nil {
 				return err
 			}
-			totalBytes += int64(len(put.data))
 			treeMap[put.path] = TreeEntry{
 				Path: put.path,
 				Type: "file",
@@ -666,38 +667,17 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 				Mode: put.mode,
 				Hash: blobHash,
 			}
-			vmOps = append(vmOps, WorkspaceFileOp{
-				Kind: "put",
-				Path: put.path,
-				Data: put.data,
-				Mode: put.mode,
-			})
 		}
-
-		// Deterministic changed list preserving request order (puts, deletes, moves).
-		changed := make([]string, 0, len(puts)+len(deletes)+2*len(moves))
-		seenChanged := map[string]bool{}
-		addChanged := func(p string) {
-			if !seenChanged[p] {
-				seenChanged[p] = true
-				changed = append(changed, p)
-			}
-		}
-		for _, p := range puts {
-			addChanged(p.path)
-		}
-		for _, d := range deletes {
-			addChanged(d)
-		}
-		for _, m := range moves {
-			addChanged(m.from)
-			addChanged(m.to)
-		}
-
 		newTreeHash, err := e.PutTreeMap(ctx, lineage, treeMap)
 		if err != nil {
 			return err
 		}
+		if vmSession != nil {
+			if err := vmSession.ApplyOps(ctx, vmOps); err != nil {
+				return err
+			}
+		}
+
 		newCommitHash, err := e.PutCommit(ctx, lineage, CommitObject{
 			Tree:      newTreeHash,
 			Parents:   []string{curRef.Commit},
@@ -710,7 +690,7 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 		}
 
 		if vmSession != nil {
-			if err := vmSession.ApplyOps(ctx, vmOps, newCommitHash); err != nil {
+			if err := vmSession.UpdateHead(ctx, newCommitHash); err != nil {
 				return err
 			}
 		}
@@ -742,51 +722,22 @@ func (e *Engine) Write(ctx context.Context, lineage string, req WriteRequest) (*
 	return &out, nil
 }
 
-// Read reads a file at a ref or commit with byte offset & limit and binary detection.
-func (e *Engine) Read(ctx context.Context, lineage string, p ReadParams) (*ReadResponse, error) {
-	normPath, err := NormalizeRelPath(p.Path, false)
-	if err != nil {
-		return nil, err
-	}
-	if p.Offset < 0 {
-		return nil, apperr.InvalidRequest("offset must be >= 0")
-	}
-
-	commitHash, commitObj, err := e.ResolveCommit(ctx, lineage, p.At)
-	if err != nil {
-		return nil, err
-	}
-	treeMap, err := e.GetTreeMap(ctx, commitObj.Tree)
-	if err != nil {
-		return nil, err
-	}
-	ent, ok := treeMap[normPath]
-	if !ok {
-		return nil, apperr.NotFoundf("path %q not found at %q", normPath, commitHash)
-	}
-
-	data, err := e.GetBlob(ctx, ent.Hash)
-	if err != nil {
-		return nil, err
-	}
+// BuildReadResponse slices data and detects binary payloads uniformly across live VM and committed tree reads.
+func BuildReadResponse(commitHash, relPath string, data []byte, mode int, offset, limit int64) *ReadResponse {
 	fullSize := int64(len(data))
 	binary := IsBinary(data)
-
-	start := p.Offset
-	if start > fullSize {
-		start = fullSize
-	}
+	start := min(offset, fullSize)
 	end := fullSize
-	if p.Limit > 0 && start+p.Limit < end {
-		end = start + p.Limit
+	if limit > 0 && start+limit < end {
+		end = start + limit
 	}
 	slice := data[start:end]
 
 	resp := &ReadResponse{
 		Commit: commitHash,
-		Path:   normPath,
+		Path:   relPath,
 		Size:   fullSize,
-		Mode:   ent.Mode,
+		Mode:   mode,
 		Binary: binary,
 	}
 	if binary {
@@ -796,20 +747,36 @@ func (e *Engine) Read(ctx context.Context, lineage string, p ReadParams) (*ReadR
 		str := string(slice)
 		resp.Content = &str
 	}
-	return resp, nil
+	return resp
 }
 
-// ListEntries implements ls with path prefix, recursive flag, and glob filtering.
-func (e *Engine) ListEntries(ctx context.Context, lineage string, p ListParams) (*ListResponse, error) {
-	normDir, err := NormalizeRelPath(p.Path, true)
+// Read reads a file from the active VM (when reading a ref head) or from the committed disk/tree.
+func (e *Engine) Read(ctx context.Context, lineage string, p ReadParams) (*ReadResponse, error) {
+	normPath, err := NormalizeRelPath(p.Path, false)
 	if err != nil {
 		return nil, err
 	}
-	var globRE *regexp.Regexp
-	if strings.TrimSpace(p.Glob) != "" {
-		globRE, err = CompileGlob(p.Glob)
-		if err != nil {
-			return nil, apperr.InvalidRequestf("invalid glob %q: %v", p.Glob, err)
+	if p.Offset < 0 {
+		return nil, apperr.InvalidRequest("offset must be >= 0")
+	}
+	if _, err := e.store.GetLineage(ctx, lineage); err != nil {
+		return nil, err
+	}
+
+	if e.vm != nil {
+		if refName := e.resolveRefName(ctx, lineage, p.At); refName != "" {
+			var liveResp *ReadResponse
+			handled, err := e.vm.WithRefReadVM(ctx, lineage, refName, func(reader LiveVMReader) error {
+				var rErr error
+				liveResp, rErr = reader.ReadFile(ctx, normPath, p.Offset, p.Limit)
+				return rErr
+			})
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				return liveResp, nil
+			}
 		}
 	}
 
@@ -817,9 +784,31 @@ func (e *Engine) ListEntries(ctx context.Context, lineage string, p ListParams) 
 	if err != nil {
 		return nil, err
 	}
-	entries, err := e.GetTree(ctx, commitObj.Tree)
+
+	treeMap, err := e.GetTreeMap(ctx, commitObj.Tree)
 	if err != nil {
 		return nil, err
+	}
+	ent, ok := treeMap[normPath]
+	if !ok {
+		return nil, apperr.NotFoundf("path %q not found at %q", normPath, commitHash)
+	}
+	data, err := e.GetBlob(ctx, ent.Hash)
+	if err != nil {
+		return nil, err
+	}
+	return BuildReadResponse(commitHash, normPath, data, ent.Mode, p.Offset, p.Limit), nil
+}
+
+// FilterListEntries filters sorted directory/file entries by directory prefix, recursion, and glob.
+func FilterListEntries(entries []TreeEntry, normDir string, recursive bool, glob string) ([]TreeEntry, error) {
+	var globRE *regexp.Regexp
+	if strings.TrimSpace(glob) != "" {
+		var err error
+		globRE, err = CompileGlob(glob)
+		if err != nil {
+			return nil, apperr.InvalidRequestf("invalid glob %q: %v", glob, err)
+		}
 	}
 
 	matchesGlob := func(entryPath string) bool {
@@ -830,23 +819,21 @@ func (e *Engine) ListEntries(ctx context.Context, lineage string, p ListParams) 
 			return true
 		}
 		if normDir != "" && strings.HasPrefix(entryPath, normDir+"/") {
-			rel := strings.TrimPrefix(entryPath, normDir+"/")
-			if globRE.MatchString(rel) {
+			if globRE.MatchString(strings.TrimPrefix(entryPath, normDir+"/")) {
 				return true
 			}
 		}
 		return false
 	}
 
-	// If path names an exact single file, return it if it matches glob.
 	if normDir != "" {
 		for _, ent := range entries {
-			if ent.Path == normDir {
+			if ent.Path == normDir && ent.Type != "dir" {
 				out := []TreeEntry{}
 				if matchesGlob(ent.Path) {
 					out = append(out, ent)
 				}
-				return &ListResponse{Commit: commitHash, Entries: out}, nil
+				return out, nil
 			}
 		}
 	}
@@ -855,56 +842,142 @@ func (e *Engine) ListEntries(ctx context.Context, lineage string, p ListParams) 
 	if normDir != "" {
 		prefix = normDir + "/"
 	}
-
 	out := make([]TreeEntry, 0)
-	if p.Recursive {
+	if recursive {
 		for _, ent := range entries {
 			if prefix != "" && !strings.HasPrefix(ent.Path, prefix) {
+				continue
+			}
+			if ent.Type == "dir" {
 				continue
 			}
 			if matchesGlob(ent.Path) {
 				out = append(out, ent)
 			}
 		}
-	} else {
-		seenDirs := map[string]bool{}
-		for _, ent := range entries {
-			if prefix != "" && !strings.HasPrefix(ent.Path, prefix) {
-				continue
-			}
-			rel := strings.TrimPrefix(ent.Path, prefix)
-			if slash := strings.IndexByte(rel, '/'); slash >= 0 {
-				dirName := rel[:slash]
-				dirPath := dirName
-				if prefix != "" {
-					dirPath = prefix + dirName
-				}
-				if !seenDirs[dirPath] {
-					seenDirs[dirPath] = true
-					if matchesGlob(dirPath) {
-						out = append(out, TreeEntry{
-							Path: dirPath,
-							Type: "dir",
-							Size: 0,
-							Mode: ExecFileMode,
-							Hash: "",
-						})
-					}
-				}
-			} else if matchesGlob(ent.Path) {
-				out = append(out, ent)
-			}
-		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+		return out, nil
 	}
 
-	return &ListResponse{
-		Commit:  commitHash,
-		Entries: out,
-	}, nil
+	seenDirs := map[string]bool{}
+	for _, ent := range entries {
+		if prefix != "" && !strings.HasPrefix(ent.Path, prefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(ent.Path, prefix)
+		if rel == "" {
+			continue
+		}
+		if slash := strings.IndexByte(rel, '/'); slash >= 0 {
+			dirPath := prefix + rel[:slash]
+			if !seenDirs[dirPath] {
+				seenDirs[dirPath] = true
+				if matchesGlob(dirPath) {
+					out = append(out, TreeEntry{Path: dirPath, Type: "dir", Size: 0, Mode: ExecFileMode})
+				}
+			}
+		} else if ent.Type == "dir" {
+			if !seenDirs[ent.Path] {
+				seenDirs[ent.Path] = true
+				if matchesGlob(ent.Path) {
+					out = append(out, ent)
+				}
+			}
+		} else if matchesGlob(ent.Path) {
+			out = append(out, ent)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
-// Grep searches text blobs at ref/commit using regular expressions.
+// ListEntries implements ls against the active VM or committed tree.
+func (e *Engine) ListEntries(ctx context.Context, lineage string, p ListParams) (*ListResponse, error) {
+	normDir, err := NormalizeRelPath(p.Path, true)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(p.Glob) != "" {
+		if _, err := CompileGlob(p.Glob); err != nil {
+			return nil, apperr.InvalidRequestf("invalid glob %q: %v", p.Glob, err)
+		}
+	}
+	if _, err := e.store.GetLineage(ctx, lineage); err != nil {
+		return nil, err
+	}
+
+	if e.vm != nil {
+		if refName := e.resolveRefName(ctx, lineage, p.At); refName != "" {
+			var commitHash string
+			var entries []TreeEntry
+			handled, err := e.vm.WithRefReadVM(ctx, lineage, refName, func(reader LiveVMReader) error {
+				commitHash = reader.HeadCommit()
+				var lErr error
+				entries, lErr = reader.ListEntries(ctx, normDir, p.Recursive, p.Glob)
+				return lErr
+			})
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				return &ListResponse{Commit: commitHash, Entries: entries}, nil
+			}
+		}
+	}
+
+	commitHash, commitObj, err := e.ResolveCommit(ctx, lineage, p.At)
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := e.GetTree(ctx, commitObj.Tree)
+	if err != nil {
+		return nil, err
+	}
+	filtered, err := FilterListEntries(entries, normDir, p.Recursive, p.Glob)
+	if err != nil {
+		return nil, err
+	}
+	return &ListResponse{Commit: commitHash, Entries: filtered}, nil
+}
+
+// GrepTextLines matches re over text file content, stopping at maxMatches.
+func GrepTextLines(re *regexp.Regexp, filePath string, data []byte, maxMatches int, out *[]GrepMatch) bool {
+	if IsBinary(data) {
+		return false
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" && strings.HasSuffix(string(data), "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	for lineIdx, line := range lines {
+		cleanLine := strings.TrimSuffix(line, "\r")
+		if loc := re.FindStringIndex(cleanLine); loc != nil {
+			*out = append(*out, GrepMatch{
+				Path:   filePath,
+				Line:   lineIdx + 1,
+				Column: loc[0] + 1,
+				Text:   cleanLine,
+			})
+			if len(*out) >= maxMatches {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func matchGrepPrefix(filePath, prefix string, dirOnly bool) bool {
+	if prefix == "" {
+		return true
+	}
+	if dirOnly {
+		return strings.HasPrefix(filePath, prefix+"/")
+	}
+	return filePath == prefix || strings.HasPrefix(filePath, prefix+"/") || strings.HasPrefix(filePath, prefix)
+}
+
+// Grep searches text files in the active VM or committed tree.
 func (e *Engine) Grep(ctx context.Context, lineage string, req GrepRequest) (*GrepResponse, error) {
 	if req.Pattern == "" {
 		return nil, apperr.InvalidRequest("pattern is required")
@@ -913,75 +986,65 @@ func (e *Engine) Grep(ctx context.Context, lineage string, req GrepRequest) (*Gr
 	if err != nil {
 		return nil, apperr.InvalidRequestf("invalid regex pattern: %v", err)
 	}
-
 	prefix, err := NormalizeRelPath(req.PathPrefix, true)
 	if err != nil {
 		return nil, err
 	}
-	// Preserve directory prefix semantics if caller passed "src/".
-	rawTrimmed := strings.TrimSpace(req.PathPrefix)
-	dirOnly := strings.HasSuffix(rawTrimmed, "/") && prefix != ""
-
+	dirOnly := strings.HasSuffix(strings.TrimSpace(req.PathPrefix), "/") && prefix != ""
 	maxMatches := req.MaxMatches
 	if maxMatches <= 0 {
 		maxMatches = 100
+	}
+	if _, err := e.store.GetLineage(ctx, lineage); err != nil {
+		return nil, err
+	}
+
+	if e.vm != nil {
+		if refName := e.resolveRefName(ctx, lineage, req.At); refName != "" {
+			var commitHash string
+			var matches []GrepMatch
+			handled, err := e.vm.WithRefReadVM(ctx, lineage, refName, func(reader LiveVMReader) error {
+				commitHash = reader.HeadCommit()
+				var gErr error
+				matches, gErr = reader.Grep(ctx, GrepRequest{
+					Pattern:    req.Pattern,
+					PathPrefix: req.PathPrefix,
+					MaxMatches: maxMatches,
+				})
+				return gErr
+			})
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				return &GrepResponse{Commit: commitHash, Matches: matches}, nil
+			}
+		}
 	}
 
 	commitHash, commitObj, err := e.ResolveCommit(ctx, lineage, req.At)
 	if err != nil {
 		return nil, err
 	}
+	matches := make([]GrepMatch, 0)
+
 	entries, err := e.GetTree(ctx, commitObj.Tree)
 	if err != nil {
 		return nil, err
 	}
-
-	matches := make([]GrepMatch, 0)
 	for _, ent := range entries {
-		if prefix != "" {
-			if dirOnly {
-				if !strings.HasPrefix(ent.Path, prefix+"/") {
-					continue
-				}
-			} else if ent.Path != prefix && !strings.HasPrefix(ent.Path, prefix+"/") && !strings.HasPrefix(ent.Path, prefix) {
-				continue
-			}
+		if !matchGrepPrefix(ent.Path, prefix, dirOnly) {
+			continue
 		}
-
 		data, err := e.GetBlob(ctx, ent.Hash)
 		if err != nil {
 			return nil, err
 		}
-		if IsBinary(data) {
-			continue
-		}
-
-		lines := strings.Split(string(data), "\n")
-		// Drop trailing empty element from final newline.
-		if len(lines) > 0 && lines[len(lines)-1] == "" && strings.HasSuffix(string(data), "\n") {
-			lines = lines[:len(lines)-1]
-		}
-		for lineIdx, line := range lines {
-			cleanLine := strings.TrimSuffix(line, "\r")
-			loc := re.FindStringIndex(cleanLine)
-			if loc != nil {
-				matches = append(matches, GrepMatch{
-					Path:   ent.Path,
-					Line:   lineIdx + 1,
-					Column: loc[0] + 1,
-					Text:   cleanLine,
-				})
-				if len(matches) >= maxMatches {
-					return &GrepResponse{Commit: commitHash, Matches: matches}, nil
-				}
-			}
+		if GrepTextLines(re, ent.Path, data, maxMatches, &matches) {
+			return &GrepResponse{Commit: commitHash, Matches: matches}, nil
 		}
 	}
-
-	return &GrepResponse{
-		Commit:  commitHash,
-		Matches: matches,
-	}, nil
+	return &GrepResponse{Commit: commitHash, Matches: matches}, nil
 }
 
 // History walks commits reachable from ref up to limit.
@@ -992,168 +1055,44 @@ func (e *Engine) History(ctx context.Context, lineage, ref string, limit int) (*
 	if limit > 1000 {
 		limit = 1000
 	}
-	startHash, _, err := e.ResolveCommit(ctx, lineage, ref)
+	headHash, _, err := e.ResolveCommit(ctx, lineage, ref)
 	if err != nil {
 		return nil, err
 	}
 
+	seen := map[string]bool{}
+	queue := []string{headHash}
 	commits := make([]HistoryCommit, 0)
-	visited := map[string]bool{}
-	queue := []string{startHash}
-
 	for len(queue) > 0 && len(commits) < limit {
-		// Pick the commit in queue with highest CreatedAt for clean merge history ordering.
-		bestIdx := 0
-		var bestCommit *CommitObject
-		for idx, h := range queue {
-			c, err := e.GetCommit(ctx, h)
-			if err != nil {
-				return nil, err
-			}
-			if bestCommit == nil || c.CreatedAt > bestCommit.CreatedAt {
-				bestIdx = idx
-				bestCommit = c
-			}
-		}
-		curHash := queue[bestIdx]
-		queue = append(queue[:bestIdx], queue[bestIdx+1:]...)
-		if visited[curHash] {
+		h := queue[0]
+		queue = queue[1:]
+		if h == "" || seen[h] {
 			continue
 		}
-		visited[curHash] = true
+		seen[h] = true
 
+		c, err := e.GetCommit(ctx, h)
+		if err != nil {
+			return nil, err
+		}
 		commits = append(commits, HistoryCommit{
-			Commit:    curHash,
-			Tree:      bestCommit.Tree,
-			Parents:   bestCommit.Parents,
-			Author:    bestCommit.Author,
-			Message:   bestCommit.Message,
-			CreatedAt: bestCommit.CreatedAt,
+			Commit:    h,
+			Tree:      c.Tree,
+			Parents:   c.Parents,
+			Author:    c.Author,
+			Message:   c.Message,
+			CreatedAt: c.CreatedAt,
 		})
-		for _, p := range bestCommit.Parents {
-			if !visited[p] {
+		for _, p := range c.Parents {
+			if !seen[p] {
 				queue = append(queue, p)
 			}
 		}
 	}
-
 	return &HistoryResponse{Commits: commits}, nil
 }
 
-// Diff computes file-level and unified line-level diffs between from and to.
-func (e *Engine) Diff(ctx context.Context, lineage, fromRef, toRef string) (*DiffResponse, error) {
-	if strings.TrimSpace(toRef) == "" {
-		toRef = DefaultRef
-	}
-	toHash, toCommit, err := e.ResolveCommit(ctx, lineage, toRef)
-	if err != nil {
-		return nil, err
-	}
-
-	var fromHash string
-	var fromTree map[string]TreeEntry
-	if strings.TrimSpace(fromRef) == "" {
-		if len(toCommit.Parents) > 0 {
-			fromHash = toCommit.Parents[0]
-			fc, err := e.GetCommit(ctx, fromHash)
-			if err != nil {
-				return nil, err
-			}
-			fromTree, err = e.GetTreeMap(ctx, fc.Tree)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			fromHash = ""
-			fromTree = map[string]TreeEntry{}
-		}
-	} else {
-		var fc *CommitObject
-		fromHash, fc, err = e.ResolveCommit(ctx, lineage, fromRef)
-		if err != nil {
-			return nil, err
-		}
-		fromTree, err = e.GetTreeMap(ctx, fc.Tree)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	toTree, err := e.GetTreeMap(ctx, toCommit.Tree)
-	if err != nil {
-		return nil, err
-	}
-
-	pathSet := map[string]bool{}
-	for p := range fromTree {
-		pathSet[p] = true
-	}
-	for p := range toTree {
-		pathSet[p] = true
-	}
-	paths := make([]string, 0, len(pathSet))
-	for p := range pathSet {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
-
-	changes := make([]DiffChange, 0)
-	for _, p := range paths {
-		oldEnt, inOld := fromTree[p]
-		newEnt, inNew := toTree[p]
-
-		switch {
-		case !inOld && inNew:
-			newBytes, err := e.GetBlob(ctx, newEnt.Hash)
-			if err != nil {
-				return nil, err
-			}
-			changes = append(changes, DiffChange{
-				Path:    p,
-				Kind:    "added",
-				OldHash: "",
-				NewHash: newEnt.Hash,
-				Patch:   UnifiedPatch(nil, newBytes),
-			})
-		case inOld && !inNew:
-			oldBytes, err := e.GetBlob(ctx, oldEnt.Hash)
-			if err != nil {
-				return nil, err
-			}
-			changes = append(changes, DiffChange{
-				Path:    p,
-				Kind:    "deleted",
-				OldHash: oldEnt.Hash,
-				NewHash: "",
-				Patch:   UnifiedPatch(oldBytes, nil),
-			})
-		case inOld && inNew && (oldEnt.Hash != newEnt.Hash || oldEnt.Mode != newEnt.Mode):
-			oldBytes, err := e.GetBlob(ctx, oldEnt.Hash)
-			if err != nil {
-				return nil, err
-			}
-			newBytes, err := e.GetBlob(ctx, newEnt.Hash)
-			if err != nil {
-				return nil, err
-			}
-			changes = append(changes, DiffChange{
-				Path:    p,
-				Kind:    "modified",
-				OldHash: oldEnt.Hash,
-				NewHash: newEnt.Hash,
-				Patch:   UnifiedPatch(oldBytes, newBytes),
-			})
-		}
-	}
-
-	return &DiffResponse{
-		FromCommit: fromHash,
-		ToCommit:   toHash,
-		Changes:    changes,
-	}, nil
-}
-
-// Restore creates a new commit on ref restoring targetCommit's tree, syncing any active VM.
+// Restore creates a new commit on ref pointing to targetCommit's disk/tree, stopping any active VM first.
 func (e *Engine) Restore(ctx context.Context, lineage string, req RestoreRequest) (*RestoreResponse, error) {
 	refName := strings.TrimSpace(req.Ref)
 	if refName == "" {
@@ -1187,9 +1126,14 @@ func (e *Engine) Restore(ctx context.Context, lineage string, req RestoreRequest
 			return apperr.RefLeasedf("ref %q is leased by %q", refName, curRef.Lease.Holder)
 		}
 
+		if vmSession != nil {
+			if err := vmSession.StopForRestore(ctx); err != nil {
+				return err
+			}
+		}
+
 		newCommit, err := e.PutCommit(ctx, lineage, CommitObject{
 			Tree:      targetObj.Tree,
-			Disk:      targetObj.Disk,
 			Parents:   []string{curRef.Commit},
 			Author:    author,
 			Message:   msg,
@@ -1197,16 +1141,6 @@ func (e *Engine) Restore(ctx context.Context, lineage string, req RestoreRequest
 		})
 		if err != nil {
 			return err
-		}
-
-		if vmSession != nil {
-			files, err := e.loadMaterializedTree(ctx, targetObj.Tree)
-			if err != nil {
-				return err
-			}
-			if err := vmSession.ReplaceTree(ctx, files, newCommit); err != nil {
-				return err
-			}
 		}
 
 		_, err = e.store.SetRef(ctx, store.SetRefParams{
@@ -1230,369 +1164,188 @@ func (e *Engine) Restore(ctx context.Context, lineage string, req RestoreRequest
 	return &out, nil
 }
 
-// findLCA finds the nearest common ancestor commit between c1 and c2 via BFS.
-func (e *Engine) findLCA(ctx context.Context, c1, c2 string) (string, error) {
-	if c1 == c2 {
-		return c1, nil
-	}
-	anc1 := map[string]int{}
-	q1 := []string{c1}
-	depth := 0
-	for len(q1) > 0 {
-		next := []string{}
-		for _, h := range q1 {
-			if _, seen := anc1[h]; seen {
-				continue
-			}
-			anc1[h] = depth
-			c, err := e.GetCommit(ctx, h)
-			if err != nil {
-				return "", err
-			}
-			next = append(next, c.Parents...)
-		}
-		q1 = next
-		depth++
-	}
-
-	visited2 := map[string]bool{}
-	q2 := []string{c2}
-	for len(q2) > 0 {
-		h := q2[0]
-		q2 = q2[1:]
-		if visited2[h] {
-			continue
-		}
-		visited2[h] = true
-		if _, ok := anc1[h]; ok {
-			return h, nil
-		}
-		c, err := e.GetCommit(ctx, h)
-		if err != nil {
-			return "", err
-		}
-		q2 = append(q2, c.Parents...)
-	}
-	return "", nil
-}
-
-// Merge merges sourceRef into targetRef using ff-only, squash, or three-way merge.
-func (e *Engine) Merge(ctx context.Context, lineage string, req MergeRequest) (*MergeResponse, error) {
-	sourceRef := strings.TrimSpace(req.SourceRef)
-	if sourceRef == "" {
-		return nil, apperr.InvalidRequest("sourceRef is required")
-	}
-	targetRef := strings.TrimSpace(req.TargetRef)
-	if targetRef == "" {
-		targetRef = DefaultRef
-	}
-	strategy := strings.TrimSpace(req.Strategy)
-	if strategy == "" {
-		strategy = "three-way"
-	}
-	if strategy != "three-way" && strategy != "ff-only" && strategy != "squash" {
-		return nil, apperr.InvalidRequestf("unsupported merge strategy %q", strategy)
-	}
-	author := strings.TrimSpace(req.Author)
-	if author == "" {
-		author = "system"
-	}
-	msg := strings.TrimSpace(req.Message)
-	if msg == "" {
-		msg = fmt.Sprintf("merge %s into %s", sourceRef, targetRef)
-	}
-
-	var out MergeResponse
-	err := e.withRefLock(ctx, lineage, targetRef, req.Holder, func(vmSession ActiveVMSession) error {
-		now := e.nowMs()
-		tgtRefRec, err := e.store.GetRef(ctx, lineage, targetRef, now)
-		if err != nil {
-			return err
-		}
-		if tgtRefRec.Lease != nil && tgtRefRec.Lease.Holder != req.Holder {
-			return apperr.RefLeasedf("target ref %q is leased by %q", targetRef, tgtRefRec.Lease.Holder)
-		}
-
-		srcCommitHash, srcCommitObj, err := e.ResolveCommit(ctx, lineage, sourceRef)
-		if err != nil {
-			return err
-		}
-		tgtCommitHash := tgtRefRec.Commit
-		tgtCommitObj, err := e.GetCommit(ctx, tgtCommitHash)
-		if err != nil {
-			return err
-		}
-
-		if srcCommitHash == tgtCommitHash {
-			out = MergeResponse{Commit: tgtCommitHash, Tree: tgtCommitObj.Tree, Conflicts: []string{}}
-			return nil
-		}
-
-		lcaHash, err := e.findLCA(ctx, tgtCommitHash, srcCommitHash)
-		if err != nil {
-			return err
-		}
-		if lcaHash == srcCommitHash {
-			// Target already contains all of source.
-			out = MergeResponse{Commit: tgtCommitHash, Tree: tgtCommitObj.Tree, Conflicts: []string{}}
-			return nil
-		}
-
-		if strategy == "ff-only" {
-			if lcaHash != tgtCommitHash {
-				return apperr.CASConflict("cannot fast-forward: target has diverged from source")
-			}
-			if vmSession != nil {
-				files, err := e.loadMaterializedTree(ctx, srcCommitObj.Tree)
-				if err != nil {
-					return err
-				}
-				if err := vmSession.ReplaceTree(ctx, files, srcCommitHash); err != nil {
-					return err
-				}
-			}
-			_, err = e.store.SetRef(ctx, store.SetRefParams{
-				Lineage:        lineage,
-				Ref:            targetRef,
-				Commit:         srcCommitHash,
-				Tree:           srcCommitObj.Tree,
-				ExpectedCommit: tgtCommitHash,
-				Holder:         req.Holder,
-				NowMs:          now,
-			})
-			if err != nil {
-				return err
-			}
-			out = MergeResponse{Commit: srcCommitHash, Tree: srcCommitObj.Tree, Conflicts: []string{}}
-			return nil
-		}
-
-		// Three-way or squash merge from LCA tree.
-		baseTree := map[string]TreeEntry{}
-		if lcaHash != "" {
-			lcaCommit, err := e.GetCommit(ctx, lcaHash)
-			if err != nil {
-				return err
-			}
-			baseTree, err = e.GetTreeMap(ctx, lcaCommit.Tree)
-			if err != nil {
-				return err
-			}
-		}
-		oursTree, err := e.GetTreeMap(ctx, tgtCommitObj.Tree)
-		if err != nil {
-			return err
-		}
-		theirsTree, err := e.GetTreeMap(ctx, srcCommitObj.Tree)
-		if err != nil {
-			return err
-		}
-
-		allPathsSet := map[string]bool{}
-		for p := range baseTree {
-			allPathsSet[p] = true
-		}
-		for p := range oursTree {
-			allPathsSet[p] = true
-		}
-		for p := range theirsTree {
-			allPathsSet[p] = true
-		}
-		allPaths := make([]string, 0, len(allPathsSet))
-		for p := range allPathsSet {
-			allPaths = append(allPaths, p)
-		}
-		sort.Strings(allPaths)
-
-		mergedTree := map[string]TreeEntry{}
-		var conflicts []string
-
-		entryEq := func(a EntryState, b EntryState) bool {
-			if !a.exists && !b.exists {
-				return true
-			}
-			if a.exists != b.exists {
-				return false
-			}
-			return a.ent.Hash == b.ent.Hash && a.ent.Mode == b.ent.Mode
-		}
-
-		for _, p := range allPaths {
-			bEnt, bOk := baseTree[p]
-			oEnt, oOk := oursTree[p]
-			tEnt, tOk := theirsTree[p]
-
-			bs := EntryState{exists: bOk, ent: bEnt}
-			osSt := EntryState{exists: oOk, ent: oEnt}
-			ts := EntryState{exists: tOk, ent: tEnt}
-
-			switch {
-			case entryEq(osSt, ts):
-				if oOk {
-					mergedTree[p] = oEnt
-				}
-			case entryEq(osSt, bs):
-				// Only theirs changed (added, modified, or deleted).
-				if tOk {
-					mergedTree[p] = tEnt
-				}
-			case entryEq(ts, bs):
-				// Only ours changed.
-				if oOk {
-					mergedTree[p] = oEnt
-				}
-			default:
-				// Both sides changed differently relative to base!
-				if !oOk || !tOk {
-					// Delete/modify conflict.
-					conflicts = append(conflicts, p)
-					continue
-				}
-				var baseBytes []byte
-				if bOk {
-					baseBytes, err = e.GetBlob(ctx, bEnt.Hash)
-					if err != nil {
-						return err
-					}
-				}
-				oursBytes, err := e.GetBlob(ctx, oEnt.Hash)
-				if err != nil {
-					return err
-				}
-				theirsBytes, err := e.GetBlob(ctx, tEnt.Hash)
-				if err != nil {
-					return err
-				}
-
-				mergedBytes, clean := MergeText3Way(baseBytes, oursBytes, theirsBytes)
-				if !clean {
-					conflicts = append(conflicts, p)
-					continue
-				}
-				mergedBlobHash, err := e.PutBlob(ctx, lineage, mergedBytes)
-				if err != nil {
-					return err
-				}
-				mode := oEnt.Mode
-				if tEnt.Mode == ExecFileMode {
-					mode = ExecFileMode
-				}
-				mergedTree[p] = TreeEntry{
-					Path: p,
-					Type: "file",
-					Size: int64(len(mergedBytes)),
-					Mode: mode,
-					Hash: mergedBlobHash,
-				}
-			}
-		}
-
-		if len(conflicts) > 0 {
-			return apperr.MergeConflict(conflicts)
-		}
-
-		newTreeHash, err := e.PutTreeMap(ctx, lineage, mergedTree)
-		if err != nil {
-			return err
-		}
-		parents := []string{tgtCommitHash, srcCommitHash}
-		if strategy == "squash" {
-			parents = []string{tgtCommitHash}
-		}
-		newCommitHash, err := e.PutCommit(ctx, lineage, CommitObject{
-			Tree:      newTreeHash,
-			Parents:   parents,
-			Author:    author,
-			Message:   msg,
-			CreatedAt: now,
-		})
-		if err != nil {
-			return err
-		}
-
-		if vmSession != nil {
-			files, err := e.loadMaterializedTree(ctx, newTreeHash)
-			if err != nil {
-				return err
-			}
-			if err := vmSession.ReplaceTree(ctx, files, newCommitHash); err != nil {
-				return err
-			}
-		}
-
-		_, err = e.store.SetRef(ctx, store.SetRefParams{
-			Lineage:        lineage,
-			Ref:            targetRef,
-			Commit:         newCommitHash,
-			Tree:           newTreeHash,
-			ExpectedCommit: tgtCommitHash,
-			Holder:         req.Holder,
-			NowMs:          now,
-		})
-		if err != nil {
-			return err
-		}
-		out = MergeResponse{
-			Commit:    newCommitHash,
-			Tree:      newTreeHash,
-			Conflicts: []string{},
-		}
-		return nil
-	})
+// LoadCommitTree returns only the tree metadata entries for lazy FUSE VM mounts (zero blob reads).
+func (e *Engine) LoadCommitTree(ctx context.Context, commitHash string) (string, []TreeEntry, error) {
+	c, err := e.GetCommit(ctx, commitHash)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return &out, nil
-}
-
-type EntryState struct {
-	exists bool
-	ent    TreeEntry
-}
-
-func (e *Engine) loadMaterializedTree(ctx context.Context, treeHash string) (map[string]MaterializedFile, error) {
-	entries, err := e.GetTree(ctx, treeHash)
+	entries, err := e.GetTree(ctx, c.Tree)
 	if err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	return c.Tree, entries, nil
+}
+
+// LoadCommitFiles returns all files in commitHash's tree for local/remote VM materialization.
+func (e *Engine) LoadCommitFiles(ctx context.Context, commitHash string) (string, map[string]MaterializedFile, error) {
+	treeHash, entries, err := e.LoadCommitTree(ctx, commitHash)
+	if err != nil {
+		return "", nil, err
 	}
 	files := make(map[string]MaterializedFile, len(entries))
 	for _, ent := range entries {
 		data, err := e.GetBlob(ctx, ent.Hash)
 		if err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		files[ent.Path] = MaterializedFile{
-			Path: ent.Path,
-			Mode: ent.Mode,
-			Data: data,
-		}
+		files[ent.Path] = MaterializedFile{Path: ent.Path, Mode: ent.Mode, Data: data}
 	}
-	return files, nil
+	return treeHash, files, nil
 }
 
-// LoadCommitFiles returns all files in commitHash's tree for VM materialization.
-func (e *Engine) LoadCommitFiles(ctx context.Context, commitHash string) (string, map[string]MaterializedFile, error) {
-	c, err := e.GetCommit(ctx, commitHash)
+// ApplyWorkspaceDelta applies an O(delta) set of puts and deletes (from overlayfs upperdir) onto baseCommit.
+func (e *Engine) ApplyWorkspaceDelta(
+	ctx context.Context,
+	lineage, baseCommit, author, message string,
+	puts []MaterializedFile,
+	deletes []string,
+) (*WorkspaceCommitResult, error) {
+	baseObj, err := e.GetCommit(ctx, baseCommit)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	files, err := e.loadMaterializedTree(ctx, c.Tree)
+	if len(puts) == 0 && len(deletes) == 0 {
+		return &WorkspaceCommitResult{
+			Changed:      false,
+			Commit:       baseCommit,
+			Tree:         baseObj.Tree,
+			FilesChanged: []string{},
+		}, nil
+	}
+	treeMap, err := e.GetTreeMap(ctx, baseObj.Tree)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	return c.Tree, files, nil
+	changedSet := make(map[string]struct{})
+	for _, delPath := range deletes {
+		if _, existed := treeMap[delPath]; existed {
+			delete(treeMap, delPath)
+			changedSet[delPath] = struct{}{}
+		}
+	}
+	for _, mf := range puts {
+		blobHash := store.HashObject(store.KindBlob, mf.Data)
+		oldEnt, existed := treeMap[mf.Path]
+		if !existed || oldEnt.Hash != blobHash || oldEnt.Mode != mf.Mode {
+			if _, err := e.PutBlob(ctx, lineage, mf.Data); err != nil {
+				return nil, err
+			}
+			changedSet[mf.Path] = struct{}{}
+		}
+		treeMap[mf.Path] = TreeEntry{
+			Path: mf.Path,
+			Type: "file",
+			Size: int64(len(mf.Data)),
+			Mode: mf.Mode,
+			Hash: blobHash,
+		}
+	}
+	if len(changedSet) == 0 {
+		return &WorkspaceCommitResult{
+			Changed:      false,
+			Commit:       baseCommit,
+			Tree:         baseObj.Tree,
+			FilesChanged: []string{},
+		}, nil
+	}
+	return e.commitNewTree(ctx, lineage, baseCommit, author, message, treeMap, sortedKeys(changedSet))
 }
 
-// MaterializeCommitToDir writes every file in commitHash's tree cleanly into workspaceDir.
-func (e *Engine) MaterializeCommitToDir(ctx context.Context, commitHash, workspaceDir string) (string, error) {
-	treeHash, files, err := e.LoadCommitFiles(ctx, commitHash)
+// PrepareWorkspaceSnapshot builds tree/blob objects from a full workspace directory snapshot.
+func (e *Engine) PrepareWorkspaceSnapshot(
+	ctx context.Context,
+	lineage, baseCommit, author, message string,
+	snapshot map[string]MaterializedFile,
+) (*WorkspaceCommitResult, error) {
+	baseObj, err := e.GetCommit(ctx, baseCommit)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if err := WriteMaterializedFilesToDir(workspaceDir, files); err != nil {
-		return "", err
+	oldTree, err := e.GetTreeMap(ctx, baseObj.Tree)
+	if err != nil {
+		return nil, err
 	}
-	return treeHash, nil
+
+	newTree := make(map[string]TreeEntry, len(snapshot))
+	changedSet := make(map[string]struct{})
+	for relPath, mf := range snapshot {
+		blobHash := store.HashObject(store.KindBlob, mf.Data)
+		oldEnt, existed := oldTree[relPath]
+		if !existed || oldEnt.Hash != blobHash || oldEnt.Mode != mf.Mode {
+			if _, err := e.PutBlob(ctx, lineage, mf.Data); err != nil {
+				return nil, err
+			}
+			changedSet[relPath] = struct{}{}
+		}
+		newTree[relPath] = TreeEntry{
+			Path: relPath,
+			Type: "file",
+			Size: int64(len(mf.Data)),
+			Mode: mf.Mode,
+			Hash: blobHash,
+		}
+	}
+	for oldPath := range oldTree {
+		if _, stillThere := snapshot[oldPath]; !stillThere {
+			changedSet[oldPath] = struct{}{}
+		}
+	}
+	if len(changedSet) == 0 {
+		return &WorkspaceCommitResult{
+			Changed:      false,
+			Commit:       baseCommit,
+			Tree:         baseObj.Tree,
+			FilesChanged: []string{},
+		}, nil
+	}
+	return e.commitNewTree(ctx, lineage, baseCommit, author, message, newTree, sortedKeys(changedSet))
+}
+
+func sortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (e *Engine) commitNewTree(
+	ctx context.Context,
+	lineage, baseCommit, author, message string,
+	treeMap map[string]TreeEntry,
+	filesChanged []string,
+) (*WorkspaceCommitResult, error) {
+	newTreeHash, err := e.PutTreeMap(ctx, lineage, treeMap)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(author) == "" {
+		author = "vm"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "vm workspace commit"
+	}
+	newCommitHash, err := e.PutCommit(ctx, lineage, CommitObject{
+		Tree:      newTreeHash,
+		Parents:   []string{baseCommit},
+		Author:    author,
+		Message:   message,
+		CreatedAt: e.nowMs(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if filesChanged == nil {
+		filesChanged = []string{}
+	}
+	return &WorkspaceCommitResult{
+		Changed:      true,
+		Commit:       newCommitHash,
+		Tree:         newTreeHash,
+		FilesChanged: filesChanged,
+	}, nil
 }
 
 // WriteMaterializedFilesToDir replaces workspaceDir contents to match files exactly.
@@ -1600,7 +1353,6 @@ func WriteMaterializedFilesToDir(workspaceDir string, files map[string]Materiali
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		return apperr.Internal("mkdir workspace", err)
 	}
-	// Remove files/dirs not present in target tree.
 	entries, err := os.ReadDir(workspaceDir)
 	if err != nil {
 		return apperr.Internal("readdir workspace", err)
@@ -1636,7 +1388,10 @@ func ApplyOpsToDir(workspaceDir string, ops []WorkspaceFileOp) error {
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return apperr.Internal("mkdir move dst", err)
 			}
-			if err := os.Rename(src, dst); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := os.Rename(src, dst); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return apperr.NotFoundf("move source %q does not exist", op.From)
+				}
 				return apperr.Internal("move workspace file", err)
 			}
 		case "delete":
@@ -1659,13 +1414,6 @@ func ApplyOpsToDir(workspaceDir string, ops []WorkspaceFileOp) error {
 		}
 	}
 	return nil
-}
-
-type WorkspaceCommitResult struct {
-	Changed      bool     `json:"changed"`
-	Commit       string   `json:"commit"`
-	Tree         string   `json:"tree"`
-	FilesChanged []string `json:"filesChanged"`
 }
 
 // ScanDirFiles walks workspaceDir and collects all regular files as MaterializedFile entries.
@@ -1717,11 +1465,7 @@ func ScanDirFiles(workspaceDir string) (map[string]MaterializedFile, error) {
 			mode = ExecFileMode
 		}
 		normRel := path.Clean(relSlash)
-		files[normRel] = MaterializedFile{
-			Path: normRel,
-			Mode: mode,
-			Data: data,
-		}
+		files[normRel] = MaterializedFile{Path: normRel, Mode: mode, Data: data}
 		return nil
 	})
 	if err != nil {
@@ -1730,86 +1474,173 @@ func ScanDirFiles(workspaceDir string) (map[string]MaterializedFile, error) {
 	return files, nil
 }
 
-// PrepareWorkspaceSnapshot builds immutable objects for a workspace checkpoint.
-// The caller publishes the result after any other data it needs is ready.
-func (e *Engine) PrepareWorkspaceSnapshot(
-	ctx context.Context,
-	lineage, baseCommit, author, message string,
-	snapshot map[string]MaterializedFile,
-) (*WorkspaceCommitResult, error) {
-	baseObj, err := e.GetCommit(ctx, baseCommit)
+// DirReadFile reads a single file from a live workspace directory on disk.
+func DirReadFile(workspaceDir, commitHash, rawPath string, offset, limit int64) (*ReadResponse, error) {
+	normPath, err := NormalizeRelPath(rawPath, false)
 	if err != nil {
 		return nil, err
 	}
-	oldTree, err := e.GetTreeMap(ctx, baseObj.Tree)
+	full := filepath.Join(workspaceDir, filepath.FromSlash(normPath))
+	info, err := os.Lstat(full)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, apperr.NotFoundf("path %q not found", normPath)
+		}
+		return nil, apperr.Internal("stat workspace file", err)
+	}
+	if info.IsDir() || !info.Mode().IsRegular() {
+		return nil, apperr.InvalidRequestf("path %q is not a regular file", normPath)
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return nil, apperr.Internal("read workspace file", err)
+	}
+	mode := DefaultFileMode
+	if info.Mode()&0o111 != 0 {
+		mode = ExecFileMode
+	}
+	return BuildReadResponse(commitHash, normPath, data, mode, offset, limit), nil
+}
+
+// DirListEntries lists files and directories inside a live workspace directory on disk.
+func DirListEntries(workspaceDir, dirPrefix string, recursive bool, glob string) ([]TreeEntry, error) {
+	normDir, err := NormalizeRelPath(dirPrefix, true)
 	if err != nil {
 		return nil, err
 	}
-
-	newTree := make(map[string]TreeEntry, len(snapshot))
-	var filesChanged []string
-
-	for relPath, mf := range snapshot {
-		blobHash := store.HashObject(store.KindBlob, mf.Data)
-		oldEnt, existed := oldTree[relPath]
-		if !existed || oldEnt.Hash != blobHash || oldEnt.Mode != mf.Mode {
-			if _, err := e.PutBlob(ctx, lineage, mf.Data); err != nil {
-				return nil, err
+	if _, err := os.Stat(workspaceDir); errors.Is(err, os.ErrNotExist) {
+		return []TreeEntry{}, nil
+	}
+	var entries []TreeEntry
+	root := workspaceDir
+	if normDir != "" {
+		target := filepath.Join(workspaceDir, filepath.FromSlash(normDir))
+		info, err := os.Lstat(target)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return []TreeEntry{}, nil
 			}
-			filesChanged = append(filesChanged, relPath)
+			return nil, apperr.Internal("stat workspace list path", err)
 		}
-		newTree[relPath] = TreeEntry{
-			Path: relPath,
-			Type: "file",
-			Size: int64(len(mf.Data)),
-			Mode: mf.Mode,
-			Hash: blobHash,
+		if !info.IsDir() {
+			t := "file"
+			if info.Mode()&os.ModeSymlink != 0 {
+				t = "symlink"
+			}
+			mode := DefaultFileMode
+			if info.Mode()&0o111 != 0 {
+				mode = ExecFileMode
+			}
+			return FilterListEntries([]TreeEntry{{Path: normDir, Type: t, Size: info.Size(), Mode: mode}}, normDir, recursive, glob)
 		}
+		root = target
 	}
 
-	for oldPath := range oldTree {
-		if _, stillThere := snapshot[oldPath]; !stillThere {
-			filesChanged = append(filesChanged, oldPath)
+	err = filepath.WalkDir(root, func(full string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-	}
-
-	if len(filesChanged) == 0 {
-		return &WorkspaceCommitResult{
-			Changed:      false,
-			Commit:       baseCommit,
-			Tree:         baseObj.Tree,
-			FilesChanged: []string{},
-		}, nil
-	}
-
-	sort.Strings(filesChanged)
-	newTreeHash, err := e.PutTreeMap(ctx, lineage, newTree)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(author) == "" {
-		author = "vm"
-	}
-	if strings.TrimSpace(message) == "" {
-		message = "vm workspace commit"
-	}
-
-	now := e.nowMs()
-	newCommitHash, err := e.PutCommit(ctx, lineage, CommitObject{
-		Tree:      newTreeHash,
-		Parents:   []string{baseCommit},
-		Author:    author,
-		Message:   message,
-		CreatedAt: now,
+		if full == root {
+			return nil
+		}
+		rel, err := filepath.Rel(workspaceDir, full)
+		if err != nil {
+			return err
+		}
+		relSlash := path.Clean(filepath.ToSlash(rel))
+		if filepath.Base(relSlash) == "lost+found" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			entries = append(entries, TreeEntry{Path: relSlash, Type: "dir", Mode: ExecFileMode})
+			if !recursive {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		t := "file"
+		if info.Mode()&os.ModeSymlink != 0 {
+			t = "symlink"
+		}
+		mode := DefaultFileMode
+		if info.Mode()&0o111 != 0 {
+			mode = ExecFileMode
+		}
+		entries = append(entries, TreeEntry{Path: relSlash, Type: t, Size: info.Size(), Mode: mode})
+		return nil
 	})
 	if err != nil {
+		return nil, apperr.Internal("list workspace dir", err)
+	}
+	return FilterListEntries(entries, normDir, recursive, glob)
+}
+
+// DirGrepFiles searches text files inside a live workspace directory on disk.
+func DirGrepFiles(workspaceDir string, req GrepRequest) ([]GrepMatch, error) {
+	re, err := regexp.Compile(req.Pattern)
+	if err != nil {
+		return nil, apperr.InvalidRequestf("invalid regex pattern: %v", err)
+	}
+	prefix, err := NormalizeRelPath(req.PathPrefix, true)
+	if err != nil {
 		return nil, err
 	}
+	dirOnly := strings.HasSuffix(strings.TrimSpace(req.PathPrefix), "/") && prefix != ""
+	maxMatches := req.MaxMatches
+	if maxMatches <= 0 {
+		maxMatches = 100
+	}
 
-	return &WorkspaceCommitResult{
-		Changed:      true,
-		Commit:       newCommitHash,
-		Tree:         newTreeHash,
-		FilesChanged: filesChanged,
-	}, nil
+	matches := make([]GrepMatch, 0)
+	if _, err := os.Stat(workspaceDir); errors.Is(err, os.ErrNotExist) {
+		return matches, nil
+	}
+	var allPaths []string
+	err = filepath.WalkDir(workspaceDir, func(full string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if full == workspaceDir {
+			return nil
+		}
+		rel, err := filepath.Rel(workspaceDir, full)
+		if err != nil {
+			return err
+		}
+		relSlash := path.Clean(filepath.ToSlash(rel))
+		if relSlash == ".git" || strings.HasPrefix(relSlash, ".git/") || relSlash == "lost+found" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if matchGrepPrefix(relSlash, prefix, dirOnly) {
+			allPaths = append(allPaths, relSlash)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, apperr.Internal("grep workspace dir", err)
+	}
+	sort.Strings(allPaths)
+	for _, relSlash := range allPaths {
+		data, err := os.ReadFile(filepath.Join(workspaceDir, filepath.FromSlash(relSlash)))
+		if err != nil {
+			continue
+		}
+		if GrepTextLines(re, relSlash, data, maxMatches, &matches) {
+			break
+		}
+	}
+	return matches, nil
 }
