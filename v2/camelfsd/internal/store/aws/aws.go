@@ -917,10 +917,19 @@ func (s *AWSStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*st
 		return nil, nil
 	}
 	var payload []byte
-	if b, ok := out.Item["responseJson"].(*ddbtypes.AttributeValueMemberB); ok {
+	if hash := getStr(out.Item, "responseHash"); hash != "" {
+		kind, data, err := s.GetObject(ctx, hash)
+		if err != nil {
+			return nil, apperr.Internal("load exec receipt object", err)
+		}
+		if kind != store.KindExecReceipt {
+			return nil, apperr.Internal("unexpected exec receipt object kind", nil)
+		}
+		payload = data
+	} else if b, ok := out.Item["responseJson"].(*ddbtypes.AttributeValueMemberB); ok {
 		payload = b.Value
-	} else if sv := getStr(out.Item, "responseJson"); sv != "" {
-		payload = []byte(sv)
+	} else {
+		payload = []byte(getStr(out.Item, "responseJson"))
 	}
 	return &store.ExecReceipt{
 		VMID:         vmID,
@@ -930,18 +939,68 @@ func (s *AWSStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*st
 	}, nil
 }
 
-func (s *AWSStore) PutExecReceipt(ctx context.Context, r *store.ExecReceipt) error {
-	_, err := s.ddb.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &s.vmsTable,
-		Item: map[string]ddbtypes.AttributeValue{
-			"PK":           strVal(vmPK(r.VMID)),
-			"SK":           strVal(execSK(r.ExecID)),
-			"responseJson": &ddbtypes.AttributeValueMemberB{Value: r.ResponseJSON},
-			"createdAt":    numVal(r.CreatedAt),
-		},
-	})
-	if err != nil {
-		return apperr.Internal("ddb put exec receipt", err)
+func (s *AWSStore) CompleteExec(ctx context.Context, p store.CompleteExecParams) error {
+	vm := p.VM
+	receipt := p.Receipt
+	item := map[string]ddbtypes.AttributeValue{
+		"PK":        strVal(vmPK(vm.VMID)),
+		"SK":        strVal(execSK(receipt.ExecID)),
+		"createdAt": numVal(receipt.CreatedAt),
+	}
+	// DynamoDB limits each item to 400 KiB. Leave room for the keys and
+	// metadata, and stage larger results as immutable objects.
+	if len(receipt.ResponseJSON) > 390*1024 {
+		hash, err := s.PutObject(ctx, vm.Lineage, store.KindExecReceipt, receipt.ResponseJSON)
+		if err != nil {
+			return apperr.Internal("stage exec receipt object", err)
+		}
+		item["responseHash"] = strVal(hash)
+	} else {
+		item["responseJson"] = &ddbtypes.AttributeValueMemberB{Value: receipt.ResponseJSON}
+	}
+
+	items := []ddbtypes.TransactWriteItem{
+		{Put: &ddbtypes.Put{
+			TableName:           &s.vmsTable,
+			Item:                item,
+			ConditionExpression: aws.String("attribute_not_exists(PK)"),
+		}},
+		{Put: &ddbtypes.Put{
+			TableName:                &s.vmsTable,
+			Item:                     vmToItem(vm),
+			ConditionExpression:      aws.String("#state = :running AND headCommit = :base AND leaseEpoch = :epoch"),
+			ExpressionAttributeNames: map[string]string{"#state": "state"},
+			ExpressionAttributeValues: map[string]ddbtypes.AttributeValue{
+				":running": strVal("running"),
+				":base":    strVal(p.BaseCommit),
+				":epoch":   numVal(vm.LeaseEpoch),
+			},
+		}},
+	}
+	refKey := map[string]ddbtypes.AttributeValue{"PK": strVal(linPK(vm.Lineage)), "SK": strVal(refSK(vm.Ref))}
+	refCondition := aws.String("#commit = :base AND leaseHolder = :holder AND leaseEpoch = :epoch")
+	refNames := map[string]string{"#commit": "commit"}
+	refValues := map[string]ddbtypes.AttributeValue{
+		":base": strVal(p.BaseCommit), ":holder": strVal(vm.Holder), ":epoch": numVal(vm.LeaseEpoch),
+	}
+	if vm.HeadCommit == p.BaseCommit {
+		items = append(items, ddbtypes.TransactWriteItem{ConditionCheck: &ddbtypes.ConditionCheck{
+			TableName: &s.reposTable, Key: refKey, ConditionExpression: refCondition,
+			ExpressionAttributeNames: refNames, ExpressionAttributeValues: refValues,
+		}})
+	} else {
+		refNames["#tree"] = "tree"
+		refValues[":head"], refValues[":tree"], refValues[":now"] = strVal(vm.HeadCommit), strVal(p.Tree), numVal(receipt.CreatedAt)
+		items = append(items, ddbtypes.TransactWriteItem{Update: &ddbtypes.Update{
+			TableName: &s.reposTable, Key: refKey, ConditionExpression: refCondition,
+			UpdateExpression:         aws.String("SET #commit = :head, #tree = :tree, updatedAt = :now"),
+			ExpressionAttributeNames: refNames, ExpressionAttributeValues: refValues,
+		}})
+	}
+	if _, err := s.ddb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: items}); err != nil {
+		// This is an uncertain exec outcome for the caller even if a
+		// condition failed. The command has already reached the guest.
+		return apperr.Internal("ddb complete exec", err)
 	}
 	return nil
 }

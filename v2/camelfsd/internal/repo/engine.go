@@ -1702,14 +1702,11 @@ func ScanDirFiles(workspaceDir string) (map[string]MaterializedFile, error) {
 	return files, nil
 }
 
-// CommitSnapshotIfChanged diffs a workspace file snapshot against baseCommit's tree and,
-// if anything changed, uploads new/modified blobs, creates a commit, and updates (lineage, ref).
-func (e *Engine) CommitSnapshotIfChanged(
+// PrepareWorkspaceSnapshot builds immutable objects for a workspace checkpoint.
+// The caller publishes the result after any other data it needs is ready.
+func (e *Engine) PrepareWorkspaceSnapshot(
 	ctx context.Context,
-	lineage, ref, holder string,
-	expectedEpoch int64,
-	baseCommit string,
-	author, message string,
+	lineage, baseCommit, author, message string,
 	snapshot map[string]MaterializedFile,
 ) (*WorkspaceCommitResult, error) {
 	baseObj, err := e.GetCommit(ctx, baseCommit)
@@ -1763,11 +1760,7 @@ func (e *Engine) CommitSnapshotIfChanged(
 		return nil, err
 	}
 	if strings.TrimSpace(author) == "" {
-		if holder != "" {
-			author = "agent:" + holder
-		} else {
-			author = "vm"
-		}
+		author = "vm"
 	}
 	if strings.TrimSpace(message) == "" {
 		message = "vm workspace commit"
@@ -1780,20 +1773,6 @@ func (e *Engine) CommitSnapshotIfChanged(
 		Author:    author,
 		Message:   message,
 		CreatedAt: now,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = e.store.SetRef(ctx, store.SetRefParams{
-		Lineage:        lineage,
-		Ref:            ref,
-		Commit:         newCommitHash,
-		Tree:           newTreeHash,
-		ExpectedCommit: baseCommit,
-		Holder:         holder,
-		ExpectedEpoch:  expectedEpoch,
-		NowMs:          now,
 	})
 	if err != nil {
 		return nil, err

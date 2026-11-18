@@ -3,6 +3,8 @@ package vm
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -432,9 +434,6 @@ func (m *Manager) Exec(
 	}
 
 	startTime := time.Now()
-	vmRec.LastActiveAt = m.nowMs()
-	_ = m.store.UpdateVM(ctx, vmRec)
-
 	drvRes, err := m.driver.Exec(ctx, DriverExecRequest{
 		VMID:     vmID,
 		ExecID:   execID,
@@ -449,17 +448,30 @@ func (m *Manager) Exec(
 		return nil, false, err
 	}
 
-	durationMs := time.Since(startTime).Milliseconds()
-	if durationMs < 1 {
-		durationMs = 1
+	resp, err := m.completeExec(ctx, vmRec, execID, req, drvRes, time.Since(startTime))
+	if err != nil {
+		// The guest may have changed its disk. Discard that VM so a later
+		// command or clean stop cannot publish an unfinished checkpoint.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		return nil, false, apperr.Internal("finalize exec", errors.Join(err, m.discardExecVM(cleanup, vmID)))
 	}
+	return resp, false, nil
+}
+
+func (m *Manager) completeExec(
+	ctx context.Context, vmRec *store.VMRecord, execID string, req ExecRequest,
+	drvRes *DriverExecResult, elapsed time.Duration,
+) (*ExecResponse, error) {
+	durationMs := max(elapsed.Milliseconds(), 1)
+	baseCommit := vmRec.HeadCommit
 
 	var commitRes repo.WorkspaceCommitResult
 	skipCommit := req.Commit != nil && req.Commit.Skip
 	if skipCommit {
 		headObj, err := m.repo.GetCommit(ctx, vmRec.HeadCommit)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		commitRes = repo.WorkspaceCommitResult{
 			Changed:      false,
@@ -468,9 +480,9 @@ func (m *Manager) Exec(
 			FilesChanged: []string{},
 		}
 	} else {
-		snapshot, err := m.driver.SnapshotWorkspace(ctx, vmID)
+		snapshot, err := m.driver.SnapshotWorkspace(ctx, vmRec.VMID)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		author := "agent:" + vmRec.Holder
 		msg := "bash: " + truncateCmd(req.Command, 72)
@@ -482,34 +494,18 @@ func (m *Manager) Exec(
 				msg = req.Commit.Message
 			}
 		}
-		cr, err := m.repo.CommitSnapshotIfChanged(
-			ctx,
-			vmRec.Lineage,
-			vmRec.Ref,
-			vmRec.Holder,
-			vmRec.LeaseEpoch,
-			vmRec.HeadCommit,
-			author,
-			msg,
-			snapshot,
-		)
+		cr, err := m.repo.PrepareWorkspaceSnapshot(ctx, vmRec.Lineage, baseCommit, author, msg, snapshot)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		commitRes = *cr
-		if commitRes.Changed {
-			vmRec.HeadCommit = commitRes.Commit
-		}
 	}
 
 	now := m.nowMs()
-	billableMs := durationMs
+	vmRec.HeadCommit = commitRes.Commit
 	vmRec.LastActiveAt = now
 	vmRec.TotalDurationMs += durationMs
-	vmRec.BilledMs += billableMs
-	if err := m.store.UpdateVM(ctx, vmRec); err != nil {
-		return nil, false, err
-	}
+	vmRec.BilledMs += durationMs
 
 	resp := &ExecResponse{
 		ExecID:     execID,
@@ -519,18 +515,58 @@ func (m *Manager) Exec(
 		Cwd:        drvRes.Cwd,
 		TimedOut:   drvRes.TimedOut,
 		DurationMs: durationMs,
-		BillableMs: billableMs,
+		BillableMs: durationMs,
 		Commit:     commitRes,
 	}
-	if raw, err := json.Marshal(resp); err == nil {
-		_ = m.store.PutExecReceipt(ctx, &store.ExecReceipt{
-			VMID:         vmID,
-			ExecID:       execID,
-			ResponseJSON: raw,
-			CreatedAt:    now,
-		})
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return nil, apperr.Internal("marshal exec receipt", err)
 	}
-	return resp, false, nil
+	if err := m.store.CompleteExec(ctx, store.CompleteExecParams{
+		VM: vmRec, BaseCommit: baseCommit, Tree: commitRes.Tree,
+		Receipt: store.ExecReceipt{VMID: vmRec.VMID, ExecID: execID, ResponseJSON: raw, CreatedAt: now},
+	}); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (m *Manager) discardExecVM(ctx context.Context, vmID string) error {
+	stopErr := m.driver.Stop(ctx, vmID)
+	rec, err := m.store.GetVM(ctx, vmID)
+	if err != nil {
+		return errors.Join(stopErr, err)
+	}
+	if rec.State != "running" {
+		return stopErr
+	}
+	return errors.Join(stopErr, retireLostVM(ctx, m.store, rec))
+}
+
+func retireLostVM(ctx context.Context, st store.Store, rec *store.VMRecord) error {
+	lease, err := st.LeaseRef(ctx, store.LeaseRefParams{
+		Lineage: rec.Lineage, Ref: rec.Ref, Holder: rec.Holder,
+		Release: true, ExpectedEpoch: rec.LeaseEpoch, NowMs: time.Now().UnixMilli(),
+	})
+	if err != nil && !apperr.IsCode(err, apperr.CodeNotFound) {
+		return fmt.Errorf("release lease for lost VM %s: %w", rec.VMID, err)
+	}
+	// Completion checks the same ref lease, so any in-flight transaction
+	// has either won by now or cannot commit. Reload the VM after releasing
+	// the lease to retain the winning transaction's accounting and head.
+	fresh, err := st.GetVM(ctx, rec.VMID)
+	if err != nil {
+		return fmt.Errorf("read lost VM %s: %w", rec.VMID, err)
+	}
+	if lease != nil && fresh.HeadCommit == rec.HeadCommit {
+		fresh.HeadCommit = lease.Commit
+	}
+	fresh.LeaseExpiresAt = 0
+	fresh.State = store.VMStateLost
+	if err := st.UpdateVM(ctx, fresh); err != nil {
+		return fmt.Errorf("retire lost VM %s: %w", rec.VMID, err)
+	}
+	return nil
 }
 
 func (m *Manager) RenewLease(ctx context.Context, vmID string, req RenewLeaseRequest) (*RenewLeaseResponse, error) {
@@ -605,12 +641,20 @@ func (m *Manager) stopLocked(ctx context.Context, vmID string) (*StopVMResponse,
 	if err != nil {
 		return nil, err
 	}
-	cr, err := m.repo.CommitSnapshotIfChanged(ctx, vmRec.Lineage, vmRec.Ref, vmRec.Holder,
-		vmRec.LeaseEpoch, vmRec.HeadCommit, "agent:"+vmRec.Holder, "vm stop: final workspace sync", snapshot)
+	cr, err := m.repo.PrepareWorkspaceSnapshot(ctx, vmRec.Lineage, vmRec.HeadCommit,
+		"agent:"+vmRec.Holder, "vm stop: final workspace sync", snapshot)
 	if err != nil {
 		return nil, err
 	}
 	if cr.Changed {
+		_, err := m.store.SetRef(ctx, store.SetRefParams{
+			Lineage: vmRec.Lineage, Ref: vmRec.Ref, Holder: vmRec.Holder,
+			ExpectedEpoch: vmRec.LeaseEpoch, ExpectedCommit: vmRec.HeadCommit,
+			Commit: cr.Commit, Tree: cr.Tree, NowMs: m.nowMs(),
+		})
+		if err != nil {
+			return nil, err
+		}
 		vmRec.HeadCommit = cr.Commit
 		if err := m.store.UpdateVM(ctx, vmRec); err != nil {
 			return nil, err

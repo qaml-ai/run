@@ -159,7 +159,7 @@ Finds the running VM for `(lineage, ref)` when `holder` matches, or starts one f
 ```
 
 ### `POST /v1/vms/{vmId}/exec`
-Runs `command` in the VM's **persistent bash shell** (preserving `cwd` and exported environment variables across calls!) and **atomically commits any `/workspace` changes** to `ref` before returning. Idempotent by `execId`.
+Runs `command` in the VM's **persistent bash shell** (preserving `cwd` and exported environment variables across calls!) and publishes any `/workspace` changes, updated VM accounting, and the execution receipt in one transaction before returning. Idempotent by `execId`.
 - Request:
 ```json
 {

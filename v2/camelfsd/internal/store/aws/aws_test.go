@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -275,6 +278,7 @@ func TestAWSStoreTwoTableAndS3Backend(t *testing.T) {
 		Lineage:        "lin_aws",
 		Ref:            "refs/heads/main",
 		Holder:         "agt_1",
+		LeaseEpoch:     lease.Epoch,
 		State:          "running",
 		HeadCommit:     "c1",
 		LeaseExpiresAt: nowMs + 60_000,
@@ -289,13 +293,11 @@ func TestAWSStoreTwoTableAndS3Backend(t *testing.T) {
 	}
 
 	// Exec receipt roundtrip
-	if err := st.PutExecReceipt(ctx, &store.ExecReceipt{
-		VMID:         "vm_1",
-		ExecID:       "exec_1",
-		ResponseJSON: []byte(`{"exitCode":0}`),
-		CreatedAt:    nowMs,
+	if err := st.CompleteExec(ctx, store.CompleteExecParams{
+		VM: vm1, BaseCommit: vm1.HeadCommit, Tree: "t1",
+		Receipt: store.ExecReceipt{VMID: vm1.VMID, ExecID: "exec_1", ResponseJSON: []byte(`{"exitCode":0}`), CreatedAt: nowMs},
 	}); err != nil {
-		t.Fatalf("PutExecReceipt: %v", err)
+		t.Fatalf("CompleteExec: %v", err)
 	}
 	// Recovery can replace the VM on a ref while retaining the previous VM's receipts.
 	vm1.State = store.VMStateLost
@@ -317,4 +319,122 @@ func TestAWSStoreTwoTableAndS3Backend(t *testing.T) {
 	if err != nil || rcpt == nil || string(rcpt.ResponseJSON) != `{"exitCode":0}` {
 		t.Fatalf("GetExecReceipt mismatch: %+v err=%v", rcpt, err)
 	}
+}
+
+func TestCompleteExecDynamoDBLocal(t *testing.T) {
+	endpoint := os.Getenv("CAMELFS_DDB_LOCAL")
+	if endpoint == "" {
+		t.Skip("CAMELFS_DDB_LOCAL is unset")
+	}
+	ctx := t.Context()
+	client := dynamodb.New(dynamodb.Options{
+		BaseEndpoint: aws.String(endpoint), Region: "us-east-1",
+		Credentials: credentials.NewStaticCredentialsProvider("localtest", "localtest", ""),
+	})
+	createTable := func(prefix string) string {
+		t.Helper()
+		name := store.RandomID(prefix)
+		_, err := client.CreateTable(ctx, &dynamodb.CreateTableInput{
+			TableName: aws.String(name), BillingMode: ddbtypes.BillingModePayPerRequest,
+			AttributeDefinitions: []ddbtypes.AttributeDefinition{
+				{AttributeName: aws.String("PK"), AttributeType: ddbtypes.ScalarAttributeTypeS},
+				{AttributeName: aws.String("SK"), AttributeType: ddbtypes.ScalarAttributeTypeS},
+			},
+			KeySchema: []ddbtypes.KeySchemaElement{
+				{AttributeName: aws.String("PK"), KeyType: ddbtypes.KeyTypeHash},
+				{AttributeName: aws.String("SK"), KeyType: ddbtypes.KeyTypeRange},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, err := client.DeleteTable(context.Background(), &dynamodb.DeleteTableInput{TableName: aws.String(name)})
+			if err != nil {
+				t.Errorf("delete test table %s: %v", name, err)
+			}
+		})
+		return name
+	}
+	st, err := awsstore.Open(ctx, awsstore.Config{
+		Bucket: "test", ReposTable: createTable("repos"), VMsTable: createTable("vms"),
+		DDB: client, S3: newMemS3(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const lineage, ref, holder = "lin_exec", "refs/heads/main", "agent"
+	now := time.Now().UnixMilli()
+	_, _, _, err = st.CreateLineageIfAbsent(ctx,
+		store.LineageRecord{Lineage: lineage, DefaultRef: ref, CreatedAt: now},
+		store.RefRecord{Lineage: lineage, Name: ref, Commit: "c1", Tree: "t1", UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := st.LeaseRef(ctx, store.LeaseRefParams{Lineage: lineage, Ref: ref, Holder: holder, NowMs: now, TTLMs: 60000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := &store.VMRecord{
+		VMID: "vm_1", Lineage: lineage, Ref: ref, Holder: holder, State: "running",
+		HeadCommit: "c1", LeaseEpoch: lease.Epoch, LeaseExpiresAt: lease.ExpiresAt,
+	}
+	if err := st.CreateRunningVM(ctx, vm); err != nil {
+		t.Fatal(err)
+	}
+	// A result larger than a DynamoDB item is still fully recoverable.
+	payload := bytes.Repeat([]byte("result"), 80_000)
+	vm.HeadCommit, vm.BilledMs = "c2", 14
+	p := store.CompleteExecParams{
+		VM: vm, BaseCommit: "c1", Tree: "t2",
+		Receipt: store.ExecReceipt{VMID: vm.VMID, ExecID: "exec_1", ResponseJSON: payload, CreatedAt: now},
+	}
+	if err := st.CompleteExec(ctx, p); err != nil {
+		t.Fatalf("complete exec: %v", err)
+	}
+	assertCommitted := func() {
+		t.Helper()
+		gotRef, err := st.GetRef(ctx, lineage, ref, now)
+		if err != nil || gotRef.Commit != "c2" || gotRef.Tree != "t2" {
+			t.Fatalf("expected ref c2/t2, got %+v: %v", gotRef, err)
+		}
+		gotVM, err := st.GetVM(ctx, vm.VMID)
+		if err != nil || gotVM.HeadCommit != "c2" || gotVM.BilledMs != 14 {
+			t.Fatalf("expected VM at c2 with 14 billed ms, got %+v: %v", gotVM, err)
+		}
+		gotReceipt, err := st.GetExecReceipt(ctx, vm.VMID, "exec_1")
+		if err != nil || gotReceipt == nil || !bytes.Equal(gotReceipt.ResponseJSON, payload) {
+			t.Fatalf("expected original large receipt: %v", err)
+		}
+	}
+	assertCommitted()
+
+	vm.HeadCommit, vm.BilledMs = "c3", 99
+	p.BaseCommit, p.Tree, p.Receipt.ResponseJSON = "c2", "t3", []byte("rejected")
+	if err := st.CompleteExec(ctx, p); err == nil {
+		t.Fatal("duplicate receipt should abort the whole transaction")
+	}
+	assertCommitted()
+
+	// Renew the ref lease without updating the VM. The old VM cannot publish.
+	if _, err := st.LeaseRef(ctx, store.LeaseRefParams{Lineage: lineage, Ref: ref, Holder: holder, NowMs: now, TTLMs: 60000}); err != nil {
+		t.Fatal(err)
+	}
+	p.Receipt.ExecID = "exec_2"
+	if err := st.CompleteExec(ctx, p); err == nil {
+		t.Fatal("stale lease should abort the whole transaction")
+	}
+	assertCommitted()
+	gotReceipt, err := st.GetExecReceipt(ctx, vm.VMID, "exec_2")
+	if err != nil || gotReceipt != nil {
+		t.Fatalf("stale lease published a receipt: %+v, %v", gotReceipt, err)
+	}
+
+	vm.HeadCommit, p.Tree = p.BaseCommit, "t2"
+	p.Receipt.ExecID = "exec_3"
+	if err := st.CompleteExec(ctx, p); err == nil {
+		t.Fatal("stale lease should also fence commands that did not change the workspace")
+	}
+	assertCommitted()
 }

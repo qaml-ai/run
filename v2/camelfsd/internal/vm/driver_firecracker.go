@@ -143,20 +143,8 @@ func (d *FirecrackerDriver) Recover(ctx context.Context, st store.Store) error {
 		if rec.HostID != firecrackerHost {
 			continue
 		}
-		lease, err := st.LeaseRef(ctx, store.LeaseRefParams{
-			Lineage: rec.Lineage, Ref: rec.Ref, Holder: rec.Holder,
-			Release: true, ExpectedEpoch: rec.LeaseEpoch, NowMs: time.Now().UnixMilli(),
-		})
-		if err != nil && !apperr.IsCode(err, apperr.CodeNotFound) {
-			return fmt.Errorf("release lease for lost VM %s: %w", rec.VMID, err)
-		}
-		if lease != nil {
-			rec.HeadCommit = lease.Commit
-		}
-		rec.LeaseExpiresAt = 0
-		rec.State = store.VMStateLost
-		if err := st.UpdateVM(ctx, rec); err != nil {
-			return fmt.Errorf("retire lost VM %s: %w", rec.VMID, err)
+		if err := retireLostVM(ctx, st, rec); err != nil {
+			return err
 		}
 		log.Printf("camelfsd: retired lost Firecracker VM %s", rec.VMID)
 	}

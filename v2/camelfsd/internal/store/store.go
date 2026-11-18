@@ -15,11 +15,12 @@ import (
 type ObjectKind string
 
 const (
-	KindBlob      ObjectKind = "blob"
-	KindTree      ObjectKind = "tree"
-	KindCommit    ObjectKind = "commit"
-	KindDiskMap   ObjectKind = "disk-map"
-	KindDiskChunk ObjectKind = "disk-chunk"
+	KindBlob        ObjectKind = "blob"
+	KindTree        ObjectKind = "tree"
+	KindCommit      ObjectKind = "commit"
+	KindDiskMap     ObjectKind = "disk-map"
+	KindDiskChunk   ObjectKind = "disk-chunk"
+	KindExecReceipt ObjectKind = "exec-receipt"
 )
 
 type LineageRecord struct {
@@ -104,6 +105,15 @@ type ExecReceipt struct {
 	CreatedAt    int64
 }
 
+// CompleteExecParams publishes the receipt and updated VM together. The ref
+// advances in the same transaction when VM.HeadCommit differs from BaseCommit.
+type CompleteExecParams struct {
+	VM         *VMRecord
+	BaseCommit string
+	Tree       string
+	Receipt    ExecReceipt
+}
+
 type HostRecord struct {
 	HostID          string            `json:"hostId"`
 	Address         string            `json:"address,omitempty"`
@@ -141,7 +151,7 @@ type VMStore interface {
 	UpdateVM(ctx context.Context, vm *VMRecord) error
 
 	GetExecReceipt(ctx context.Context, vmID, execID string) (*ExecReceipt, error)
-	PutExecReceipt(ctx context.Context, r *ExecReceipt) error
+	CompleteExec(ctx context.Context, p CompleteExecParams) error
 
 	UpsertHost(ctx context.Context, h *HostRecord) error
 	GetHost(ctx context.Context, hostID string) (*HostRecord, error)

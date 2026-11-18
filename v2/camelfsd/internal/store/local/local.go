@@ -854,17 +854,50 @@ func (s *LocalStore) GetExecReceipt(ctx context.Context, vmID, execID string) (*
 	return &r, nil
 }
 
-func (s *LocalStore) PutExecReceipt(ctx context.Context, r *store.ExecReceipt) error {
+func (s *LocalStore) CompleteExec(ctx context.Context, p store.CompleteExecParams) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	_, err := s.db.ExecContext(
-		ctx,
-		`INSERT OR REPLACE INTO exec_receipts(vm_id, exec_id, response_json, created_at) VALUES (?, ?, ?, ?)`,
-		r.VMID, r.ExecID, r.ResponseJSON, r.CreatedAt,
-	)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return apperr.Internal("begin complete exec", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	vm := p.VM
+	receipt := p.Receipt
+	var held int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM refs
+		WHERE lineage = ? AND name = ? AND commit_hash = ? AND lease_holder = ? AND lease_epoch = ?`,
+		vm.Lineage, vm.Ref, p.BaseCommit, vm.Holder, vm.LeaseEpoch).Scan(&held); err != nil {
+		return apperr.Internal("verify exec ref and lease", err)
+	}
+	if vm.HeadCommit != p.BaseCommit {
+		if _, err := tx.ExecContext(ctx, `UPDATE refs SET commit_hash = ?, tree_hash = ?, updated_at = ?
+			WHERE lineage = ? AND name = ?`,
+			vm.HeadCommit, p.Tree, receipt.CreatedAt, vm.Lineage, vm.Ref); err != nil {
+			return apperr.Internal("advance exec ref", err)
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, `UPDATE vms SET head_commit = ?, last_active_at = ?, total_duration_ms = ?, billed_ms = ?
+		WHERE vm_id = ? AND state = 'running' AND head_commit = ? AND lease_epoch = ?`,
+		vm.HeadCommit, vm.LastActiveAt, vm.TotalDurationMs, vm.BilledMs, vm.VMID, p.BaseCommit, vm.LeaseEpoch)
+	if err != nil {
+		return apperr.Internal("update completed exec VM", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return apperr.Internal("exec VM state changed", err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO exec_receipts(vm_id, exec_id, response_json, created_at) VALUES (?, ?, ?, ?)`,
+		vm.VMID, receipt.ExecID, receipt.ResponseJSON, receipt.CreatedAt,
+	); err != nil {
 		return apperr.Internal("put exec receipt", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return apperr.Internal("commit completed exec", err)
 	}
 	return nil
 }
