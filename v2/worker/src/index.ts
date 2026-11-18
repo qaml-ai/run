@@ -707,7 +707,7 @@ app.post("/v2/agents/:idOrKey/runs", async (c) => {
 
 app.get("/v2/agents/:idOrKey/runs/:runId", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
-  return c.json(await stub.getRun(c.req.param("runId")));
+  return c.json(await stub.getRun(c.req.param("runId"), c.req.query("by") === "idempotency-key"));
 });
 
 app.post("/v2/agents/:idOrKey/abort", async (c) => {
@@ -727,7 +727,8 @@ app.get("/v2/agents/:idOrKey/events", async (c) => {
       signal: c.req.raw.signal,
     });
   }
-  const after = c.req.query("after") ? Number(c.req.query("after")) : 0;
+  const cursor = c.req.query("after");
+  const after = cursor === "latest" ? "latest" : cursor ? Number(cursor) : 0;
   const runId = c.req.query("runId") || null;
   return c.json(await stub.getEvents({ after, runId }));
 });
@@ -739,9 +740,15 @@ app.get("/v2/agents/:idOrKey/ws", async (c) => {
 
 app.get("/v2/agents/:idOrKey/history", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
-  const after = c.req.query("after") ? Number(c.req.query("after")) : 0;
+  const afterParam = c.req.query("after");
+  const beforeParam = c.req.query("before");
+  const before = beforeParam === "latest" ? Number.MAX_SAFE_INTEGER : beforeParam === undefined ? undefined : Number(beforeParam);
+  if (before !== undefined && (afterParam !== undefined || !Number.isSafeInteger(before) || before < 1)) {
+    throw new ApiError(400, "invalid_request", "Use either after or before, where before is a positive sequence or latest");
+  }
+  const after = afterParam ? Number(afterParam) : 0;
   const limit = c.req.query("limit") ? Number(c.req.query("limit")) : 50;
-  return c.json(await stub.getHistory({ after, limit }));
+  return c.json(await stub.getHistory({ after, limit, before }));
 });
 
 app.put("/v2/agents/:idOrKey/history/import", async (c) => {
@@ -777,6 +784,11 @@ app.post("/v2/agents/:idOrKey/inputs/:inputId", async (c) => {
     wait?: boolean;
   };
   return c.json(await stub.respondToInput(c.req.param("inputId"), body, auth.kind === "tenant"));
+});
+
+app.get("/v2/agents/:idOrKey/inputs", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
+  return c.json({ runs: await stub.getRunsWithPendingInputs() });
 });
 
 app.post("/v2/agents/:idOrKey/schedules", async (c) => {

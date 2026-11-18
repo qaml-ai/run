@@ -859,6 +859,8 @@ export class AgentDO extends DurableObject<Env> {
     return {
       id: row.id,
       agentId: cfg.id,
+      idempotencyKey: row.idempotency_key,
+      startedAt: row.started_at,
       status: row.status as RunStatus,
       text: row.text,
       output: row.output_json ? JSON.parse(row.output_json) : null,
@@ -1574,9 +1576,25 @@ export class AgentDO extends DurableObject<Env> {
     return this.enqueueOrRunInternal(body, hints);
   }
 
-  async getRun(runId: string): Promise<RunRecord> {
+  async getRun(runId: string, byIdempotencyKey = false): Promise<RunRecord> {
     this.ensureSql();
+    if (byIdempotencyKey) {
+      const row = this.ctx.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM runs WHERE idempotency_key = ?1", runId,
+      ).toArray()[0];
+      if (!row) throw new ApiError(404, "run_not_found", "No run for that idempotency key");
+      return this.materializeRunRecord(row.id);
+    }
     return this.materializeRunRecord(runId);
+  }
+
+  async getRunsWithPendingInputs(): Promise<RunRecord[]> {
+    this.ensureSql();
+    const rows = this.ctx.storage.sql.exec<{ run_id: string }>(
+      "SELECT DISTINCT run_id FROM inputs WHERE status = 'pending' AND expires_at > ?1",
+      Date.now(),
+    ).toArray();
+    return rows.map(row => this.materializeRunRecord(row.run_id));
   }
 
   async abortRuns(body?: { keepQueued?: boolean }): Promise<{
@@ -1612,16 +1630,23 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   async getEvents(opts?: {
-    after?: number;
+    after?: number | "latest";
     runId?: string | null;
   }): Promise<{ events: AgentEventRecord[]; nextAfter: number }> {
+    if (opts?.after === "latest") {
+      this.ensureSql();
+      const row = opts.runId
+        ? this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events WHERE run_id = ?1", opts.runId).one()
+        : this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events").one();
+      return { events: [], nextAfter: row.seq ?? 0 };
+    }
     const after = Math.max(0, Number(opts?.after ?? 0));
     const events = this.fetchStoredEvents(after, opts?.runId ?? null);
     const nextAfter = events.length > 0 ? events[events.length - 1]!.seq : after;
     return { events, nextAfter };
   }
 
-  async getHistory(opts?: { after?: number; limit?: number }): Promise<{
+  async getHistory(opts?: { after?: number; before?: number; limit?: number }): Promise<{
     messages: Array<{
       seq: number;
       runId: string | null;
@@ -1632,10 +1657,13 @@ export class AgentDO extends DurableObject<Env> {
     }>;
     compaction: { id: string; upToSeq: number; summary: string } | null;
     nextAfter: number;
+    nextBefore?: number | null;
   }> {
     this.ensureSql();
     const after = Math.max(0, Number(opts?.after ?? 0));
     const limit = Math.max(1, Math.min(500, Number(opts?.limit ?? 50)));
+    const before = opts?.before;
+    const newest = before !== undefined;
     const rows = this.ctx.storage.sql
       .exec<{
         seq: number;
@@ -1644,8 +1672,14 @@ export class AgentDO extends DurableObject<Env> {
         content_json: string;
         tokens_est: number;
         created_at: number;
-      }>(`SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2`, after, limit)
+      }>(newest
+        ? "SELECT * FROM messages WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
+        : "SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+        newest ? before : after, newest ? limit + 1 : limit)
       .toArray();
+    const hasOlder = newest && rows.length > limit;
+    if (hasOlder) rows.pop();
+    if (newest) rows.reverse();
 
     const messages = rows.map((r) => ({
       seq: r.seq,
@@ -1656,8 +1690,8 @@ export class AgentDO extends DurableObject<Env> {
       createdAt: r.created_at,
     }));
     const compaction = this.buildAdapter().getLatestCompaction();
-    const nextAfter = messages.length > 0 ? messages[messages.length - 1]!.seq : after;
-    return { messages, compaction, nextAfter };
+    const nextAfter = messages.at(-1)?.seq ?? after;
+    return { messages, compaction, nextAfter, ...(newest ? { nextBefore: hasOlder ? rows[0]!.seq : null } : {}) };
   }
 
   async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
@@ -1926,6 +1960,7 @@ export class AgentDO extends DurableObject<Env> {
       JSON.stringify(body?.answer ?? approved),
       inputId,
     );
+    this.recordAndBroadcastEvent(inp.run_id, "input_resolved", { id: inputId, status: newStatus });
 
     const wait = body?.wait !== undefined ? Boolean(body.wait) : true;
 

@@ -441,6 +441,7 @@ async function* streamOpenAiChat(
     stream: true,
     stream_options: { include_usage: true },
   };
+  if (endpoint.providerName === "openrouter") payload.provider = { data_collection: "deny" };
   if (req.temperature !== undefined) payload.temperature = req.temperature;
   if (req.maxOutputTokens !== undefined) payload.max_tokens = req.maxOutputTokens;
 

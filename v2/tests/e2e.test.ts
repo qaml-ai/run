@@ -70,6 +70,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let failNextExec = false;
   let vmBootRequests = 0;
   let lastProviderMessages: Array<{ role: string; content: unknown }> | undefined;
+  let lastProviderOptions: Record<string, unknown> | undefined;
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
 
   before(async () => {
@@ -166,8 +167,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         const body = JSON.parse(rawBody) as {
           model?: string;
           messages?: Array<{ role: string; content: unknown }>;
+          provider?: Record<string, unknown>;
         };
         lastProviderMessages = body.messages;
+        lastProviderOptions = body.provider;
         const lastMsg = body.messages?.[body.messages.length - 1];
         const replyText = `SSE upstream (${body.model ?? "unknown"}) saw ${body.messages?.length ?? 0} messages (last role=${lastMsg?.role ?? "none"})`;
         res.writeHead(200, {
@@ -578,11 +581,19 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(paused.status, "input_required");
     assert.equal(refunded, false);
     assert.equal(paused.inputs.length, 1);
+    const runHeaders = { Authorization: "Bearer " + apiKey };
+    const getPending = async () => {
+      const response = await fetch(`${workerUrl}/v2/agents/${billingAgent.id}/inputs`, { headers: runHeaders });
+      assert.equal(response.status, 200);
+      return await response.json() as { runs: Array<{ id: string }> };
+    };
+    assert.deepEqual((await getPending()).runs.map(run => run.id), [paused.id]);
 
     const resumed = await billingAgent.answerInput(paused.inputs[0]!.id, { approved: true });
     assert.equal(resumed.status, "completed");
     assert.equal(refunded, true);
     assert.match(resumed.text, /45/);
+    assert.deepEqual((await getPending()).runs, []);
 
     // Also test ask_human question -> answer -> completion
     const asked = await billingAgent.run(`Ask deploy window [CALL:ask_human {"question":"Deploy now?"}]`);
@@ -631,11 +642,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const idem1 = await agent.run("Count once", { idempotencyKey: "idem-key-1" });
     const idem2 = await agent.run("Count once", { idempotencyKey: "idem-key-1" });
     assert.equal(idem1.id, idem2.id);
+    assert.equal((await agent.getRunByKey("idem-key-1")).id, idem1.id);
 
     // Compaction summarizes history while preserving full /history
     await agent.compact();
     const history = await agent.history();
     assert.ok(history.length >= 4);
+    const latest = await agent.history({ before: "latest", limit: 2 });
+    assert.deepEqual(latest, history.slice(-2));
+    assert.deepEqual(await agent.history({ before: latest[0]!.seq!, limit: 2 }), history.slice(-4, -2));
 
     // Fork creates an independent agent + forked camelfs repo
     const forked = await agent.fork({ key: "lead-agent-fork" });
@@ -891,6 +906,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(sseRun.usage.outputTokens, 10);
     // 18 * $0.10/1M + 10 * $0.50/1M = $0.0000068
     assert.equal(sseRun.usage.costUsd, 0.0000068);
+    assert.deepEqual(lastProviderOptions, { data_collection: "deny" });
 
     const assets = await camel.repos.create({ name: "attachments" });
     const originalImage = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmfQAAAAASUVORK5CYII=";

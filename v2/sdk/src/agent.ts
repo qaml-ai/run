@@ -216,6 +216,10 @@ export class AgentHandle {
     return this.transport.requestJson("GET", `${this.basePath}/runs/${encodeURIComponent(runId)}`);
   }
 
+  getRunByKey<TOutput = unknown>(idempotencyKey: string): Promise<RunRecord<TOutput>> {
+    return this.transport.requestJson("GET", `${this.basePath}/runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`);
+  }
+
   abort(options?: { keepQueued?: boolean }): Promise<{ aborted: boolean; [key: string]: unknown }> {
     return this.transport.requestJson("POST", `${this.basePath}/abort`, { keepQueued: options?.keepQueued });
   }
@@ -225,8 +229,8 @@ export class AgentHandle {
     return this.transport.requestJson("POST", `${this.basePath}/inputs/${encodeURIComponent(inputId)}`, payload);
   }
 
-  async history(options?: { after?: number; limit?: number }): Promise<HistoryMessage[]> {
-    const res = await this.transport.requestJson("GET", `${this.basePath}/history${buildQuery({ after: options?.after, limit: options?.limit })}`);
+  async history(options?: { after?: number; before?: number | "latest"; limit?: number }): Promise<HistoryMessage[]> {
+    const res = await this.transport.requestJson("GET", `${this.basePath}/history${buildQuery({ after: options?.after, before: options?.before, limit: options?.limit })}`);
     return unwrapArray<HistoryMessage>(res, "messages", "history");
   }
 
