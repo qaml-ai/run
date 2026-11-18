@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import boto3
 from botocore.config import Config
@@ -57,12 +57,20 @@ class Volume:
         return data
 
     def save_blocks(self, unique):
-        def upload(item):
-            key, data = item
-            self.put("blocks/" + key, data)
+        self.upload_blocks(unique.items())
 
-        with ThreadPoolExecutor(max_workers=8) as workers:
-            list(workers.map(upload, unique.items()))
+    def upload_blocks(self, items):
+        concurrency = 8
+        with ThreadPoolExecutor(max_workers=concurrency) as workers:
+            pending = set()
+            for key, data in items:
+                pending.add(workers.submit(self.put, "blocks/" + key, data))
+                if len(pending) >= 2 * concurrency:
+                    completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for task in completed:
+                        task.result()
+            for task in pending:
+                task.result()
 
     def save_map(self, blocks):
         data = encode(blocks)
@@ -82,23 +90,24 @@ class Volume:
 
 def snapshot(volume, base, dirty_dir):
     blocks = base.copy()
-    new = {}
     known = set(base)
     uploaded = 0
-    for path in dirty_dir.iterdir():
-        i = int(path.name)
-        data = path.read_bytes()
-        if len(data) != CHUNK:
-            raise OSError("incomplete dirty block")
-        key = digest(data) if any(data) else None
-        blocks[i] = key
-        if key and key not in known:
-            known.add(key)
-            new[key] = data
-            uploaded += CHUNK
-            if len(new) == 8:
-                volume.save_blocks(new)
-                new.clear()
-    if new:
-        volume.save_blocks(new)
+
+    def changed_blocks():
+        nonlocal uploaded
+        for path in dirty_dir.iterdir():
+            i = int(path.name)
+            if i < 0 or i >= len(blocks):
+                raise OSError("dirty block outside volume")
+            data = path.read_bytes()
+            if len(data) != CHUNK:
+                raise OSError("incomplete dirty block")
+            key = digest(data) if any(data) else None
+            blocks[i] = key
+            if key and key not in known:
+                known.add(key)
+                uploaded += CHUNK
+                yield key, data
+
+    volume.upload_blocks(changed_blocks())
     return blocks, uploaded
