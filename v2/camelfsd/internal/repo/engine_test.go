@@ -347,3 +347,39 @@ func TestRepoThreeWayMergeForkAndLeaseFencing(t *testing.T) {
 		t.Fatalf("forked lineage must survive source deletion: %+v, err=%v", forkRead, err)
 	}
 }
+
+func TestCommitLookupRequiresLineageHistory(t *testing.T) {
+	ctx := context.Background()
+	eng := newTestRepoEngine(t)
+	lineage, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := eng.Write(ctx, lineage.Lineage, repo.WriteRequest{
+		Puts: []repo.WritePut{{Path: "notes.txt", Content: "original"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.Write(ctx, lineage.Lineage, repo.WriteRequest{
+		Puts: []repo.WritePut{{Path: "notes.txt", Content: "updated"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := eng.ResolveCommit(ctx, lineage.Lineage, original.Commit); err != nil {
+		t.Fatalf("old commit in lineage history: %v", err)
+	}
+
+	other, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{TenantID: "tenant-b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := eng.ResolveCommit(ctx, other.Lineage, original.Commit); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected commit outside lineage history to be absent, got %v", err)
+	}
+	if _, err := eng.SetRef(ctx, other.Lineage, repo.SetRefRequest{
+		Ref: "refs/heads/version", Commit: original.Commit,
+	}); !apperr.IsCode(err, apperr.CodeNotFound) {
+		t.Fatalf("expected ref targeting a commit outside lineage history to be rejected, got %v", err)
+	}
+}

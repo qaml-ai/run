@@ -145,7 +145,15 @@ export interface AgentSummary {
 
 export type RunStatus = "queued" | "running" | "input_required" | "completed" | "failed" | "cancelled";
 
+/** A file already written to the agent's repository. */
+export interface RunFile {
+  path: string;
+  commit: string;
+  contentType: string;
+}
+
 export interface RunOptions {
+  files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
   wait?: boolean;

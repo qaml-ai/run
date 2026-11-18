@@ -174,8 +174,20 @@ export interface RunRecord {
   error: RunErrorShape | null;
 }
 
+export interface RunFile {
+  path: string;
+  commit: string;
+  contentType: string;
+}
+
+export interface StoredRunFile extends RunFile {
+  lineage: string;
+  size: number;
+}
+
 export interface StartRunInput {
   prompt: string;
+  files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
   wait?: boolean;
@@ -201,6 +213,7 @@ export interface ToolCallInvocation {
 
 export interface StoredMessageContent {
   text?: string;
+  files?: StoredRunFile[];
   toolCalls?: ToolCallInvocation[];
   toolCallId?: string;
   toolName?: string;

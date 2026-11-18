@@ -76,11 +76,12 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
   files: [
     {
       name: "read_file",
-      description: "Read file contents from the agent repository.",
+      description: "Read file contents from the agent repository, optionally at an attachment’s commit.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "Relative file path in the repo" },
+          at: { type: "string", description: "Ref or commit of the file version to read" },
           offset: { type: "number" },
           limit: { type: "number" },
         },

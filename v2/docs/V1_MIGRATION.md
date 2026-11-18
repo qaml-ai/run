@@ -70,8 +70,20 @@ configure its MCP server with `auth: { type: "runtime" }`, the app's audience,
 and the allowed tool names. The application still checks bot ownership and
 the agent mapping before dispatching a tool.
 
-The live canary still needs app routing, shared draft access, attachment import
-and delivery, tool-driven forms, and a common credit authority. Keep the
-existing balances, daily allowances, and expiring lots authoritative for both
-versions. Verify that each accepted call charges once and a refused call
-uses neither the provider nor the other runtime.
+## Send new attachments
+
+Write the attachment to the agent's repository with `repos.write`. Pass the
+resulting commit and the file path and media type as a `files` entry on
+`agent.run`, `agent.submit`, or `agent.stream`. The reference is saved with the
+queued turn. The agent receives the path and commit for reading the exact
+version with `read_file` and receives supported images as model input. The
+history API retains the references. Keep attachments reachable in the
+repository. Large images are rejected before the turn is added to history.
+Older images outside the model request budget remain readable by their
+path and commit.
+
+The live canary still needs app routing, shared draft access, import of
+historical attachments, tool-driven forms, and a common credit authority.
+Keep the existing balances, daily allowances, and expiring lots
+authoritative for both versions. Verify that each accepted call charges
+once and a refused call uses neither the provider nor the other runtime.

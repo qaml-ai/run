@@ -116,7 +116,7 @@ export class AgentHandle {
     const wait = options?.wait ?? true;
     let rec = await this.transport.requestJson<RunRecord<TOutput>>(
       "POST", `${this.basePath}/runs`,
-      { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
       { signal: options?.signal },
     );
     if (wait) {
@@ -138,11 +138,11 @@ export class AgentHandle {
   async submit<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "wait">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
-      { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
       { signal: options?.signal });
   }
 
-  async steer<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "whileRunning">): Promise<RunRecord<TOutput>> {
+  async steer<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "whileRunning" | "files">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
       { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: "steer", ...(options?.wait !== undefined ? { wait: options.wait } : {}), outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },

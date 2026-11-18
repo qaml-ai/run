@@ -69,6 +69,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let workerUrl: string;
   let failNextExec = false;
   let vmBootRequests = 0;
+  let lastProviderMessages: Array<{ role: string; content: unknown }> | undefined;
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
 
   before(async () => {
@@ -166,6 +167,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
           model?: string;
           messages?: Array<{ role: string; content: unknown }>;
         };
+        lastProviderMessages = body.messages;
         const lastMsg = body.messages?.[body.messages.length - 1];
         const replyText = `SSE upstream (${body.model ?? "unknown"}) saw ${body.messages?.length ?? 0} messages (last role=${lastMsg?.role ?? "none"})`;
         res.writeHead(200, {
@@ -857,6 +859,48 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(sseRun.usage.outputTokens, 10);
     // 18 * $0.10/1M + 10 * $0.50/1M = $0.0000068
     assert.equal(sseRun.usage.costUsd, 0.0000068);
+
+    const assets = await camel.repos.create({ name: "attachments" });
+    const originalImage = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+nmfQAAAAASUVORK5CYII=";
+    const attachedVersion = await camel.repos.write(assets.repoId, {
+      puts: [
+        { path: "notes.txt", content: "Original notes" },
+        { path: "image.png", base64: originalImage },
+      ],
+    });
+    await camel.repos.write(assets.repoId, {
+      puts: [{ path: "notes.txt", content: "Revised notes" }],
+      deletes: ["image.png"],
+    });
+    const attachmentAgent = await camel.agents.upsert("attachment-agent", {
+      definition: "sse-assistant",
+      repoId: assets.repoId,
+    });
+    const files = [
+      { path: "notes.txt", commit: attachedVersion.commit, contentType: "text/plain" },
+      { path: "image.png", commit: attachedVersion.commit, contentType: "image/png" },
+    ];
+    const stream = attachmentAgent.stream("Use these specific revisions", { files });
+    for await (const event of stream) assert.ok(event.type);
+    assert.equal((await stream.result).status, "completed");
+    assert.deepEqual(lastProviderMessages?.at(-1)?.content, [
+      { type: "text", text: [
+        "Use these specific revisions",
+        `Workspace attachment "notes.txt" at commit ${attachedVersion.commit} (text/plain, 14 bytes).`,
+        `Workspace attachment "image.png" at commit ${attachedVersion.commit} (image/png, ${Buffer.from(originalImage, "base64").length} bytes).`,
+      ].join("\n") },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${originalImage}` } },
+    ]);
+    assert.equal((await camel.repos.read(assets.repoId, { at: attachedVersion.commit, path: "notes.txt" })).content, "Original notes");
+    const history = await attachmentAgent.history();
+    assert.deepEqual(
+      (history[0]?.content as { files: Array<{ path: string; commit: string }> }).files.map(({ path, commit }) => ({ path, commit })),
+      files.map(({ path, commit }) => ({ path, commit })),
+    );
+    await assert.rejects(attachmentAgent.run("Use this file", {
+      files: [{ ...files[0]!, path: "missing.txt" }],
+    }), /Attachment missing.txt is missing/);
+    assert.equal((await attachmentAgent.history()).length, history.length);
 
     // Schedules CRUD
     const sched = await sseAgent.schedules.create({

@@ -29,6 +29,7 @@ import {
   type RpcStub,
   type RunRecord,
   type RunStatus,
+  type RunFile,
   type RunUsage,
   type ScheduleRecord,
   type StartRunHints,
@@ -36,6 +37,7 @@ import {
   type StoredMessage,
   type ToolCallSummary,
 } from "./types.ts";
+import { parseRunFiles } from "./run-files.ts";
 import { enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
@@ -127,6 +129,10 @@ export class AgentDO extends DurableObject<Env> {
         ended_at INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, started_at ASC);
+      CREATE TABLE IF NOT EXISTS run_files (
+        run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+        files_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS steers (
         id TEXT PRIMARY KEY,
         run_id TEXT,
@@ -931,6 +937,11 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
+    const files = parseRunFiles(body.files);
+    if (files.length > 0 && (whileRunning === "steer" || !cfg.lineage)) {
+      throw new ApiError(400, "invalid_attachments", "Attachments require a queued turn and a configured repository");
+    }
+
     // Mid-turn steering when a run is currently executing!
     if (whileRunning === "steer" && this.activeRunId) {
       this.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
@@ -988,18 +999,27 @@ export class AgentDO extends DurableObject<Env> {
       this.preRunHints.set(runId, hints);
     }
     const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at)
-       VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8)`,
-      runId,
-      idempotencyKey,
-      whileRunning,
-      prompt,
-      body.outputSchema ? JSON.stringify(body.outputSchema) : null,
-      JSON.stringify(emptyUsage()),
-      maxSteps,
-      now,
-    );
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at)
+         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8)`,
+        runId,
+        idempotencyKey,
+        whileRunning,
+        prompt,
+        body.outputSchema ? JSON.stringify(body.outputSchema) : null,
+        JSON.stringify(emptyUsage()),
+        maxSteps,
+        now,
+      );
+      if (files.length > 0) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO run_files (run_id, files_json) VALUES (?1, ?2)`,
+          runId,
+          JSON.stringify({ lineage: cfg.lineage, files }),
+        );
+      }
+    });
 
     this.recordAndBroadcastEvent(runId, "run_queued", {
       runId,
@@ -1122,10 +1142,21 @@ export class AgentDO extends DurableObject<Env> {
         slotAcquired = true;
       }
 
+      const files: Array<{ lineage: string; file: RunFile }> = [];
+      for (const id of [runId, ...batchedFollowerIds]) {
+        const row = this.ctx.storage.sql
+          .exec<{ files_json: string }>(`SELECT files_json FROM run_files WHERE run_id = ?1`, id)
+          .toArray()[0];
+        if (!row) continue;
+        const queued = JSON.parse(row.files_json) as { lineage: string; files: RunFile[] };
+        for (const file of queued.files) files.push({ lineage: queued.lineage, file });
+      }
+
       const adapter = this.buildAdapter();
       const finalRecord = await runAgentTurn(adapter, {
         runId,
         prompt,
+        files,
         outputSchema,
         maxSteps,
         signal: abortController.signal,

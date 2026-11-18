@@ -6,6 +6,7 @@ import {
   streamModelResponse,
   type ConversationMessage,
 } from "./providers.ts";
+import { verifyRunFiles } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -24,6 +25,7 @@ import {
   type PendingInputView,
   type ProviderCredentials,
   type RunRecord,
+  type RunFile,
   type RunUsage,
   type StoredMessage,
   type ToolCallInvocation,
@@ -100,9 +102,16 @@ export function buildConversationMessages(
     });
   }
   for (const m of stored) {
+    const files = m.content.files;
+    const text = files?.length
+      ? [m.content.text, ...files.map((file) =>
+          `Workspace attachment ${JSON.stringify(file.path)} at commit ${file.commit} (${file.contentType}, ${file.size} bytes).`),
+        ].filter(Boolean).join("\n")
+      : m.content.text;
     out.push({
       role: m.role,
-      text: m.content.text,
+      text,
+      files,
       toolCalls: m.content.toolCalls,
       toolCallId: m.content.toolCallId,
       toolName: m.content.toolName,
@@ -305,6 +314,7 @@ export async function runAgentTurn(
   params: {
     runId: string;
     prompt: string;
+    files: Array<{ lineage: string; file: RunFile }>;
     outputSchema: Record<string, unknown> | null;
     maxSteps: number;
     signal: AbortSignal;
@@ -328,6 +338,10 @@ export async function runAgentTurn(
     }
   }
 
+  const files = params.files.length
+    ? await verifyRunFiles(new CamelFsClient(adapter.env, config.tenantId), params.files)
+    : undefined;
+
   // Auto-compact before starting if stored message tokens exceed model-aware threshold
   const autoCompactThreshold = Math.min(
     256_000,
@@ -340,7 +354,7 @@ export async function runAgentTurn(
     await performCompaction(adapter, { keepLast: 4 });
   }
 
-  adapter.appendMessage(params.runId, "user", { text: params.prompt });
+  adapter.appendMessage(params.runId, "user", { text: params.prompt, files });
   adapter.updateRunState(params.runId, { status: "running" });
   adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt });
 
