@@ -4,7 +4,7 @@
  * Readers still read it; no release writes it.
  */
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";
 import { convertToLlm } from "../../src/pi-harness/messages.ts";
 import { contextWrites, SEED_MARKER_KIND, SEED_RECORD_KIND, SESSION_CONVERSATION_ID as conversationId, type SeedMetadata } from "../../src/pi-durable/seed.ts";

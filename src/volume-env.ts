@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { FileError, ExecutionError, LineScanner, type ExecutionEnv, type FileSystem, type FileInfo, type Result, type BinaryReader } from "@earendil-works/pi-durable/env";
 import { type FileEntry, type VolumeService, normalizePath } from "./volumes.ts";
 import { FILE_TOOL_LIMITS, remember, resolve, writable, type ToolContext } from "./volume-tools.ts";
