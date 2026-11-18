@@ -19,7 +19,11 @@ trap 'rm -rf -- "$work"' EXIT
 cp --reflink=auto --sparse=always -- "$base" "$work/rootfs"
 install -m 0755 -- "$init" "$work/init"
 cd "$work"
-debugfs -w -R 'write init /sbin/camelfs-guest-init' rootfs
-debugfs -R 'dump /sbin/camelfs-guest-init installed-init' rootfs
+sbin=/sbin
+if debugfs -R 'stat /sbin' rootfs 2>/dev/null | grep -Eq 'Fast link dest: "/?usr/sbin"'; then
+  sbin=/usr/sbin
+fi
+debugfs -w -R "write init $sbin/camelfs-guest-init" rootfs
+debugfs -R "dump $sbin/camelfs-guest-init installed-init" rootfs
 cmp init installed-init
 ln -- rootfs "$output"
