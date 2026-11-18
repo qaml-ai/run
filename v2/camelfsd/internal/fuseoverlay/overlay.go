@@ -55,10 +55,13 @@ func Mount(ctx context.Context, manifest []TreeEntry, fetcher BlobFetcher, cfg S
 	}
 
 	srv := NewReadOnlyFuseServer(manifest, fetcher, cfg)
-	dev, err := os.OpenFile("/dev/fuse", os.O_RDWR, 0)
+	// Use blocking I/O. Before mount binds the fd, poll reports /dev/fuse as
+	// disconnected, which can make Go's poller reject subsequent reads.
+	fd, err := unix.Open("/dev/fuse", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/fuse: %w", err)
 	}
+	dev := os.NewFile(uintptr(fd), "/dev/fuse")
 
 	sCtx, cancel := context.WithCancel(ctx)
 	s := &MountSession{
@@ -72,7 +75,7 @@ func Mount(ctx context.Context, manifest []TreeEntry, fetcher BlobFetcher, cfg S
 		serveDone: make(chan error, 1),
 	}
 
-	opts := fmt.Sprintf("fd=%d,rootmode=040755,user_id=%d,group_id=%d,default_permissions", dev.Fd(), os.Getuid(), os.Getgid())
+	opts := fmt.Sprintf("fd=%d,rootmode=040755,user_id=%d,group_id=%d,default_permissions", fd, os.Getuid(), os.Getgid())
 	if os.Geteuid() == 0 {
 		opts += ",allow_other"
 	}
