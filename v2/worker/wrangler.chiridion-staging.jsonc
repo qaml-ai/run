@@ -1,0 +1,30 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-v2-chiridion-staging",
+  "main": "src/index.ts",
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "compatibility_date": "2026-03-01",
+  "compatibility_flags": ["nodejs_compat", "enhanced_error_serialization"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": {
+    "CAMELFS_URL": "https://fs-v2.camelai.dev",
+    "DEFAULT_MODEL": "openrouter/openai/gpt-6-luna",
+    "TOOL_IDENTITY_ISSUER": "https://camelrun-v2-chiridion-staging.miguel-85b.workers.dev/v2"
+  },
+  "r2_buckets": [
+    { "binding": "MEDIA_BUCKET", "bucket_name": "camelrun-v2-chiridion-staging-media" }
+  ],
+  "queues": {
+    "producers": [{ "binding": "EVENTS_QUEUE", "queue": "camelrun-v2-chiridion-staging-events" }],
+    "consumers": [{ "queue": "camelrun-v2-chiridion-staging-events", "max_batch_size": 25, "max_batch_timeout": 1, "max_retries": 3 }]
+  },
+  "durable_objects": {
+    "code_update_strategy": { "mode": "deferred", "max_delay": 86400 },
+    "bindings": [
+      { "name": "TENANT_DO", "class_name": "TenantDO" },
+      { "name": "AGENT_DO", "class_name": "AgentDO" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TenantDO", "AgentDO"] }]
+}
