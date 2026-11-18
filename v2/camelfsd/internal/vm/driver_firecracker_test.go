@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -20,7 +19,7 @@ func fetchFramedBlob(t *testing.T, rw io.ReadWriter, hash string) ([]byte, error
 		return nil, err
 	}
 	var hdr [9]byte
-	if _, err := io.ReadFull(bufio.NewReader(rw), hdr[:]); err != nil {
+	if _, err := io.ReadFull(rw, hdr[:]); err != nil {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint64(hdr[1:9])
@@ -36,18 +35,15 @@ func fetchFramedBlob(t *testing.T, rw io.ReadWriter, hash string) ([]byte, error
 	return buf, nil
 }
 
-func TestFirecrackerBlobSocketFraming(t *testing.T) {
+func TestFirecrackerBlobSocketScopesReadsToWorkspace(t *testing.T) {
 	payload := bytes.Repeat([]byte("lazy-fuse-blob-"), 1024)
 	sum := sha256.Sum256(payload)
 	hash := hex.EncodeToString(sum[:])
 
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
-	go serveBlobConn(serverConn, func(_ context.Context, h string) ([]byte, error) {
-		if h == hash {
-			return payload, nil
-		}
-		return nil, os.ErrNotExist
+	go serveBlobConn(serverConn, map[string]struct{}{hash: {}}, func(_ context.Context, _ string) ([]byte, error) {
+		return payload, nil
 	})
 
 	got, err := fetchFramedBlob(t, clientConn, hash)
@@ -58,7 +54,8 @@ func TestFirecrackerBlobSocketFraming(t *testing.T) {
 		t.Fatalf("blob payload mismatch (%d bytes vs %d)", len(got), len(payload))
 	}
 
-	if _, err := fetchFramedBlob(t, clientConn, "deadbeef"); err == nil {
-		t.Fatalf("expected error for missing blob")
+	other := sha256.Sum256([]byte("another workspace"))
+	if _, err := fetchFramedBlob(t, clientConn, hex.EncodeToString(other[:])); err == nil || err.Error() != os.ErrNotExist.Error() {
+		t.Fatalf("expected not found for a blob outside the mounted tree, got %v", err)
 	}
 }
