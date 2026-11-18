@@ -15,9 +15,11 @@ import (
 type ObjectKind string
 
 const (
-	KindBlob   ObjectKind = "blob"
-	KindTree   ObjectKind = "tree"
-	KindCommit ObjectKind = "commit"
+	KindBlob      ObjectKind = "blob"
+	KindTree      ObjectKind = "tree"
+	KindCommit    ObjectKind = "commit"
+	KindDiskMap   ObjectKind = "disk-map"
+	KindDiskChunk ObjectKind = "disk-chunk"
 )
 
 type LineageRecord struct {

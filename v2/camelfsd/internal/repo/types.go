@@ -27,6 +27,7 @@ type TreeEntry struct {
 
 type CommitObject struct {
 	Tree      string   `json:"tree"`
+	Disk      string   `json:"disk,omitempty"`
 	Parents   []string `json:"parents"`
 	Author    string   `json:"author"`
 	Message   string   `json:"message"`

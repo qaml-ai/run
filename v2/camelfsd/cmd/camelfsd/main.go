@@ -8,7 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	awsstore "github.com/qaml-ai/camelrun-next/camelfsd/internal/store/aws"
 	localstore "github.com/qaml-ai/camelrun-next/camelfsd/internal/store/local"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/vm"
+	"github.com/qaml-ai/camelrun-next/camelfsd/internal/workdisk"
 )
 
 func main() {
@@ -36,11 +40,13 @@ func main() {
 		ddbReposTable = flag.String("ddb-repos-table", envOr("CAMELFSD_DDB_REPOS_TABLE", "camelfs-repos"), "DynamoDB table for lineages, refs, and leases")
 		ddbVMsTable   = flag.String("ddb-vms-table", envOr("CAMELFSD_DDB_VMS_TABLE", "camelfs-vms"), "DynamoDB table for VM sessions, exec receipts, and hosts")
 
-		fcBin          = flag.String("firecracker-bin", envOr("CAMELFSD_FC_BIN", "firecracker"), "Path to firecracker binary")
-		fcKernel       = flag.String("firecracker-kernel", os.Getenv("CAMELFSD_FC_KERNEL"), "Path to Firecracker guest kernel image")
-		fcRootfs       = flag.String("firecracker-rootfs", os.Getenv("CAMELFSD_FC_ROOTFS"), "Path to Firecracker guest rootfs ext4 image")
-		fcWorkspaceMiB = flag.Int("firecracker-workspace-mib", 512, "Size in MiB for Firecracker /workspace ext4 image")
-		fcVsockPort    = flag.Int("firecracker-vsock-port", 10000, "Guest agent vsock port inside Firecracker microVM")
+		fcBin             = flag.String("firecracker-bin", envOr("CAMELFSD_FC_BIN", "firecracker"), "Path to firecracker binary")
+		fcKernel          = flag.String("firecracker-kernel", os.Getenv("CAMELFSD_FC_KERNEL"), "Path to Firecracker guest kernel image")
+		fcRootfs          = flag.String("firecracker-rootfs", os.Getenv("CAMELFSD_FC_ROOTFS"), "Path to Firecracker guest rootfs ext4 image")
+		workspaceTemplate = flag.String("workspace-template", os.Getenv("CAMELFSD_WORKSPACE_TEMPLATE"), "Preformatted empty ext4 workspace template")
+		workspaceEditor   = flag.String("workspace-editor", envOr("CAMELFSD_WORKSPACE_EDITOR", "camelfs-workspace-editor"), "Path to the ext4 workspace editor")
+		workspaceNBD      = flag.String("workspace-nbd", os.Getenv("CAMELFSD_WORKSPACE_NBD"), "Comma-separated dedicated Firecracker NBD devices")
+		fcVsockPort       = flag.Int("firecracker-vsock-port", 10000, "Guest agent vsock port inside Firecracker microVM")
 	)
 	flag.Parse()
 
@@ -80,6 +86,27 @@ func main() {
 
 	hostMux := vm.NewHostMux(st, time.Now)
 
+	repoEngine := repo.NewEngine(st, time.Now)
+	var disks *workdisk.Disks
+	if *workspaceTemplate != "" {
+		editor, err := exec.LookPath(*workspaceEditor)
+		if err != nil {
+			log.Fatalf("camelfsd: find workspace editor: %v", err)
+		}
+		editor, err = filepath.Abs(editor)
+		if err != nil {
+			log.Fatalf("camelfsd: locate workspace editor: %v", err)
+		}
+		if err = os.MkdirAll(*dataDir, 0700); err != nil {
+			log.Fatalf("camelfsd: create data directory: %v", err)
+		}
+		disks, err = workdisk.New(ctx, st, *workspaceTemplate, editor, *dataDir)
+		if err != nil {
+			log.Fatalf("camelfsd: import workspace template: %v", err)
+		}
+		repoEngine.UseWorkspaceDisks(disks)
+	}
+
 	var drv vm.Driver
 	switch *vmDriverName {
 	case "local":
@@ -89,12 +116,13 @@ func main() {
 		}
 	case "firecracker":
 		drv, err = vm.NewFirecrackerDriver(vm.FirecrackerConfig{
-			DataDir:          *dataDir,
-			FirecrackerBin:   *fcBin,
-			KernelImagePath:  *fcKernel,
-			RootfsImagePath:  *fcRootfs,
-			WorkspaceSizeMiB: *fcWorkspaceMiB,
-			VsockPort:        *fcVsockPort,
+			DataDir:         *dataDir,
+			FirecrackerBin:  *fcBin,
+			KernelImagePath: *fcKernel,
+			RootfsImagePath: *fcRootfs,
+			Disks:           disks,
+			NBDDevices:      strings.FieldsFunc(*workspaceNBD, func(r rune) bool { return r == ',' }),
+			VsockPort:       *fcVsockPort,
 		})
 		if err != nil {
 			log.Fatalf("camelfsd: init firecracker VM driver: %v", err)
@@ -105,7 +133,6 @@ func main() {
 		log.Fatalf("camelfsd: unsupported --vm-driver %q (expected local|firecracker|remote)", *vmDriverName)
 	}
 
-	repoEngine := repo.NewEngine(st, time.Now)
 	vmMgr := vm.NewManager(vm.ManagerConfig{
 		Store:   st,
 		Repo:    repoEngine,

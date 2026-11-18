@@ -17,11 +17,13 @@ import (
 
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/apperr"
 	"github.com/qaml-ai/camelrun-next/camelfsd/internal/store"
+	"github.com/qaml-ai/camelrun-next/camelfsd/internal/workdisk"
 )
 
 type Engine struct {
 	store store.Store
 	vm    VMCoordinator
+	disks *workdisk.Disks
 	nowFn func() time.Time
 }
 
@@ -116,6 +118,13 @@ func (e *Engine) GetTreeMap(ctx context.Context, hash string) (map[string]TreeEn
 }
 
 func (e *Engine) PutCommit(ctx context.Context, lineage string, c CommitObject) (string, error) {
+	if e.disks != nil && c.Disk == "" {
+		var err error
+		c.Disk, err = e.prepareDisk(ctx, lineage, c)
+		if err != nil {
+			return "", err
+		}
+	}
 	if c.Parents == nil {
 		c.Parents = []string{}
 	}
@@ -288,6 +297,18 @@ func (e *Engine) collectReachableObjects(ctx context.Context, rootCommit string)
 		c, err := e.GetCommit(ctx, ch)
 		if err != nil {
 			return nil, err
+		}
+		if c.Disk != "" && !seenObjects[c.Disk] {
+			if e.disks == nil {
+				return nil, apperr.Internal("workspace disk storage is disabled", nil)
+			}
+			hashes, err := e.disks.Reachable(ctx, c.Disk)
+			if err != nil {
+				return nil, err
+			}
+			for _, hash := range hashes {
+				seenObjects[hash] = true
+			}
 		}
 		if !seenObjects[c.Tree] {
 			seenObjects[c.Tree] = true
@@ -1140,6 +1161,7 @@ func (e *Engine) Restore(ctx context.Context, lineage string, req RestoreRequest
 
 		newCommit, err := e.PutCommit(ctx, lineage, CommitObject{
 			Tree:      targetObj.Tree,
+			Disk:      targetObj.Disk,
 			Parents:   []string{curRef.Commit},
 			Author:    author,
 			Message:   msg,

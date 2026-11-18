@@ -158,8 +158,11 @@ func (m *Manager) WithRefWriteLock(
 	if running.LeaseExpiresAt <= now && running.Holder != holder {
 		vmLk := m.getVMLock(running.VMID)
 		vmLk.Lock()
-		_, _ = m.stopLocked(ctx, running.VMID)
+		_, err := m.stopLocked(ctx, running.VMID)
 		vmLk.Unlock()
+		if err != nil {
+			return err
+		}
 		return fn(nil)
 	}
 
@@ -173,7 +176,10 @@ func (m *Manager) WithRefWriteLock(
 
 	// Re-read VM record under vmLk in case state or headCommit changed.
 	fresh, err := m.store.GetVM(ctx, running.VMID)
-	if err != nil || fresh.State != "running" {
+	if err != nil {
+		return err
+	}
+	if fresh.State != "running" {
 		return fn(nil)
 	}
 	return fn(&liveVMSessionAdapter{mgr: m, vmRec: fresh})
@@ -283,8 +289,11 @@ func (m *Manager) BootOrReuse(ctx context.Context, req BootVMRequest) (*BootVMRe
 			// Expired VM held by previous holder: stop & reap cleanly first.
 			vmLk := m.getVMLock(existing.VMID)
 			vmLk.Lock()
-			_, _ = m.stopLocked(ctx, existing.VMID)
+			_, err := m.stopLocked(ctx, existing.VMID)
 			vmLk.Unlock()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -298,21 +307,24 @@ func (m *Manager) BootOrReuse(ctx context.Context, req BootVMRequest) (*BootVMRe
 		return nil, err
 	}
 
-	// Load files from head commit to materialize /workspace BEFORE starting VM session.
-	_, files, err := m.repo.LoadCommitFiles(ctx, leaseRes.Commit)
-	if err != nil {
-		_, _ = m.repo.LeaseRef(ctx, lineage, repo.LeaseRequest{Ref: ref, Holder: holder, Release: true})
-		return nil, err
-	}
-
 	vmID := store.RandomID("vm")
-	hostID, err := m.driver.Start(ctx, StartSpec{
-		VMID:      vmID,
-		VCPUs:     vcpus,
-		MemoryMiB: memMiB,
-		Env:       req.Env,
-		Files:     files,
-	})
+	spec := StartSpec{VMID: vmID, VCPUs: vcpus, MemoryMiB: memMiB, Env: req.Env}
+	if _, firecracker := m.driver.(*FirecrackerDriver); firecracker {
+		var commit *repo.CommitObject
+		commit, err = m.repo.GetCommit(ctx, leaseRes.Commit)
+		if err == nil {
+			spec.Disk = commit.Disk
+			if spec.Disk == "" {
+				err = apperr.InvalidRequest("commit has no ext4 disk; create a workspace commit with disk storage enabled before starting it")
+			}
+		}
+	} else {
+		_, spec.Files, err = m.repo.LoadCommitFiles(ctx, leaseRes.Commit)
+	}
+	var hostID string
+	if err == nil {
+		hostID, err = m.driver.Start(ctx, spec)
+	}
 	if err != nil {
 		_, _ = m.repo.LeaseRef(ctx, lineage, repo.LeaseRequest{Ref: ref, Holder: holder, Release: true})
 		return nil, err
@@ -586,23 +598,24 @@ func (m *Manager) stopLocked(ctx context.Context, vmID string) (*StopVMResponse,
 	}
 
 	// Commit any dirty uncommitted /workspace files before stopping the VM.
-	if snapshot, snapErr := m.driver.SnapshotWorkspace(ctx, vmID); snapErr == nil {
-		if cr, commitErr := m.repo.CommitSnapshotIfChanged(
-			ctx,
-			vmRec.Lineage,
-			vmRec.Ref,
-			vmRec.Holder,
-			vmRec.LeaseEpoch,
-			vmRec.HeadCommit,
-			"agent:"+vmRec.Holder,
-			"vm stop: final workspace sync",
-			snapshot,
-		); commitErr == nil && cr.Changed {
-			vmRec.HeadCommit = cr.Commit
+	snapshot, err := m.driver.SnapshotWorkspace(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	cr, err := m.repo.CommitSnapshotIfChanged(ctx, vmRec.Lineage, vmRec.Ref, vmRec.Holder,
+		vmRec.LeaseEpoch, vmRec.HeadCommit, "agent:"+vmRec.Holder, "vm stop: final workspace sync", snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if cr.Changed {
+		vmRec.HeadCommit = cr.Commit
+		if err := m.store.UpdateVM(ctx, vmRec); err != nil {
+			return nil, err
 		}
 	}
-
-	_ = m.driver.Stop(ctx, vmID)
+	if err := m.driver.Stop(ctx, vmID); err != nil {
+		return nil, err
+	}
 	_, _ = m.repo.LeaseRef(ctx, vmRec.Lineage, repo.LeaseRequest{
 		Ref:     vmRec.Ref,
 		Holder:  vmRec.Holder,

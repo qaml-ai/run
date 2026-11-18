@@ -13,6 +13,7 @@ type StartSpec struct {
 	MemoryMiB int                              `json:"memoryMiB"`
 	Env       map[string]string                `json:"env,omitempty"`
 	Files     map[string]repo.MaterializedFile `json:"files,omitempty"`
+	Disk      string                           `json:"disk,omitempty"`
 }
 
 type DriverExecRequest struct {
