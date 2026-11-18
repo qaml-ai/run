@@ -1,0 +1,1 @@
+OpenRouter Responses conversations can continue when the provider gives different tool calls the same ID. CamelRun assigns separate IDs when replaying those calls and their results. The saved conversation is preserved.
