@@ -1,6 +1,9 @@
 import { importJWK, SignJWT, type JWK } from "jose";
 import { ApiError, type AgentConfig, type Env } from "./types.ts";
 
+export type ToolApproval = { input: string; by: { id: string }; at: number };
+export type ToolCallIdentity = { runId: string; callId: string; approval?: ToolApproval };
+
 function signingKey(env: Env) {
   if (!env.TOOL_IDENTITY_ISSUER || !env.TOOL_IDENTITY_PRIVATE_JWK) {
     throw new ApiError(503, "tool_identity_unavailable", "Runtime tool identity is not configured");
@@ -22,7 +25,7 @@ export function toolIdentityKeys(env: Env) {
   return { keys: [signingKey(env).publicKey] };
 }
 
-export async function signToolIdentity(env: Env, agent: AgentConfig, audience: string, call?: { runId: string; callId: string }) {
+export async function signToolIdentity(env: Env, agent: AgentConfig, audience: string, call?: ToolCallIdentity) {
   const { issuer, privateKey } = signingKey(env);
   const key = await importJWK(privateKey, "EdDSA");
   return new SignJWT({
@@ -31,6 +34,7 @@ export async function signToolIdentity(env: Env, agent: AgentConfig, audience: s
     ...(agent.definition ? { definition: agent.definition } : {}),
     ...(agent.toolIdentity?.context ? { ctx: agent.toolIdentity.context } : {}),
     ...(call ? { req: call.runId, tcid: call.callId } : {}),
+    ...(call?.approval ? { approval: call.approval } : {}),
   })
     .setProtectedHeader({ alg: "EdDSA", kid: privateKey.kid, typ: "JWT" })
     .setIssuer(issuer)

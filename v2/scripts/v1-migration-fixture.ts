@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { AgentRuntime, nodeListener, type ToolContext } from "../../clients/node.ts";
+import { Type } from "typebox";
+import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../clients/node.ts";
 import { serveTools } from "../../clients/server.ts";
 import { listen, OPERATOR, runtime } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
@@ -13,17 +14,34 @@ export async function rehearseSignedTools(t: TestContext, workerUrl: string, adm
   t.after(() => target.close());
   const audience = "camel-bots:canary:bot";
   const calls: ToolContext[] = [];
-  const url = await listen(t, nodeListener(serveTools({
-    listTools: () => ["echo", "restricted"].map(name => ({ name, inputSchema: { type: "object" } })),
-    async callTool(name, args, context) {
-      assert.equal(name, "echo");
+  const formCalls: ToolContext[] = [];
+  const echo = tool({
+    description: "Echo the fixture", input: Type.Object({ text: Type.String() }),
+    async execute(args, context) {
       assert.deepEqual(args, { text: "hello" });
       calls.push(context);
-      return { content: [{ type: "text", text: "verified tool response" }] };
+      return "verified tool response";
     },
+  });
+  const url = await listen(t, nodeListener(serveTools({
+    echo,
+    guarded: { ...echo, needsApproval: args => args.text === "hello" },
+    restricted: echo,
+    settings: tool({
+      description: "Configure a fixture", input: Type.Object({}), needsApproval: true,
+      async execute(_args, context) {
+        formCalls.push(context);
+        assert.ok(context.identity?.approval);
+        const form = await context.ask("Pick a bot name", {
+          type: "object", properties: { name: { type: "string" } }, required: ["name"],
+        });
+        const done = form && await context.requireUrl("https://bots.camelai.com/connect/fixture", "Finish setup");
+        return done ? `Configured ${form.name}` : "Skipped settings";
+      },
+    }),
   }, { runtime: `${workerUrl}/v2`, tenant: tenantId, audience, metadata: false })));
   const toolIdentity = { subject: "owner", context: { bot: "canary", agent: "default", key: "test" } };
-  const mcp = { name: "bot", url, audience, allowTools: ["echo"], auth: { type: "runtime" as const } };
+  const mcp = { name: "bot", url, audience, allowTools: ["echo", "guarded", "settings"], auth: { type: "runtime" as const } };
   const agent = await target.agents.upsert("tool-canary", { model: "mock/default", toolIdentity, mcpServers: [mcp] });
   const run = await agent.run('Call the signed tool [CALL:bot__echo {"text":"hello"}]');
   assert.match(run.text, /verified tool response/);
@@ -50,6 +68,49 @@ export async function rehearseSignedTools(t: TestContext, workerUrl: string, adm
   const jwks = await (await fetch(`${workerUrl}/v2/.well-known/jwks.json`)).json() as { keys: { kid: string; d?: string }[] };
   assert.equal(jwks.keys[0]?.kid, "tool-fixture");
   assert.equal(jwks.keys[0]?.d, undefined);
+
+  const guarded = await target.agents.upsert("guarded-tool", { model: "mock/default", toolIdentity, mcpServers: [mcp] });
+  const guardedPrompt = 'Call the signed tool [CALL:bot__guarded {"text":"hello"}]';
+  const waiting = await guarded.run(guardedPrompt);
+  assert.equal(waiting.status, "input_required");
+  const inputId = waiting.inputs[0]!.id;
+  assert.equal(calls.length, 1);
+  await assert.rejects(guarded.answerInput(inputId, { answer: "yes" }), /explicitly/);
+  const agentClient = new CamelRun({ baseUrl: workerUrl, apiKey: guarded.agentToken! });
+  t.after(() => agentClient.close());
+  const untrusted = await agentClient.agents.get(guarded.id);
+  await assert.rejects(untrusted.answerInput(inputId, { approved: true }), /tenant credential/);
+  assert.equal((await guarded.answerInput(inputId, { approved: false })).status, "completed");
+  assert.equal(calls.length, 1);
+  const another = await guarded.run(guardedPrompt);
+  assert.equal(another.status, "input_required");
+  const approvedInput = another.inputs[0]!.id;
+  const allowed = await guarded.answerInput(approvedInput, { approved: true });
+  assert.match(allowed.text, /verified tool response/);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]?.identity?.approval?.input, approvedInput);
+  assert.equal(calls[1]?.identity?.approval?.by.id, toolIdentity.subject);
+
+  const settings = await target.agents.upsert("tool-forms", {
+    model: "mock/default", toolIdentity, mcpServers: [mcp],
+  });
+  const approval = (await settings.run("Set up a bot [CALL:bot__settings {}]")).inputs[0]!;
+  assert.equal(formCalls.length, 0);
+  const form = (await settings.answerInput(approval.id, { approved: true })).inputs.find(input => input.status === "pending")!;
+  assert.equal(form.kind, "question");
+  assert.ok(form.prompt && typeof form.prompt === "object");
+  assert.equal(form.prompt.question, "Pick a bot name");
+  await assert.rejects(settings.answerInput(form.id, { answer: "bad form" }), /with an object/);
+  const link = (await settings.answerInput(form.id, { answer: { name: "Kelpie" } })).inputs.find(input => input.status === "pending")!;
+  assert.ok(link.prompt && typeof link.prompt === "object");
+  assert.equal(link.prompt.question, "Finish setup");
+  assert.equal("requestState" in link.prompt, false);
+  const configured = await settings.answerInput(link.id, { approved: true });
+  assert.match(configured.text, /Configured Kelpie/);
+  assert.equal(formCalls.length, 3);
+  assert.equal(new Set(formCalls.map(call => call.idempotencyKey)).size, 1);
+  assert.equal(new Set(formCalls.map(call => call.callId)).size, 3);
+  assert.ok(formCalls.every(call => call.identity?.approval?.input === approval.id));
 }
 
 export async function rehearseMigration(t: TestContext, workerUrl: string, adminKey: string) {
@@ -66,20 +127,31 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
 
   const assistant = { role: "assistant", timestamp: 2, provider: "openrouter", model: "openai/gpt-4o-mini" };
   const seeded = await v1.call("/v1/agents", { body: { initialMessages: [
-    { role: "user", content: "Look up my fixture", timestamp: 1 },
+    { role: "user", content: "Look up my fixture in /workspace/uploads/web/notes.txt", timestamp: 1 },
     { ...assistant, content: [{ type: "toolCall", name: "lookup", id: "lookup-1", arguments: { id: "fixture" } }] },
     { role: "toolResult", toolName: "lookup", toolCallId: "lookup-1", content: [{ type: "text", text: "fixture result" }], timestamp: 3, isError: false },
     { ...assistant, timestamp: 4, content: [{ type: "text", text: "Found the fixture" }] },
   ] } });
   assert.equal(seeded.status, 201, seeded.text);
   const sourceAgent = seeded.json.id as string;
-  const history = await target.agents.upsert("migrated-history", { model: "mock/default" });
-  const copy = (previous?: string) => migrateHistory(v1.base, OPERATOR, sourceAgent, history, previous);
+  const workspace = await target.repos.create({ name: "v1-builder-workspace" });
+  const path = "uploads/web/notes.txt";
+  const { commit } = await target.repos.write(workspace.repoId, { path, content: "v1 attachment bytes" });
+  await target.repos.write(workspace.repoId, { path, content: "changed after attachment" });
+  const history = await target.agents.upsert("migrated-history", { model: "mock/default", repoId: workspace.repoId });
+  const copy = (previous?: string, at = commit) => migrateHistory(v1.base, OPERATOR, sourceAgent, history, previous, [
+    { messageIndex: 0, files: [{ path: `/workspace/${path}`, commit: at, contentType: "text/plain" }] },
+  ]);
+  await assert.rejects(copy(undefined, workspace.commit), /is missing at the specified commit/);
+  assert.deepEqual(await history.history(), []);
   const firstCopy = await copy();
   assert.equal(firstCopy.count, 4);
   assert.deepEqual(await copy(), firstCopy);
-  assert.deepEqual((await history.history()).map(m => (m.content as { meta: { v1: unknown } }).meta.v1),
+  const imported = await history.history();
+  assert.deepEqual(imported.map(m => (m.content as { meta: { v1: unknown } }).meta.v1),
     (await v1.call(`/v1/agents/${sourceAgent}/history`)).json.messages);
+  assert.deepEqual((imported[0]?.content as { files?: unknown } | undefined)?.files, [{ lineage: workspace.lineage, path, commit, contentType: "text/plain", size: 19 }]);
+  assert.equal((await target.repos.read(workspace.repoId, { path, at: commit })).content, "v1 attachment bytes");
   await v1.prompt(sourceAgent, "One turn while the v1 bot is still serving");
   await assert.rejects(copy(), /history import has changed/);
   const finalCopy = await copy(firstCopy.receipt);

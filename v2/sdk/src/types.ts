@@ -152,6 +152,13 @@ export interface RunFile {
   contentType: string;
 }
 
+export interface V1HistoryImport {
+  source: string;
+  messages: unknown[];
+  previous?: string;
+  attachments?: Array<{ messageIndex: number; files: RunFile[] }>;
+}
+
 export interface RunOptions {
   files?: RunFile[];
   idempotencyKey?: string;

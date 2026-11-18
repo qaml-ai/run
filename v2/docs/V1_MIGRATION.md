@@ -57,7 +57,14 @@ a changed conversation, pass the prior receipt after the source turn drains.
 The destination refuses imports after it has activity. The importer preserves
 the original messages, including sender metadata and tool records, and maps
 text and completed tool calls into v2 model context. A missing source page,
-an unanswered tool call, or an attachment makes the import fail before writing.
+an unanswered tool call, or an inline image block makes the import fail before writing.
+
+For attachments stored as workspace files, copy their bytes into the
+destination repository before importing the history. Pass
+`--attachments manifest.json` with a JSON array of entries containing
+`messageIndex` (the zero-based v1 history index) and `files` (each with a
+`path`, `commit`, and `contentType`). The destination checks each file at its
+commit and retains the pinned reference. A missing file fails the whole import.
 
 ## Runtime tool authentication
 
@@ -69,6 +76,13 @@ Set the verified bot owner and context as the agent's `toolIdentity` and
 configure its MCP server with `auth: { type: "runtime" }`, the app's audience,
 and the allowed tool names. The application still checks bot ownership and
 the agent mapping before dispatching a tool.
+
+Signed MCP servers can request tool approval using `needsApproval` in
+`serveTools`. The runtime pauses and signs approval for the original call
+only after a tenant credential submits an affirmative answer. A server can
+also ask for a form or a URL step. Return form fields as an object in `answer`
+or send `approved: false` to decline. The runtime resumes the call with its
+original idempotency key. Keep the tenant credential in the application server.
 
 ## Send new attachments
 
@@ -96,5 +110,5 @@ the canary. The v2 balance check at run start is a spending threshold.
 A run that starts with a positive balance can spend past it. At final
 cutover, carry remaining paid credit over once v1 usage ends.
 
-The live canary also needs app routing, shared draft access, historical
-attachment import and tool-driven forms.
+The live canary also needs app routing, shared draft access, attachment
+manifest generation, and rendering the v2 tool inputs in Camel Bots.

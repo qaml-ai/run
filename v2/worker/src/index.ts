@@ -770,13 +770,13 @@ app.post("/v2/agents/:idOrKey/fork", async (c) => {
 });
 
 app.post("/v2/agents/:idOrKey/inputs/:inputId", async (c) => {
-  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "input");
+  const { auth, stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "input");
   const body = (await c.req.json().catch(() => ({}))) as {
     approved?: boolean;
     answer?: unknown;
     wait?: boolean;
   };
-  return c.json(await stub.respondToInput(c.req.param("inputId"), body));
+  return c.json(await stub.respondToInput(c.req.param("inputId"), body, auth.kind === "tenant"));
 });
 
 app.post("/v2/agents/:idOrKey/schedules", async (c) => {

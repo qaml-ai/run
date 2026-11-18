@@ -1,9 +1,10 @@
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
-import { discoverMcpTools, invokeMcpTool, type DiscoveredMcpTool } from "./mcp.ts";
+import { discoverMcpTools, invokeMcpTool, McpInputRequired, type DiscoveredMcpTool, type McpInputResponse } from "./mcp.ts";
 import { runCodemodeScript } from "./sandbox.ts";
 import { getTenantStub } from "./tenant-do.ts";
+import type { ToolApproval } from "./tool-identity.ts";
 import {
   ApiError,
   extractApiError,
@@ -16,17 +17,30 @@ import {
 } from "./types.ts";
 import { executeAgentWorkflow } from "./workflows.ts";
 
+type McpBinding = {
+  url: string;
+  audience?: string;
+  subject: string;
+};
+
+export type PausedMcpInput = McpBinding & (
+  | { mode: "approval" }
+  | { mode: "form" | "url"; key: string; sealedState?: string }
+);
+
 export class PauseForInputSignal extends Error {
   readonly kind: "approval" | "question";
   readonly toolCallId: string;
   readonly toolName: string;
   readonly promptPayload: Record<string, unknown>;
+  readonly mcpInput?: PausedMcpInput;
 
   constructor(opts: {
     kind: "approval" | "question";
     toolCallId: string;
     toolName: string;
     promptPayload: Record<string, unknown>;
+    mcpInput?: PausedMcpInput;
   }) {
     super(`Paused for human ${opts.kind}`);
     this.name = "PauseForInputSignal";
@@ -34,6 +48,7 @@ export class PauseForInputSignal extends Error {
     this.toolCallId = opts.toolCallId;
     this.toolName = opts.toolName;
     this.promptPayload = opts.promptPayload;
+    this.mcpInput = opts.mcpInput;
   }
 }
 
@@ -42,6 +57,9 @@ export interface ToolExecutionContext {
   config: AgentConfig;
   runId: string;
   approvedToolCallIds: Set<string>;
+  approval?: ToolApproval;
+  mcpBinding?: McpBinding;
+  mcpInput?: McpInputResponse;
   codemodeDepth?: number;
   signal?: AbortSignal;
   ensureAgentRepo(): Promise<{ repoId: string; lineage: string; branch: string }>;
@@ -413,22 +431,28 @@ export async function executeToolCall(
     });
   }
 
-  // 2. Custom tools (HTTP webhook OR attached WebSocket SDK tool)
   const custom = catalog.customByName.get(toolName);
-  if (custom) {
-    if (custom.requiresApproval && !ctx.approvedToolCallIds.has(callId)) {
-      throw new PauseForInputSignal({
-        kind: "approval",
-        toolCallId: callId,
-        toolName,
-        promptPayload: {
-          tool: toolName,
-          args,
-          message: `Approve execution of tool '${toolName}'?`,
-        },
-      });
-    }
+  const mcpTool = catalog.mcpByName.get(toolName);
+  const subject = ctx.config.toolIdentity?.subject ?? ctx.config.id;
+  if (ctx.mcpBinding && (!mcpTool?.server.auth || ctx.mcpBinding.url !== mcpTool.server.url ||
+      ctx.mcpBinding.audience !== mcpTool.server.audience || ctx.mcpBinding.subject !== subject)) {
+    throw new Error(`MCP tool '${toolName}' changed while waiting for input`);
+  }
+  if (custom?.requiresApproval && !ctx.approvedToolCallIds.has(callId)) {
+    throw new PauseForInputSignal({
+      kind: "approval",
+      toolCallId: callId,
+      toolName,
+      promptPayload: {
+        tool: toolName,
+        args,
+        message: `Approve execution of tool '${toolName}'?`,
+      },
+    });
+  }
 
+  // 2. Custom tools (HTTP webhook OR attached WebSocket SDK tool)
+  if (custom) {
     if (custom.url) {
       const res = await fetch(custom.url, {
         method: "POST",
@@ -468,9 +492,34 @@ export async function executeToolCall(
   }
 
   // 3. Remote MCP tools
-  const mcpTool = catalog.mcpByName.get(toolName);
   if (mcpTool) {
-    return invokeMcpTool(mcpTool, args, { env: ctx.env, agent: ctx.config, call: { runId: ctx.runId, callId } }, ctx.signal);
+    const approval = ctx.approvedToolCallIds.has(callId) ? ctx.approval : undefined;
+    const { url, audience } = mcpTool.server;
+    try {
+      return await invokeMcpTool(mcpTool, args, { env: ctx.env, agent: ctx.config, call: { runId: ctx.runId, callId, approval } }, ctx.signal, ctx.mcpInput);
+    } catch (error) {
+      if (!(error instanceof McpInputRequired)) throw error;
+      if (ctx.codemodeDepth) throw new Error(`MCP tool '${toolName}' must be called directly to request input`);
+      if (error.input.method === "agent-runtime/approval") {
+        if (approval) throw new Error(`MCP tool '${toolName}' requested approval again`);
+        throw new PauseForInputSignal({
+          kind: "approval",
+          toolCallId: callId,
+          toolName,
+          promptPayload: { tool: toolName, args, message: `Approve execution of tool '${toolName}'?` },
+          mcpInput: { url, audience, subject, mode: "approval" },
+        });
+      }
+      const sealedState = error.requestState === undefined ? undefined : await sealSecret(error.requestState, ctx.env.VAULT_SECRET);
+      const elicitation = error.input.params;
+      throw new PauseForInputSignal({
+        kind: "question",
+        toolCallId: callId,
+        toolName,
+        promptPayload: { tool: toolName, question: elicitation.message, elicitation },
+        mcpInput: { key: error.key, url, audience, subject, sealedState, mode: elicitation.mode },
+      });
+    }
   }
 
   // 4. Built-in Repo File tools

@@ -1,5 +1,5 @@
 import { CamelFsClient } from "./camelfs.ts";
-import { randomId } from "./crypto.ts";
+import { openSecret, randomId } from "./crypto.ts";
 import {
   calculateCostUsd,
   getModelContextWindow,
@@ -8,11 +8,13 @@ import {
 } from "./providers.ts";
 import { verifyRunFiles } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
+import type { ToolApproval } from "./tool-identity.ts";
 import {
   buildToolCatalog,
   executeToolCall,
   PauseForInputSignal,
   type BuiltToolCatalog,
+  type PausedMcpInput,
   type ToolExecutionContext,
 } from "./tools.ts";
 import {
@@ -37,6 +39,8 @@ export interface PausedTurnState {
   maxSteps: number;
   outputSchema: Record<string, unknown> | null;
   approvedToolCallIds: string[];
+  approval?: ToolApproval;
+  mcpInput?: PausedMcpInput;
   currentToolCall: ToolCallInvocation;
   remainingToolCalls: ToolCallInvocation[];
   accText: string;
@@ -380,6 +384,8 @@ export async function resumePausedTurn(
     runId: string;
     paused: PausedTurnState;
     decision: {
+      input: string;
+      at: number;
       kind: "approval" | "question";
       approved: boolean;
       answer: unknown;
@@ -415,7 +421,44 @@ export async function resumePausedTurn(
   );
 
   const tc = paused.currentToolCall;
-  if (decision.kind === "question") {
+  if ((paused.mcpInput && decision.kind === "question") || (decision.kind === "approval" && decision.approved)) {
+    if (decision.kind === "approval") {
+      approvedSet.add(tc.id);
+    }
+    if (paused.mcpInput) {
+      toolCtx.mcpBinding = paused.mcpInput;
+      if (paused.mcpInput.mode === "approval") {
+        toolCtx.approval = { input: decision.input, at: decision.at, by: { id: paused.mcpInput.subject } };
+      } else {
+        const { key, sealedState, mode } = paused.mcpInput;
+        toolCtx.approval = paused.approval;
+        toolCtx.mcpInput = {
+          key,
+          requestState: sealedState === undefined ? undefined : await openSecret(sealedState, adapter.env.VAULT_SECRET),
+          response: decision.approved
+            ? { action: "accept", ...(mode === "form" ? { content: decision.answer } : {}) }
+            : { action: "decline" },
+        };
+      }
+    }
+    const pausedAgain = await runSingleToolAndRecord({
+      adapter,
+      runId,
+      tc,
+      remainingAfterThis: paused.remainingToolCalls,
+      catalog,
+      toolCtx,
+      approvedSet,
+      stepIndex: paused.stepIndex,
+      maxSteps: paused.maxSteps,
+      outputSchema: paused.outputSchema,
+      accText: paused.accText,
+      toolCallsSummary,
+      filesChangedSet,
+      usage,
+    });
+    if (pausedAgain) return adapter.getRunRecord(runId);
+  } else if (decision.kind === "question") {
     if (!decision.approved) {
       toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
       adapter.appendMessage(runId, "tool", {
@@ -437,46 +480,14 @@ export async function resumePausedTurn(
       });
     }
   } else {
-    // Tool approval
-    if (!decision.approved) {
-      toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
-      adapter.appendMessage(runId, "tool", {
-        toolCallId: tc.id,
-        toolName: tc.name,
-        isError: true,
-        text: JSON.stringify({
-          error: `Tool '${tc.name}' was denied by human reviewer`,
-          reason: decision.answer ?? null,
-        }),
-      });
-      adapter.emitEvent(runId, "tool_call_end", {
-        callId: tc.id,
-        name: tc.name,
-        ok: false,
-        denied: true,
-      });
-    } else {
-      approvedSet.add(tc.id);
-      const pausedAgain = await runSingleToolAndRecord({
-        adapter,
-        runId,
-        tc,
-        remainingAfterThis: paused.remainingToolCalls,
-        catalog,
-        toolCtx,
-        approvedSet,
-        stepIndex: paused.stepIndex,
-        maxSteps: paused.maxSteps,
-        outputSchema: paused.outputSchema,
-        accText: paused.accText,
-        toolCallsSummary,
-        filesChangedSet,
-        usage,
-      });
-      if (pausedAgain) {
-        return adapter.getRunRecord(runId);
-      }
-    }
+    toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
+    adapter.appendMessage(runId, "tool", {
+      toolCallId: tc.id,
+      toolName: tc.name,
+      isError: true,
+      text: JSON.stringify({ error: `The user declined tool '${tc.name}'`, reason: decision.answer ?? null }),
+    });
+    adapter.emitEvent(runId, "tool_call_end", { callId: tc.id, name: tc.name, ok: false, denied: true });
   }
 
   return continueTurnLoop(adapter, {
@@ -543,6 +554,8 @@ async function runSingleToolAndRecord(opts: {
         maxSteps: opts.maxSteps,
         outputSchema: opts.outputSchema,
         approvedToolCallIds: [...opts.approvedSet],
+        approval: toolCtx.approval,
+        mcpInput: err.mcpInput,
         currentToolCall: tc,
         remainingToolCalls: opts.remainingAfterThis,
         accText: opts.accText,

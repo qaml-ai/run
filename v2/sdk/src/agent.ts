@@ -3,7 +3,7 @@ import { ToolSession, type ToolEventSubscriber } from "./tools.ts";
 import {
   CamelRunError, type AgentEvent, type AgentSchedule, type AgentSummary, type HistoryMessage,
   type LocalTool, type ResponseLike, type RunOptions, type RunRecord, type ScheduleCreateInput,
-  type WebSocketConstructorLike, type WorkflowRunResult,
+  type V1HistoryImport, type WebSocketConstructorLike, type WorkflowRunResult,
 } from "./types.ts";
 
 export interface AgentTransport {
@@ -230,7 +230,7 @@ export class AgentHandle {
     return unwrapArray<HistoryMessage>(res, "messages", "history");
   }
 
-  importV1History(input: { source: string; messages: unknown[]; previous?: string }): Promise<{ receipt: string; count: number }> {
+  importV1History(input: V1HistoryImport): Promise<{ receipt: string; count: number }> {
     return this.transport.requestJson("PUT", `${this.basePath}/history/import`, input);
   }
 

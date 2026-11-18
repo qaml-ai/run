@@ -35,9 +35,10 @@ import {
   type StartRunHints,
   type StartRunInput,
   type StoredMessage,
+  type StoredMessageContent,
   type ToolCallSummary,
 } from "./types.ts";
-import { parseRunFiles } from "./run-files.ts";
+import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
 import { enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
@@ -1661,8 +1662,23 @@ export class AgentDO extends DurableObject<Env> {
 
   async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
     this.ensureSql();
-    this.requireConfig();
+    const config = this.requireConfig();
+    const messages: StoredMessageContent[] = [];
+    const cfs = new CamelFsClient(this.env, config.tenantId);
+    for (const { content, attachments } of input.messages) {
+      if (!attachments) {
+        messages.push(content);
+        continue;
+      }
+      const lineage = config.lineage;
+      if (!lineage) throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
+      const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })));
+      messages.push({ ...content, files });
+    }
     return this.ctx.storage.transactionSync(() => {
+      if (this.requireConfig().lineage !== config.lineage) {
+        throw new ApiError(409, "history_import_conflict", "The v2 destination repository changed during import");
+      }
       const sql = this.ctx.storage.sql;
       const current = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'").toArray()[0];
       const imported = current ? JSON.parse(current.v) as { source: string; receipt: string } : undefined;
@@ -1677,8 +1693,9 @@ export class AgentDO extends DurableObject<Env> {
       }
       if (imported) sql.exec("DELETE FROM messages");
       for (const [index, message] of input.messages.entries()) {
+        const content = messages[index]!;
         sql.exec("INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-          index + 1, message.role, JSON.stringify(message.content), estimateTokens(message.content.text ?? ""), message.createdAt);
+          index + 1, message.role, JSON.stringify(content), estimateTokens(content.text ?? ""), message.createdAt);
       }
       sql.exec(`INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
         JSON.stringify({ source: input.source, receipt }));
@@ -1851,6 +1868,7 @@ export class AgentDO extends DurableObject<Env> {
   async respondToInput(
     inputId: string,
     body?: { approved?: boolean; answer?: unknown; wait?: boolean },
+    trustedResponder = false,
   ): Promise<RunRecord> {
     this.ensureSql();
     const rows = this.ctx.storage.sql
@@ -1886,7 +1904,21 @@ export class AgentDO extends DurableObject<Env> {
       throw new ApiError(500, "missing_turn_state", "Paused turn state missing");
     }
 
-    const approved = body?.approved !== undefined ? Boolean(body.approved) : true;
+    if (body?.approved !== undefined && typeof body.approved !== "boolean") {
+      throw new ApiError(400, "invalid_approval", "The approval decision must be a boolean");
+    }
+    if (inp.kind === "approval" && body?.approved === undefined) {
+      throw new ApiError(400, "invalid_approval", "Approve or decline the tool explicitly");
+    }
+    const approved = body?.approved ?? true;
+    const pausedState = JSON.parse(inp.pending_turn_json) as PausedTurnState;
+    if (pausedState.mcpInput && !trustedResponder) {
+      throw new ApiError(403, "forbidden", "A tenant credential must respond to signed tool inputs");
+    }
+    if (approved && pausedState.mcpInput?.mode === "form" && (!body?.answer || typeof body.answer !== "object" || Array.isArray(body.answer))) {
+      throw new ApiError(400, "invalid_approval", "Answer the tool form with an object");
+    }
+    const answeredAt = Date.now();
     const newStatus = approved ? "answered" : "denied";
     this.ctx.storage.sql.exec(
       `UPDATE inputs SET status = ?1, answer_json = ?2 WHERE id = ?3`,
@@ -1895,7 +1927,6 @@ export class AgentDO extends DurableObject<Env> {
       inputId,
     );
 
-    const pausedState = JSON.parse(inp.pending_turn_json) as PausedTurnState;
     const wait = body?.wait !== undefined ? Boolean(body.wait) : true;
 
     const resumeWork = (async () => {
@@ -1913,6 +1944,8 @@ export class AgentDO extends DurableObject<Env> {
           runId: inp.run_id,
           paused: pausedState,
           decision: {
+            input: inputId,
+            at: answeredAt,
             kind: inp.kind,
             approved,
             answer: body?.answer,

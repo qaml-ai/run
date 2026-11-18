@@ -1,7 +1,41 @@
-import { signToolIdentity } from "./tool-identity.ts";
+import { z } from "zod";
+import { signToolIdentity, type ToolCallIdentity } from "./tool-identity.ts";
 import { ApiError, type AgentConfig, type Env, type LlmToolSchema, type McpServerSpec } from "./types.ts";
 
-type McpIdentity = { env: Env; agent: AgentConfig; call?: { runId: string; callId: string } };
+type McpIdentity = { env: Env; agent: AgentConfig; call?: ToolCallIdentity };
+
+const elicitationRequestSchema = z.object({
+  method: z.literal("elicitation/create"),
+  params: z.discriminatedUnion("mode", [
+    z.object({
+      mode: z.literal("form"),
+      message: z.string(),
+      requestedSchema: z.record(z.string(), z.unknown()),
+    }),
+    z.object({
+      mode: z.literal("url"),
+      message: z.string(),
+      url: z.url({ protocol: /^https$/ }),
+      elicitationId: z.string(),
+    }),
+  ]),
+});
+const inputRequestSchema = z.discriminatedUnion("method", [
+  elicitationRequestSchema,
+  z.object({ method: z.literal("agent-runtime/approval") }),
+]);
+
+export class McpInputRequired extends Error {
+  constructor(
+    readonly key: string,
+    readonly input: z.infer<typeof inputRequestSchema>,
+    readonly requestState?: string,
+  ) {
+    super("MCP tool is waiting for input");
+  }
+}
+
+export type McpInputResponse = { key: string; requestState?: string; response: { action: "accept" | "decline"; content?: unknown } };
 
 interface JsonRpcResponse {
   jsonrpc?: string;
@@ -141,6 +175,7 @@ export async function invokeMcpTool(
   args: Record<string, unknown>,
   identity: McpIdentity,
   signal?: AbortSignal,
+  input?: McpInputResponse,
 ): Promise<unknown> {
   const call = identity.call;
   const result = await mcpRpcCall(
@@ -150,16 +185,24 @@ export async function invokeMcpTool(
       name: tool.remoteName,
       arguments: args,
       ...(call && tool.server.auth ? { _meta: {
-        "agent-runtime/callId": call.callId,
+        "agent-runtime/callId": crypto.randomUUID(),
         "agent-runtime/toolCallId": call.callId,
         "agent-runtime/idempotencyKey": JSON.stringify([identity.agent.id, call.runId, call.callId]),
+        "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } },
       } } : {}),
+      ...(input ? { inputResponses: { [input.key]: input.response }, requestState: input.requestState } : {}),
     },
     identity,
     signal,
   );
   if (result.resultType === "input_required") {
-    throw new Error(`MCP tool '${tool.remoteName}' requires input via its server`);
+    const requests = Object.entries(z.record(z.string(), inputRequestSchema).parse(result.inputRequests));
+    const entry = requests[0];
+    if (!tool.server.auth || requests.length !== 1 || !entry) {
+      throw new Error(`MCP tool '${tool.remoteName}' returned an unsupported input request`);
+    }
+    const state = z.string().max(65_536).optional().parse(result.requestState);
+    throw new McpInputRequired(entry[0], entry[1], state);
   }
   if (Array.isArray(result.content)) {
     const texts = (result.content as Array<{ type?: string; text?: string }>)
