@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -153,6 +154,7 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 	}()
 	device, err := disk.Attach(ctx, d.cfg.NBDDevices)
 	if err != nil {
+		log.Printf("camelfsd: attach workspace disk for %s: %v", spec.VMID, err)
 		return "", apperr.Internal("attach workspace disk", err)
 	}
 	defer func() {
@@ -191,6 +193,7 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 
 	if err := d.configureAndBoot(ctx, sess, rootfsCopy, spec); err != nil {
 		sess.kill()
+		log.Printf("camelfsd: configure Firecracker VM %s: %v", spec.VMID, err)
 		return "", apperr.Internal("configure firecracker microVM", err)
 	}
 

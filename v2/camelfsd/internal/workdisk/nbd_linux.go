@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -37,10 +38,33 @@ type Device struct {
 }
 
 func (v *View) Attach(ctx context.Context, paths []string) (*Device, error) {
-	if v.Size()%4096 != 0 {
-		return nil, fmt.Errorf("workspace disk is not 4 KiB aligned")
+	// The kernel can retain the old config briefly while other openers
+	// release the slot after disconnect. Never try to configure that slot.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		d, err := v.tryAttach(ctx, paths)
+		if d != nil || err != nil {
+			return d, err
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("all configured workspace NBD devices are busy")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
+}
+
+func (v *View) tryAttach(ctx context.Context, paths []string) (*Device, error) {
 	for _, path := range paths {
+		pid := filepath.Join("/sys/class/block", filepath.Base(path), "pid")
+		if _, err := os.Stat(pid); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 		dev, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
 			return nil, err
@@ -50,6 +74,13 @@ func (v *View) Attach(ctx context.Context, paths []string) (*Device, error) {
 			if errors.Is(err, unix.EWOULDBLOCK) {
 				continue
 			}
+			return nil, err
+		}
+		if _, err := os.Stat(pid); err == nil {
+			_ = dev.Close()
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			_ = dev.Close()
 			return nil, err
 		}
 		info, err := dev.Stat()
@@ -90,8 +121,12 @@ func (v *View) Attach(ctx context.Context, paths []string) (*Device, error) {
 		}
 		serveCtx, cancel := context.WithCancel(context.Background())
 		d := &Device{Path: path, device: dev, peer: peer, cancel: cancel, kernel: make(chan error, 1), server: make(chan error, 1)}
+		tid := make(chan int, 1)
 		go func() {
+			runtime.LockOSThread()
+			defer runtime.UnlockOSThread()
 			defer close(d.kernel)
+			tid <- unix.Gettid()
 			d.kernel <- ioctl(nbdDoIt, 0)
 		}()
 		go func() {
@@ -99,16 +134,19 @@ func (v *View) Attach(ctx context.Context, paths []string) (*Device, error) {
 			_ = unix.Shutdown(int(peer.Fd()), unix.SHUT_RDWR)
 			d.server <- err
 		}()
-		if err := d.waitReady(ctx, v.Size()); err != nil {
+		if err := d.waitReady(ctx, v.Size(), <-tid); err != nil {
 			_ = d.Close()
+			if errors.Is(err, unix.EBUSY) {
+				continue
+			}
 			return nil, err
 		}
 		return d, nil
 	}
-	return nil, fmt.Errorf("all configured workspace NBD devices are busy")
+	return nil, nil
 }
 
-func (d *Device) waitReady(ctx context.Context, size int64) error {
+func (d *Device) waitReady(ctx context.Context, size int64, tid int) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -116,14 +154,17 @@ func (d *Device) waitReady(ctx context.Context, size int64) error {
 	sys := filepath.Join("/sys/class/block", filepath.Base(d.Path))
 	want := strconv.FormatInt(size/512, 10)
 	for {
-		_, pidErr := os.Stat(filepath.Join(sys, "pid"))
+		pid, pidErr := os.ReadFile(filepath.Join(sys, "pid"))
 		sectors, sizeErr := os.ReadFile(filepath.Join(sys, "size"))
-		if pidErr == nil && sizeErr == nil && strings.TrimSpace(string(sectors)) == want {
+		if pidErr == nil && strings.TrimSpace(string(pid)) == strconv.Itoa(tid) && sizeErr == nil && strings.TrimSpace(string(sectors)) == want {
 			return nil
 		}
 		select {
 		case err := <-d.kernel:
-			return fmt.Errorf("%s detached during setup: %v", d.Path, err)
+			if err == nil {
+				return fmt.Errorf("%s detached during setup", d.Path)
+			}
+			return fmt.Errorf("%s detached during setup: %w", d.Path, err)
 		case <-ctx.Done():
 			return fmt.Errorf("wait for %s: %w", d.Path, ctx.Err())
 		case <-ticker.C:
