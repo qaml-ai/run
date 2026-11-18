@@ -130,7 +130,7 @@ Atomic multi-file write/delete/move producing a commit on `ref`.
 ## 3. Session VM Endpoints (1 VM per `(lineage, ref)`, Atomic Exec + Commit)
 
 ### `POST /v1/vms`
-Finds the running VM for `(lineage, ref)` (if `holder` matches) or boots one with `/workspace` materialized on the host from `ref`'s head commit.
+Finds the running VM for `(lineage, ref)` when `holder` matches, or starts one from the ref's head commit. The direct Firecracker driver attaches the commit's ext4 disk map and fetches chunks on demand. The local and outbound host drivers receive the file tree.
 - Request:
 ```json
 {
