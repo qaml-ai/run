@@ -91,8 +91,13 @@ routes, including `/v1`, `/console`, and `/ops`, to the existing origin.
 
 Create the production R2 bucket and queue named in the configuration. Set up
 `fs-v2.camelai.dev` with its own Firecracker host, S3 bucket, DynamoDB repo and
-VM tables, and signing key. Create fresh `ADMIN_SECRET`, `VAULT_SECRET`, and
-`CAMELFS_SIGNING_KEY` for the production Worker. The deploy creates its own
+VM tables, and signing key. Run camelfsd as a system service on cgroup v2 with
+`KillMode=control-group` and `Restart=on-failure`. Set
+`CAMELFSD_FC_JAILER=/usr/local/bin/jailer` using the same Firecracker release as
+`CAMELFSD_FC_BIN`. The jailer uses UID and GID 201000 plus the assigned NBD
+device's minor number. Reserve that range on the dedicated host, and use a
+short data path such as `/nvme/v2` for the Unix sockets. Create fresh
+`ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` for the production Worker. The deploy creates its own
 Durable Objects. Bootstrap new v2 tenants and issue v2 credentials for the
 clients joining the rollout.
 

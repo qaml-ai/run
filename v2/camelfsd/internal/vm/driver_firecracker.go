@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,11 +32,19 @@ const firecrackerHost = "firecracker"
 type FirecrackerConfig struct {
 	DataDir         string
 	FirecrackerBin  string
+	JailerBin       string
 	KernelImagePath string
 	RootfsImagePath string
 	Disks           *workdisk.Disks
 	NBDDevices      []string
 	VsockPort       int
+}
+
+type fcVMFiles struct {
+	kernel    string
+	rootfs    string
+	workspace string
+	vsock     string
 }
 
 type fcVMSession struct {
@@ -56,6 +65,8 @@ type fcVMSession struct {
 type FirecrackerDriver struct {
 	cfg      FirecrackerConfig
 	rootDir  string
+	jailDir  string
+	cgroup   string
 	lock     *os.File
 	mu       sync.RWMutex
 	nextCID  uint32
@@ -79,6 +90,24 @@ func NewFirecrackerDriver(cfg FirecrackerConfig) (*FirecrackerDriver, error) {
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir firecracker vms dir: %w", err)
 	}
+	var jailDir, cgroup string
+	if cfg.JailerBin != "" {
+		cgroup, err = firecrackerServiceCgroup()
+		if err != nil {
+			return nil, err
+		}
+		for _, bin := range []*string{&cfg.FirecrackerBin, &cfg.JailerBin} {
+			path, err := exec.LookPath(*bin)
+			if err != nil {
+				return nil, err
+			}
+			*bin, err = filepath.Abs(path)
+			if err != nil {
+				return nil, err
+			}
+		}
+		jailDir = filepath.Join(rootDir, filepath.Base(cfg.FirecrackerBin))
+	}
 	lock, err := os.OpenFile(filepath.Join(rootDir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open Firecracker data directory lock: %w", err)
@@ -90,6 +119,8 @@ func NewFirecrackerDriver(cfg FirecrackerConfig) (*FirecrackerDriver, error) {
 	return &FirecrackerDriver{
 		cfg:      cfg,
 		rootDir:  rootDir,
+		jailDir:  jailDir,
+		cgroup:   cgroup,
 		lock:     lock,
 		nextCID:  100,
 		sessions: make(map[string]*fcVMSession),
@@ -125,17 +156,33 @@ func (d *FirecrackerDriver) Recover(ctx context.Context, st store.Store) error {
 		log.Printf("camelfsd: retired lost Firecracker VM %s", rec.VMID)
 	}
 
-	entries, err := os.ReadDir(d.rootDir)
+	if err := removeLostVMDirs(d.rootDir, "vm_"); err != nil {
+		return err
+	}
+	if d.jailDir != "" {
+		return removeLostVMDirs(d.jailDir, "vm-")
+	}
+	return nil
+}
+
+func removeLostVMDirs(dir, prefix string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
-		name := entry.Name()
-		if !entry.IsDir() || len(name) != 27 || !strings.HasPrefix(name, "vm_") {
+		id, ok := strings.CutPrefix(entry.Name(), prefix)
+		if !entry.IsDir() || !ok || len(id) != 24 {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(d.rootDir, name)); err != nil {
-			return fmt.Errorf("remove scratch directory for lost VM %s: %w", name, err)
+		if _, err := hex.DecodeString(id); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("remove scratch directory for lost VM %s: %w", entry.Name(), err)
 		}
 	}
 	return nil
@@ -188,12 +235,24 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 	}
 
 	baseDir := filepath.Join(d.rootDir, spec.VMID)
-	rootfsCopy := filepath.Join(baseDir, "rootfs.ext4")
-	apiSock := filepath.Join(baseDir, "fc.sock")
-	vsockUDS := filepath.Join(baseDir, "vsock.sock")
+	vmDir := baseDir
+	jailID := "vm-" + strings.TrimPrefix(spec.VMID, "vm_")
+	if d.jailDir != "" {
+		if err := os.MkdirAll(d.jailDir, 0700); err != nil {
+			return "", apperr.Internal("mkdir Firecracker jail directory", err)
+		}
+		baseDir = filepath.Join(d.jailDir, jailID)
+		vmDir = filepath.Join(baseDir, "root")
+	}
+	rootfsCopy := filepath.Join(vmDir, "rootfs.ext4")
+	apiSock := filepath.Join(vmDir, "fc.sock")
+	vsockUDS := filepath.Join(vmDir, "vsock.sock")
+	if len(vsockUDS) >= 108 {
+		return "", apperr.InvalidRequest("Firecracker socket path is too long. Use a shorter data directory")
+	}
 
 	if err := os.Mkdir(baseDir, 0700); err != nil {
-		return "", apperr.Internal("mkdir firecracker VM", err)
+		return "", apperr.Internal("mkdir Firecracker VM", err)
 	}
 	started := false
 	defer func() {
@@ -201,6 +260,11 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 			_ = os.RemoveAll(baseDir)
 		}
 	}()
+	if d.jailDir != "" {
+		if err := os.Mkdir(vmDir, 0700); err != nil {
+			return "", apperr.Internal("mkdir Firecracker jail root", err)
+		}
+	}
 	disk, err := d.cfg.Disks.Open(ctx, spec.Disk)
 	if err != nil {
 		return "", apperr.Internal("open workspace disk", err)
@@ -224,9 +288,20 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 		return "", apperr.Internal("stage rootfs image", err)
 	}
 
-	cid := d.allocCID()
+	files := fcVMFiles{kernel: d.cfg.KernelImagePath, rootfs: rootfsCopy, workspace: device.Path, vsock: vsockUDS}
 	cmd := exec.Command(d.cfg.FirecrackerBin, "--api-sock", apiSock)
-	cmd.Dir = baseDir
+	cmd.Dir = vmDir
+	if d.jailDir != "" {
+		uid, err := prepareFirecrackerJail(vmDir, d.cfg.KernelImagePath, rootfsCopy, device.Path)
+		if err != nil {
+			return "", apperr.Internal("prepare Firecracker jail", err)
+		}
+		files = fcVMFiles{kernel: "/kernel", rootfs: "/rootfs.ext4", workspace: "/workspace.nbd", vsock: "/vsock.sock"}
+		cmd = exec.Command(d.cfg.JailerBin, "--id", jailID, "--exec-file", d.cfg.FirecrackerBin,
+			"--uid", uid, "--gid", uid, "--chroot-base-dir", d.rootDir,
+			"--cgroup-version", "2", "--parent-cgroup", d.cgroup, "--", "--api-sock", "/fc.sock")
+	}
+	cmd.Stderr = os.Stderr
 	waitCh, err := launchFirecracker(cmd)
 	if err != nil {
 		return "", apperr.Internal("launch firecracker", err)
@@ -239,12 +314,12 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 		device:       device,
 		apiSockPath:  apiSock,
 		vsockUDSPath: vsockUDS,
-		guestCID:     cid,
+		guestCID:     d.allocCID(),
 		cmd:          cmd,
 		waitCh:       waitCh,
 	}
 
-	if err := d.configureAndBoot(ctx, sess, rootfsCopy, spec); err != nil {
+	if err := d.configureAndBoot(ctx, sess, files, spec); err != nil {
 		sess.kill()
 		log.Printf("camelfsd: configure Firecracker VM %s: %v", spec.VMID, err)
 		return "", apperr.Internal("configure firecracker microVM", err)
@@ -276,14 +351,20 @@ func copyFileReflinkOrCopy(src, dst string) error {
 	return err
 }
 
-func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSession, rootfsPath string, spec StartSpec) error {
+func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSession, files fcVMFiles, spec StartSpec) error {
 	// Wait up to 3s for Firecracker API socket to appear.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sess.apiSockPath); err == nil {
 			break
 		}
-		time.Sleep(15 * time.Millisecond)
+		select {
+		case <-sess.waitCh:
+			return fmt.Errorf("Firecracker exited before creating its API socket")
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(15 * time.Millisecond):
+		}
 	}
 
 	hc := newUnixHTTPClient(sess.apiSockPath)
@@ -304,14 +385,14 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 		return err
 	}
 	if err := fcPutJSON(ctx, hc, "/boot-source", map[string]any{
-		"kernel_image_path": d.cfg.KernelImagePath,
+		"kernel_image_path": files.kernel,
 		"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw devtmpfs.mount=1 init=/sbin/camelfs-guest-init",
 	}); err != nil {
 		return err
 	}
 	if err := fcPutJSON(ctx, hc, "/drives/rootfs", map[string]any{
 		"drive_id":       "rootfs",
-		"path_on_host":   rootfsPath,
+		"path_on_host":   files.rootfs,
 		"is_root_device": true,
 		"is_read_only":   false,
 	}); err != nil {
@@ -319,7 +400,7 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 	}
 	if err := fcPutJSON(ctx, hc, "/drives/workspace", map[string]any{
 		"drive_id":       "workspace",
-		"path_on_host":   sess.device.Path,
+		"path_on_host":   files.workspace,
 		"cache_type":     "Writeback",
 		"is_root_device": false,
 		"is_read_only":   false,
@@ -329,7 +410,7 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 	if err := fcPutJSON(ctx, hc, "/vsock", map[string]any{
 		"vsock_id":  "vsock0",
 		"guest_cid": sess.guestCID,
-		"uds_path":  sess.vsockUDSPath,
+		"uds_path":  files.vsock,
 	}); err != nil {
 		return err
 	}

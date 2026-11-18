@@ -41,6 +41,7 @@ func main() {
 		ddbVMsTable   = flag.String("ddb-vms-table", envOr("CAMELFSD_DDB_VMS_TABLE", "camelfs-vms"), "DynamoDB table for VM sessions, exec receipts, and hosts")
 
 		fcBin             = flag.String("firecracker-bin", envOr("CAMELFSD_FC_BIN", "firecracker"), "Path to firecracker binary")
+		fcJailer          = flag.String("firecracker-jailer", os.Getenv("CAMELFSD_FC_JAILER"), "Path to the matching Firecracker jailer")
 		fcKernel          = flag.String("firecracker-kernel", os.Getenv("CAMELFSD_FC_KERNEL"), "Path to Firecracker guest kernel image")
 		fcRootfs          = flag.String("firecracker-rootfs", os.Getenv("CAMELFSD_FC_ROOTFS"), "Path to Firecracker guest rootfs ext4 image")
 		workspaceTemplate = flag.String("workspace-template", os.Getenv("CAMELFSD_WORKSPACE_TEMPLATE"), "Preformatted empty ext4 workspace template")
@@ -118,6 +119,7 @@ func main() {
 		fc, err := vm.NewFirecrackerDriver(vm.FirecrackerConfig{
 			DataDir:         *dataDir,
 			FirecrackerBin:  *fcBin,
+			JailerBin:       *fcJailer,
 			KernelImagePath: *fcKernel,
 			RootfsImagePath: *fcRootfs,
 			Disks:           disks,
