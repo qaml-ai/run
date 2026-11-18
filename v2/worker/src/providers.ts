@@ -64,6 +64,7 @@ const MODEL_PRICING_PER_1M: Record<string, { input: number; output: number }> = 
   "openrouter/meta/muse-ember": { input: 0.1, output: 0.5 },
   "deepseek-v4.1-flash-1017": { input: 0.08, output: 0.35 },
   "openrouter/deepseek/deepseek-v4.1-flash": { input: 0.3, output: 1.2 },
+  "openrouter/openai/gpt-6-luna": { input: 0.1, output: 0.5 },
   "gpt-4.1": { input: 2.0, output: 8.0 },
   "gpt-4.1-mini": { input: 0.4, output: 1.6 },
   "gpt-4.1-nano": { input: 0.1, output: 0.4 },
