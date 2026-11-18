@@ -418,7 +418,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
     t.after(() => camel.close());
     await camel.providers.set("openrouter", { apiKey: "test-spend", baseUrl: `${auxUrl}/v1` });
-    await camel.webhooks.create({ url: `${auxUrl}/usage-webhook`, events: ["usage.recorded"] });
+    await camel.webhooks.create({ url: `${auxUrl}/usage-webhook`, events: ["usage.recorded", "run.failed"] });
     const context = { org: "org-test", workspace: "workspace-test", thread: "thread-test" };
     const agent = await camel.agents.upsert("per-run-spend", {
       model: "openrouter/meta/muse-ember",
@@ -479,6 +479,18 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       output: capped.usage.outputTokens,
       cost: { usd: capped.usage.costUsd, source: "catalog" },
     });
+    const failures = () => receivedWebhooks.filter(({ headers }) => headers["x-camelrun-event"] === "run.failed");
+    while (failures().length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const [failed, retriedFailure] = failures();
+    assert.ok(failed && retriedFailure, "expected lifecycle delivery and retry");
+    assert.equal(failed.body, retriedFailure.body);
+    const failure = JSON.parse(failed.body);
+    assert.equal(failure.data.runId, capped.id);
+    assert.equal(failure.data.actor, "sender");
+    assert.deepEqual(failure.data.context, context);
+    assert.equal(failure.data.error?.code, "spend_limit_exceeded");
   });
 
   it("binds signed tools to the run's actor and queues a steer from another actor", async (t) => {
@@ -1182,6 +1194,14 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
     t.after(() => camel.close());
     const agent = await camel.agents.upsert("restart-run-context", { model: "mock/default", builtins: ["human"] });
+    const repoPath = `${workerUrl}/v2/agents/${agent.id}/repo`;
+    const ensureRepo = (key: string) => fetch(repoPath, { method: "PUT", headers: { Authorization: `Bearer ${key}` } });
+    assert.equal((await ensureRepo(agent.agentToken!)).status, 403);
+    const repos = await Promise.all([ensureRepo(apiKey), ensureRepo(apiKey)]);
+    assert.deepEqual(repos.map((response) => response.status), [200, 200]);
+    const [firstRepo, secondRepo] = await Promise.all(repos.map((response) => response.json()));
+    assert.ok(firstRepo.repoId);
+    assert.deepEqual(secondRepo, firstRepo);
     const paused = await agent.run('Pause the queue [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
     const capped = await agent.submit("Wait with no spend left", { spendLimitUsd: 0, idempotencyKey: "capped" });
@@ -1198,6 +1218,6 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(completed.id, attributed.id);
     const content = (await agent.history()).find(message => message.runId === attributed.id && message.role === "user")?.content;
     assert.ok(content && typeof content === "object" && "meta" in content);
-    assert.deepEqual(content.meta, { actor: "returning-member" });
+    assert.deepEqual(content.meta, { actor: "returning-member", requestId: "attributed" });
   });
 });
