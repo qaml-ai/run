@@ -1,0 +1,92 @@
+[
+  {
+    "install_s": 7.4085347650107,
+    "install_local_sync_s": 3.0384817159501836,
+    "compile_s": 2.8558847359963693,
+    "compile_local_sync_s": 0.007174358004704118,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "ext4",
+    "repetition": 0
+  },
+  {
+    "install_s": 10.191559951985255,
+    "install_local_sync_s": 3.0266815350041725,
+    "compile_s": 3.2632250180467963,
+    "compile_local_sync_s": 0.008001612965017557,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "fuse",
+    "repetition": 0
+  },
+  {
+    "install_s": 9.750721088959835,
+    "install_local_sync_s": 3.063909513002727,
+    "compile_s": 3.112081214960199,
+    "compile_local_sync_s": 0.008920305001083761,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "passthrough",
+    "repetition": 0
+  },
+  {
+    "install_s": 9.988108769000974,
+    "install_local_sync_s": 3.227819611027371,
+    "compile_s": 3.290465475001838,
+    "compile_local_sync_s": 0.007265112013556063,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "fuse",
+    "repetition": 1
+  },
+  {
+    "install_s": 9.580784381949343,
+    "install_local_sync_s": 3.096334681031294,
+    "compile_s": 3.116362067987211,
+    "compile_local_sync_s": 0.008807177015114576,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "passthrough",
+    "repetition": 1
+  },
+  {
+    "install_s": 7.495030436955858,
+    "install_local_sync_s": 3.58122163801454,
+    "compile_s": 2.9765610979520716,
+    "compile_local_sync_s": 0.0072668539942242205,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "ext4",
+    "repetition": 1
+  },
+  {
+    "install_s": 9.056866455997806,
+    "install_local_sync_s": 3.2523191579966806,
+    "compile_s": 3.267140461015515,
+    "compile_local_sync_s": 0.007613369030877948,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "passthrough",
+    "repetition": 2
+  },
+  {
+    "install_s": 7.693463803036138,
+    "install_local_sync_s": 3.269409939995967,
+    "compile_s": 2.892345296975691,
+    "compile_local_sync_s": 0.006587657961063087,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "ext4",
+    "repetition": 2
+  },
+  {
+    "install_s": 10.006671139970422,
+    "install_local_sync_s": 3.1968648330075666,
+    "compile_s": 3.3228695479920134,
+    "compile_local_sync_s": 0.007705105002969503,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "fuse",
+    "repetition": 2
+  }
+]

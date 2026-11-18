@@ -1,0 +1,62 @@
+[
+  {
+    "install_s": 7.681550637003966,
+    "install_local_sync_s": 2.917025649046991,
+    "compile_s": 3.047589704976417,
+    "compile_local_sync_s": 0.007173557998612523,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "ext4",
+    "repetition": 0
+  },
+  {
+    "install_s": 7.655952100001741,
+    "install_local_sync_s": 2.895874095032923,
+    "compile_s": 2.909845640999265,
+    "compile_local_sync_s": 0.006967453984543681,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "local-build-dirs",
+    "repetition": 0
+  },
+  {
+    "install_s": 7.710456004017033,
+    "install_local_sync_s": 3.2617714540101588,
+    "compile_s": 3.0336080380366184,
+    "compile_local_sync_s": 0.0075288579682819545,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "local-build-dirs",
+    "repetition": 1
+  },
+  {
+    "install_s": 7.443574486998841,
+    "install_local_sync_s": 3.265821409993805,
+    "compile_s": 2.8614011860336177,
+    "compile_local_sync_s": 0.007294395996723324,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "ext4",
+    "repetition": 1
+  },
+  {
+    "install_s": 7.427886229997966,
+    "install_local_sync_s": 3.2661440040101297,
+    "compile_s": 2.771739367977716,
+    "compile_local_sync_s": 0.006962411978747696,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "ext4",
+    "repetition": 2
+  },
+  {
+    "install_s": 7.47700212005293,
+    "install_local_sync_s": 3.2791867119958624,
+    "compile_s": 3.0054279710166156,
+    "compile_local_sync_s": 0.007171213976107538,
+    "emitted": 319,
+    "output_digest": "3d433013fdcd070b277559dab2ee80082fe665e00e10763724018d97072fc578",
+    "mode": "local-build-dirs",
+    "repetition": 2
+  }
+]
