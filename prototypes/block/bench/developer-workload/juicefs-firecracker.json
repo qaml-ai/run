@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-18",
+  "firecracker": "1.13.1",
+  "guest_kernel": "6.1.141",
+  "vcpus": 4,
+  "memory_mib": 5120,
+  "node": "22.23.5",
+  "npm": "10.9.9",
+  "juicefs": "1.4.2",
+  "redis": "7.0.15",
+  "remote": {
+    "install_s": 576.399,
+    "compile_s": 9.731,
+    "emitted": 319,
+    "output_sha256sum_manifest": "e5ca16974bab2ab2d6376ce8661decc1c1ee8de01ccc47f7145e152323f36535"
+  },
+  "native": {
+    "install_s": 16.188,
+    "compile_s": 4.16,
+    "emitted": 319,
+    "output_sha256sum_manifest": "e5ca16974bab2ab2d6376ce8661decc1c1ee8de01ccc47f7145e152323f36535"
+  },
+  "recovered_compiler_manifest": "e5ca16974bab2ab2d6376ce8661decc1c1ee8de01ccc47f7145e152323f36535",
+  "service_file_write_fsync_close_ms": [
+    57.39,
+    28.05,
+    28.61,
+    26.27,
+    26.66,
+    23.93,
+    24.66,
+    26.93,
+    32.25,
+    31.93,
+    27.01,
+    28.64
+  ],
+  "guest_read_before_edit": "sleeping-edit",
+  "fresh_client_read_after_guest_loss": "awake-edit",
+  "s3_prefix_before_cleanup": {
+    "objects": 50203,
+    "bytes": 910886922
+  }
+}

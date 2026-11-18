@@ -1,0 +1,58 @@
+[
+  {
+    "ref": "empty-cache-0",
+    "revision": 1,
+    "value": "aaafa93a6af54b57af2de9f69a799745",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  },
+  {
+    "ref": "populated-cache-0",
+    "revision": 5,
+    "value": "49c9e73f7e034b69a08d9c411a206c28",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  },
+  {
+    "ref": "empty-cache-1",
+    "revision": 1,
+    "value": "81081b19f75543a5802f888e628d6c21",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  },
+  {
+    "ref": "populated-cache-1",
+    "revision": 5,
+    "value": "618ff3a55e444fd4b46cbd4a8aa94150",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  },
+  {
+    "ref": "empty-cache-2",
+    "revision": 1,
+    "value": "84a34ef657794dc8b345fac0e6bb4093",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  },
+  {
+    "ref": "populated-cache-2",
+    "revision": 5,
+    "value": "255bd47931e64cdf935a8ceffabec42c",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  },
+  {
+    "ref": "before-publish",
+    "revision": 1,
+    "value": "f1f5a209ed3342999d013dd3fe29be4b",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  }
+]

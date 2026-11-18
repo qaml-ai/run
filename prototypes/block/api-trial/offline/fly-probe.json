@@ -1,0 +1,77 @@
+[
+  {
+    "before": "warm",
+    "writes": [
+      [
+        {
+          "http": 200,
+          "sec": 0.205767
+        }
+      ],
+      [
+        {
+          "http": 200,
+          "sec": 0.192405
+        }
+      ]
+    ],
+    "after_write_0": "warm",
+    "status_after_first_before_any_read": [
+      "cold",
+      "warm",
+      "warm",
+      "cold"
+    ],
+    "after_write_1": "cold"
+  },
+  {
+    "before": "warm",
+    "writes": [
+      [
+        {
+          "http": 200,
+          "sec": 0.218029
+        }
+      ],
+      [
+        {
+          "http": 200,
+          "sec": 0.200076
+        }
+      ]
+    ],
+    "after_write_0": "cold",
+    "status_after_first_before_any_read": [
+      "warm",
+      "warm",
+      "warm",
+      "warm"
+    ],
+    "after_write_1": "warm"
+  },
+  {
+    "before": "warm",
+    "writes": [
+      [
+        {
+          "http": 200,
+          "sec": 0.203443
+        }
+      ],
+      [
+        {
+          "http": 200,
+          "sec": 0.189551
+        }
+      ]
+    ],
+    "after_write_0": "warm",
+    "status_after_first_before_any_read": [
+      "warm",
+      "warm",
+      "warm",
+      "warm"
+    ],
+    "after_write_1": "warm"
+  }
+]

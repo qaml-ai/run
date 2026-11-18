@@ -1,0 +1,335 @@
+{
+  "prefix": "unified-volume-trials/20261117-mwla7dbzd",
+  "cases": [
+    {
+      "ref": "empty-cache-0",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "aaafa93a6af54b57af2de9f69a799745",
+          "root": "4c2e8fad3f2a1f0fdc580c4d7385dc774918d723e819c57ee40ed382350a9dc9",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1142.2993629821576,
+          "edit_and_bash_ms": 326.0699780075811,
+          "freeze_ms": 70.12299000052735,
+          "blocks_and_map_ms": 150.53511003497988,
+          "publish_ms": 42.1858619665727,
+          "thaw_ms": 2.8752959915436804,
+          "elapsed_ms": 1734.3326910049655
+        }
+      ],
+      "cache_blocks_at_start": 0,
+      "owner_exit": -9,
+      "cache_blocks_at_end": 13
+    },
+    {
+      "ref": "populated-cache-0",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "2bdc4928711b499db70c5e081b265955",
+          "root": "b0909f742b41af42ebebd09e7a365739a677009d18dd007f2a4b6f297dc7a131",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1106.6143399802968,
+          "edit_and_bash_ms": 12.267292011529207,
+          "freeze_ms": 37.546339037362486,
+          "blocks_and_map_ms": 137.80615298310295,
+          "publish_ms": 43.87863498413935,
+          "thaw_ms": 2.8954949812032282,
+          "elapsed_ms": 1341.2030740291812
+        },
+        {
+          "ack": true,
+          "value": "af4732b59e40452196419bae721d91f6",
+          "root": "c2d18b106029f357765535c29a0d6d582c04bdacd8a9c6f50cda67c583db89b2",
+          "revision": 2,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 0.0007239868864417076,
+          "edit_and_bash_ms": 4.284847003873438,
+          "freeze_ms": 4.885363974608481,
+          "blocks_and_map_ms": 78.54074699571356,
+          "publish_ms": 37.17017802409828,
+          "thaw_ms": 3.0497710104100406,
+          "elapsed_ms": 128.13146598637104
+        },
+        {
+          "ack": true,
+          "value": "6710d410212a40e7b3f88493d46e8b09",
+          "root": "e40021591232bcc032ecf616b35584b33dc3444081d6ed5ee029485ae5a09a5b",
+          "revision": 3,
+          "uploaded_bytes": 1310720,
+          "mount_ms": 0.0007529743015766144,
+          "edit_and_bash_ms": 4.267593030817807,
+          "freeze_ms": 65.42385998181999,
+          "blocks_and_map_ms": 105.19055899931118,
+          "publish_ms": 38.10965799493715,
+          "thaw_ms": 2.975566021632403,
+          "elapsed_ms": 216.19306900538504
+        },
+        {
+          "ack": true,
+          "value": "0365030bc69943b689613c963c2b58ca",
+          "root": "c304aad59b1c0168314523bbbff2831db35f8ee60a0e91ff71d990b71aa55ab0",
+          "revision": 4,
+          "uploaded_bytes": 1310720,
+          "mount_ms": 0.001193024218082428,
+          "edit_and_bash_ms": 4.43892297334969,
+          "freeze_ms": 12.669657997321337,
+          "blocks_and_map_ms": 75.27008705073968,
+          "publish_ms": 33.724302949849516,
+          "thaw_ms": 2.8881780453957617,
+          "elapsed_ms": 129.1924259858206
+        },
+        {
+          "ack": true,
+          "value": "49c9e73f7e034b69a08d9c411a206c28",
+          "root": "672f315d7f091327cdac5aa631240c404e3b36f9ca74872fcf2917dbde5b460f",
+          "revision": 5,
+          "uploaded_bytes": 1572864,
+          "mount_ms": 0.0008270144462585449,
+          "edit_and_bash_ms": 4.245007992722094,
+          "freeze_ms": 5.50621998263523,
+          "blocks_and_map_ms": 134.41141799557954,
+          "publish_ms": 56.937536981422454,
+          "thaw_ms": 3.0053480295464396,
+          "elapsed_ms": 204.31856694631279
+        }
+      ],
+      "cache_blocks_at_start": 13,
+      "owner_exit": -9,
+      "cache_blocks_at_end": 14
+    },
+    {
+      "ref": "empty-cache-1",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "81081b19f75543a5802f888e628d6c21",
+          "root": "487b579acf864333675e716a048b5d2b5eb66bf7d4148852a864fcccfb9092d5",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1233.897927973885,
+          "edit_and_bash_ms": 281.47154301404953,
+          "freeze_ms": 73.28267599223182,
+          "blocks_and_map_ms": 161.0165759921074,
+          "publish_ms": 35.49876803299412,
+          "thaw_ms": 2.861633023712784,
+          "elapsed_ms": 1788.2201579632238
+        }
+      ],
+      "cache_blocks_at_start": 0,
+      "owner_exit": -9,
+      "cache_blocks_at_end": 13
+    },
+    {
+      "ref": "populated-cache-1",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "e71b3b1dc5444f3e8ef5903d4d8b5ea2",
+          "root": "0b135ba1353edab74d7c4e94c7090d2bec02189d6eed152044952698a16169bd",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1101.121817016974,
+          "edit_and_bash_ms": 9.176279010716826,
+          "freeze_ms": 37.1865889756009,
+          "blocks_and_map_ms": 143.00169399939477,
+          "publish_ms": 38.51321100955829,
+          "thaw_ms": 2.8812100063078105,
+          "elapsed_ms": 1332.095046993345
+        },
+        {
+          "ack": true,
+          "value": "bc2118da56ba440ea25edd71360726e6",
+          "root": "4d8dc97b6c8aa95b8994d3c79887dd8e943ffd1c6a5680ec4f4d74a9e0d4c976",
+          "revision": 2,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 0.00076700234785676,
+          "edit_and_bash_ms": 4.181121999863535,
+          "freeze_ms": 4.650747985579073,
+          "blocks_and_map_ms": 104.01803604327142,
+          "publish_ms": 45.93050299445167,
+          "thaw_ms": 2.927172987256199,
+          "elapsed_ms": 161.90255503170192
+        },
+        {
+          "ack": true,
+          "value": "e005285242a945fca8c9d327e2af65b8",
+          "root": "a0898d33b3e786cfcd9dd3a01b64011c0ddee5f858477e28a11304d4f9828276",
+          "revision": 3,
+          "uploaded_bytes": 1310720,
+          "mount_ms": 0.0007449998520314693,
+          "edit_and_bash_ms": 4.267039010301232,
+          "freeze_ms": 64.26276598358527,
+          "blocks_and_map_ms": 136.72018400393426,
+          "publish_ms": 39.378979010507464,
+          "thaw_ms": 2.8565439861267805,
+          "elapsed_ms": 247.6639529922977
+        },
+        {
+          "ack": true,
+          "value": "cf30824c817046bf8a324cd318f8c7ea",
+          "root": "ea3a153a351487294211309c18f5346a40ec9cb952cc4fb83f26ebe2800addcc",
+          "revision": 4,
+          "uploaded_bytes": 1310720,
+          "mount_ms": 0.0008220085874199867,
+          "edit_and_bash_ms": 4.18866501422599,
+          "freeze_ms": 5.129699013195932,
+          "blocks_and_map_ms": 128.51302599301562,
+          "publish_ms": 46.55972099862993,
+          "thaw_ms": 2.970621979329735,
+          "elapsed_ms": 187.5348860048689
+        },
+        {
+          "ack": true,
+          "value": "618ff3a55e444fd4b46cbd4a8aa94150",
+          "root": "b7fb3a93cbd7565c39a0b8090df9eaeefbab11984ee25489b89b1a5f22b72c7f",
+          "revision": 5,
+          "uploaded_bytes": 1572864,
+          "mount_ms": 0.0008950009942054749,
+          "edit_and_bash_ms": 4.319438012316823,
+          "freeze_ms": 12.683085980825126,
+          "blocks_and_map_ms": 100.71192198665813,
+          "publish_ms": 35.42076703161001,
+          "thaw_ms": 2.850910008419305,
+          "elapsed_ms": 156.1544450232759
+        }
+      ],
+      "cache_blocks_at_start": 13,
+      "owner_exit": -9,
+      "cache_blocks_at_end": 14
+    },
+    {
+      "ref": "empty-cache-2",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "84a34ef657794dc8b345fac0e6bb4093",
+          "root": "da2c4173a6fb9dd45ea87445d1a2bc766b899d2b8b8e9e8bf81eebe3b5f90f24",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1157.0204479503445,
+          "edit_and_bash_ms": 367.984451004304,
+          "freeze_ms": 65.71740499930456,
+          "blocks_and_map_ms": 141.84100303100422,
+          "publish_ms": 38.41161698801443,
+          "thaw_ms": 2.7197470190003514,
+          "elapsed_ms": 1773.9081830368377
+        }
+      ],
+      "cache_blocks_at_start": 0,
+      "owner_exit": -9,
+      "cache_blocks_at_end": 13
+    },
+    {
+      "ref": "populated-cache-2",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "22e18ff799534095a45173e607e5b6a3",
+          "root": "b962642efe39a32da5d93d3e2a2c04e4f3fda6832b855951a58feb86fde3d1e1",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1079.8654760001227,
+          "edit_and_bash_ms": 9.219831030350178,
+          "freeze_ms": 34.091189969331026,
+          "blocks_and_map_ms": 139.86038701841608,
+          "publish_ms": 35.06719501456246,
+          "thaw_ms": 2.825900970492512,
+          "elapsed_ms": 1301.1706119868904
+        },
+        {
+          "ack": true,
+          "value": "ae2facbe6574487a89a6781c9c4de821",
+          "root": "d9b0593baeb92d2da10d40802b540e1c4917d64e34c030b9469ea9566e543e8a",
+          "revision": 2,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 0.0011239899322390556,
+          "edit_and_bash_ms": 4.384771047625691,
+          "freeze_ms": 12.122278974857181,
+          "blocks_and_map_ms": 88.61655200598761,
+          "publish_ms": 35.95468500861898,
+          "thaw_ms": 3.071205981541425,
+          "elapsed_ms": 144.34518298367038
+        },
+        {
+          "ack": true,
+          "value": "4c12394884bf4631878eed61b02c19d3",
+          "root": "9810a78526582b62c6ae777d421657af61c821d50e29151a833387ab13de0f56",
+          "revision": 3,
+          "uploaded_bytes": 1310720,
+          "mount_ms": 0.0008699717000126839,
+          "edit_and_bash_ms": 4.347580019384623,
+          "freeze_ms": 84.45187599863857,
+          "blocks_and_map_ms": 95.04250099416822,
+          "publish_ms": 35.00167600577697,
+          "thaw_ms": 3.030407999176532,
+          "elapsed_ms": 222.07959700608626
+        },
+        {
+          "ack": true,
+          "value": "a7d5b85a9c834300adf6ac6c25d576cf",
+          "root": "0037a6ce2341b1faf7ed9d0c6820c40925cc17650b8dd8b2b8243bb38a416199",
+          "revision": 4,
+          "uploaded_bytes": 1310720,
+          "mount_ms": 0.000776955857872963,
+          "edit_and_bash_ms": 4.269882047083229,
+          "freeze_ms": 5.110120982863009,
+          "blocks_and_map_ms": 84.89449002081528,
+          "publish_ms": 39.98234396567568,
+          "thaw_ms": 2.6569340261630714,
+          "elapsed_ms": 137.16284395195544
+        },
+        {
+          "ack": true,
+          "value": "255bd47931e64cdf935a8ceffabec42c",
+          "root": "20a1f15f3bc9dede5abf652b0b79ef9b9e609145e634a4576049ab073b1eb5b2",
+          "revision": 5,
+          "uploaded_bytes": 1572864,
+          "mount_ms": 0.0006460468284785748,
+          "edit_and_bash_ms": 4.133841954171658,
+          "freeze_ms": 17.32201303821057,
+          "blocks_and_map_ms": 338.0163160036318,
+          "publish_ms": 45.809425006154925,
+          "thaw_ms": 3.049938997719437,
+          "elapsed_ms": 408.57163502369076
+        }
+      ],
+      "cache_blocks_at_start": 13,
+      "owner_exit": -9,
+      "cache_blocks_at_end": 14
+    },
+    {
+      "ref": "before-publish",
+      "first_etag": "\"21e0c5233da65f5108f99b4fa0c99c63\"",
+      "edits": [
+        {
+          "ack": true,
+          "value": "f1f5a209ed3342999d013dd3fe29be4b",
+          "root": "fd93fe83b8d705caf91f95afe791bd5ac8b9366b39fe51df006058d5073d230c",
+          "revision": 1,
+          "uploaded_bytes": 1048576,
+          "mount_ms": 1189.9143559858203,
+          "edit_and_bash_ms": 252.1129189990461,
+          "freeze_ms": 67.9543720325455,
+          "blocks_and_map_ms": 136.19176601059735,
+          "publish_ms": 35.12284700991586,
+          "thaw_ms": 2.7915279497392476,
+          "elapsed_ms": 1684.299808985088
+        }
+      ],
+      "cache_blocks_at_start": 0,
+      "unacknowledged": "10eb9a8cee84437d9aeed462909254c1",
+      "owner_exit": -9,
+      "cache_blocks_at_end": 13
+    }
+  ]
+}

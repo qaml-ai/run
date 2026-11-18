@@ -1,0 +1,53 @@
+[
+  {
+    "idle_5s_samples": [
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "cold",
+      "warm",
+      "cold",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "cold",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm",
+      "warm"
+    ],
+    "before": "warm",
+    "writes": [
+      [
+        {
+          "http": 200,
+          "sec": 0.217473
+        }
+      ],
+      [
+        {
+          "http": 200,
+          "sec": 0.199815
+        }
+      ]
+    ],
+    "after_write_0": "warm",
+    "status_after_first_before_any_read": [
+      "warm",
+      "warm",
+      "warm",
+      "warm"
+    ],
+    "after_write_1": "warm"
+  }
+]

@@ -1,0 +1,10 @@
+[
+  {
+    "ref": "power-loss",
+    "revision": 2,
+    "value": "702f9cecef294a5dbace69433120075d",
+    "blocks_fetched_for_lazy_mount_and_read": 13,
+    "clean_ext4": true,
+    "stale_publish_http": 412
+  }
+]

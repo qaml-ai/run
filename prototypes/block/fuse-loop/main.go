@@ -1,5 +1,6 @@
 // fuse-loop: a FUSE loopback mount (go-fuse) as the FUSE baseline, with and without kernel passthrough (Linux 6.9+).
-//   fuse-loop -passthrough=true|false ORIGIN MOUNTPOINT
+//
+//	fuse-loop -passthrough=true|false ORIGIN MOUNTPOINT
 package main
 
 import (
@@ -12,6 +13,8 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
+
+var allowOther = flag.Bool("allow-other", false, "allow a separate workload UID to use the benchmark mount")
 
 var passthrough = flag.Bool("passthrough", true, "let the kernel read/write the backing file directly (FUSE passthrough)")
 
@@ -63,10 +66,14 @@ func main() {
 	server, err := fs.Mount(flag.Arg(1), rootNode, &fs.Options{
 		AttrTimeout:  &sec,
 		EntryTimeout: &sec,
-		MountOptions: fuse.MountOptions{Name: "fuse-loop", FsName: flag.Arg(0), AllowOther: false, MaxWrite: 1 << 20, DirectMount: true},
+		MountOptions: fuse.MountOptions{Name: "fuse-loop", FsName: flag.Arg(0), AllowOther: *allowOther, MaxWrite: 1 << 20, DirectMount: true},
 	})
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *passthrough && server.KernelSettings().Flags64()&fuse.CAP_PASSTHROUGH == 0 {
+		_ = server.Unmount()
+		log.Fatal("kernel lacks FUSE passthrough")
 	}
 	log.Printf("mounted %s on %s passthrough=%v", flag.Arg(0), flag.Arg(1), *passthrough)
 	server.Wait()
