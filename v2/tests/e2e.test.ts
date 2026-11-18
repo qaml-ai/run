@@ -1200,7 +1200,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const repos = await Promise.all([ensureRepo(apiKey), ensureRepo(apiKey)]);
     assert.deepEqual(repos.map((response) => response.status), [200, 200]);
     const [firstRepo, secondRepo] = await Promise.all(repos.map((response) => response.json()));
-    assert.ok(firstRepo.repoId);
+    assert.ok(firstRepo && typeof firstRepo === "object" && "repoId" in firstRepo && firstRepo.repoId);
     assert.deepEqual(secondRepo, firstRepo);
     const paused = await agent.run('Pause the queue [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
