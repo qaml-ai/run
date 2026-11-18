@@ -211,27 +211,20 @@ app.get("/v2/billing", async (c) => {
 });
 
 app.post("/v2/billing/credits", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(403, "forbidden", "Only an admin can add credits");
+  }
   const body = (await c.req.json()) as {
     tenantId?: string;
     amountUsd: number;
     refId: string;
     note?: string;
   };
-  let targetTenantId = body.tenantId?.trim() ?? "";
-
-  if (verifyAdminHeader(c.env, c.req.raw)) {
-    if (!targetTenantId) {
-      try {
-        const bearerAuth = await authenticateRequest(c.env, c.req.raw);
-        targetTenantId = bearerAuth.tenantId;
-      } catch {
-        throw new ApiError(400, "invalid_request", "`tenantId` is required with X-Admin-Key");
-      }
-    }
-  } else {
-    const auth = await authenticateRequest(c.env, c.req.raw);
-    assertTenantScope(auth);
-    targetTenantId = auth.tenantId;
+  let targetTenantId = body.tenantId?.trim();
+  if (!targetTenantId) {
+    const caller = await authenticateRequest(c.env, c.req.raw).catch(() => null);
+    if (!caller) throw new ApiError(400, "invalid_request", "`tenantId` is required with X-Admin-Key");
+    targetTenantId = caller.tenantId;
   }
 
   const amountUsd = Number(body.amountUsd);

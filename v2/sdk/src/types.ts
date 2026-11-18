@@ -74,7 +74,7 @@ export interface BillingUsageEntry {
   [key: string]: unknown;
 }
 export interface BillingInfo { balanceUsd: number; monthlyCapUsd: number | null; usage: BillingUsageEntry[]; }
-export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey?: string; }
+export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey: string; }
 
 export type BuiltinCategory =
   | "files" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"

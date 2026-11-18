@@ -108,7 +108,7 @@ export class CamelRun {
   readonly billing = {
     get: (): Promise<BillingInfo> => this.requestJson("GET", "/v2/billing"),
     addCredits: ({ adminKey, refId, ...rest }: AddCreditsInput): Promise<{ balanceUsd: number }> =>
-      this.requestJson("POST", "/v2/billing/credits", { ...rest, refId: refId ?? crypto.randomUUID() }, adminKey ? { headers: { "X-Admin-Key": adminKey } } : undefined),
+      this.requestJson("POST", "/v2/billing/credits", { ...rest, refId: refId ?? crypto.randomUUID() }, { headers: { "X-Admin-Key": adminKey } }),
   };
 
   readonly definitions = {

@@ -330,7 +330,7 @@ export async function runAgentTurn(
       params.prefetchedBalanceUsd !== undefined
         ? params.prefetchedBalanceUsd
         : (await getTenantStub(adapter.env, config.tenantId).getProfile())?.balanceUsd;
-    if (balanceUsd !== undefined && balanceUsd <= -0.0001) {
+    if (balanceUsd !== undefined && balanceUsd <= 0) {
       const err = { code: "insufficient_credits", message: "Tenant credit balance is exhausted" };
       adapter.updateRunState(params.runId, { status: "failed", error: err, ended: true });
       adapter.emitEvent(params.runId, "run_failed", err);

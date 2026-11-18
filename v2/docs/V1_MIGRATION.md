@@ -82,8 +82,19 @@ repository. Large images are rejected before the turn is added to history.
 Older images outside the model request budget remain readable by their
 path and commit.
 
-The live canary still needs app routing, shared draft access, import of
-historical attachments, tool-driven forms, and a common credit authority.
-Keep the existing balances, daily allowances, and expiring lots
-authoritative for both versions. Verify that each accepted call charges
-once and a refused call uses neither the provider nor the other runtime.
+## Credit for the canary
+
+If the canary can grant extra credit, provision a v2 tenant for each
+participating owner and set a one-time initial balance. Route the selected
+owner's builder and bots to that tenant. Use the v2 billing summary for
+their canary usage. Only an admin can add credit, and repeated grants
+with the same reference apply once. Each owner's existing v1 balance
+continues to fund their v1 activity.
+
+Keep paid balances, daily allowances and expiring lots on v1 during
+the canary. The v2 balance check at run start is a spending threshold.
+A run that starts with a positive balance can spend past it. At final
+cutover, carry remaining paid credit over once v1 usage ends.
+
+The live canary also needs app routing, shared draft access, historical
+attachment import and tool-driven forms.

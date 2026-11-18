@@ -349,6 +349,38 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await scopedClient.close();
   });
 
+  it("isolates pilot credits by tenant and requires admin authorization to grant them", async (t) => {
+    const provision = (name: string, initialCreditsUsd: number) =>
+      CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name, initialCreditsUsd });
+    const pilot = await provision("Funded pilot account", 1);
+    const other = await provision("Unfunded pilot account", 0);
+    const funded = new CamelRun({ baseUrl: workerUrl, apiKey: pilot.apiKey });
+    const unfunded = new CamelRun({ baseUrl: workerUrl, apiKey: other.apiKey });
+    t.after(() => { funded.close(); unfunded.close(); });
+
+    const grant = { amountUsd: 1, refId: "pilot-grant" };
+    const unauthorized = await fetch(`${workerUrl}/v2/billing/credits`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${other.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(grant),
+    });
+    assert.equal(unauthorized.status, 403);
+    await unfunded.providers.set("openrouter", { apiKey: "fake-provider-key", baseUrl: auxUrl + "/v1" });
+    const builder = await unfunded.agents.upsert("pilot-builder", { model: "openrouter/meta/muse-ember" });
+    const beforeDispatch = lastProviderMessages;
+    await assert.rejects(builder.run("Unfunded"), (error: unknown) =>
+      error instanceof CamelRunError && error.code === "insufficient_credits");
+    assert.equal(lastProviderMessages, beforeDispatch);
+    assert.equal((await unfunded.billing.get()).balanceUsd, 0);
+
+    assert.equal((await unfunded.billing.addCredits({ ...grant, adminKey: ADMIN_SECRET })).balanceUsd, 1);
+    assert.equal((await unfunded.billing.addCredits({ ...grant, adminKey: ADMIN_SECRET })).balanceUsd, 1);
+    const run = await builder.run("Funded");
+    assert.match(run.text, /SSE upstream/);
+    assert.ok((await unfunded.billing.get()).balanceUsd < 1);
+    assert.equal((await funded.billing.get()).balanceUsd, 1);
+  });
+
   it("2. camelfsd repos, file tools, persistent bash VM (cwd + env + atomic commit), and edit-while-VM-live work seamlessly", async () => {
     const { apiKey, tenantId } = await CamelRun.createTenant({
       baseUrl: workerUrl,
