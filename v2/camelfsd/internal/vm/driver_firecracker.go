@@ -274,7 +274,7 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 			_ = blobLn.Close()
 		}
 	}()
-	go d.serveBlobSocket(blobLn)
+	go d.serveBlobSocket(blobLn, spec.Tree)
 
 	guestCID := d.allocCID()
 	files := fcVMFiles{kernel: d.cfg.KernelImagePath, rootfs: rootfsCopy, vsock: vsockUDS}
@@ -324,34 +324,40 @@ func (d *FirecrackerDriver) Start(ctx context.Context, spec StartSpec) (string, 
 	return firecrackerHost, nil
 }
 
-func (d *FirecrackerDriver) serveBlobSocket(ln net.Listener) {
+func (d *FirecrackerDriver) serveBlobSocket(ln net.Listener, tree []repo.TreeEntry) {
+	allowed := make(map[string]struct{}, len(tree))
+	for _, entry := range tree {
+		if entry.Hash != "" {
+			allowed[entry.Hash] = struct{}{}
+		}
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go serveBlobConn(conn, d.cfg.GetBlob)
+		go serveBlobConn(conn, allowed, d.cfg.GetBlob)
 	}
 }
 
-func serveBlobConn(conn net.Conn, getBlob func(ctx context.Context, hash string) ([]byte, error)) {
+func serveBlobConn(conn net.Conn, allowed map[string]struct{}, getBlob func(ctx context.Context, hash string) ([]byte, error)) {
 	defer conn.Close()
-	br := bufio.NewReader(conn)
+	requests := bufio.NewScanner(conn)
+	requests.Buffer(make([]byte, 128), 128) // A request is a SHA-256 hex digest and a newline.
 	var hdr [9]byte
-	for {
-		line, err := br.ReadString('\n')
+	for requests.Scan() {
+		hash := requests.Text()
+		var data []byte
+		var err error
+		if _, ok := allowed[hash]; ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			data, err = getBlob(ctx, hash)
+			cancel()
+		} else {
+			err = os.ErrNotExist
+		}
 		if err != nil {
-			return
-		}
-		hash := strings.TrimSpace(line)
-		if hash == "" {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		data, bErr := getBlob(ctx, hash)
-		cancel()
-		if bErr != nil {
-			msg := []byte(bErr.Error())
+			msg := []byte(err.Error())
 			hdr[0] = 1
 			binary.BigEndian.PutUint64(hdr[1:9], uint64(len(msg)))
 			if _, wErr := conn.Write(hdr[:]); wErr != nil {
