@@ -189,12 +189,14 @@ export interface StoredRunFile extends RunFile {
 
 export interface StartRunInput {
   prompt: string;
+  actor?: string;
   files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
   wait?: boolean;
   outputSchema?: Record<string, unknown> | null;
   maxSteps?: number;
+  spendLimitUsd?: number;
 }
 
 export interface StartRunHints {

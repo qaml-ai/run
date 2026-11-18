@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import { unstable_startWorker } from "wrangler";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool } from "../sdk/src/index.ts";
@@ -66,12 +67,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let auxServer: Server;
   let auxUrl: string;
   let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
+  let startWorker: () => Promise<void>;
   let workerUrl: string;
   let failNextExec = false;
   let vmBootRequests = 0;
   type ProviderMessage = { role: string; content: unknown; tool_call_id?: string };
   let lastProviderMessages: ProviderMessage[] | undefined;
   let lastProviderOptions: Record<string, unknown> | undefined;
+  let actorToolGate: { started: () => void; resume: Promise<void> } | undefined;
+  const actorTokens = new Map<string, string>();
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
 
   before(async () => {
@@ -117,7 +121,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         return;
       }
 
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url === "/mcp" || req.url === "/mcp-actor") && req.method === "POST") {
         const rpc = JSON.parse(rawBody) as { id: number | string; method: string; params?: Record<string, unknown> };
         if (rpc.method === "initialize") {
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -145,6 +149,13 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         }
         if (rpc.method === "tools/call") {
           const args = (rpc.params?.arguments as { city?: string } | undefined) ?? {};
+          if (req.url === "/mcp-actor" && args.city && req.headers.authorization) {
+            actorTokens.set(args.city, req.headers.authorization.slice("Bearer ".length));
+            if (args.city === "Paris" && actorToolGate) {
+              actorToolGate.started();
+              await actorToolGate.resume;
+            }
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(
             JSON.stringify({
@@ -251,16 +262,19 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         2,
       ),
     );
-    worker = await unstable_startWorker({
-      config: testConfigPath,
-      dev: {
-        persist: join(tempDir, "wrangler-state"),
-        server: { hostname: "127.0.0.1", port: workerPort },
-        logLevel: "none",
-      },
-    });
     workerUrl = `http://127.0.0.1:${workerPort}`;
-    await waitForHealth(`${workerUrl}/healthz`);
+    startWorker = async () => {
+      worker = await unstable_startWorker({
+        config: testConfigPath,
+        dev: {
+          persist: join(tempDir, "wrangler-state"),
+          server: { hostname: "127.0.0.1", port: workerPort },
+          logLevel: "none",
+        },
+      });
+      await waitForHealth(`${workerUrl}/healthz`);
+    };
+    await startWorker();
   });
 
   after(async () => {
@@ -383,6 +397,102 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.match(run.text, /SSE upstream/);
     assert.ok((await unfunded.billing.get()).balanceUsd < 1);
     assert.equal((await funded.billing.get()).balanceUsd, 1);
+  });
+
+  it("persists a run spend limit, isolates capped runs from batching, and bills metered usage", async (t) => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl,
+      adminKey: ADMIN_SECRET,
+      name: "per-run-spend",
+      initialCreditsUsd: 1,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    await camel.providers.set("openrouter", { apiKey: "test-spend", baseUrl: `${auxUrl}/v1` });
+    const agent = await camel.agents.upsert("per-run-spend", {
+      model: "openrouter/meta/muse-ember",
+      queue: { mode: "batch", windowMs: 100 },
+    });
+    const beforeZero = lastProviderMessages;
+    const zero = await agent.run("no budget", { spendLimitUsd: 0, throwOnError: false });
+    assert.ok(zero.error && typeof zero.error === "object");
+    assert.equal(zero.error.code, "spend_limit_exceeded");
+    assert.equal(zero.usage.costUsd, 0);
+    assert.equal(lastProviderMessages, beforeZero);
+    await assert.rejects(agent.run("wrong budget", { spendLimitUsd: -1 }), (error: unknown) =>
+      error instanceof CamelRunError && error.code === "invalid_spend_limit");
+
+    await assert.rejects(agent.run("steering with a new budget", { whileRunning: "steer", spendLimitUsd: 0 }), (error: unknown) =>
+      error instanceof CamelRunError && error.code === "invalid_spend_limit");
+
+    const [normal, capped] = await Promise.all([
+      agent.run("uncapped batch member"),
+      agent.run("capped batch member", { spendLimitUsd: 0.00000001, idempotencyKey: "capped", throwOnError: false }),
+    ]);
+    assert.equal(normal.status, "completed");
+    assert.equal(capped.batchedInto, null);
+    assert.ok(capped.error && typeof capped.error === "object");
+    assert.equal(capped.error.code, "spend_limit_exceeded");
+    assert.ok(capped.usage.costUsd > 0);
+    assert.equal((1 - (await camel.billing.get()).balanceUsd).toFixed(8), (normal.usage.costUsd + capped.usage.costUsd).toFixed(8));
+    const retried = await agent.run("retry with larger budget", { spendLimitUsd: 1, idempotencyKey: "capped", throwOnError: false });
+    assert.equal(retried.id, capped.id);
+    assert.deepEqual(retried.error, capped.error);
+  });
+
+  it("binds signed tools to the run's actor and queues a steer from another actor", async (t) => {
+    const { apiKey, tenantId } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "run-actor",
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    const audience = `${auxUrl}/mcp-actor`;
+    const agent = await camel.agents.upsert("run-actor", {
+      model: "mock/default",
+      toolIdentity: { subject: "thread-owner", context: { thread: "shared-thread" } },
+      mcpServers: [{ name: "app", url: audience, audience, auth: { type: "runtime" } }],
+    });
+    const scoped = new CamelRun({ baseUrl: workerUrl, apiKey: agent.agentToken! });
+    t.after(() => scoped.close());
+    const scopedAgent = await scoped.agents.get(agent.id);
+    await assert.rejects(scopedAgent.run("Try to become a member", { actor: "another-member" }), (error: unknown) =>
+      error instanceof CamelRunError && error.status === 403);
+
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { resume = resolve; });
+    actorToolGate = { started: markStarted, resume: paused };
+    const parisPrompt = 'First [CALL:app__weather_forecast {"city":"Paris"}]';
+    const londonPrompt = 'Second [CALL:app__weather_forecast {"city":"London"}]';
+    const first = await agent.submit(parisPrompt, { actor: "first-member", idempotencyKey: "first" });
+    let second;
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([started, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("First actor did not reach the tool")), 3_000);
+        })]);
+      } finally { clearTimeout(timer); }
+      second = await agent.steer(londonPrompt, { actor: "second-member", idempotencyKey: "second", wait: false });
+      assert.equal(second.status, "queued");
+      assert.equal(second.batchedInto, null);
+    } finally {
+      resume();
+      actorToolGate = undefined;
+    }
+    await agent.run(parisPrompt, { actor: "first-member", idempotencyKey: "first" });
+    await agent.run(londonPrompt, { actor: "second-member", idempotencyKey: "second" });
+    const issuer = `${workerUrl}/v2`;
+    const jwks = createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
+    for (const [city, actor, runId] of [["Paris", "first-member", first.id], ["London", "second-member", second.id]]) {
+      const { payload } = await jwtVerify(actorTokens.get(city)!, jwks, { issuer, audience });
+      assert.equal(payload.act, actor);
+      assert.equal(payload.sub, "thread-owner");
+      assert.equal(payload.tenant, tenantId);
+      assert.equal(payload.agent, agent.id);
+      assert.equal(payload.req, runId);
+    }
   });
 
   it("2. camelfsd repos, file tools, persistent bash VM (cwd + env + atomic commit), and edit-while-VM-live work seamlessly", async () => {
@@ -1015,5 +1125,29 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     );
 
     await camel.close();
+  });
+
+  it("keeps a queued run's spend limit and actor after a Worker restart", async (t) => {
+    const { apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "restart-run-context" });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    const agent = await camel.agents.upsert("restart-run-context", { model: "mock/default", builtins: ["human"] });
+    const paused = await agent.run('Pause the queue [CALL:ask_human {"question":"Continue?"}]');
+    assert.equal(paused.status, "input_required");
+    const capped = await agent.submit("Wait with no spend left", { spendLimitUsd: 0, idempotencyKey: "capped" });
+    const attributed = await agent.submit("Wait with a sender", { actor: "returning-member", idempotencyKey: "attributed" });
+    assert.equal(capped.status, "queued");
+    assert.equal(attributed.status, "queued");
+
+    await worker.dispose();
+    await startWorker();
+    await agent.answerInput(paused.inputs[0]!.id, { answer: "Continue" });
+    await assert.rejects(agent.run("See queued run", { idempotencyKey: "capped" }), (error: unknown) =>
+      error instanceof CamelRunError && error.code === "spend_limit_exceeded");
+    const completed = await agent.run("See queued run", { idempotencyKey: "attributed" });
+    assert.equal(completed.id, attributed.id);
+    const content = (await agent.history()).find(message => message.runId === attributed.id && message.role === "user")?.content;
+    assert.ok(content && typeof content === "object" && "meta" in content);
+    assert.deepEqual(content.meta, { actor: "returning-member" });
   });
 });

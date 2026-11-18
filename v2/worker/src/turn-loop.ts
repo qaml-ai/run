@@ -85,6 +85,7 @@ export interface TurnStorageAdapter {
     }>,
   ): void;
   getRunRecord(runId: string): RunRecord;
+  getRunSpendLimit(runId: string): number | null;
   makeToolContext(
     runId: string,
     approvedToolCallIds: Set<string>,
@@ -134,7 +135,7 @@ export function contextCutoff(messages: readonly Pick<StoredMessage, "role">[], 
 
 export async function performCompaction(
   adapter: TurnStorageAdapter,
-  options?: { customSummary?: string; keepLast?: number; signal?: AbortSignal },
+  options?: { customSummary?: string; keepLast?: number; signal?: AbortSignal; usage?: RunUsage },
 ): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
   const config = adapter.getConfig();
   const prev = adapter.getLatestCompaction();
@@ -170,6 +171,10 @@ export async function performCompaction(
     })) {
       if (chunk.type === "text_delta") {
         generated += chunk.delta;
+      } else if (chunk.type === "done" && options?.usage) {
+        options.usage.inputTokens += chunk.inputTokens;
+        options.usage.outputTokens += chunk.outputTokens;
+        options.usage.costUsd = calculateCostUsd(config.model, options.usage.inputTokens, options.usage.outputTokens, options.usage.vmMs);
       }
     }
     options?.signal?.throwIfAborted();
@@ -319,6 +324,7 @@ export async function runAgentTurn(
   params: {
     runId: string;
     prompt: string;
+    actor?: string;
     files: Array<{ lineage: string; file: RunFile }>;
     outputSchema: Record<string, unknown> | null;
     maxSteps: number;
@@ -328,6 +334,9 @@ export async function runAgentTurn(
   },
 ): Promise<RunRecord> {
   const config = adapter.getConfig();
+  const spendLimit = adapter.getRunSpendLimit(params.runId);
+  const usage = spendLimit === null ? emptyUsage() : adapter.getRunRecord(params.runId).usage;
+  if (spendLimit !== null && usage.costUsd >= spendLimit) throw runSpendLimitError(spendLimit);
 
   // Credit balance pre-check (non-mock models require positive balance if tenant exists)
   if (!config.model.startsWith("mock") && config.model !== "mock") {
@@ -347,9 +356,13 @@ export async function runAgentTurn(
     ? await verifyRunFiles(new CamelFsClient(adapter.env, config.tenantId), params.files)
     : undefined;
 
-  adapter.appendMessage(params.runId, "user", { text: params.prompt, files });
+  adapter.appendMessage(params.runId, "user", {
+    text: params.prompt,
+    files,
+    ...(params.actor ? { meta: { actor: params.actor } } : {}),
+  });
   adapter.updateRunState(params.runId, { status: "running" });
-  adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt });
+  adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt, ...(params.actor ? { actor: params.actor } : {}) });
 
   // Count only prior messages and keep the new prompt along with the recent history.
   const autoCompactThreshold = Math.min(
@@ -360,7 +373,11 @@ export async function runAgentTurn(
   const existingMsgs = adapter.listMessagesAfter(prevCompaction?.upToSeq ?? 0);
   const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
   if (estTotal > autoCompactThreshold && existingMsgs.length > 7) {
-    await performCompaction(adapter, { keepLast: 5, signal: params.signal });
+    try {
+      await performCompaction(adapter, { keepLast: 5, signal: params.signal, ...(spendLimit === null ? {} : { usage }) });
+    } finally {
+      if (spendLimit !== null) adapter.updateRunState(params.runId, { usage });
+    }
   }
 
   return continueTurnLoop(adapter, {
@@ -373,7 +390,7 @@ export async function runAgentTurn(
     accText: "",
     toolCallsSummary: [],
     filesChangedSet: new Set<string>(),
-    usage: emptyUsage(),
+    usage,
     signal: params.signal,
     prefetchedProvider: params.prefetchedProvider,
   });
@@ -398,6 +415,8 @@ export async function resumePausedTurn(
   const approvedSet = new Set(paused.approvedToolCallIds);
   const filesChangedSet = new Set(paused.filesChanged);
   const usage: RunUsage = { ...paused.usage };
+  const spendLimit = adapter.getRunSpendLimit(runId);
+  if (spendLimit !== null && usage.costUsd >= spendLimit) throw runSpendLimitError(spendLimit);
   const toolCallsSummary = [...paused.toolCallsSummary];
 
   adapter.updateRunState(runId, { status: "running" });
@@ -417,6 +436,7 @@ export async function resumePausedTurn(
     },
     (ms) => {
       usage.vmMs += ms;
+      usage.costUsd = calculateCostUsd(config.model, usage.inputTokens, usage.outputTokens, usage.vmMs);
     },
     params.signal,
   );
@@ -605,6 +625,10 @@ async function runSingleToolAndRecord(opts: {
   }
 }
 
+function runSpendLimitError(limit: number): ApiError {
+  return new ApiError(402, "spend_limit_exceeded", `Run reached its spend limit ($${limit})`);
+}
+
 async function continueTurnLoop(
   adapter: TurnStorageAdapter,
   state: {
@@ -629,6 +653,13 @@ async function continueTurnLoop(
 
   try {
     const config = adapter.getConfig();
+    const spendLimit = adapter.getRunSpendLimit(runId);
+    const checkRunSpend = () => {
+      if (spendLimit === null) return;
+      adapter.updateRunState(runId, { usage });
+      if (usage.costUsd >= spendLimit) throw runSpendLimitError(spendLimit);
+    };
+    checkRunSpend();
     const catalog = await buildToolCatalog(config, adapter.env, state.signal);
     const toolCtx = adapter.makeToolContext(
       runId,
@@ -675,6 +706,7 @@ async function continueTurnLoop(
         if (paused) {
           return adapter.getRunRecord(runId);
         }
+        checkRunSpend();
       }
     }
 
@@ -753,6 +785,7 @@ async function continueTurnLoop(
       if (stepText) {
         accText = stepText;
       }
+      checkRunSpend();
 
       adapter.appendMessage(runId, "assistant", {
         text: stepText,
@@ -849,6 +882,7 @@ async function continueTurnLoop(
         if (paused) {
           return adapter.getRunRecord(runId);
         }
+        checkRunSpend();
       }
     }
 

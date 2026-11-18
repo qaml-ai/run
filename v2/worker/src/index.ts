@@ -641,6 +641,9 @@ app.post("/v2/agents/:idOrKey/runs", async (c) => {
     throw new ApiError(401, "unauthorized", "Missing Bearer token");
   }
   const body = (await c.req.json()) as StartRunInput;
+  if (body.actor !== undefined && creds.kind !== "tenant") {
+    throw new ApiError(403, "forbidden", "A tenant credential is required to set the run actor");
+  }
   const preacquireRunId = body.whileRunning !== "steer" ? randomId("run", 8) : undefined;
   const tenantStub = getTenantStub(c.env, creds.tenantId);
   const prep = await tenantStub.authorizeAndPrepareRun({

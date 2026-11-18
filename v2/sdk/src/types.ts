@@ -160,12 +160,14 @@ export interface V1HistoryImport {
 }
 
 export interface RunOptions {
+  actor?: string;
   files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
   wait?: boolean;
   outputSchema?: Record<string, unknown>;
   maxSteps?: number;
+  spendLimitUsd?: number;
   throwOnError?: boolean;
   signal?: AbortSignal;
 }

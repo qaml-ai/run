@@ -56,6 +56,7 @@ export interface ToolExecutionContext {
   env: Env;
   config: AgentConfig;
   runId: string;
+  actor?: string;
   approvedToolCallIds: Set<string>;
   approval?: ToolApproval;
   mcpBinding?: McpBinding;
@@ -421,7 +422,7 @@ export async function executeToolCall(
 
   const custom = catalog.customByName.get(toolName);
   const mcpTool = catalog.mcpByName.get(toolName);
-  const subject = ctx.config.toolIdentity?.subject ?? ctx.config.id;
+  const subject = ctx.actor ?? ctx.config.toolIdentity?.subject ?? ctx.config.id;
   if (ctx.mcpBinding && (!mcpTool?.server.auth || ctx.mcpBinding.url !== mcpTool.server.url ||
       ctx.mcpBinding.audience !== mcpTool.server.audience || ctx.mcpBinding.subject !== subject)) {
     throw new Error(`MCP tool '${toolName}' changed while waiting for input`);
@@ -484,7 +485,7 @@ export async function executeToolCall(
     const approval = ctx.approvedToolCallIds.has(callId) ? ctx.approval : undefined;
     const { url, audience } = mcpTool.server;
     try {
-      return await invokeMcpTool(mcpTool, args, { env: ctx.env, agent: ctx.config, call: { runId: ctx.runId, callId, approval } }, ctx.signal, ctx.mcpInput);
+      return await invokeMcpTool(mcpTool, args, { env: ctx.env, agent: ctx.config, call: { runId: ctx.runId, callId, actor: ctx.actor, approval } }, ctx.signal, ctx.mcpInput);
     } catch (error) {
       if (!(error instanceof McpInputRequired)) throw error;
       if (ctx.codemodeDepth) throw new Error(`MCP tool '${toolName}' must be called directly to request input`);

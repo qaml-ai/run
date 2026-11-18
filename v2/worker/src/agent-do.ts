@@ -214,6 +214,13 @@ export class AgentDO extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
     `);
+    const runColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(runs)").toArray();
+    if (!runColumns.some((column) => column.name === "spend_limit_usd")) {
+      this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN spend_limit_usd REAL");
+    }
+    if (!runColumns.some((column) => column.name === "actor")) {
+      this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN actor TEXT");
+    }
     this.sqlReady = true;
 
     // Recover from isolate eviction/restart: load persisted dream watermark
@@ -428,6 +435,7 @@ export class AgentDO extends DurableObject<Env> {
         );
       },
       getRunRecord: (runId) => this.materializeRunRecord(runId),
+      getRunSpendLimit: (runId) => this.runSpendLimit(runId),
       makeToolContext: (runId, approvedSet, onFilesChanged, onVmMs, signal) =>
         this.createToolExecutionContext(runId, approvedSet, onFilesChanged, onVmMs, signal),
     };
@@ -440,10 +448,12 @@ export class AgentDO extends DurableObject<Env> {
     onVmMs: (ms: number) => void,
     signal?: AbortSignal,
   ): ToolExecutionContext {
+    const actor = this.runActor(runId);
     return {
       env: this.env,
       config: this.requireConfig(),
       runId,
+      actor,
       approvedToolCallIds,
       signal,
       ensureAgentRepo: async () => this.ensureAgentRepository(),
@@ -534,8 +544,12 @@ export class AgentDO extends DurableObject<Env> {
         );
       },
       runInlineSubprompt: async (prompt: string, opts?: Record<string, unknown>) => {
+        if (this.runSpendLimit(runId) !== null) {
+          throw new ApiError(409, "nested_run_spend_limit", "A capped run cannot start an independent workflow model run");
+        }
         const subRun = await this.enqueueOrRunInternal({
           prompt,
+          actor,
           wait: true,
           outputSchema:
             opts?.outputSchema && typeof opts.outputSchema === "object"
@@ -923,6 +937,17 @@ export class AgentDO extends DurableObject<Env> {
     const whileRunning = body.whileRunning === "steer" ? "steer" : "queue";
     const wait = body.wait !== undefined ? Boolean(body.wait) : true;
     const maxSteps = Math.max(1, Math.min(100, Number(body.maxSteps ?? 25)));
+    const spendLimitUsd = body.spendLimitUsd;
+    if (spendLimitUsd !== undefined && (!Number.isFinite(spendLimitUsd) || spendLimitUsd < 0)) {
+      throw new ApiError(400, "invalid_spend_limit", "spendLimitUsd must be a finite non-negative number");
+    }
+    if (spendLimitUsd !== undefined && whileRunning === "steer") {
+      throw new ApiError(400, "invalid_spend_limit", "A run with a spend limit must use whileRunning: queue");
+    }
+    const actor = body.actor;
+    if (actor !== undefined && (typeof actor !== "string" || !actor.trim() || actor.length > 200)) {
+      throw new ApiError(400, "invalid_actor", "actor must be a non-empty string of at most 200 characters");
+    }
     const idempotencyKey = body.idempotencyKey?.trim() || null;
 
     if (idempotencyKey) {
@@ -947,7 +972,7 @@ export class AgentDO extends DurableObject<Env> {
     }
 
     // Mid-turn steering when a run is currently executing!
-    if (whileRunning === "steer" && this.activeRunId) {
+    if (whileRunning === "steer" && this.activeRunId && actor === this.runActor(this.activeRunId)) {
       this.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
       const targetRunId = this.activeRunId;
       const steerId = randomId("str", 6);
@@ -963,8 +988,8 @@ export class AgentDO extends DurableObject<Env> {
       );
 
       this.ctx.storage.sql.exec(
-        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, batched_into, text, usage_json, max_steps, started_at, ended_at)
-         VALUES (?1, ?2, ?3, 'steer', ?4, ?5, '', ?6, ?7, ?8, ?9)`,
+        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, batched_into, text, usage_json, max_steps, started_at, ended_at, spend_limit_usd, actor)
+         VALUES (?1, ?2, ?3, 'steer', ?4, ?5, '', ?6, ?7, ?8, ?9, ?10, ?11)`,
         steerRunId,
         idempotencyKey,
         wait ? "running" : "completed",
@@ -974,6 +999,8 @@ export class AgentDO extends DurableObject<Env> {
         maxSteps,
         now,
         wait ? null : now,
+        spendLimitUsd ?? null,
+        actor ?? null,
       );
 
       if (!wait) {
@@ -1005,8 +1032,8 @@ export class AgentDO extends DurableObject<Env> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
-        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at)
-         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8)`,
+        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at, spend_limit_usd, actor)
+         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8, ?9, ?10)`,
         runId,
         idempotencyKey,
         whileRunning,
@@ -1015,6 +1042,8 @@ export class AgentDO extends DurableObject<Env> {
         JSON.stringify(emptyUsage()),
         maxSteps,
         now,
+        spendLimitUsd ?? null,
+        actor ?? null,
       );
       if (files.length > 0) {
         this.ctx.storage.sql.exec(
@@ -1039,6 +1068,16 @@ export class AgentDO extends DurableObject<Env> {
     return this.waitForRunSettlement(runId);
   }
 
+  private runSpendLimit(runId: string): number | null {
+    return this.ctx.storage.sql.exec<{ spend_limit_usd: number | null }>("SELECT spend_limit_usd FROM runs WHERE id = ?1", runId)
+      .one().spend_limit_usd;
+  }
+
+  private runActor(runId: string): string | undefined {
+    return this.ctx.storage.sql.exec<{ actor: string | null }>("SELECT actor FROM runs WHERE id = ?1", runId)
+      .toArray()[0]?.actor ?? undefined;
+  }
+
   private async drainRunQueue(): Promise<void> {
     if (this.queueDraining || this.activeRunId) return;
     this.queueDraining = true;
@@ -1054,36 +1093,34 @@ export class AgentDO extends DurableObject<Env> {
         const cfg = this.requireConfig();
 
         // Check if any queued run exists
-        let queued = this.ctx.storage.sql
+        const readQueued = () => this.ctx.storage.sql
           .exec<{
             id: string;
             prompt: string;
             output_schema_json: string | null;
             max_steps: number;
+            spend_limit_usd: number | null;
+            actor: string | null;
           }>(
-            `SELECT id, prompt, output_schema_json, max_steps FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
+            `SELECT id, prompt, output_schema_json, max_steps, spend_limit_usd, actor FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
           )
           .toArray();
+        let queued = readQueued();
         if (queued.length === 0) break;
 
         // If batch mode has a coalescing window, wait briefly so concurrent arrivals coalesce!
-        if (cfg.queue.mode === "batch" && cfg.queue.windowMs > 0) {
+        const canBatch = (run: (typeof queued)[number]) => run.spend_limit_usd === null && run.actor === null;
+        if (canBatch(queued[0]!) && cfg.queue.mode === "batch" && cfg.queue.windowMs > 0) {
           await new Promise((r) => setTimeout(r, Math.min(cfg.queue.windowMs, 5_000)));
-          queued = this.ctx.storage.sql
-            .exec<{
-              id: string;
-              prompt: string;
-              output_schema_json: string | null;
-              max_steps: number;
-            }>(
-              `SELECT id, prompt, output_schema_json, max_steps FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
-            )
-            .toArray();
+          queued = readQueued();
           if (queued.length === 0) break;
         }
 
         const primary = queued[0]!;
-        const followers = cfg.queue.mode === "batch" ? queued.slice(1) : [];
+        const firstIndividual = queued.findIndex((run) => !canBatch(run));
+        const followers = cfg.queue.mode === "batch" && firstIndividual !== 0
+          ? queued.slice(1, firstIndividual === -1 ? undefined : firstIndividual)
+          : [];
 
         const combinedPrompt =
           followers.length > 0
@@ -1160,6 +1197,7 @@ export class AgentDO extends DurableObject<Env> {
       const finalRecord = await runAgentTurn(adapter, {
         runId,
         prompt,
+        actor: this.runActor(runId),
         files,
         outputSchema,
         maxSteps,
