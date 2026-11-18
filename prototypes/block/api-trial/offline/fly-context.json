@@ -1,0 +1,16 @@
+{
+  "before": [
+    "warm",
+    "warm",
+    "cold"
+  ],
+  "write_http": 200,
+  "write_seconds": 0.214492,
+  "after": "warm",
+  "proc_boot_id_http": 200,
+  "fs_and_exec_same_boot": false,
+  "proc_comm_http": 404,
+  "proc_comm": null,
+  "workspace_fstype": "overlay",
+  "exec_read_expected": true
+}
