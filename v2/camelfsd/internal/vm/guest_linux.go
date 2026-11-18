@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 
@@ -42,6 +43,15 @@ type guestRequest struct {
 func ServeFirecrackerGuest() error {
 	if os.Getpid() != 1 {
 		return fmt.Errorf("guest init must run as PID 1")
+	}
+	// The kernel starts PID 1 without a shell environment.
+	if os.Getenv("PATH") == "" {
+		if err := os.Setenv("PATH", defaultShellPath); err != nil {
+			return err
+		}
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		return fmt.Errorf("find guest bash: %w", err)
 	}
 	for _, mount := range []struct {
 		source string

@@ -274,6 +274,8 @@ func (p *localShellProc) killProcessGroup() {
 	<-p.waitCh
 }
 
+const defaultShellPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 const persistentBashLoop = `
 if [ -f "$__CAMELFS_ENV_FILE" ]; then
   source "$__CAMELFS_ENV_FILE" >/dev/null 2>&1 || true
@@ -324,7 +326,7 @@ func (s *localVMSession) ensureShellLocked() error {
 		"__CAMELFS_ENV_FILE": s.envFile,
 	}
 	if envMap["PATH"] == "" {
-		envMap["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+		envMap["PATH"] = defaultShellPath
 	}
 	for k, v := range s.initEnv {
 		envMap[k] = v
