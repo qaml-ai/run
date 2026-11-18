@@ -47,11 +47,12 @@ func firecrackerServiceCgroup() (string, error) {
 			continue
 		}
 		unit := filepath.Base(path)
-		out, err := exec.Command("systemctl", "show", "--property=KillMode", "--value", "--", unit).Output()
+		out, err := exec.Command("systemctl", "show", "--property=ControlGroup,KillMode", "--", unit).Output()
 		if err != nil {
 			return "", fmt.Errorf("check Firecracker service %s: %w", unit, err)
 		}
-		if strings.TrimSpace(string(out)) == "control-group" {
+		props := "\n" + string(out)
+		if strings.Contains(props, "\nControlGroup=/"+path+"\n") && strings.Contains(props, "\nKillMode=control-group\n") {
 			return path, nil
 		}
 	}

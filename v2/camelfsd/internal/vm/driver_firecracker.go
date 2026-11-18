@@ -101,7 +101,12 @@ func NewFirecrackerDriver(cfg FirecrackerConfig) (*FirecrackerDriver, error) {
 			if err != nil {
 				return nil, err
 			}
-			*bin, err = filepath.Abs(path)
+			path, err = filepath.Abs(path)
+			if err != nil {
+				return nil, err
+			}
+			// The jailer names its directory after the resolved executable.
+			*bin, err = filepath.EvalSymlinks(path)
 			if err != nil {
 				return nil, err
 			}
