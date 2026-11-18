@@ -700,7 +700,7 @@ async function continueTurnLoop(
     // Finish any remaining tool calls from a resumed turn before calling the model again
     if (state.pendingToolQueue.length > 0) {
       for (let i = 0; i < state.pendingToolQueue.length; i++) {
-        if (state.signal.aborted && chunk.type !== "done") {
+        if (state.signal.aborted) {
           throw new ApiError(499, "cancelled", "Run aborted");
         }
         const tc = state.pendingToolQueue[i]!;
@@ -775,7 +775,7 @@ async function continueTurnLoop(
         purpose: "turn",
         prefetchedProvider: state.prefetchedProvider,
       })) {
-        if (state.signal.aborted) {
+        if (state.signal.aborted && chunk.type !== "done") {
           throw new ApiError(499, "cancelled", "Run aborted");
         }
         if (chunk.type === "text_delta") {
