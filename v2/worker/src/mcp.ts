@@ -42,9 +42,12 @@ async function mcpRpcCall(
       params,
     }),
     signal,
-    ...(server.auth ? { redirect: "error" as const } : {}),
+    ...(server.auth ? { redirect: "manual" as const } : {}),
   });
 
+  if (server.auth && res.status >= 300 && res.status < 400) {
+    throw new Error(`Signed MCP server '${server.name}' returned a redirect`);
+  }
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`MCP server '${server.name}' HTTP ${res.status}: ${errText}`);

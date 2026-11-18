@@ -36,7 +36,8 @@ export async function rehearseSignedTools(t: TestContext, workerUrl: string, adm
   assert.equal(call.identity?.requestId, run.id);
   assert.equal(call.identity?.toolCallId, call.toolCallId);
   assert.deepEqual(JSON.parse(call.idempotencyKey), [agent.id, run.id, call.toolCallId]);
-  assert.equal((await agent.run('Call the restricted tool [CALL:bot__restricted {}]')).toolCalls[0]?.ok, false);
+  const restricted = await agent.run('Call the restricted tool [CALL:bot__restricted {}]');
+  assert.equal(restricted.toolCalls.some((tool) => tool.ok), false);
 
   const wrongAudience = await target.agents.upsert("wrong-audience", { model: "mock/default", toolIdentity, mcpServers: [{ ...mcp, audience: "other" }] });
   await assert.rejects(wrongAudience.run("Start a run"), /another server/);
