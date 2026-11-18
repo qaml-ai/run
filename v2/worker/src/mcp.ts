@@ -1,4 +1,7 @@
-import type { LlmToolSchema, McpServerSpec } from "./types.ts";
+import { signToolIdentity } from "./tool-identity.ts";
+import { ApiError, type AgentConfig, type Env, type LlmToolSchema, type McpServerSpec } from "./types.ts";
+
+type McpIdentity = { env: Env; agent: AgentConfig; call?: { runId: string; callId: string } };
 
 interface JsonRpcResponse {
   jsonrpc?: string;
@@ -11,13 +14,23 @@ async function mcpRpcCall(
   server: McpServerSpec,
   method: string,
   params: Record<string, unknown>,
+  identity: McpIdentity,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const headers: Record<string, string> = {
+  const headers = new Headers({
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
     ...(server.headers ?? {}),
-  };
+  });
+  if (server.auth) {
+    if (server.auth.type !== "runtime") throw new ApiError(400, "invalid_tool_auth", "Unsupported MCP authentication");
+    const url = new URL(server.url);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "127.0.0.1")) {
+      throw new ApiError(400, "invalid_tool_url", "Signed runtime tools require HTTPS");
+    }
+    const audience = server.audience ?? `${url.origin}${url.pathname}`;
+    headers.set("Authorization", `Bearer ${await signToolIdentity(identity.env, identity.agent, audience, identity.call)}`);
+  }
 
   const res = await fetch(server.url, {
     method: "POST",
@@ -29,6 +42,7 @@ async function mcpRpcCall(
       params,
     }),
     signal,
+    ...(server.auth ? { redirect: "error" as const } : {}),
   });
 
   if (!res.ok) {
@@ -76,16 +90,18 @@ export interface DiscoveredMcpTool {
 }
 
 export async function discoverMcpTools(
-  servers: McpServerSpec[],
+  env: Env,
+  agent: AgentConfig,
   signal?: AbortSignal,
 ): Promise<DiscoveredMcpTool[]> {
+  const servers = agent.mcpServers;
   if (!servers || servers.length === 0) return [];
   const discovered: DiscoveredMcpTool[] = [];
 
   await Promise.all(
     servers.map(async (server) => {
       try {
-        const result = await mcpRpcCall(server, "tools/list", {}, signal);
+        const result = await mcpRpcCall(server, "tools/list", {}, { env, agent }, signal);
         const tools = Array.isArray(result.tools) ? result.tools : [];
         for (const rawTool of tools) {
           if (!rawTool || typeof rawTool !== "object") continue;
@@ -94,7 +110,7 @@ export async function discoverMcpTools(
             description?: string;
             inputSchema?: Record<string, unknown>;
           };
-          if (!t.name) continue;
+          if (!t.name || (server.allowTools && !server.allowTools.includes(t.name))) continue;
           const qualifiedName = `${server.name}__${t.name}`;
           discovered.push({
             qualifiedName,
@@ -107,7 +123,8 @@ export async function discoverMcpTools(
             },
           });
         }
-      } catch {
+      } catch (error) {
+        if (server.auth) throw error;
         // Non-fatal: unreachable MCP servers should not break the entire turn if unused
       }
     }),
@@ -119,17 +136,28 @@ export async function discoverMcpTools(
 export async function invokeMcpTool(
   tool: DiscoveredMcpTool,
   args: Record<string, unknown>,
+  identity: McpIdentity,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  const call = identity.call;
   const result = await mcpRpcCall(
     tool.server,
     "tools/call",
     {
       name: tool.remoteName,
       arguments: args,
+      ...(call && tool.server.auth ? { _meta: {
+        "agent-runtime/callId": call.callId,
+        "agent-runtime/toolCallId": call.callId,
+        "agent-runtime/idempotencyKey": JSON.stringify([identity.agent.id, call.runId, call.callId]),
+      } } : {}),
     },
+    identity,
     signal,
   );
+  if (result.resultType === "input_required") {
+    throw new Error(`MCP tool '${tool.remoteName}' requires input via its server`);
+  }
   if (Array.isArray(result.content)) {
     const texts = (result.content as Array<{ type?: string; text?: string }>)
       .filter((c) => typeof c.text === "string")

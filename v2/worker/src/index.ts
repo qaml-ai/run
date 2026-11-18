@@ -34,6 +34,7 @@ import {
 import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
+import { toolIdentityKeys } from "./tool-identity.ts";
 import {
   ApiError,
   errorResponse,
@@ -67,6 +68,7 @@ app.notFound((c) => {
 app.get("/healthz", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/health", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
+app.get("/v2/.well-known/jwks.json", (c) => c.json(toolIdentityKeys(c.env), 200, { "Cache-Control": "public, max-age=60" }));
 
 // ---- 1. Tenants, Keys, Providers, Billing & Definitions (Per-Tenant TenantDO RPC) ----
 
@@ -537,6 +539,11 @@ app.put("/v2/agents/:key", async (c) => {
   }
 
   const input = (await c.req.json().catch(() => ({}))) as AgentUpsertInput;
+  const identity = input.toolIdentity;
+  if (identity !== undefined && (!identity || typeof identity.subject !== "string" || !identity.subject.trim() ||
+    (identity.context !== undefined && (!identity.context || typeof identity.context !== "object" || Array.isArray(identity.context))))) {
+    throw new ApiError(400, "invalid_tool_identity", "Tool identity needs a subject and optional context object");
+  }
   const candidateAgentId = randomId("agt", 8);
   const minted = await mintAgentToken(creds.tenantId, candidateAgentId);
   const candidateSealedToken = await sealSecret(minted.token, c.env.VAULT_SECRET);
@@ -593,6 +600,7 @@ app.put("/v2/agents/:key", async (c) => {
         definition: input.definition,
         tools: input.tools ?? defCfg?.tools,
         mcpServers: input.mcpServers ?? defCfg?.mcpServers,
+        toolIdentity: identity,
         builtins: input.builtins ?? defCfg?.builtins,
         queue: queueCfg,
         repoId: prep.repoId,

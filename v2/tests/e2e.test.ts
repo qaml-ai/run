@@ -220,6 +220,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await waitForHealth(`${camelfsUrl}/healthz`);
 
     // 3. Start real Cloudflare workerd via Wrangler using an isolated test config
+    const workerPort = await getFreePort();
+    const toolKey = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
     const baseConfig = JSON.parse(readFileSync(join(ROOT, "worker/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
     const testConfigPath = join(tempDir, "wrangler.test.jsonc");
     writeFileSync(
@@ -235,13 +237,14 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
             CAMELFS_SIGNING_KEY: camelfsSigningKey,
             CAMELFS_DEV_TOKEN: "",
             DEFAULT_MODEL: "mock/default",
+            TOOL_IDENTITY_ISSUER: `http://127.0.0.1:${workerPort}/v2`,
+            TOOL_IDENTITY_PRIVATE_JWK: JSON.stringify({ ...toolKey, kid: "tool-fixture" }),
           },
         },
         null,
         2,
       ),
     );
-    const workerPort = await getFreePort();
     worker = await unstable_startWorker({
       config: testConfigPath,
       dev: {
@@ -273,6 +276,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
   it("moves three v1 bot drafts through the v2 client", { skip: !migrationFixture }, async (t) => {
     await migrationFixture.rehearseMigration(t, workerUrl, ADMIN_SECRET);
+  });
+
+  it("authenticates v2 calls with the Camel Bots tool verifier", { skip: !migrationFixture }, async (t) => {
+    await migrationFixture.rehearseSignedTools(t, workerUrl, ADMIN_SECRET);
   });
 
   it("1. tenants, API keys, billing credits, and scoped agent tokens enforce boundaries", async () => {

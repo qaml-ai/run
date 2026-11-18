@@ -1413,6 +1413,7 @@ export class AgentDO extends DurableObject<Env> {
           : (existing?.definition ?? null),
       tools: incoming.tools ?? existing?.tools ?? [],
       mcpServers: incoming.mcpServers ?? existing?.mcpServers ?? [],
+      toolIdentity: incoming.toolIdentity ?? existing?.toolIdentity,
       builtins: incoming.builtins ?? existing?.builtins ?? [],
       queue: {
         mode: incoming.queue?.mode ?? existing?.queue.mode ?? "each",
@@ -1514,6 +1515,7 @@ export class AgentDO extends DurableObject<Env> {
       definition: cfg.definition,
       tools: cfg.tools,
       mcpServers: cfg.mcpServers,
+      toolIdentity: cfg.toolIdentity,
       builtins: cfg.builtins,
       queue: cfg.queue,
       repoId: cfg.repoId,
@@ -1967,7 +1969,7 @@ export class AgentDO extends DurableObject<Env> {
       ? `wf:${body.idempotencyKey.trim()}`
       : `wf:${workflowId}`;
     const cfg = this.requireConfig();
-    const catalog = await buildToolCatalog(cfg);
+    const catalog = await buildToolCatalog(cfg, this.env);
     const toolCtx = this.createToolExecutionContext(
       workflowId,
       new Set(),
@@ -2154,7 +2156,7 @@ export class AgentDO extends DurableObject<Env> {
       throw new ApiError(400, "invalid_request", "`name` is required");
     }
     const cfg = this.requireConfig();
-    const catalog = await buildToolCatalog(cfg);
+    const catalog = await buildToolCatalog(cfg, this.env);
     const callId = body.callId || randomId("vt", 6);
     const toolCtx = this.createToolExecutionContext(
       callId,

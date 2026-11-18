@@ -352,6 +352,7 @@ export interface BuiltToolCatalog {
 
 export async function buildToolCatalog(
   config: AgentConfig,
+  env: Env,
   signal?: AbortSignal,
 ): Promise<BuiltToolCatalog> {
   const schemas: LlmToolSchema[] = [];
@@ -379,7 +380,7 @@ export async function buildToolCatalog(
     }
   }
 
-  const mcpTools = await discoverMcpTools(config.mcpServers ?? [], signal);
+  const mcpTools = await discoverMcpTools(env, config, signal);
   for (const mt of mcpTools) {
     if (seen.has(mt.qualifiedName)) continue;
     seen.add(mt.qualifiedName);
@@ -468,7 +469,7 @@ export async function executeToolCall(
   // 3. Remote MCP tools
   const mcpTool = catalog.mcpByName.get(toolName);
   if (mcpTool) {
-    return invokeMcpTool(mcpTool, args, ctx.signal);
+    return invokeMcpTool(mcpTool, args, { env: ctx.env, agent: ctx.config, call: { runId: ctx.runId, callId } }, ctx.signal);
   }
 
   // 4. Built-in Repo File tools

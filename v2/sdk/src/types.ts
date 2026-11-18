@@ -80,7 +80,14 @@ export type BuiltinCategory =
   | "files" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
   | (string & {});
 
-export interface McpServerConfig { name: string; url: string; headers?: Record<string, string>; }
+export interface McpServerConfig {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  auth?: { type: "runtime" };
+  audience?: string;
+  allowTools?: string[];
+}
 
 export interface ToolDefinition {
   name: string;
@@ -103,6 +110,7 @@ export interface AgentConfig {
   definition?: string;
   tools?: Array<ToolDefinition | LocalTool<any, any>>;
   mcpServers?: McpServerConfig[];
+  toolIdentity?: { subject: string; context?: Record<string, unknown> };
   builtins?: BuiltinCategory[];
   queue?: QueueConfig;
   repoId?: string | null;
@@ -111,7 +119,7 @@ export interface AgentConfig {
   idleTtlSeconds?: number;
   dreaming?: DreamingConfig;
 }
-export type DefinitionConfig = Omit<AgentConfig, "tools" | "definition"> & { name?: string; tools?: ToolDefinition[]; };
+export type DefinitionConfig = Omit<AgentConfig, "tools" | "definition" | "toolIdentity"> & { name?: string; tools?: ToolDefinition[]; };
 export interface AgentDefinition extends DefinitionConfig { slug: string; createdAt?: number; updatedAt?: number; }
 
 export interface AgentSummary {

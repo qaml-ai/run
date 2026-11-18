@@ -1,9 +1,54 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { AgentRuntime } from "../../clients/node.ts";
-import { OPERATOR, runtime } from "../../tests/runtime-server.ts";
+import { AgentRuntime, nodeListener, type ToolContext } from "../../clients/node.ts";
+import { serveTools } from "../../clients/server.ts";
+import { listen, OPERATOR, runtime } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
 import { migrateVolume } from "./migrate-volume.ts";
+
+export async function rehearseSignedTools(t: TestContext, workerUrl: string, adminKey: string) {
+  const { tenantId, apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey, name: "Signed tools", initialCreditsUsd: 10 });
+  const target = new CamelRun({ baseUrl: workerUrl, apiKey });
+  t.after(() => target.close());
+  const audience = "camel-bots:canary:bot";
+  const calls: ToolContext[] = [];
+  const url = await listen(t, nodeListener(serveTools({
+    listTools: () => ["echo", "restricted"].map(name => ({ name, inputSchema: { type: "object" } })),
+    async callTool(name, args, context) {
+      assert.equal(name, "echo");
+      assert.deepEqual(args, { text: "hello" });
+      calls.push(context);
+      return { content: [{ type: "text", text: "verified tool response" }] };
+    },
+  }, { runtime: `${workerUrl}/v2`, tenant: tenantId, audience, metadata: false })));
+  const toolIdentity = { subject: "owner", context: { bot: "canary", agent: "default", key: "test" } };
+  const mcp = { name: "bot", url, audience, allowTools: ["echo"], auth: { type: "runtime" as const } };
+  const agent = await target.agents.upsert("tool-canary", { model: "mock/default", toolIdentity, mcpServers: [mcp] });
+  const run = await agent.run('Call the signed tool [CALL:bot__echo {"text":"hello"}]');
+  assert.match(run.text, /verified tool response/);
+  assert.equal(calls.length, 1);
+  const call = calls[0]!;
+  assert.equal(call.identity?.agent, agent.id);
+  assert.equal(call.identity?.tenant, tenantId);
+  assert.equal(call.identity?.subject, toolIdentity.subject);
+  assert.deepEqual(call.identity?.context, toolIdentity.context);
+  assert.equal(call.identity?.requestId, run.id);
+  assert.equal(call.identity?.toolCallId, call.toolCallId);
+  assert.deepEqual(JSON.parse(call.idempotencyKey), [agent.id, run.id, call.toolCallId]);
+  assert.equal((await agent.run('Call the restricted tool [CALL:bot__restricted {}]')).toolCalls[0]?.ok, false);
+
+  const wrongAudience = await target.agents.upsert("wrong-audience", { model: "mock/default", toolIdentity, mcpServers: [{ ...mcp, audience: "other" }] });
+  await assert.rejects(wrongAudience.run("Start a run"), /another server/);
+  const foreign = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey, name: "Other tenant", initialCreditsUsd: 10 });
+  const foreignClient = new CamelRun({ baseUrl: workerUrl, apiKey: foreign.apiKey });
+  t.after(() => foreignClient.close());
+  const forgedIdentity = await foreignClient.agents.upsert("forged-owner", { model: "mock/default", toolIdentity, mcpServers: [mcp] });
+  await assert.rejects(forgedIdentity.run("Start a run"), /another tenant/);
+  assert.equal(calls.length, 1);
+  const jwks = await (await fetch(`${workerUrl}/v2/.well-known/jwks.json`)).json() as { keys: { kid: string; d?: string }[] };
+  assert.equal(jwks.keys[0]?.kid, "tool-fixture");
+  assert.equal(jwks.keys[0]?.d, undefined);
+}
 
 export async function rehearseMigration(t: TestContext, workerUrl: string, adminKey: string) {
   const v1 = await runtime(t, () => ({ content: "fixture" }));

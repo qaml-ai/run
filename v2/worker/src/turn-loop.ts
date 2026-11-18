@@ -387,7 +387,7 @@ export async function resumePausedTurn(
   });
 
   const config = adapter.getConfig();
-  const catalog = await buildToolCatalog(config, params.signal);
+  const catalog = await buildToolCatalog(config, adapter.env, params.signal);
   const toolCtx = adapter.makeToolContext(
     runId,
     approvedSet,
@@ -601,7 +601,7 @@ async function continueTurnLoop(
 
   try {
     const config = adapter.getConfig();
-    const catalog = await buildToolCatalog(config, state.signal);
+    const catalog = await buildToolCatalog(config, adapter.env, state.signal);
     const toolCtx = adapter.makeToolContext(
       runId,
       approvedToolCallIds,
