@@ -462,18 +462,9 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for {
-		conn, reader, err := d.dialGuestVsock(readyCtx, sess)
+		conn, _, err := d.dialGuestVsock(readyCtx, sess)
 		if err == nil {
-			// Send the metadata on the ready connection. The guest handles requests
-			// serially, so it never needs to drain an empty probe before mounting.
-			err = exchangeVsockRPC(conn, reader, map[string]any{
-				"op":   "mount_fuse",
-				"tree": spec.Tree,
-			}, nil, nil, nil)
 			_ = conn.Close()
-			if err != nil {
-				return fmt.Errorf("mount lazy workspace in guest: %w", err)
-			}
 			break
 		}
 		select {
@@ -485,6 +476,13 @@ func (d *FirecrackerDriver) configureAndBoot(ctx context.Context, sess *fcVMSess
 		}
 	}
 
+	// Send only tree metadata (zero blobs); guest FUSE fetches file bytes lazily over port 10001.
+	if err := d.vsockRPC(readyCtx, sess, map[string]any{
+		"op":   "mount_fuse",
+		"tree": spec.Tree,
+	}, nil, nil, nil); err != nil {
+		return err
+	}
 	if len(spec.Env) > 0 {
 		return d.vsockRPC(readyCtx, sess, map[string]any{
 			"op":  "init_env",
@@ -551,10 +549,10 @@ func (d *FirecrackerDriver) vsockRPC(
 		return err
 	}
 	defer conn.Close()
-	return exchangeVsockRPC(conn, br, payload, onStdout, onStderr, outFinal)
-}
 
-func exchangeVsockRPC(conn net.Conn, br *bufio.Reader, payload any, onStdout, onStderr func(string), outFinal *vsockStreamFrame) error {
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl)
+	}
 	reqBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err
