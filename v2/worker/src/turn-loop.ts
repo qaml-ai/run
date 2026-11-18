@@ -125,21 +125,23 @@ export function buildConversationMessages(
   return out;
 }
 
+/** Keep tool calls and all their results on the same side of a context boundary. */
+export function contextCutoff(messages: readonly Pick<StoredMessage, "role">[], keepLast: number): number {
+  let cutoff = messages.length - Math.min(messages.length, Math.max(0, Math.trunc(keepLast) || 0));
+  while (cutoff > 0 && messages[cutoff]?.role === "tool") cutoff--;
+  return cutoff;
+}
+
 export async function performCompaction(
   adapter: TurnStorageAdapter,
-  options?: { customSummary?: string; keepLast?: number },
+  options?: { customSummary?: string; keepLast?: number; signal?: AbortSignal },
 ): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
   const config = adapter.getConfig();
   const prev = adapter.getLatestCompaction();
   const allActive = adapter.listMessagesAfter(prev?.upToSeq ?? 0);
 
   const keepLast = Math.max(0, options?.keepLast ?? 0);
-  const toCompact =
-    keepLast > 0 && allActive.length > keepLast
-      ? allActive.slice(0, allActive.length - keepLast)
-      : keepLast > 0
-        ? []
-        : allActive;
+  const toCompact = allActive.slice(0, contextCutoff(allActive, keepLast));
 
   if (toCompact.length === 0 && !options?.customSummary) {
     return {
@@ -149,16 +151,12 @@ export async function performCompaction(
     };
   }
 
-  const targetSeq =
-    toCompact.length > 0
-      ? toCompact[toCompact.length - 1]!.seq
-      : allActive.length > 0
-        ? allActive[allActive.length - 1]!.seq
-        : (prev?.upToSeq ?? 0);
+  const targetSeq = toCompact.at(-1)?.seq ?? prev?.upToSeq ?? 0;
 
   let summary = options?.customSummary?.trim() ?? "";
   if (!summary) {
     const msgs = buildConversationMessages(prev, toCompact);
+    msgs.push({ role: "user", text: "Summarize the conversation above." });
     let generated = "";
     for await (const chunk of streamModelResponse({
       env: adapter.env,
@@ -168,12 +166,15 @@ export async function performCompaction(
         "Summarize the conversation history concisely, preserving key decisions, file paths, facts, and open tasks.",
       messages: msgs,
       purpose: "compaction",
+      signal: options?.signal,
     })) {
       if (chunk.type === "text_delta") {
         generated += chunk.delta;
       }
     }
-    summary = generated.trim() || "Conversation compacted.";
+    options?.signal?.throwIfAborted();
+    summary = generated.trim();
+    if (!summary) throw new ApiError(502, "empty_compaction", "The model returned no conversation summary");
   }
 
   adapter.insertCompaction(targetSeq, summary);
@@ -346,21 +347,21 @@ export async function runAgentTurn(
     ? await verifyRunFiles(new CamelFsClient(adapter.env, config.tenantId), params.files)
     : undefined;
 
-  // Auto-compact before starting if stored message tokens exceed model-aware threshold
+  adapter.appendMessage(params.runId, "user", { text: params.prompt, files });
+  adapter.updateRunState(params.runId, { status: "running" });
+  adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt });
+
+  // Count only prior messages and keep the new prompt along with the recent history.
   const autoCompactThreshold = Math.min(
     256_000,
     Math.floor(getModelContextWindow(config.model) * 0.6),
   );
   const prevCompaction = adapter.getLatestCompaction();
   const existingMsgs = adapter.listMessagesAfter(prevCompaction?.upToSeq ?? 0);
-  const estTotal = existingMsgs.reduce((acc, m) => acc + m.tokensEst, 0);
-  if (estTotal > autoCompactThreshold && existingMsgs.length > 6) {
-    await performCompaction(adapter, { keepLast: 4 });
+  const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
+  if (estTotal > autoCompactThreshold && existingMsgs.length > 7) {
+    await performCompaction(adapter, { keepLast: 5, signal: params.signal });
   }
-
-  adapter.appendMessage(params.runId, "user", { text: params.prompt, files });
-  adapter.updateRunState(params.runId, { status: "running" });
-  adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt });
 
   return continueTurnLoop(adapter, {
     runId: params.runId,

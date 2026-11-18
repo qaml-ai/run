@@ -69,7 +69,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let workerUrl: string;
   let failNextExec = false;
   let vmBootRequests = 0;
-  let lastProviderMessages: Array<{ role: string; content: unknown }> | undefined;
+  type ProviderMessage = { role: string; content: unknown; tool_call_id?: string };
+  let lastProviderMessages: ProviderMessage[] | undefined;
   let lastProviderOptions: Record<string, unknown> | undefined;
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
 
@@ -166,7 +167,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       if (req.url === "/v1/chat/completions" && req.method === "POST") {
         const body = JSON.parse(rawBody) as {
           model?: string;
-          messages?: Array<{ role: string; content: unknown }>;
+          messages?: ProviderMessage[];
           provider?: Record<string, unknown>;
         };
         lastProviderMessages = body.messages;
@@ -670,6 +671,45 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(afterReset.status, "completed");
 
     await camel.close();
+  });
+
+  it("auto-compacts imported history without splitting a tool call from any of its results", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "compaction-tenant", initialCreditsUsd: 1,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    try {
+      await camel.providers.set("openrouter", { apiKey: "test-compaction-key", baseUrl: `${auxUrl}/v1` });
+      const agent = await camel.agents.upsert("imported-agent", { model: "openrouter/test/context-compaction" });
+      const timestamp = Date.now();
+      const textBlock = (text: string) => ({ type: "text", text });
+      const assistant = (text: string) => ({ role: "assistant", content: [textBlock(text)], timestamp });
+      const user = (content: string) => ({ role: "user", content, timestamp });
+      const toolResult = (id: string) => ({
+        role: "toolResult", content: [textBlock(id)], toolCallId: id, toolName: "lookup", timestamp,
+      });
+      const messages = [
+        user("Earlier context. ".repeat(21_000)), assistant("Prior reply"), user("Use both lookups"),
+        { role: "assistant", content: ["call_one", "call_two"].map(id => ({ type: "toolCall", id, name: "lookup", arguments: {} })), timestamp },
+        toolResult("call_one"), toolResult("call_two"), assistant("Both found"), user("Thanks"), assistant("Of course"),
+      ];
+      await agent.importV1History({ source: "imported-v1", messages });
+
+      const run = await agent.run("Continue from my history");
+      assert.equal(run.status, "completed");
+      assert.deepEqual(lastProviderMessages?.map(message => message.role), [
+        "system", "assistant", "tool", "tool", "assistant", "user", "assistant", "user",
+      ]);
+      assert.deepEqual(lastProviderMessages?.filter(message => message.role === "tool").map(message => message.tool_call_id),
+        ["call_one", "call_two"]);
+      assert.match(String(lastProviderMessages?.[0]?.content), /summary \(up to message #3\)/);
+      assert.equal(lastProviderMessages?.at(-1)?.content, "Continue from my history");
+      const history = (await agent.history()).map(row => row.content as { text?: string; meta?: { v1?: unknown } });
+      assert.deepEqual(history.slice(0, messages.length).map(content => content.meta?.v1), messages);
+      assert.equal(history[messages.length]?.text, "Continue from my history");
+    } finally {
+      await camel.close();
+    }
   });
 
   it("6. sub-agent delegation and deterministic replay-cached QuickJS workflows", async () => {

@@ -9,6 +9,7 @@ import {
   type ToolExecutionContext,
 } from "./tools.ts";
 import {
+  contextCutoff,
   performCompaction,
   performDreamConsolidation,
   resumePausedTurn,
@@ -1755,13 +1756,10 @@ export class AgentDO extends DurableObject<Env> {
     this.ensureSql();
     const keepLast = Math.max(0, Number(body?.keepLast ?? 0));
     const allRows = this.ctx.storage.sql
-      .exec<{ seq: number }>(`SELECT seq FROM messages ORDER BY seq ASC`)
+      .exec<{ seq: number; role: StoredMessage["role"] }>(`SELECT seq, role FROM messages ORDER BY seq ASC`)
       .toArray();
-    const cutoffIdx =
-      keepLast > 0 && allRows.length > keepLast
-        ? allRows.length - keepLast - 1
-        : allRows.length - 1;
-    const upToSeq = cutoffIdx >= 0 ? allRows[cutoffIdx]!.seq : 0;
+    const cutoff = contextCutoff(allRows, keepLast);
+    const upToSeq = allRows[cutoff - 1]?.seq ?? 0;
     const summary = body?.summary?.trim() ?? "";
 
     if (keepLast === 0 && !summary) {
