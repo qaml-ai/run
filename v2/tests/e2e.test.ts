@@ -16,6 +16,10 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
 const ADMIN_SECRET = "test-admin-secret-v2";
 const VAULT_SECRET = "test-vault-secret-32-bytes-minimum!!";
+// Load the optional Node fixture before registering tests so its database cleanup runs after the suite.
+const migrationFixture = process.env.CAMELRUN_TEST_V1_MIGRATION === "1"
+  ? await import(new URL("../scripts/v1-migration-fixture.ts", import.meta.url).href)
+  : undefined;
 
 async function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -265,6 +269,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     if (tempDir) {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("moves three v1 bot drafts through the v2 client", { skip: !migrationFixture }, async (t) => {
+    await migrationFixture.rehearseMigration(t, workerUrl, ADMIN_SECRET);
   });
 
   it("1. tenants, API keys, billing credits, and scoped agent tokens enforce boundaries", async () => {

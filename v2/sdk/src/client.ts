@@ -130,6 +130,8 @@ export class CamelRun {
       const resolvedPuts = puts ?? (path ? [{ path, content, base64, mode }] : undefined);
       return this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/write`, { ...rest, ...(resolvedPuts ? { puts: resolvedPuts } : {}) });
     },
+    restore: (repoId: string, input: { targetCommit: string; ref?: string; message?: string }): Promise<{ commit: string; tree: string }> =>
+      this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/restore`, input),
     ls: async (repoId: string, options?: { at?: string; path?: string; recursive?: boolean; glob?: string }): Promise<{ commit: string; entries: RepoEntry[] }> => {
       const q = buildQuery({ at: options?.at, path: options?.path, recursive: options?.recursive !== undefined ? (options.recursive ? 1 : 0) : undefined, glob: options?.glob });
       const res = await this.requestJson<unknown>("GET", `/v2/repos/${encodeURIComponent(repoId)}/ls${q}`);

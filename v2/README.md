@@ -20,6 +20,7 @@ npm run test:ts
 ```
 
 See [docs/API_V2.md](docs/API_V2.md) and [docs/CAMELFS_CONTRACT.md](docs/CAMELFS_CONTRACT.md) for wire protocols.
+See [Moving Camel Bots to v2](docs/V1_MIGRATION.md) for the volume importer and cutover sequence.
 
 ## Persistent Firecracker workspaces
 
