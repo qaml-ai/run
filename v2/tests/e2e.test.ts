@@ -244,6 +244,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   });
 
   it("1. tenants, API keys, billing credits, and scoped agent tokens enforce boundaries", async () => {
+    const version = await fetch(`${workerUrl}/v2`);
+    assert.equal(version.status, 200);
+    assert.deepEqual(await version.json(), { ok: true, service: "camelrun-worker-v2" });
+
     const created = await CamelRun.createTenant({
       baseUrl: workerUrl,
       adminKey: ADMIN_SECRET,

@@ -1,5 +1,11 @@
 # Workers pilot
 
+Retired on November 18, 2026. The custom domain, scheduled triggers, queue
+consumer, and three Workers were removed. The legacy queue, bucket, database,
+and the separate AWS CamelFS tier were retained. The rest of this document
+records the former deployment. The v2 pilot is documented in
+[`v2/README.md`](../../v2/README.md).
+
 The internal API is **https://run-pilot.camelai.dev**. This is a persistent,
 team-only experiment in Cloudflare account `85bbd288051330fb51ee1c86031a299b`.
 It is independent of production camelRun on AWS. Do not point it at production

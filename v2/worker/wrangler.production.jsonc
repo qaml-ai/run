@@ -1,0 +1,80 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "camelrun-v2-prod",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-01",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enhanced_error_serialization"
+  ],
+  "vars": {
+    "CAMELFS_URL": "https://fs-v2.camelai.dev",
+    "DEFAULT_MODEL": "openrouter/meta/muse-ember"
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "camelrun-v2-prod-media"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVENTS_QUEUE",
+        "queue": "camelrun-v2-prod-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "camelrun-v2-prod-events",
+        "max_batch_size": 25,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TENANT_DO",
+        "class_name": "TenantDO"
+      },
+      {
+        "name": "AGENT_DO",
+        "class_name": "AgentDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "TenantDO",
+        "AgentDO"
+      ]
+    }
+  ],
+  "account_id": "85bbd288051330fb51ee1c86031a299b",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "run.camelai.com/v2",
+      "zone_name": "camelai.com"
+    },
+    {
+      "pattern": "run.camelai.com/v2/*",
+      "zone_name": "camelai.com"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": false
+    }
+  }
+}

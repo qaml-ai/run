@@ -74,3 +74,36 @@ key ID. The pilot config provides no development bearer tokens.
 The same end-to-end suite can target a dedicated Firecracker daemon with
 `CAMELFSD_TEST_URL` and `CAMELFSD_TEST_SIGNING_KEY`. The file and VM case
 covers a live edit, a stop, an API edit during sleep, and a read after restart.
+
+## Production v2 route
+
+`worker/wrangler.production.jsonc` deploys `camelrun-v2-prod` to
+`run.camelai.com/v2` and `run.camelai.com/v2/*`. Keep the existing proxied DNS
+record for the AWS load balancer. Cloudflare sends everything outside these
+routes, including `/v1`, `/console`, and `/ops`, to the existing origin.
+
+Create the production R2 bucket and queue named in the configuration. Set up
+`fs-v2.camelai.dev` with its own Firecracker host, S3 bucket, DynamoDB repo and
+VM tables, and signing key. Create fresh `ADMIN_SECRET`, `VAULT_SECRET`, and
+`CAMELFS_SIGNING_KEY` for the production Worker. The deploy creates its own
+Durable Objects. Bootstrap new v2 tenants and issue v2 credentials for the
+clients joining the rollout.
+
+Build and check the release with the v2 package's pinned Wrangler:
+
+```sh
+cd v2
+npm exec -- wrangler deploy --dry-run -c worker/wrangler.production.jsonc --outdir dist/production-worker
+```
+
+Run the filesystem and VM smoke against the candidate daemon. Verify a workload
+that installs dependencies and builds, the expected concurrent VM load, and
+restoring a committed workspace on a replacement host. The pilot uses a single
+direct Firecracker host and its guest image has no outbound network.
+
+After deployment, verify `/v2` and `/v2/health` report the v2 Worker and that
+`/v2/repos` rejects an unauthenticated request. Test an authenticated v2 repo
+write, first command, live edit, stop, and restart with a test tenant. Verify
+the existing production smoke, including `/v1` and the console, on the same
+hostname. To remove v2 ingress, detach the two v2 routes and keep the Worker,
+queue, and data bindings in place.

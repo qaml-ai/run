@@ -65,6 +65,7 @@ app.notFound((c) => {
 });
 
 app.get("/healthz", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
+app.get("/v2", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/health", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 
 // ---- 1. Tenants, Keys, Providers, Billing & Definitions (Per-Tenant TenantDO RPC) ----
