@@ -91,7 +91,13 @@ test("volume origin takes over and rolls back existing drafts without changing f
     origin.ownership.forget(id);
     const ingressEnv = {
       V2: { fetch: async () => { throw new Error("volume request was misrouted to the v2 agent runtime"); } },
-      LEGACY_VOLUMES_ORIGIN: origin.node, LEGACY_VOLUMES_ORIGIN_TOKEN: originToken,
+      LEGACY_VOLUMES: {
+        fetch: (request: Request, init?: RequestInit) => {
+          const publicUrl = new URL(request.url);
+          return fetch(new Request(origin.node + publicUrl.pathname + publicUrl.search, request), init);
+        },
+      },
+      LEGACY_VOLUMES_ORIGIN_TOKEN: originToken,
     };
     const apiUrl = "https://run.camelai.com";
     const draft = new AgentRuntime({

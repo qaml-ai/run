@@ -3,26 +3,25 @@ const ORIGIN_HEADER = "x-camelrun-volume-origin";
 const VOLUME_ROUTE = /^\/v1\/(?:volumes|links)(?:\/|$)/;
 
 export interface LegacyVolumeOrigin {
-  LEGACY_VOLUMES_ORIGIN?: string;
+  LEGACY_VOLUMES?: { fetch(request: Request, init?: RequestInit): Promise<Response> };
   LEGACY_VOLUMES_ORIGIN_TOKEN?: string;
 }
 
-export function legacyVolumes(request: Request, env: LegacyVolumeOrigin, send = fetch): Promise<Response> | undefined {
+export function legacyVolumes(request: Request, env: LegacyVolumeOrigin): Promise<Response> | undefined {
   const asked = new URL(request.url);
-  if (!VOLUME_ROUTE.test(asked.pathname) || !env.LEGACY_VOLUMES_ORIGIN) return undefined;
-  const origin = URL.parse(env.LEGACY_VOLUMES_ORIGIN);
-  if (!env.LEGACY_VOLUMES_ORIGIN_TOKEN || !origin || !["http:", "https:"].includes(origin.protocol) || origin.origin !== env.LEGACY_VOLUMES_ORIGIN) {
+  if (!VOLUME_ROUTE.test(asked.pathname) || !env.LEGACY_VOLUMES) return undefined;
+  if (!env.LEGACY_VOLUMES_ORIGIN_TOKEN) {
     return Promise.resolve(volumeError(503, "VOLUME_ORIGIN_MISCONFIGURED", "Volume origin is misconfigured"));
   }
-  origin.pathname = asked.pathname;
-  origin.search = asked.search;
-  const upstream = new Request(origin, request);
+  // The VPC service chooses the private address and port. Its URL provides the original Host.
+  asked.protocol = "http:";
+  const upstream = new Request(asked, request);
   upstream.headers.delete("host");
   upstream.headers.delete("x-agent-runtime-hop");
   upstream.headers.delete("x-agent-runtime-internal");
   upstream.headers.delete("x-agent-runtime-forwarded");
   upstream.headers.set(ORIGIN_HEADER, env.LEGACY_VOLUMES_ORIGIN_TOKEN);
-  return send(upstream, { redirect: "manual" }).catch(() => volumeError(502, "VOLUME_ORIGIN_UNAVAILABLE", "Volume origin is unavailable; retry"));
+  return env.LEGACY_VOLUMES.fetch(upstream, { redirect: "manual" }).catch(() => volumeError(502, "VOLUME_ORIGIN_UNAVAILABLE", "Volume origin is unavailable; retry"));
 }
 
 function volumeError(status: number, code: string, error: string) {
