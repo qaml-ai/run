@@ -234,13 +234,18 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   await assert.rejects(importFiles([wrongSize]), /differs in size/);
   const toolCall = { role: "assistant", timestamp: 3, content: [{ type: "toolCall", id: "call_file", name: "make_file", arguments: {} }] };
   const toolResult = { role: "toolResult", timestamp: 4, toolCallId: "call_file", toolName: "make_file", content: [
-    { type: "text", text: "File is ready" }, nativeFileMessage.content[1],
+    { type: "text", text: "File is ready" }, nativeFileMessage.content[1], nativeFileMessage.content[1],
   ] };
   const historyWithFiles = [nativeFileMessage, toolCall, toolResult];
   await assert.rejects(importFiles(historyWithFiles), /V1 message 2 has a workspace file without a matching pinned attachment/);
+  const pinnedFiles = [{ messageIndex: 0, files: [attachment] }, { messageIndex: 2, files: [attachment, attachment] }];
+  const conflict = { ...toolResult, content: [toolResult.content[0], toolResult.content[1], { ...toolResult.content[2], version: 6 }] };
+  await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [nativeFileMessage, toolCall, conflict],
+    attachments: pinnedFiles,
+  }), /matching pinned attachment/);
   assert.deepEqual(await attachmentHistory.history(), []);
   assert.equal((await attachmentHistory.importV1History({ source: sourceAgent, messages: historyWithFiles,
-    attachments: [0, 2].map(messageIndex => ({ messageIndex, files: [attachment] })),
+    attachments: pinnedFiles,
   })).count, 3);
   const [importedAttachment, , importedTool] = await attachmentHistory.history();
   const importedContent = importedAttachment?.content as { files?: Array<{ commit: string }>; meta?: { v1?: unknown } } | undefined;

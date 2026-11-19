@@ -3,7 +3,7 @@ import { parseRunFiles } from "./run-files.ts";
 import { ApiError, type ChatRole, type RunFile, type StoredMessageContent, type ToolCallInvocation } from "./types.ts";
 
 const text = z.object({ type: z.literal("text"), text: z.string() });
-const file = z.object({
+const file = z.looseObject({
   type: z.literal("file"),
   path: z.string().startsWith("/workspace/"),
   size: z.number().int().nonnegative(),
@@ -53,15 +53,21 @@ export function parseV1History(body: unknown) {
       throw new ApiError(422, "unsupported_history", `V1 message ${index} contains an unsupported role, attachment, or content block`);
     }
     const message = parsed.data;
-    const files = attachments.get(index);
+    const mappedFiles = attachments.get(index);
+    const files = mappedFiles && [...new Map(mappedFiles.map(file => [JSON.stringify(file), file])).values()];
     const sourceFileSizes = new Map<string, number>();
     if ((message.role === "user" || message.role === "toolResult") && Array.isArray(message.content)) {
+      const seen = new Map<string, string>();
       for (const block of message.content) {
         if (block.type !== "file") continue;
         const path = block.path.slice("/workspace/".length);
-        if (sourceFileSizes.has(path) || files?.filter(file => file.path === path && file.contentType === block.contentType).length !== 1) {
+        const identity = JSON.stringify(block);
+        const earlier = seen.get(path);
+        if ((earlier !== undefined && earlier !== identity) ||
+            files?.filter(file => file.path === path && file.contentType === block.contentType).length !== 1) {
           throw new ApiError(422, "invalid_history", `V1 message ${index} has a workspace file without a matching pinned attachment`);
         }
+        seen.set(path, identity);
         sourceFileSizes.set(path, block.size);
       }
     }
