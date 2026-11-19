@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { Context, JsonValue } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationId, DocumentId, EntryId, Storage, StorageWrite } from "@earendil-works/pi-durable";

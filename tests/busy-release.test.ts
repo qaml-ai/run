@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentClient } from "../clients/node.ts";
+import { fenceV1Agent, unfenceV1Agent } from "../src/agent-v2-cutover.ts";
+import { migrate } from "../src/db.ts";
 import { echo, fixture, sleep } from "./client-fixture.ts";
 import { check, fc } from "./prop-helpers.ts";
 import { until } from "./runtime-server.ts";
@@ -15,10 +18,12 @@ import { until } from "./runtime-server.ts";
  */
 
 /** A model that answers every turn at once. */
-async function instantModel(t: { after: (fn: () => Promise<void>) => void }) {
+async function instantModel(t: { after: (fn: () => Promise<void>) => void }, beforeFinish?: () => Promise<void>) {
   const provider = createServer(async (req, res) => {
     for await (const _ of req);
     res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.flushHeaders();
+    await beforeFinish?.();
     for (const [delta, finish_reason] of [[{ role: "assistant", content: "ok" }, null], [{}, "stop"]]) res.write(`data: ${JSON.stringify({ id: "fixture", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
     res.end("data: [DONE]\n\n");
   });
@@ -26,6 +31,46 @@ async function instantModel(t: { after: (fn: () => Promise<void>) => void }) {
   t.after(async () => { provider.closeAllConnections(); await new Promise<void>(resolve => provider.close(() => resolve())); });
   return { id: "fixture", name: "Fixture", api: "openai-completions", provider: "openai", baseUrl: `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 1024 } as Model<Api>;
 }
+
+test("a v2 cutover waits for an accepted model call and rejects new v1 calls once fenced", { timeout: 30_000 }, async t => {
+  const f = await fixture(t, { busyLimit: 2 });
+  await f.db.query(`drop trigger reject_fenced_v1_run on busy_agents;
+    drop function reject_fenced_v1_run(); drop table agent_v2_cutovers;
+    delete from schema_migrations where name = '143_agent_v2_cutover.sql'`);
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  let calls = 0;
+  f.setModel(await instantModel(t, async () => { calls++; entered.resolve(); await finish.promise; }));
+  const agent = await f.start();
+  const id = agent.session.id;
+  const operation = randomUUID();
+  const params = { text: "original turn" };
+  const client = raw(f);
+  await client.start(agent, "original", "prompt", params);
+  try {
+    await entered.promise;
+    assert.deepEqual(await migrate(f.db), ["143_agent_v2_cutover.sql"]);
+    assert.equal(await fenceV1Agent(f.db, "default", id, operation), false);
+    assert.equal(calls, 1);
+  } finally {
+    finish.resolve();
+  }
+  const outcome = await client.ended(agent, "original", "wait");
+  assert.equal(outcome.error, undefined);
+  assert.equal(calls, 1);
+  await f.sessions.releaseIdle();
+  assert.equal(await fenceV1Agent(f.db, "default", id, operation), true);
+
+  const refused = await f.post(agent, "/requests", { id: "new", method: "prompt", params });
+  assert.equal(refused.ok, false);
+  assert.match((await refused.json() as { error: string }).error, /^AGENT_V2_CUTOVER:/);
+  const replay = await f.post(agent, "/requests", { id: "original", method: "prompt", params });
+  assert.equal(replay.status, 200);
+  assert.equal(calls, 1);
+  assert.equal(await unfenceV1Agent(f.db, "default", id, operation), true);
+  await client.start(agent, "after", "prompt", { text: "after releasing the fence" });
+  assert.equal((await client.ended(agent, "after", "wait")).error, undefined);
+  assert.equal(calls, 2);
+});
 
 /**
  * Requests as a client makes them, without the SDK's retries (it retries a 429): `start` is refused unless it is taken (202),

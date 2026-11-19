@@ -9,7 +9,6 @@ import { type McpResult } from "../mcp-results.ts";
 import { jsonResult, type ToolCall, type ToolServer, type ToolSourceView } from "../tool-servers.ts";
 import { safeError } from "../metrics.ts";
 import { agentMessage, agentsTools, agentUpdates, batchedEnding, childNotice, withBatch, delegateTool, MULTI_AGENT_LIMITS, PARENT_KEYS, REPORT_PROGRESS, SEND_MESSAGE, startsChildren, type ChildNotice, type DelegateSettings } from "../multi-agent.ts";
-import { reachable, sometimes } from "../assert.ts";
 import { agentGone, deliveryDropped } from "../agent-gone.ts";
 
 import * as spend from "./spend.ts";
@@ -177,7 +176,6 @@ export async function toolSpawn(ctx: ChildrenContext, session: Session, call: To
   // The tenant's own agent, alive.
   const { rows } = await ctx.db.query("select name from agents where id = $1 and tenant = $2 and not revoked and (expires_at is null or expires_at > $3)", [agent, header.tenant, Date.now()]);
   if (!rows[0]) throw new Error(`${call.name} asked to start an agent this account does not have`);
-  reachable("a tool's spawn directive started a background child");
   const output = schema === undefined ? undefined : outputInput({ schema });
   // A worker given task after task keeps one name while it runs one, and numbered ones beside it.
   const base = (name as string | undefined) ?? (String(rows[0].name ?? "").replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 56) || "worker");
@@ -553,7 +551,6 @@ async function deliverChild(ctx: ChildrenContext, row: any) {
   } catch (error) {
     const status = (error as HttpError).status;
     if (status !== 404 && status !== 410 && (error as HttpError).code !== "IDEMPOTENCY_CONFLICT") {
-      reachable("a child's notification failed to reach its parent and was left for a sweep");
       console.error(JSON.stringify({ type: "child_notice_failed", agent: row.parent, child: row.child, error: safeError(error) }));
       return void await release();
     }
@@ -606,9 +603,7 @@ export async function sweepChildren(ctx: ChildrenContext, now = Date.now()) {
         }
         row = await recordEnding(ctx, row, failure ? { status: "failed", error: failure } : record!);
         if (row.landed_at !== null) continue;
-        reachable("a sweep found a child's ended run that no one had recorded");
       }
-      else reachable("a sweep delivered a child's ending recorded before");
       await deliverChild(ctx, row);
     }
   } catch (error) {
@@ -861,7 +856,6 @@ async function landNotice(ctx: ChildrenContext, session: Session, record: Reques
   const refusal = refused ? { message: refused.message, ...spend.refusalStop(refused) ?? { stopped: "spend_limit" } }
     : turns > cap ? { stopped: "agent_loop_limit", message: `This agent's chain has had ${cap} turns started by sub-agent notifications and messages this hour, its limit (AGENT_WAKES_PER_HOUR): the message is in its history, but no turn ran. Send a message to go on` } : undefined;
   if (!refusal) return { params };
-  if (refusal.stopped === "agent_loop_limit") sometimes(true, "a notification reached its chain's wake cap");
   // Durable before the message lands: whoever has the turn next keeps the refusal.
   ctx.upsertRequest(session, { ...session.requests.get(record.id)!, landOnly: refusal });
   await ctx.commit(session, true);
@@ -881,6 +875,5 @@ export async function landing(ctx: ChildrenContext, session: Session, record: Re
     console.error(JSON.stringify({ type: "notice_landing_failed", agent: session.header.id, request: record.id, error: safeError(error) }));
     return { params };
   }
-  if (tries > 1) reachable("a notification's landing met a transient refusal and was tried again");
   return result;
 }

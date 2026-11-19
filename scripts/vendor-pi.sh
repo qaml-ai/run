@@ -19,6 +19,8 @@ commit="$1"
 repo_url=https://github.com/earendil-works/pi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/vendor/pi"
+previous="$(sed -n 's/^commit //p' "$out/PI_COMMIT" 2>/dev/null || true)"
+previous="${previous:-v1.4.0}"
 patches=()
 for patch in "$out"/patches/*.patch; do [ -e "$patch" ] && patches+=("$patch"); done
 # Pi package directory, npm name and our tarball name, in build order (each after the packages it depends on).
@@ -102,16 +104,48 @@ for entry in "${packages[@]}"; do
   echo "Building $name"
   # pi-ai's build generates its model catalog from upstream sources (models.dev, OpenRouter, Vercel AI Gateway) at
   # this moment, so it needs the network; the tarball keeps that snapshot. PI_KEEP_CATALOG=1 builds it with the
-  # catalog of the pi-ai tarball vendored now instead (a rebuild that must not change models or prices).
+  # catalog of the pi-ai tarball vendored now instead. PI_CATALOG_ADDITIONS can supply data for new providers and APIs.
   build=build
   if [ "$dir" = ai ] && [ "${PI_KEEP_CATALOG:-}" = 1 ]; then
     tar -xzf "$out/pi-ai.tgz" -C "$work" package/dist/providers/data
-    rm -rf "$src/packages/ai/src/providers/data" && mv "$work/package/dist/providers/data" "$src/packages/ai/src/providers/data"
+    ai_src="$src/packages/ai/src"
+    rm -rf "$ai_src/providers/data" && mv "$work/package/dist/providers/data" "$ai_src/providers/data"
+    if [ -n "${PI_CATALOG_ADDITIONS:-}" ]; then
+      node --experimental-strip-types --input-type=module - "$src/packages/ai" "$PI_CATALOG_ADDITIONS" <<'JS'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const [root, additions] = process.argv.slice(2);
+const { createModelDataManifest, readModelDataProviderIds, readModelDataStructure } =
+  await import(pathToFileURL(join(root, "scripts", "model-data.ts")).href);
+const data = join(root, "src", "providers", "data");
+const contents = {};
+for (const provider of readModelDataProviderIds(root)) {
+  const file = `${provider}.json`;
+  const target = join(data, file);
+  const source = join(additions, file);
+  if (!existsSync(target)) {
+    writeFileSync(target, readFileSync(source));
+  } else if (existsSync(source)) {
+    const existing = JSON.parse(readFileSync(target, "utf8"));
+    const extra = JSON.parse(readFileSync(source, "utf8"));
+    writeFileSync(target, JSON.stringify({ ...extra, ...existing }));
+  }
+  contents[file] = readFileSync(target, "utf8");
+}
+const manifest = join(data, ".manifest.json");
+const { generatedAt } = JSON.parse(readFileSync(manifest, "utf8"));
+writeFileSync(manifest, JSON.stringify(createModelDataManifest(readModelDataStructure(root), contents, generatedAt)));
+JS
+    fi
     build=build:offline
   fi
   (cd "$src/packages/$dir" && npm run "$build" > "$work/build.log" 2>&1) || { cat "$work/build.log" >&2; exit 1; }
-  json="$(cd "$src/packages/$dir" && npm pack --ignore-scripts --json --pack-destination "$work/packed")"
-  packed="$(node -e 'const r = JSON.parse(process.argv[1]); console.log((r.filename ? r : Object.values(r)[0]).filename)' "$json")"
+  packed="$(cd "$src/packages/$dir" && npm pack --ignore-scripts --json --pack-destination "$work/packed" | node -e '
+    const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+    console.log((Array.isArray(result) ? result[0] : result).filename);
+  ')"
   mv "$work/packed/$packed" "$work/packed/$file.tgz"
 done
 
@@ -133,8 +167,6 @@ node -e '
 ' "$root/package-lock.json" "${names[@]}"
 for name in "${names[@]}"; do rm -rf "${root:?}/node_modules/$name"; done
 # The upstream changes since the commit vendored before (v1.4.0, the npm release, before the first vendoring).
-previous="$(git -C "$root" show HEAD:vendor/pi/PI_COMMIT 2>/dev/null | sed -n 's/^commit //p' || true)"
-previous="${previous:-v1.4.0}"
 {
   echo "commit $commit"
   echo "date $date"

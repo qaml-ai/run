@@ -14,11 +14,14 @@ import { getModels } from "./pi-catalog.ts";
  * model's deployment; a model without one is not offered). See azureChatCredentials.
  *
  * Configured with AGENT_AZURE_OPENAI_SECRET_ARN (JSON {endpoint, apiKey, imageDeployment?, transcriptionDeployment?,
- * realtimeDeployment?, realtimeModels?, apiVersion?, models?}), or AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY
+ * realtimeDeployment?, realtimeModels?, apiVersion?, models?, modelResources?}), or AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY
  * (with AGENT_AZURE_IMAGE_DEPLOYMENT, AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT, AGENT_AZURE_REALTIME_DEPLOYMENT,
  * AGENT_AZURE_REALTIME_MODELS, AGENT_AZURE_OPENAI_API_VERSION and AGENT_AZURE_OPENAI_MODELS). A media deployment defaults
  * to its model's name; "" leaves that kind on OpenAI. Chat models have none by default.
+ * `modelResources` maps a configured model ID to { endpoint, apiKey } for a deployment on a separate resource.
  */
+export type AzureModelResource = { apiKey: string; baseUrl: string };
+
 export type AzureOpenAI = {
   endpoint: string; apiKey: string; apiVersion: string; imageDeployment?: string; transcriptionDeployment?: string;
   /** gpt-realtime-2.1's deployment; without it no realtime session goes to Azure. */
@@ -26,6 +29,7 @@ export type AzureOpenAI = {
   /** Other realtime models' deployments (gpt-realtime-2.1-mini…), by model. */
   realtimeModels?: Record<string, string>;
   models?: Record<string, string>;
+  modelResources?: Record<string, AzureModelResource>;
 };
 
 /** The realtime model `realtimeDeployment` is a deployment of (voice/realtime/openai.ts's default). */
@@ -35,7 +39,7 @@ const DEFAULT_DEPLOYMENTS = { imageDeployment: "gpt-image-2.5-flare", transcript
 export const AZURE_API_VERSION = "2025-04-01-preview";
 
 /** Settings as given (the secret's JSON, or the environment's), checked; undefined when there are none. */
-export function azureOpenAIConfig(value: { endpoint?: unknown; apiKey?: unknown; imageDeployment?: unknown; transcriptionDeployment?: unknown; realtimeDeployment?: unknown; realtimeModels?: unknown; apiVersion?: unknown; models?: unknown } | undefined, source: string): AzureOpenAI | undefined {
+export function azureOpenAIConfig(value: { endpoint?: unknown; apiKey?: unknown; imageDeployment?: unknown; transcriptionDeployment?: unknown; realtimeDeployment?: unknown; realtimeModels?: unknown; apiVersion?: unknown; models?: unknown; modelResources?: unknown } | undefined, source: string): AzureOpenAI | undefined {
   if (!value || (value.endpoint === undefined && value.apiKey === undefined)) return undefined;
   const { endpoint, apiKey } = value;
   if (typeof endpoint !== "string" || typeof apiKey !== "string" || !apiKey) throw new Error(`${source} must give endpoint (https://<resource>.openai.azure.com) and apiKey`);
@@ -54,9 +58,10 @@ export function azureOpenAIConfig(value: { endpoint?: unknown; apiKey?: unknown;
   const imageDeployment = deployment("imageDeployment"), transcriptionDeployment = deployment("transcriptionDeployment"), realtimeDeployment = deployment("realtimeDeployment");
   const realtimeModels = realtimeDeployment ? deploymentMap(value.realtimeModels, source, "realtimeModels") : undefined;
   const models = chatDeployments(value.models, source);
+  const modelResources = chatResources(value.modelResources, models, source);
   return {
     endpoint: url.origin, apiKey, apiVersion, ...(imageDeployment ? { imageDeployment } : {}), ...(transcriptionDeployment ? { transcriptionDeployment } : {}),
-    ...(realtimeDeployment ? { realtimeDeployment } : {}), ...(realtimeModels ? { realtimeModels } : {}), ...(models ? { models } : {}),
+    ...(realtimeDeployment ? { realtimeDeployment } : {}), ...(realtimeModels ? { realtimeModels } : {}), ...(models ? { models } : {}), ...(modelResources ? { modelResources } : {}),
   };
 }
 
@@ -109,6 +114,21 @@ function chatDeployments(given: unknown, source: string): Record<string, string>
   return known.length ? Object.fromEntries(known) as Record<string, string> : undefined;
 }
 
+/** A deployment on a different resource authenticates with that resource's key. */
+function chatResources(given: unknown, models: Record<string, string> | undefined, source: string): Record<string, AzureModelResource> | undefined {
+  if (given === undefined) return undefined;
+  if (!given || typeof given !== "object" || Array.isArray(given)) throw new Error(`${source}: modelResources must map model ids to Azure resources`);
+  return Object.fromEntries(Object.entries(given).map(([id, value]) => {
+    if (!models || !Object.hasOwn(models, id)) throw new Error(`${source}: modelResources.${id} needs a matching models entry`);
+    if (!value || typeof value !== "object" || typeof value.apiKey !== "string" || !value.apiKey || typeof value.endpoint !== "string")
+      throw new Error(`${source}: modelResources.${id} must give endpoint and apiKey`);
+    let endpoint: URL;
+    try { endpoint = new URL(value.endpoint); } catch { throw new Error(`${source}: modelResources.${id}.endpoint is not a URL`); }
+    if (endpoint.protocol !== "https:") throw new Error(`${source}: modelResources.${id}.endpoint must use HTTPS`);
+    return [id, { apiKey: value.apiKey, baseUrl: `${endpoint.origin}/openai/v1` }];
+  }));
+}
+
 /** Azure's v1 data-plane API, which serves Responses and Chat Completions by deployment name in the body's `model`. */
 export const AZURE_CHAT_API_VERSION = "v1";
 
@@ -118,7 +138,7 @@ export const AZURE_CHAT_API_VERSION = "v1";
  * media's `apiVersion`, which names a dated version for the deployment paths those use.
  */
 export function azureChatCredentials(azure: AzureOpenAI) {
-  return { apiKey: azure.apiKey, baseUrl: `${azure.endpoint}/openai/v1`, deployments: azure.models ?? {} };
+  return { apiKey: azure.apiKey, baseUrl: `${azure.endpoint}/openai/v1`, deployments: azure.models ?? {}, ...(azure.modelResources ? { modelResources: azure.modelResources } : {}) };
 }
 
 /**

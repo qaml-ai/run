@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { Accounts } from "../src/accounts.ts";
+import { fenceV1Agent, unfenceV1Agent } from "../src/agent-v2-cutover.ts";
 import { BusyAgents, busyCount, busyLimitError, type BusyLimit } from "../src/busy-agents.ts";
 import type { Db } from "../src/db.ts";
 import { errorFields } from "../src/http.ts";
@@ -69,6 +70,47 @@ test("the 429 names the tier, the limit and what unlocks the next tier", () => {
   const top = busyLimitError({ limit: 1000, source: "tier", tier: "Tier 4", paid: micros(1200) }, 1000);
   assert.equal(top.message, "This account has 1000 agents busy, the most its usage tier (Tier 4) allows; retry when one finishes.");
   assert.equal(busyLimitError({ limit: 200, source: "tenant" }, 200).message, "This account has 200 agents busy, the most this account allows; retry when one finishes.");
+});
+
+test("v2 cutover and run admission are mutually exclusive across nodes", async t => {
+  const { db, url } = await testDatabase();
+  const a = await node(url, "http://a", () => ({ limit: 20, source: "default" }));
+  const b = await node(url, "http://b", () => ({ limit: 20, source: "default" }));
+  t.after(async () => { await a.stop(); await b.stop(); });
+  for (let i = 0; i < 8; i++) {
+    const agent = `agent_${i}`;
+    await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ($1, 'acme', '{}', 1, 'test', 'test', 'm')", [agent]);
+    const operation = randomUUID();
+    const [fenced, held] = await Promise.all([
+      fenceV1Agent(db, "acme", agent, operation),
+      (i % 2 ? a : b).busy.hold("acme", agent).then(() => true, error => {
+        assert.match(error.message, /^AGENT_V2_CUTOVER:/);
+        return false;
+      }),
+    ]);
+    assert.equal(fenced, !held);
+    if (fenced) {
+      await assert.rejects(a.busy.hold("acme", agent, true), { code: "CV201", message: /^AGENT_V2_CUTOVER:/ });
+      assert.equal(await fenceV1Agent(db, "acme", agent, operation), true);
+      assert.equal(await unfenceV1Agent(db, "acme", agent, randomUUID()), false);
+      assert.equal(await unfenceV1Agent(db, "acme", agent, operation), true);
+    }
+  }
+});
+
+test("v2 cutover leaves recoverable work and undelivered input on v1", async () => {
+  const { db } = await testDatabase();
+  await db.query("insert into agents (id, tenant, header, revision, name, type, model, pending_runs) values ('a', 'acme', '{}', 1, 'test', 'test', 'm', true)");
+  const operation = randomUUID();
+  assert.equal(await fenceV1Agent(db, "acme", "a", operation), false);
+  await db.query("update agents set pending_runs = false where id = 'a'");
+  await db.query(`insert into agent_inputs (id, tenant, agent, request_id, tool_call_id, kind, state, input, created_at, expires_at)
+    values ('i', 'acme', 'a', 'run', 'tool', 'question', 'answered', '{}', 1, 2)`);
+  assert.equal(await fenceV1Agent(db, "acme", "a", operation), false);
+  assert.equal(await fenceV1Agent(db, "other", "a", operation), false);
+  await db.query("delete from agent_inputs where id = 'i'");
+  assert.equal(await fenceV1Agent(db, "acme", "a", operation), true);
+  assert.equal(await fenceV1Agent(db, "acme", "a", randomUUID()), false);
 });
 
 test("busy limits: a tenant's own maxAgents wins, prepaid tenants get their tier from what they paid (at once, net of refunds, grants not counted), others the default", async () => {

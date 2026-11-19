@@ -109,7 +109,7 @@ export const SCOPE_KEY = "agent-runtime:key-scope";
  */
 /** `bearer`: plain `Authorization: Bearer` instead of `x-api-key`, without Pi's subscription OAuth behavior (Anthropic federation or a gateway). */
 /** `deployments`: for the platform's Azure OpenAI resource (whose v1 API root is `baseUrl`), each azure model's deployment. */
-export type Credentials = { apiKey: string; platform?: boolean; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; deployments?: Record<string, string> };
+export type Credentials = { apiKey: string; platform?: boolean; identity?: boolean; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; deployments?: Record<string, string>; modelResources?: Record<string, { apiKey: string; baseUrl: string }> };
 export interface AgentConfig {
   networking?: import("./core/vault.ts").Networking;
   /** Runtime-only membership state; never accepted from an API definition. */
