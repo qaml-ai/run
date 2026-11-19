@@ -642,7 +642,7 @@ app.put("/v2/agents/:idOrKey/repo", async (c) => {
   return c.json(await stub.ensureAgentRepository());
 });
 
-async function startAgentRun(request: Request, env: Env, ctx: ExecutionContext, idOrKey: string, legacyActor = false) {
+async function startAgentRun(request: Request, env: Env, ctx: Pick<ExecutionContext, "waitUntil">, idOrKey: string, legacyActor = false) {
   const creds = await parseRequestCredentials(env, request);
   if (creds.kind === "admin") {
     throw new ApiError(401, "unauthorized", "Missing Bearer token");
