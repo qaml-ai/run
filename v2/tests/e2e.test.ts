@@ -528,6 +528,13 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
           timer = setTimeout(() => reject(new Error("First actor did not reach the tool")), 3_000);
         })]);
       } finally { clearTimeout(timer); }
+      const switchDuringTool = await fetch(`${workerUrl}/v2/agents/${agent.id}/model`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "mock/sol", expectedModel: "mock/default" }),
+      });
+      assert.equal(switchDuringTool.status, 409);
+      assert.equal((await switchDuringTool.json()).error.code, "agent_busy");
       second = await agent.steer(londonPrompt, { actor: "second-member", idempotencyKey: "second", wait: false });
       assert.equal(second.status, "queued");
       assert.equal(second.batchedInto, null);
