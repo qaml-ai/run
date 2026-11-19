@@ -39,7 +39,7 @@ import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readBytes, readJson, readText, signInHint } from "./http.ts";
 import { limitRefused } from "./limit-hits.ts";
-import { AGENT_PAGE_MAX, agentListQuery } from "./core/agent-directory-page.ts";
+import { AGENT_PAGE_MAX, agentListQuery } from "./agent-directory-page.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
 import type { GitHubApps } from "./core/github-apps.ts";

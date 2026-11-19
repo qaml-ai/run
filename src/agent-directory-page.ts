@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
-import { metadataFilters } from "../../shared/agent-metadata.ts";
-import { HttpError } from "./http-error.ts";
+import { metadataFilters } from "../shared/agent-metadata.ts";
+import { HttpError } from "./core/http-error.ts";
 
 /** GET /v1/agents' filters and page. Without `limit` the whole (filtered) list, as callers have always had it. */
 export type AgentListQuery = {

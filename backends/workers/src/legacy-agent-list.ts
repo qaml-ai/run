@@ -1,4 +1,4 @@
-import { agentListQuery, listAgentPage } from "../../../src/core/agent-directory-page.ts";
+import { agentListQuery, listAgentPage } from "../../../src/agent-directory-page.ts";
 import { HttpError } from "../../../src/core/http-error.ts";
 import type { Sql } from "./postgres.ts";
 
