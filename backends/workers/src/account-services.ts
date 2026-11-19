@@ -152,6 +152,16 @@ export async function accountPrincipal(request: Request, service: AccountService
   return principal;
 }
 
+/** The caller's account projection, without account or billing maintenance. */
+export async function accountIdentityResponse(service: AccountServices, principal: Principal): Promise<Response> {
+  const tenant = principal.tenant;
+  const person = principal as Principal & { login?: string; name?: string; signIn?: string };
+  const login = "login" in person ? person.login : await service.accounts.identity(tenant);
+  return Response.json({ tenant, via: principal.via, ...(login ? { login } : {}), ...(person.name ? { name: person.name } : {}),
+    ...(person.signIn ? { signIn: person.signIn } : {}), canStoreKeys: service.accounts.canStoreKeys, defaultModel: await defaultModelFor(service.environment, tenant) },
+  { headers: { "Cache-Control": "no-store" } });
+}
+
 /** Account-management HTTP projection; policy and mutations remain in the source services. */
 export async function accountManagementRoutes(request: Request, service: AccountServices, principal: Principal, webhooks?: Pick<Webhooks, "setBy">): Promise<Response | null> {
   const path = new URL(request.url).pathname, tenant = principal.tenant;
@@ -163,10 +173,7 @@ export async function accountManagementRoutes(request: Request, service: Account
   };
   const googleEmail = async () => (await service.accounts.db.query("select google_email from tenants where id=$1", [tenant])).rows[0]?.google_email as string | undefined;
   if (path === "/v1/me" && request.method === "GET") {
-    const person = principal as Principal & { login?: string; name?: string; signIn?: string };
-    const login = "login" in person ? person.login : await service.accounts.identity(tenant);
-    return reply({ tenant, via: principal.via, ...(login ? { login } : {}), ...(person.name ? { name: person.name } : {}),
-      ...(person.signIn ? { signIn: person.signIn } : {}), canStoreKeys: service.accounts.canStoreKeys, defaultModel: await defaultModelFor(service.environment, tenant) });
+    return accountIdentityResponse(service, principal);
   }
   if (path === "/v1/sessions" && request.method === "DELETE") return reply({ signedOut: await service.auth.endSessions(tenant) });
   if (path === "/v1/oauth/grants" && request.method === "GET") return reply(await service.oauth.grants(tenant));

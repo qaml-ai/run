@@ -78,7 +78,7 @@ test("the named hosted MCP Worker preserves bearer credentials and issuer discov
       assert.equal(result.isError, undefined);
       const content = result.content as { type: string; text: string }[];
       assert.equal(content[0].type, "text");
-      assert.deepEqual(JSON.parse(content[0].text), { tenant: "fixture", via, url: origin });
+      assert.deepEqual(JSON.parse(content[0].text), { tenant: "fixture", via, canStoreKeys: true, defaultModel: "test/echo", url: origin });
       for (const path of [undefined, "guides/definitions.md"]) {
         const document = await client.callTool({ name: "read_docs", arguments: path ? { path } : {} });
         const file = new URL(`../../../docs/${path ?? "llms.txt"}`, import.meta.url);
