@@ -3,7 +3,7 @@ import { fileStorage, type LogTail, type Storage, type StorageMeter } from "./st
 /** Which storage the runtime uses. */
 export type StorageDescriptor =
   | { kind: "file"; root: string; shared?: boolean }
-  | { kind: "s3"; bucket: string; prefix?: string; region?: string; endpoint?: string; forcePathStyle?: boolean };
+  | { kind: "s3"; bucket: string; prefix?: string; region?: string; endpoint?: string; forcePathStyle?: boolean; putBlobsWithoutHead?: boolean };
 
 /** Shared storage keeps each log's recent records in `tail`; single-host files do not need one. `meter` hears of every object created or deleted. */
 export async function openStorage(descriptor: StorageDescriptor, tail: LogTail, meter?: StorageMeter): Promise<Storage> {
