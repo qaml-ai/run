@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import worker from "../ingress/index.ts";
+import worker, { fetchLegacyApi } from "../ingress/index.ts";
 
 test("dispatches native and legacy requests once, preserving the origin response", async t => {
   const legacyRedirect = new Response(null, { status: 307, headers: { Location: "/login" } });
@@ -56,4 +56,20 @@ test("uses ECS only for legacy compatibility misses and keeps the original reque
   assert.deepEqual(await (await worker.fetch(prompt(false), env)).json(), { migrated: false });
   assert.equal(origin.mock.callCount(), 1);
   assert.equal(route.mock.callCount(), 2);
+});
+
+test("offers hosted MCP on both hosts and limits its origin binding to the legacy API", async t => {
+  const answer = new Response(null, { status: 202 });
+  const origin = t.mock.method(globalThis, "fetch", async () => answer);
+  const route = t.mock.fn(async () => answer);
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    assert.equal(await worker.fetch(new Request(`https://${host}/mcp`), env), answer);
+    assert.equal(await fetchLegacyApi(new Request(`https://${host}/v1/agents`)), answer);
+  }
+  for (const url of ["https://example.com/v1/agents", "https://run.camelai.com/mcp", "https://run.camelai.com/v2/health"]) {
+    assert.equal((await fetchLegacyApi(new Request(url))).status, 404);
+  }
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 2);
 });
