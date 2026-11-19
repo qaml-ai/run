@@ -635,6 +635,16 @@ export class PostgresPiStorage implements Storage {
         return new PostgresPiStorage(database, { tables: TABLES }, Number(metadata.next_id), committing);
     }
 
+    /** Open only the read methods on an existing session, without creating or updating its namespace. */
+    static async openExisting(db: Db, sessionId: string): Promise<Pick<Storage,
+        "scanEntries" | "entry" | "findDocument" | "document" | "scanSubmissions" | "submissionByRequest" | "close"> | undefined> {
+        await postgres();
+        const database = postgresDatabase(db, sessionId);
+        const metadata = await database.get<MetadataRow>(`SELECT next_id FROM ${TABLES.durableMetadata} WHERE session_id = $1`);
+        if (!metadata) return;
+        return new PostgresPiStorage(database, { tables: TABLES }, Number(metadata.next_id));
+    }
+
 	/**
 	 * Each batch in a transaction of its own, in order, as the one commit it is. The receipts come once the batches that
 	 * were stored are (also after a lost answer that landed), before this settles; a batch that fails rejects the call
