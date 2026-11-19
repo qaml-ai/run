@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { RUN_METHODS } from "../v1-client-state.ts";
+export { RUN_METHODS, REQUEST_METHODS, activityOf, expired, hash, validId } from "../v1-client-state.ts";
 import type { AttemptAck, ModelAttemptHook } from "../model-attempt.ts";
 import type { Computers } from "../computers/service.ts";
 import type { EndUserCredits } from "../end-user-credits.ts";
@@ -459,9 +460,6 @@ export interface SessionHooks {
   /** Where a run's turn came from, passed to every tool it calls (as `_meta` to MCP servers). */
   origin?(agent: AgentRef, requestId?: string): Promise<Record<string, unknown> | undefined>;
 }
-/** `resume` continues a turn that waited on human input; the runtime makes it when the last input settles. */
-export const RUN_METHODS = ["prompt", "execute", "continue", "resume"];
-export const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 export const MODEL_RUNS = ["prompt", "continue"];
 /**
@@ -494,24 +492,3 @@ export function failureClass(record: Pick<RequestRecord, "outcome">): string | u
 export function runningRun(session: Session) {
   return [...session.running.values()].find(record => RUN_METHODS.includes(record.method) && record.began);
 }
-
-export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-
-export const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
-
-/**
- * Whether an agent is busy, from its request records alone: the one source every view of it (GET /v1/agents/{id}, its
- * state, a `status` request) reads, so they never disagree. Busy while any run is open, running or queued; `activeRun`
- * is the run that has begun, and `queuedRuns` how many wait behind it.
- */
-export function activityOf(records: Iterable<RequestRecord>) {
-  let activeRun: string | null = null, queuedRuns = 0;
-  for (const record of records) {
-    if (record.state !== "running" || !RUN_METHODS.includes(record.method)) continue;
-    if (record.began) activeRun = record.id; else queuedRuns++;
-  }
-  return { busy: activeRun !== null || queuedRuns > 0, activeRun, queuedRuns };
-}
-
-/** Never-expiring agents have `expiresAt: null`; a bare `<=` would treat null as 0, long expired. */
-export const expired = (expiresAt: number | null, now = Date.now()) => expiresAt !== null && expiresAt <= now;

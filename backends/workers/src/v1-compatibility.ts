@@ -1,12 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
-import { Hono } from "hono";
 import { FRAME_BYTES, type RequestRecord } from "../../../shared/client-protocol.ts";
-import { expired, hash, REQUEST_METHODS, validId } from "../../../src/client-sessions/state.ts";
+import { expired, hash, REQUEST_METHODS, validId } from "../../../src/v1-client-state.ts";
 import { HttpError } from "../../../src/core/http-error.ts";
-import { compatibilityEvents } from "../../../src/v1-compatibility-events.ts";
+import { compatibilityEventsResponse } from "../../../src/v1-compatibility-events.ts";
 import { compatibilityHistory } from "../../../src/v1-compatibility-history.ts";
 import { PromptInput } from "../../../src/v1-prompt-schema.ts";
-import { unsupportedV1Operation, V1Compatibility, type MigratedAgent } from "../../../src/v1-v2-compatibility.ts";
+import { unsupportedV1Operation, V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { readText } from "./account-http.ts";
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import { database, type PostgresEnv, type Sql } from "./postgres.ts";
@@ -32,16 +31,6 @@ export function legacyAgentRequest(request: Request) {
   if (scoped && operation === "events" && url.searchParams.get("watch") !== "1" && url.searchParams.get("poll") !== "1") return;
   return { agent, operation, scoped };
 }
-
-const events = new Hono<{ Bindings: { compatibility: V1Compatibility; route: MigratedAgent; browser?: BrowserClaims } }>();
-events.onError(error => { throw error; });
-events.get("*", c => {
-  const { compatibility, route, browser } = c.env;
-  return compatibilityEvents(c, compatibility, route, browser && {
-    show: event => readableFrame(browser, event),
-    until: browser.exp,
-  });
-});
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "Cache-Control": "no-store" } });
 const unknownAgent = () => new HttpError(404, "Unknown agent");
@@ -150,7 +139,10 @@ export async function handleLegacyAgentRequest(
     if (typeof text !== "string" || !text.trim() || (actor !== undefined && typeof actor !== "string")) throw new HttpError(400, "Invalid prompt");
     return json(await compatibility.prompt(route, body.id, { text, actor }, archived, signal), 202);
   }
-  if (operation === "events") return events.fetch(request, { compatibility, route, browser });
+  if (operation === "events") return compatibilityEventsResponse(request, compatibility, route, browser && {
+    show: event => readableFrame(browser, event),
+    until: browser.exp,
+  });
   if (operation === "state") {
     const requests = sql.query<{ receipts: RequestRecord[] }>(
       "select receipts from agent_v2_receipt_archives where tenant = $1 and agent = $2", [tenant, agent],

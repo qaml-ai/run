@@ -1,14 +1,23 @@
 import { setTimeout as delay } from "node:timers/promises";
-import type { Context } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { FRAME_BYTES, MAX_POLL_WAIT_MS, type ClientEvent, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { parseSSE } from "../v2/sdk/src/sse.ts";
-import type { StreamReader } from "./client-sessions/events.ts";
 import { HttpError } from "./core/http-error.ts";
 import { unsupportedV1Operation, v2Event, type MigratedAgent, type V1Compatibility, type V2Event } from "./v1-v2-compatibility.ts";
 
 const terminal = new Set(["run_completed", "run_failed", "run_cancelled", "input_required"]);
 const progress = new Set(["run_started", "message_start", "message_end", "text_delta", "tool_call_start", "tool_call_end"]);
+type StreamReader = { show(data: ClientEvent | TurnSnapshot): unknown; until: number };
+
+const events = new Hono<{ Bindings: { compatibility: V1Compatibility; route: MigratedAgent; reader?: StreamReader } }>();
+events.onError(error => { throw error; });
+events.get("*", c => compatibilityEvents(c, c.env.compatibility, c.env.route, c.env.reader));
+
+/** Uses the same SSE handler from platforms that route with a standard Request. */
+export function compatibilityEventsResponse(request: Request, compatibility: V1Compatibility, route: MigratedAgent, reader?: StreamReader) {
+  return events.fetch(request, { compatibility, route, reader });
+}
 
 /** Replay and follow the v2 event buffer in the v1 cursor namespace. */
 export async function compatibilityEvents(c: Context, compatibility: V1Compatibility, route: MigratedAgent, reader?: StreamReader) {

@@ -5,8 +5,7 @@ import { canonical } from "../shared/durable-json.ts";
 import { V1_COMPAT_REQUEST_PREFIX, type RequestRecord } from "../shared/client-protocol.ts";
 import { RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
 import type { PromptInput } from "./v1-prompt-schema.ts";
-import { activityOf, validId } from "./client-sessions/state.ts";
-import type { Sql } from "./db.ts";
+import { activityOf, validId } from "./v1-client-state.ts";
 import { HttpError } from "./core/http-error.ts";
 import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 
@@ -18,6 +17,7 @@ export type MigratedAgent = {
   event_base: number;
 };
 type ArchivedRequest = (requestId: string) => Promise<RequestRecord | undefined>;
+type Sql = { query<Row = unknown>(text: string, values?: unknown[]): Promise<{ rows: Row[]; rowCount: number | null }> };
 
 const runResponse = z.object({
   id: z.string(),
