@@ -1,6 +1,7 @@
 import { randomId } from "./crypto.ts";
 import {
-  calculateCostUsd,
+  DEFAULT_MODEL_ID,
+  addModelUsage,
   streamModelResponse,
   type ConversationMessage,
 } from "./providers.ts";
@@ -35,7 +36,7 @@ export async function executeStatelessRun(
   }
 
   const runId = randomId("run", 8);
-  const model = (body.model || env.DEFAULT_MODEL || "openrouter/meta/muse-ember").trim();
+  const model = (body.model || env.DEFAULT_MODEL || DEFAULT_MODEL_ID).trim();
   const maxSteps = Math.max(1, Math.min(25, Number(body.maxSteps ?? 10)));
   const customTools = body.tools ?? [];
 
@@ -77,9 +78,7 @@ export async function executeStatelessRun(
           args: chunk.args,
         });
       } else if (chunk.type === "done") {
-        usage.inputTokens += chunk.inputTokens;
-        usage.outputTokens += chunk.outputTokens;
-        usage.costUsd = calculateCostUsd(model, usage.inputTokens, usage.outputTokens, 0);
+        addModelUsage(usage, model, chunk.inputTokens, chunk.outputTokens);
       }
     }
 

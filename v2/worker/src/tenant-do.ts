@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintChannelId, openSecret, randomId, sealSecret } from "./crypto.ts";
-import { getProviderLookupCandidates } from "./providers.ts";
+import { DEFAULT_MODEL_ID, getProviderLookupCandidates } from "./providers.ts";
 import {
   ApiError,
   extractApiError,
@@ -967,7 +967,7 @@ export class TenantDO extends DurableObject<Env> {
         defCfg?.model ??
         existing?.model ??
         params.defaultModel ??
-        "openrouter/meta/muse-ember";
+        DEFAULT_MODEL_ID;
       const repoId =
         params.input.repoId !== undefined
           ? params.input.repoId

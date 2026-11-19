@@ -74,6 +74,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   type ProviderMessage = { role: string; content: unknown; tool_call_id?: string };
   let lastProviderMessages: ProviderMessage[] | undefined;
   let lastProviderOptions: Record<string, unknown> | undefined;
+  const azureRequests: Array<{ body: Record<string, unknown>; key?: string | string[]; authorization?: string }> = [];
   let actorToolGate: { started: () => void; resume: Promise<void> } | undefined;
   const actorTokens = new Map<string, string>();
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
@@ -184,6 +185,22 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         return;
       }
 
+      if (req.url === "/openai/v1/responses" && req.method === "POST") {
+        const body = JSON.parse(rawBody) as Record<string, unknown>;
+        azureRequests.push({ body, key: req.headers["api-key"], authorization: req.headers.authorization });
+        const input = body.input as Array<{ type?: string }>;
+        const toolResult = input.some((item) => item.type === "function_call_output");
+        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        const events = [
+          ...(toolResult
+            ? [{ type: "response.output_text.delta", delta: "read the result" }]
+            : [{ type: "response.output_item.done", item: { type: "function_call", name: "lookup", call_id: "call_azure_test", arguments: "{}" } }]),
+          { type: "response.completed", response: { usage: { input_tokens: 160_000, output_tokens: 7 } } },
+        ];
+        res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+        return;
+      }
+
       if (req.url === "/v1/chat/completions" && req.method === "POST") {
         const body = JSON.parse(rawBody) as {
           model?: string;
@@ -263,6 +280,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
             CAMELFS_SIGNING_KEY: camelfsSigningKey,
             CAMELFS_DEV_TOKEN: "",
             DEFAULT_MODEL: "mock/default",
+            AZURE_OPENAI_SOL_ENDPOINT: auxUrl,
+            AZURE_OPENAI_SOL_API_KEY: "fixture-azure-key",
             TOOL_IDENTITY_ISSUER: `http://127.0.0.1:${workerPort}/v2`,
             TOOL_IDENTITY_PRIVATE_JWK: JSON.stringify({ ...toolKey, kid: "tool-fixture" }),
           },
@@ -309,6 +328,35 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
   it("authenticates v2 calls with the Camel Bots tool verifier", { skip: !migrationFixture }, async (t) => {
     await migrationFixture.rehearseSignedTools(t, workerUrl, ADMIN_SECRET);
+  });
+
+  it("routes the default alias to Azure Responses with low reasoning across tool calls", async () => {
+    const created = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "azure-sol-test", initialCreditsUsd: 1,
+    });
+    const response = await fetch(`${workerUrl}/v2/runs`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${created.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "camelrun/default", input: "Call lookup before answering.",
+        tools: [{ name: "lookup", url: `${auxUrl}/webhook` }],
+      }),
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json() as { text: string; usage: { costUsd: number } };
+    assert.equal(result.text, "read the result");
+    assert.equal(result.usage.costUsd, 0.64014, "short-context pricing applies to each request");
+    assert.equal(azureRequests.length, 2);
+    for (const { body, key, authorization } of azureRequests) {
+      assert.equal(body.model, "gpt-6.2-sol");
+      assert.deepEqual(body.reasoning, { effort: "low" });
+      assert.equal(body.store, false);
+      assert.equal(key, "fixture-azure-key");
+      assert.equal(authorization, undefined);
+    }
+    assert.ok((azureRequests[1].body.input as Array<{ type?: string; call_id?: string }>).some(
+      (item) => item.type === "function_call_output" && item.call_id === "call_azure_test",
+    ));
   });
 
   it("1. tenants, API keys, billing credits, and scoped agent tokens enforce boundaries", async () => {

@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
-import { calculateCostUsd } from "./providers.ts";
+import { DEFAULT_MODEL_ID, calculateCostUsd } from "./providers.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -1571,7 +1571,7 @@ export class AgentDO extends DurableObject<Env> {
         incoming.model ??
         existing?.model ??
         this.env.DEFAULT_MODEL ??
-        "openrouter/meta/muse-ember",
+        DEFAULT_MODEL_ID,
       instructions: incoming.instructions ?? existing?.instructions ?? "",
       definition:
         incoming.definition !== undefined
