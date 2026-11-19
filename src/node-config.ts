@@ -18,7 +18,7 @@ import { MULTI_AGENT_LIMITS } from "./multi-agent.ts";
  * tenants file, secrets, the database, storage, pricing, outbound policy, mail, rate limits...), each of which takes it
  * as an argument. Its agent processes are told its settings (`agentEnv`), not the process's.
  *
- * Two settings stay the process's, so nodes sharing one (a simulation) share them: AGENT_SANDBOX_DIR (src/sandbox.ts),
+ * Nodes in the same process share AGENT_SANDBOX_DIR (src/sandbox.ts),
  * the agent-launcher that started this process and confines all its children, and AGENT_SERVICE_NAME's dimension on
  * metric lines (src/metrics.ts), which server.ts sets for the process.
  */

@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import pg from "pg";
 import { AgentRuntime, type Mount } from "../../clients/node.ts";
+import type { RequestRecord } from "../../shared/client-protocol.ts";
 import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
 import { validVolumeId } from "../../src/volumes.ts";
 import { CamelRun, type V1HistoryImport } from "../sdk/src/index.ts";
@@ -25,10 +26,11 @@ interface StageOptions {
   initialCommit?: string;
   previous?: string;
   attachments?: V1HistoryImport["attachments"];
+  validateHistory?: (messages: unknown[]) => void;
   sharedDraft?: SharedDraft;
 }
 
-async function sourceState(source: SourceAgent): Promise<Mount[]> {
+export async function readV1AgentState(source: SourceAgent) {
   const base = `/v1/agents/${encodeURIComponent(source.agentId)}`;
   async function get<T>(path: string): Promise<T> {
     const response = await fetchWithoutRedirects(fetch, new URL(base + path, source.url), {
@@ -39,19 +41,19 @@ async function sourceState(source: SourceAgent): Promise<Mount[]> {
     return await response.json() as T;
   }
   const [state, pending, mounts] = await Promise.all([
-    get<{ requests: { state: string }[] }>("/state"),
+    get<{ requests: RequestRecord[] }>("/state"),
     get<unknown[]>("/inputs?state=pending"),
     get<Mount[]>("/mounts"),
   ]);
-  if (state.requests.some(({ state }) => state === "running" || state === "queued") || pending.length) {
+  if (state.requests.some(receipt => receipt.state !== "completed") || pending.length) {
     throw new Error("The v1 agent has active work or pending input");
   }
-  return mounts;
+  return { mounts, receipts: state.requests };
 }
 
 /** Prepare and verify data for an already configured private v2 agent. Routing belongs to the caller. */
 export async function stageAgent(source: SourceAgent, v2: CamelRun, destination: string, options: StageOptions = {}) {
-  const mounts = await sourceState(source);
+  const { mounts } = await readV1AgentState(source);
   const { sharedDraft } = options;
   const mount = mounts.find(candidate => candidate.path === "/workspace");
   let draftOwner: SharedDraftOwner | null = null;
@@ -59,7 +61,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
     const draft = mounts.find(candidate => candidate.path === "/bot");
     if (mounts.length !== 2 || !mount || !validVolumeId(sharedDraft.volumeId) ||
         !draft || draft.volumeId !== sharedDraft.volumeId || draft.volumeId === mount.volumeId ||
-        draft.mode !== "rw" || draft.subpath || draft.notify || draft.instructions !== undefined) {
+        (draft.mode !== "rw" && draft.mode !== "ro") || draft.subpath || draft.notify || draft.instructions !== undefined) {
       throw new Error("Expected /workspace and the exact Camel Bots draft volume at /bot");
     }
     draftOwner = await sharedDraft.verify(source.agentId, draft.volumeId);
@@ -74,6 +76,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
   const target = await v2.agents.get(destination);
   if (target.summary.activeRunId || target.summary.lastRun) throw new Error("The v2 destination already has activity");
   const history = await readV1History(source.url, source.apiKey, source.agentId);
+  options.validateHistory?.(history.messages);
   const input = { ...history, previous: options.previous, attachments: options.attachments };
 
   async function copyWorkspace() {
@@ -113,8 +116,8 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
       }
     }
 
-    const [currentMounts, latest, currentDraftOwner] = await Promise.all([
-      sourceState(source),
+    const [{ mounts: currentMounts }, latest, currentDraftOwner] = await Promise.all([
+      readV1AgentState(source),
       readV1History(source.url, source.apiKey, source.agentId),
       sharedDraft?.verify(source.agentId, sharedDraft.volumeId),
     ]);
@@ -125,9 +128,10 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
     }
     if (workspace) {
       const { copy, volume } = workspace;
-      const [snapshots, repo] = await Promise.all([volume.snapshots(), v2.repos.get(copy.repoId)]);
+      // The repository summary's commit is updated asynchronously after writes.
+      const [snapshots, branch] = await Promise.all([volume.snapshots(), v2.repos.ls(copy.repoId, { recursive: false })]);
       if (snapshots.length !== Object.keys(copy.snapshotCommits).length ||
-          snapshots.some(snapshot => !Object.hasOwn(copy.snapshotCommits, snapshot.id)) || repo.commit !== copy.head) {
+          snapshots.some(snapshot => !Object.hasOwn(copy.snapshotCommits, snapshot.id)) || branch.commit !== copy.head) {
         throw new Error("The workspace changed during staging");
       }
     }
@@ -141,7 +145,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
 }
 
 /** Check the builder's current open draft in the application, including collaborator access. */
-export async function verifyCamelBotsDraft(db: pg.Pool, agentId: string, volumeId: string): Promise<SharedDraftOwner | null> {
+export async function verifyCamelBotsDraft(db: pg.Pool | pg.PoolClient, agentId: string, volumeId: string): Promise<SharedDraftOwner | null> {
   const { rows } = await db.query<SharedDraftOwner>(`
     select a.owner, b.bot
     from builder_agents a join app_bots b on b.bot = a.open_bot

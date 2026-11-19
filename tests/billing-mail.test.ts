@@ -5,12 +5,15 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pg from "pg";
 import { Accounts } from "../src/accounts.ts";
 import { BillingAlerts } from "../src/billing-alerts.ts";
+import { billingCallbacks } from "../src/billing-callbacks.ts";
 import { billingEmail } from "../src/billing-emails.ts";
 import { BillingMailer, billingMailConfig } from "../src/billing-mailer.ts";
 import { postLedger } from "../src/billing.ts";
 import { Tenants } from "../src/tenants.ts";
+import { callbackRole } from "./billing-callback-role.ts";
 import { testDatabase } from "./database.ts";
 import { runtime, listen, until, OPERATOR, OTHER_OPERATOR } from "./runtime-server.ts";
 
@@ -22,10 +25,10 @@ const tenantsFile = { tenants: { alice: { tokenSha256: sha(OPERATOR), billing: "
 const MAIL = { AGENT_BILLING_EMAIL_FROM: "billing@example.test", AGENT_BILLING_EMAIL_CONFIGURATION_SET: "billing", AGENT_BILLING_EMAIL_SNS_TOPICS: TOPIC,
   AWS_REGION: "us-west-2", AWS_ACCESS_KEY_ID: "fixture", AWS_SECRET_ACCESS_KEY: "fixture" };
 async function fixture() {
-  const { db } = await testDatabase();
+  const { db, url } = await testDatabase();
   const accounts = new Accounts({ db, tenants: new Tenants({ read: async () => JSON.stringify(tenantsFile) }), secretsKey: "ab".repeat(32) });
   const alerts = new BillingAlerts(db, accounts);
-  return { db, accounts, alerts };
+  return { db, url, accounts, alerts };
 }
 
 test("billing recipient API, scanner-safe confirmation, and SES delivery work together", async t => {
@@ -154,8 +157,8 @@ test("billing templates escape content and include HTML, plain text, fallbacks a
   assert.throws(() => billingMailConfig({ ...MAIL, AGENT_PUBLIC_URL: "https://example.test", AGENT_BILLING_EMAIL_NAME: "Billing\r\nBcc: stolen@example.test" }), /display name/);
 });
 
-test("only signed, configured and correlated SES feedback suppresses a billing recipient", async () => {
-  const { db, alerts } = await fixture();
+test("only signed, configured and correlated SES feedback suppresses a billing recipient", async t => {
+  const { db, url, accounts, alerts } = await fixture();
   const recipient = await alerts.add("alice", "notify@example.test");
   const [delivery] = await alerts.claim();
   const dir = mkdtempSync(join(tmpdir(), "billing-sns-"));
@@ -163,8 +166,13 @@ test("only signed, configured and correlated SES feedback suppresses a billing r
   try { execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(dir,"key.pem"), "-out", join(dir,"cert.pem"), "-subj", "/CN=sns.amazonaws.com", "-days", "2"], { stdio:"ignore" }); key = createPrivateKey(readFileSync(join(dir,"key.pem"))); cert = readFileSync(join(dir,"cert.pem"),"utf8"); }
   finally { rmSync(dir, { recursive:true, force:true }); }
   const certUrl = `https://sns.us-west-2.amazonaws.com/billing-${randomUUID()}.pem`;
-  const mailer = new BillingMailer({ db, alerts, origin:"https://example.test", from:MAIL.AGENT_BILLING_EMAIL_FROM, configurationSet:"billing", topics:[TOPIC], fetch: (async (url: string | URL) => new Response(String(url) === certUrl ? cert : "unknown")) as typeof fetch });
-  const app = mailer.feedback();
+  const restricted = await callbackRole(db, url);
+  const callbackDb = new pg.Pool({ connectionString: restricted.url });
+  t.after(async () => { await callbackDb.end(); await restricted.release(); });
+  const mailer = new BillingMailer({ db: callbackDb, alerts: new BillingAlerts(callbackDb, accounts),
+    origin:"https://example.test", from:MAIL.AGENT_BILLING_EMAIL_FROM, configurationSet:"billing", topics:[TOPIC],
+    fetch: (async (url: string | URL) => new Response(String(url) === certUrl ? cert : "unknown")) as typeof fetch });
+  const app = billingCallbacks({ webhook: async () => assert.fail("SNS request reached Stripe settlement") }, mailer);
   function message(event: any, extra: Record<string,string> = {}) {
     const m: Record<string,string> = { Type:"Notification", Message: JSON.stringify(event), MessageId:randomUUID(), Timestamp:new Date().toISOString(), TopicArn:TOPIC, ...extra };
     const signed = ["Message","MessageId","Timestamp","TopicArn","Type"].map(k=>`${k}\n${m[k]}\n`).join("");

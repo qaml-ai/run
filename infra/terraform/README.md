@@ -141,7 +141,9 @@ Remove the destination once the export is delivered; the role goes when the last
     site's reports stay off until `infra/journey.sh` stores the two secrets' values;
   - `AGENT_AZURE_OPENAI_SECRET_ARN` (images, transcription and realtime voice on the platform's OpenAI key go to the Azure OpenAI
     deployments once `infra/azure-openai.sh` stores the resource's endpoint and key; OpenAI is the fallback; the
-    chat deployments it stores are offered as `azure/<model>`).
+    chat deployments it stores are offered as `azure/<model>`). For a chat deployment on a separate Azure resource,
+    add the model and deployment name to `models` and put its own `endpoint` and `apiKey` under `modelResources[modelId]`
+    in that secret.
   - `AGENT_OPENAI_APPS_CHALLENGE` from `openai_apps_challenge`, when set: the ChatGPT plugin's domain-verification
     token (`plugins/chatgpt/README.md`).
   - `AGENT_ADMIN_URL` (`https://<admin_hostname><admin_path>`), `AGENT_ADMIN_ACCESS_TEAM`, `AGENT_ADMIN_ACCESS_AUD`

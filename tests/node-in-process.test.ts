@@ -18,7 +18,7 @@ import { fakeModel, lastUser, toolCall, toolResults, until } from "./runtime-ser
 import { inlineSandboxes } from "./inline-sandbox.ts";
 
 // Two runtime nodes in one process (createNode, src/node.ts), each with its own configuration, sharing a database and
-// storage as a cluster does: what a simulation runs many of.
+// storage as a cluster does.
 test("two nodes run in one process, each serving its own agents and forwarding to the other's", async t => {
   // Every interval a node starts is its own, and stops when it closes.
   const intervals = new Map<number, string>();

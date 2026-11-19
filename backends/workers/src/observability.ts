@@ -1,6 +1,6 @@
 import { errorClass, safeError, metricLine } from './metrics-policy.ts';
 export { errorClass, safeError };
-export type MetricsEnv = { METRICS?: AnalyticsEngineDataset };
+export type MetricsEnv = { METRICS?: { writeDataPoint(point: { indexes: string[]; blobs: string[]; doubles: number[] }): void } };
 /** One point per metric: stable names/dimensions, never request bodies or raw errors. */
 export function metric(env: MetricsEnv, type: string, values: Record<string, number | [number, 'Count' | 'Milliseconds' | 'Bytes' | 'None']>, dimensions: Record<string, string> = {}) {
   const metrics = Object.fromEntries(Object.entries(values).map(([name,value]) => [name, typeof value === 'number' && name.endsWith('Ms') ? [value,'Milliseconds'] as [number,'Milliseconds'] : value]));

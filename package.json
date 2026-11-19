@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/server.ts",
+    "start:v1-billing-callbacks": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/v1-billing-callbacks-server.ts",
     "demo:clients": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/run.ts",
     "demo:typescript": "node --experimental-strip-types --disable-warning=ExperimentalWarning examples/release-board.ts",
     "demo:python": "python3 examples/inventory.py",
@@ -25,9 +26,6 @@
     "reconcile:storage": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/reconcile-storage.ts",
     "bench:execute": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-execute.ts",
     "build:v8-exec": "cd sandbox/v8-exec && cargo build --release",
-    "sim": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/sim.ts",
-    "sim:mcp": "node --experimental-strip-types --disable-warning=ExperimentalWarning tests/sim/mcp.ts",
-    "bench:sim-hooks": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-sim-hooks.ts",
     "bench:search": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/bench-search.ts",
     "test:studio": "node --experimental-strip-types --disable-warning=ExperimentalWarning studio/smoke.ts",
     "check:core": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/check-core.ts && tsc -p tsconfig.core.json",

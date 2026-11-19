@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, type FileHandle } from "node:fs/promises
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, openSync } from "node:fs";
-import type { Sql } from "../src/db.ts";
+import type { Sql } from "../src/core/host.ts";
 
 /**
  * Database work that commits with the record it is appended with (`AppendLog.append`): in the transaction that first

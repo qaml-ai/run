@@ -24,6 +24,7 @@ import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { BillingAlerts } from "./billing-alerts.ts";
+import { receiveStripeWebhook } from "./billing-callbacks.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import { answerList } from "./client-sessions/inputs.ts";
@@ -39,10 +40,9 @@ import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readBytes, readJson, readText, signInHint } from "./http.ts";
 import { limitRefused } from "./limit-hits.ts";
-import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
+import { AGENT_PAGE_MAX, agentListQuery } from "./agent-directory-page.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
-import { metadataFilters } from "../shared/agent-metadata.ts";
 import type { GitHubApps } from "./core/github-apps.ts";
 import { githubAppRoutes } from "./github-apps-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -79,6 +79,9 @@ import { exportAccount } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
+import { unsupportedV1Operation, type V1Compatibility } from "./v1-v2-compatibility.ts";
+import { compatibilityEvents } from "./v1-compatibility-events.ts";
+import { compatibilityHistory } from "./v1-compatibility-history.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -86,6 +89,7 @@ import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./le
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  v1Compatibility?: V1Compatibility;
   dreaming?: Dreaming;
   applyDb?: Db;
   computers?: Computers;
@@ -165,7 +169,7 @@ export interface ApiContext {
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
-type Env = { Variables: { principal: Caller } };
+type Env = { Variables: { principal: Caller; migratedAgent?: Awaited<ReturnType<V1Compatibility["route"]>> } };
 /**
  * What an OAuth access token (an MCP client the tenant connected, src/oauth.ts) may call: its agents (but not their
  * tokens), definitions, pending inputs, and reads of the account (models, providers, usage, balance). Nothing that makes
@@ -307,10 +311,7 @@ export function api(context: ApiContext) {
   });
 
   // Stripe's webhook authenticates by its signature, not a token, so it comes before the check below.
-  app.post("/v1/billing/stripe/webhook", async c => {
-    const payload = await readText(c.req.raw.body, 1024 * 1024);
-    return json(c, 200, await accounts.billing.webhook(payload, c.req.header("stripe-signature")));
-  });
+  app.post("/v1/billing/stripe/webhook", async c => json(c, 200, await receiveStripeWebhook(c.req.raw, accounts.billing)));
   // Token possession only proves the mailbox. Neither route grants account access.
   // The token travels in a JSON body, not a logged URL; GET never confirms consent.
   for (const action of ["inspect", "confirm"] as const) route(createRoute({
@@ -396,7 +397,19 @@ export function api(context: ApiContext) {
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
     // Credentials and retained usage perform their own tenant-scoped ownership checks.
-    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path) && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
+    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path)) {
+      const agent = c.req.param("id")!;
+      const tenant = c.var.principal.tenant;
+      if (!await clients.owns(agent, tenant, true)) throw new HttpError(404, "Unknown agent");
+      const admission = c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path);
+      const migrated = await context.v1Compatibility?.route(tenant, agent, admission ? c.req.raw.signal : undefined);
+      if (migrated) {
+        const supported = admission
+          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:events|state|history|requests\/[^/]+)$/.test(c.req.path));
+        if (!supported) throw unsupportedV1Operation();
+        c.set("migratedAgent", migrated);
+      }
+    }
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
@@ -637,22 +650,7 @@ export function api(context: ApiContext) {
     }) },
     responses: { 200: { ...reply("The tenant's agents that match, by id", z.array(schema.AgentSummary)), headers: z.object({ "X-Next-Cursor": z.string().optional().openapi({ description: "With limit or cursor, while more agents match: the next page's cursor" }) }) } },
   }), async c => {
-    const query = c.req.query();
-    const limit = query.limit === undefined ? undefined : Number(query.limit);
-    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > AGENT_PAGE_MAX)) throw new HttpError(400, `limit must be an integer from 1 to ${AGENT_PAGE_MAX}`);
-    const oneOf = <T extends string>(name: string, values: readonly T[]) => {
-      const value = query[name];
-      if (value !== undefined && !values.includes(value as T)) throw new HttpError(400, `${name} must be one of ${values.join(", ")}`);
-      return value as T | undefined;
-    };
-    if (query.q !== undefined && query.q.length > 200) throw new HttpError(400, "q must be at most 200 characters");
-    let metadata: Record<string, string>;
-    try { metadata = metadataFilters(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
-    const page = await clients.page(c.var.principal.tenant, { metadata,
-      // A cursor without a limit pages at the largest size.
-      limit: limit ?? (query.cursor !== undefined ? AGENT_PAGE_MAX : undefined), cursor: query.cursor, workspaceId: query.workspaceId || undefined, q: query.q,
-      status: oneOf("status", ["running", "failed", "expiring"] as const), subAgents: oneOf("subAgents", ["only", "exclude"] as const),
-    });
+    const page = await clients.page(c.var.principal.tenant, agentListQuery(new URL(c.req.url).searchParams));
     if (page.next) c.header("X-Next-Cursor", page.next);
     return json(c, 200, page.agents);
   });
@@ -762,6 +760,9 @@ export function api(context: ApiContext) {
   }), c => {
     const browser = c.var.principal.browser;
     const reader: StreamReader | undefined = browser && { show: data => readableFrame(browser, data), until: browser.exp };
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      return compatibilityEvents(c, context.v1Compatibility, c.var.migratedAgent, reader);
+    }
     // `request`: only that request's frames (its events and its response); snapshots of the running turn still come.
     const request = c.req.query("request");
     const own = (data: ClientEvent | TurnSnapshot) => data.type === "event" ? data.requestId === request : data.type === "response" ? data.id === request : true;
@@ -769,7 +770,10 @@ export function api(context: ApiContext) {
       : { show: data => own(data) ? (reader ? reader.show(data) : data) : undefined, until: reader?.until ?? Infinity });
   });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
-    const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
+    const id = c.req.param("id")!;
+    const state = c.var.migratedAgent && context.v1Compatibility
+      ? await context.v1Compatibility.state(c.var.migratedAgent, clients.archivedRequests(id), c.req.raw.signal)
+      : await clients.stateFor(id, c.var.principal.tenant);
     return json(c, 200, c.var.principal.browser ? { ...state, requests: state.requests.map(readableRequest) } : state);
   });
   const DreamConfigSchema = z.strictObject({enabled:z.boolean(),volumeId:z.string(),schedule:z.strictObject({time:z.string(),timeZone:z.string()}),analyzerModel:z.string().optional(),organizerModel:z.string().optional(),endUser:z.string().optional(),acrossUsers:z.boolean().optional(),budgetUsd:z.number().positive(),instructions:z.string().max(16000)});
@@ -810,6 +814,12 @@ export function api(context: ApiContext) {
   }), async c => {
     const { before, after, limit, maxBytes } = c.req.query();
     const tenant = c.var.principal.tenant, id = c.req.param("id")!, browser = c.var.principal.browser;
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      const history = await compatibilityHistory(context.v1Compatibility, c.var.migratedAgent, { before, after, limit, maxBytes }, c.req.raw.signal);
+      if (!browser) return json(c, 200, history);
+      if ("entries" in history) return json(c, 200, { ...history, entries: history.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) });
+      return json(c, 200, { messages: history.messages.map(message => readableMessage(browser, message)) });
+    }
     if (before !== undefined || after !== undefined || limit !== undefined || maxBytes !== undefined) {
       const page = await clients.historyPageFor(id, tenant, { before, after, limit, maxBytes });
       return json(c, 200, browser ? { ...page, entries: page.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) } : page);
@@ -848,7 +858,14 @@ export function api(context: ApiContext) {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
     if (body.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
-    const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key")),
+    const id = c.req.param("id")!;
+    const tenant = c.var.principal.tenant;
+    const request = promptRequest(body, c.req.header("idempotency-key"));
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      return json(c, 202, await context.v1Compatibility.prompt(c.var.migratedAgent, request.id, body,
+        requestId => clients.archivedRequest(id, requestId), c.req.raw.signal));
+    }
+    const record = await clients.submit(id, tenant, request,
       rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); }, personal(c.var.principal) ? "owner" : undefined);
     return json(c, 202, record);
   });
@@ -883,7 +900,15 @@ export function api(context: ApiContext) {
     method: "get", path: "/v1/agents/{id}/requests/{requestId}",
     request: { params: agentId.extend({ requestId: z.string() }), query: z.object({ wait: z.string().optional().openapi({ description: "Seconds (at most 25) to wait for a running request to settle: it answers as soon as it does, else when the wait ends, still running. Default 0" }) }) },
     responses: { 200: reply("The request and, once settled, its outcome", schema.RequestRecord) },
-  }), c => clients.requestFor(c, c.req.param("id")!, c.var.principal.tenant, c.req.param("requestId")!));
+  }), async c => {
+    const id = c.req.param("id")!;
+    const requestId = c.req.param("requestId")!;
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      return json(c, 200, await context.v1Compatibility.requestFor(c.var.migratedAgent, requestId, c.req.query("wait"),
+        requestId => clients.archivedRequest(id, requestId), c.req.raw.signal));
+    }
+    return clients.requestFor(c, id, c.var.principal.tenant, requestId);
+  });
 
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/children", request: { params: agentId }, security: readers,

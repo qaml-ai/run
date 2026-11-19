@@ -59,6 +59,8 @@ import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
 import { opsMcp } from "./ops-mcp.ts";
 import { api } from "./api.ts";
+import { V1Compatibility } from "./v1-v2-compatibility.ts";
+import { AGENT_V2_PUBLISHED } from "./agent-v2-cutover.ts";
 import { ScheduleMailer } from "./schedule-mailer.ts";
 import { calendarPrompt } from "./calendar.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -133,8 +135,6 @@ import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Duplex } from "node:stream";
 import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
-import { buggify } from "./buggify.ts";
-import { sometimes } from "./assert.ts";
 import { chargesPlatform } from "./core/key-source.ts";
 
 /** Idle keep-alive sockets stay open this long: past the ALB's idle timeout (infra/terraform alb_idle_timeout, 360 s). */
@@ -178,10 +178,7 @@ export type NodeDeps = {
   random?: Random;
   /** Where inline agents run code: this process's v8-exec runner unless given (codemode-pi-launcher.ts); `close` lets its processes go. */
   codeSandbox?: CodeSandboxes & { close?(): void };
-  /**
-   * The data plane every node shares, given the node's log tail and storage meter: AGENT_STORAGE's unless given (a
-   * simulation's in-memory store).
-   */
+  /** Override the AGENT_STORAGE data plane with a store using this node's log tail and storage meter. */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
   /** Test hooks for client-held calls. */
   voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "submitStreaming">>;
@@ -261,7 +258,7 @@ export type RuntimeNode = {
   close(): Promise<void>;
   /** Read the tenants again (SIGHUP): a bad file or secret is rejected whole, and the tenants loaded before stay. */
   reloadTenants(): Promise<void>;
-  /** Run `work` as this node: in its context, if it was given one (a simulation calling in), else as it is. */
+  /** Run `work` in this node’s context when it has one. */
   run<T>(work: () => T): T;
 };
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
@@ -717,7 +714,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
     const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
     const given = Buffer.from(signature ?? "");
-    sometimes(!!timestamp && Math.abs(Date.now() - Number(timestamp)) > 5_000, "a node-to-node request came from a node whose clock is seconds off");
     if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
     return body;
   }
@@ -871,7 +867,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // A gateway credential is not necessarily an OpenRouter key; never send it to another origin.
     return entry?.baseUrl ? { baseUrl: entry.baseUrl } : entry?.apiKey;
   }, endUsers);
+  const v1Compatibility = V1Compatibility.fromEnv(db, env);
   const clients = new ClientSessions(supervisor, {
+    v1Compatibility,
     sharedAgents: deps.sharedAgents,
     runEvents: tenant => subscribers.runs(tenant),
     // A self-hosted runtime configured by its environment takes keys there too.
@@ -1056,6 +1054,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const [from, agent] = payload.split(" ");
       if (from !== node && agent) clients.loadedElsewhere(agent);
     },
+    ...(v1Compatibility ? { [AGENT_V2_PUBLISHED]: (agent: string) => clients.v2RoutePublished(agent) } : {}),
     [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
     // Work just left without an owner: a peer released agents with runs open, or ended a dead node's heartbeat.
     [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
@@ -1399,7 +1398,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ v1Compatibility, dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}), ...(calls ? { calls } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
@@ -1801,7 +1800,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // waiting on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
     await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns(signal === "memory" ? "memory" : "drain"); });
     // A second signal may come at any moment, and the node stops waiting for its turns.
-    if (buggify("drain.stop_waiting")) drainDeadline = 0;
     for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
       if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: safeError(error) })));
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -1810,7 +1808,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // sends SIGTERM. Outside ECS the fallback releases this wait.
     if (signal === "memory") await finishMemoryDrain.promise;
     const unfinished = clients.inFlight();
-    sometimes(unfinished > 0, "a drain released turns still running");
     await step("agents", () => clients.close());
     // Usage is in memory until flushed: write what the turns recorded now, before the slower close steps eat into the
     // time left before SIGKILL (stopTimeout). What later steps record goes in the flush after them.

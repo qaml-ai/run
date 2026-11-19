@@ -1,3 +1,4 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
 import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
 import { tierConfigured } from "./camelfs/tier.ts";
@@ -23,7 +24,13 @@ import { firstPrompt } from "./first-prompt.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
+import { OPS_METADATA_PATH } from "./account-oauth.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
+import { legacyAgentList } from "./legacy-agent-list.ts";
+import { EndUserCredits } from "./end-user-credits.ts";
+import { endUserRoutes } from "./end-user-routes.ts";
+import { V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
+import { handleLegacyAgentRequest, legacyAgentRequest } from "./v1-compatibility.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers, sweepSnapshots } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -67,6 +74,7 @@ import { handleRepoRequest, repoTransportFailure } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, retiredVolumes } from "./files.ts";
+import { handleLegacyVolumeRead, legacyVolumeReadRoute } from "./legacy-volume-reads.ts";
 import { handleSignedFileRequest } from "./images.ts";
 import { channelRoutes, channelWebhook } from "./channel-routes.ts";
 import { githubAppRoutes } from "./github-app-routes.ts";
@@ -213,6 +221,138 @@ function httpFailure(error: unknown, env: Env): Response {
     { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
 }
 
+async function legacyRuntimeRequest(send: (request: Request) => Promise<Response>, url: string, init: RequestInit) {
+  const { signal, ...wire } = init;
+  // Worker RPC cannot serialize an explicit AbortSignal on a Request.
+  signal?.throwIfAborted();
+  const request = new Request(url, wire);
+  if (!signal) return send(request);
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const onAbort = () => rejectAbort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const response = send(request).then(result => {
+      if (signal.aborted) void result.body?.cancel().catch(() => {});
+      return result;
+    });
+    return await Promise.race([response, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Runs before the pilot's directory, whose stored agent headers differ from Node's. */
+function legacyCompatibility(
+  request: Request,
+  env: Env,
+  principal: Parameters<typeof handleLegacyAgentRequest>[3],
+  browser?: BrowserClaims,
+) {
+  if (!legacyAgentRequest(request)) return;
+  const sql = database(env);
+  const service = env.V2_LEGACY_RUNS;
+  const compatibility = service
+    ? new V1Compatibility(sql, (route, path, init) => legacyRuntimeRequest(
+      request => service.route(route.destination_tenant, route.destination_agent, request),
+      `https://legacy-v2.internal/v2/agents/${encodeURIComponent(route.destination_agent)}/${path}`, init))
+    : V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
+  if (!compatibility) return;
+  return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
+}
+
+function hostedMcpResponse(request: Request, env: Env, auth: Awaited<ReturnType<typeof authenticateMoney>>, fetchRest: typeof fetch) {
+  const url = new URL(request.url);
+  const headers = new Headers(request.headers);
+  if (!headers.has("host")) headers.set("host", url.host);
+  if (!headers.has("authorization") || !auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(headers), "");
+  return serveHostedMcp(request, { publicOrigin: env.AGENT_PUBLIC_URL || url.origin, fetch: fetchRest });
+}
+
+/** The ingress only sends these proven paths here. A miss still belongs to the original runtime. */
+export class LegacyV1 extends WorkerEntrypoint<Env> {
+  async route(request: Request): Promise<Response | null> {
+    const env = this.env;
+    const url = new URL(request.url);
+    const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
+    const protectedResource = ["GET", "OPTIONS"].includes(request.method) && (
+      ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", OPS_METADATA_PATH].includes(url.pathname)
+      || /^\/\.well-known\/oauth-protected-resource\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(url.pathname));
+    const mcpMetadata = protectedResource || (request.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server");
+    const jwks = request.method === "GET" && url.pathname === "/.well-known/jwks.json";
+    const oauthTokens = env.LEGACY_OAUTH_TOKEN_ROUTES === "1" && ["POST", "OPTIONS"].includes(request.method)
+      && ["/oauth/token", "/oauth/revoke"].includes(url.pathname);
+    const oauthRegistration = env.LEGACY_OAUTH_REGISTRATION === "1"
+      && url.pathname === "/oauth/register" && ["POST", "OPTIONS"].includes(request.method);
+    const consoleStatic = /^\/console\/(?:assets\/[^/]+|email\/(?:logo\.png|silkscreen\.woff2)|favicon\.(?:ico|svg)|apple-touch-icon\.png)$/.test(url.pathname);
+    const consoleAuthAssets = !!env.PUBLIC_ASSETS && ["GET", "HEAD"].includes(request.method)
+      && (["/console", "/console/", "/console/reset", "/console/signup", "/console/verify"].includes(url.pathname) || consoleStatic);
+    const oauthBrowser = env.LEGACY_OAUTH_BROWSER === "1" && (
+      consoleAuthAssets
+      || (["GET", "HEAD"].includes(request.method) && /^\/(?:oauth\/authorize|console\/auth\/(?:methods|github|callback|google(?:\/callback)?))$/.test(url.pathname))
+      || (request.method === "POST" && /^\/(?:oauth\/(?:authorize|password|signup)|console\/auth\/(?:password|signup|link|verify|reset(?:\/request)?|logout))$/.test(url.pathname)));
+    const oauth = oauthTokens || oauthRegistration || oauthBrowser;
+    if (mcp || mcpMetadata || jwks || oauth) {
+      if (!oauth && !env.MCP_LEGACY_API) return null;
+      try {
+        if (jwks) {
+          const { rows } = await database(env).query("select public_jwk, retired_at is null as active from signing_keys order by created_at, kid");
+          if (!rows.some(row => row.active)) throw new CoreHttpError(503, "The OAuth issuer signing keys are unavailable");
+          return Response.json({ keys: rows.map(row => row.public_jwk) }, { headers: { "Cache-Control": "public, max-age=300" } });
+        }
+        if (mcpMetadata || oauth) {
+          if (oauth && !env.AGENT_SESSION_SECRET) throw new CoreHttpError(503, "The OAuth issuer secret is unavailable");
+          const headers = new Headers(request.headers);
+          if (!headers.has("host")) headers.set("host", url.host);
+          const accountRequest = new Request(request, { headers });
+          if (consoleAuthAssets && consoleStatic && !publicOrigins(env, url.origin).alias(headers)) {
+            const asset = await env.PUBLIC_ASSETS!.fetch(accountRequest);
+            if (asset.status !== 404) return publicPageHeaders(request, asset);
+            await asset.body?.cancel();
+            return null;
+          }
+          const response = await publicMoneyRoutes(accountRequest, env, this.ctx);
+          return response ? publicPageHeaders(request, response) : null;
+        }
+        if (request.method === "OPTIONS") return agentMcpPreflight();
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        const origin = new URL(env.AGENT_PUBLIC_URL || url.origin).origin;
+        return await hostedMcpResponse(request, env, auth, async (input, init) => {
+          const call = new Request(input, init);
+          const target = new URL(call.url);
+          if (target.origin !== origin || target.pathname === "/mcp") return new Response(null, { status: 403 });
+          const response = await this.route(call.clone());
+          return response ?? await env.MCP_LEGACY_API!.fetch(call, { redirect: "manual" });
+        });
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
+    if (!env.V2_LEGACY_RUNS && !env.AGENT_V2_COMPAT_API_KEYS) return null;
+    const list = request.method === "GET" && url.pathname === "/v1/agents";
+    const endUsers = request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+(?:\/usage)?)?$/.test(url.pathname);
+    const target = legacyAgentRequest(request);
+    if (!list && !endUsers && !target) return null;
+    try {
+      await apiRequest(request, env);
+      const bearer = request.headers.get("authorization") ?? undefined;
+      const browser = !target?.scoped && BrowserTokens.carries(bearer)
+        ? new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(bearer!)
+        : undefined;
+      const principal = browser || target?.scoped ? null : await authenticateMoney(request, env);
+      let response: Response | undefined;
+      if (endUsers) {
+        if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
+        response = await endUserRoutes(request, principal.tenantId, new EndUserCredits(database(env)));
+      } else if (list) response = await legacyAgentList(request, database(env), principal);
+      else response = await legacyCompatibility(request, env, principal, browser);
+      return response ? publicPageHeaders(request, corsResponse(request, response)) : null;
+    } catch (error) {
+      return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+    }
+  }
+}
+
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const hostPath = new URL(request.url).pathname;
@@ -221,7 +361,7 @@ const worker = {
       catch (error) { return httpFailure(error, env); }
     }
     if (hostPath === "/v1/internal/camelfs/smoke" && !tierConfigured(env as RepoEnv)) return new Response(null, { status: 404 });
-    const retired = retiredVolumes(hostPath);
+    const retired = env.V1_VOLUME_S3_BUCKET && legacyVolumeReadRoute(request) ? undefined : retiredVolumes(hostPath);
     if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
       try {
@@ -232,7 +372,7 @@ const worker = {
     const recovery = resumeWebhookDeliveries(env);
     if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
     try {
-      if (request.method === 'POST' && request.headers.has('idempotency-key') && !skipMoneyIdempotency(new URL(request.url).pathname)) {
+      if (request.method === 'POST' && hostPath !== "/mcp" && request.headers.has('idempotency-key') && !skipMoneyIdempotency(hostPath)) {
         const auth = await authenticateMoney(request, env) ?? await authenticate(request, env);
         if (auth) {
           const response = (await withMoneyIdempotency(request, env, auth.tenantId, next => worker.fetchRequest(next, env, ctx)))!;
@@ -291,9 +431,10 @@ const worker = {
         return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
+      const hostedMcp = path === "/mcp";
       const browserTokens = new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN);
       let browser: BrowserClaims | undefined;
-      if (BrowserTokens.carries(bearer)) {
+      if (!hostedMcp && BrowserTokens.carries(bearer)) {
         browser = browserTokens.verify(bearer!);
         if (path.startsWith("/clients/") || path.startsWith("/registry/"))
           throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
@@ -301,16 +442,19 @@ const worker = {
         if (request.method !== "GET" || !BROWSER_READS.test(path) || !browser.scopes.includes(scope as never) || (request.headers.has("upgrade") && (scope !== "events" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")))
           throw new ApiError(403, "This browser token does not grant this read", "FORBIDDEN");
       }
-      let auth = browser ? null : await authenticateMoney(request, env)
+      let auth = browser ? null : await authenticateMoney(request, env, { bearerOnly: hostedMcp })
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
-      if (path === "/mcp") {
-        if (!auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
+      const migrated = (env.V2_LEGACY_RUNS || env.AGENT_V2_COMPAT_API_KEYS) && (
+        await legacyAgentList(request, database(env), auth) ?? await legacyCompatibility(request, env, auth, browser)
+      );
+      if (migrated) return migrated;
+      if (hostedMcp) {
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
-        return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
+        return hostedMcpResponse(request, env, auth, async (input, init) => {
           const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
           if (local.origin === new URL(publicOrigin).origin) local.host = url.host, local.protocol = url.protocol;
           return worker.fetch(new Request(local, input instanceof Request ? input : init), env, ctx);
-        }) as typeof fetch });
+        });
       }
       const service = await handleServiceRequest(request, env, auth);
       if (service) return service;
@@ -441,6 +585,7 @@ const worker = {
         if (voice) return voice;
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
+        if (env.V1_VOLUME_S3_BUCKET && legacyVolumeReadRoute(request)) return await handleLegacyVolumeRead(request, env, auth.tenantId);
         const files = await handleFileRequest(request, env, auth);
         if (files) return files;
         const repos = await handleRepoRequest(request, env as RepoEnv, auth);

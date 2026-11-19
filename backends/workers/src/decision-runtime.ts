@@ -1,6 +1,6 @@
 import { defineTool, type ToolRegistration, type ToolExecutionApi } from '@earendil-works/pi-durable';
 import { Decider, DECIDE, decisionRequest, decisionsAnswer, type DecisionCredentials, type DecisionProvider, type Decided } from './decision-policy.ts';
-import { openrouterDecisions } from './decision-providers.ts';
+import { decisionProvider } from './decision-transport.ts';
 import { HttpError } from './errors.ts';
 import type { UsageRecord } from './policy-host.ts';
 import { body } from './validation.ts';
@@ -42,25 +42,6 @@ export interface DecisionRuntimeOptions {
   testUrl?: string;
   testMode?: boolean;
 }
-function provider(options: DecisionRuntimeOptions): DecisionProvider {
-  if (options.provider) return options.provider;
-  const base = options.testUrl ?? 'https://openrouter.ai/api/alpha';
-  const url = new URL(base);
-  if (options.testUrl && !(options.testMode && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))) throw new HttpError(400, 'A decision fixture must be loopback HTTP');
-  return openrouterDecisions({ baseUrl: base, outbound: { async fetch(url, options) {
-    const { secrets, timeoutMs, maxBytes = 1024 * 1024, ...init } = options;
-    const signal = AbortSignal.any([...(init.signal ? [init.signal] : []), AbortSignal.timeout(timeoutMs ?? 10_000)]);
-    const response = await fetch(url, { ...init, signal, redirect: 'manual', headers: { ...Object.fromEntries(new Headers(init.headers)), ...secrets } });
-    if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new HttpError(502, 'Decision endpoint redirects are not allowed'); }
-    if (Number(response.headers.get('content-length') ?? 0) > maxBytes) { await response.body?.cancel(); throw new HttpError(502, 'Decision response is too large'); }
-    const reader = response.body?.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
-    try {
-      if (reader) for (;;) { const next = await reader.read(); if (next.done) break; bytes += next.value.byteLength; if (bytes > maxBytes) throw new HttpError(502, 'Decision response is too large'); chunks.push(next.value); }
-    } finally { await reader?.cancel().catch(() => {}); }
-    const data = new Uint8Array(bytes); let offset = 0; for (const chunk of chunks) { data.set(chunk, offset); offset += chunk.byteLength; }
-    return new Response(data, { status: response.status, headers: response.headers });
-  } } });
-}
 
 /** One instance per agent DO retains the stock decision concurrency and byte gates. */
 export class DecisionRuntime {
@@ -68,7 +49,7 @@ export class DecisionRuntime {
   private readonly options: DecisionRuntimeOptions;
   constructor(options: DecisionRuntimeOptions) {
     this.options = options;
-    this.decider = new Decider({ provider: provider(options), key: options.key });
+    this.decider = new Decider({ provider: decisionProvider(options), key: options.key });
   }
   async available() { const context = await this.options.context(); return this.decider.available(context.tenant, context.keyScope); }
   async run(input: Record<string, unknown>, signal: AbortSignal, override: Partial<DecisionContext> = {}, api?: ToolExecutionApi) {

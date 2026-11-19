@@ -15,6 +15,8 @@ import { canonical } from "../../shared/durable-json.ts";
 import type { Storage } from "../../shared/storage.ts";
 import { applicationMetadata, agentMetadata, type AgentMetadata } from "../../shared/agent-metadata.ts";
 import { HttpError } from "../http.ts";
+import { listAgentPage, type AgentListQuery } from "../agent-directory-page.ts";
+export type { AgentListQuery } from "../agent-directory-page.ts";
 import { VolumeService } from "../volumes.ts";
 import type { Db } from "../db.ts";
 import { NotOwner, type Claim } from "../ownership.ts";
@@ -309,78 +311,16 @@ export async function keyed(ctx: ConfigurationContext, tenant: string, key: stri
   }
 }
 
-/** GET /v1/agents' filters and page. Without `limit` the whole (filtered) list, as callers have always had it. */
-export type AgentListQuery = {
-  limit?: number;
-  /** The previous page's `next`: agents after it, by id. */
-  cursor?: string;
-  /** A workspace id, or "unassigned" for agents in none. */
-  workspaceId?: string;
-  /** running: served by a node now; failed: a run failed in the last 24 hours; expiring: has an expiry. */
-  status?: "running" | "failed" | "expiring";
-  /** Only sub-agents (a delegate or spawn_agent call made them), or none of them. */
-  subAgents?: "only" | "exclude";
-  /** Part of its name, key or id, ignoring case. */
-  q?: string;
-  metadata?: Record<string, string>;
-  /** Just this agent (GET /v1/agents/{id}'s summary). */
-  id?: string;
-};
-export const AGENT_PAGE_MAX = 200;
-export const FAILED_WINDOW_MS = 24 * 3600_000;
-const encodeCursor = (id: string) => Buffer.from(id).toString("base64url");
-function decodeCursor(cursor: string) {
-  const id = Buffer.from(cursor, "base64url").toString();
-  if (!id || id.length > 200 || encodeCursor(id) !== cursor) throw new HttpError(400, "cursor must be a previous page's next");
-  return id;
-}
-const like = (value: string) => `%${value.replace(/[\\%_]/g, match => `\\${match}`)}%`;
-
-/** A tenant's live agents (not its stateless runs' sessions), filtered, by id; `next` when a page has more after it. */
-export async function list(ctx: ConfigurationContext, tenant: string, query: AgentListQuery = {}) {
-  const now = Date.now();
-  const params: unknown[] = [tenant, now];
-  const where = ["a.tenant = $1", "not a.revoked", "(a.expires_at is null or a.expires_at > $2)", "a.header->'run' is null"];
-  const param = (value: unknown) => { params.push(value); return `$${params.length}`; };
-  if (query.metadata && Object.keys(query.metadata).length) where.push(`coalesce(a.header::jsonb->'metadata'->'application', a.header::jsonb->'config'->'metadata', '{}'::jsonb) @> ${param(JSON.stringify(query.metadata))}::jsonb`);
-  if (query.id !== undefined) where.push(`a.id = ${param(query.id)}`);
-  if (query.cursor !== undefined) where.push(`a.id > ${param(decodeCursor(query.cursor))}`);
-  if (query.workspaceId === "unassigned") where.push("w.workspace is null");
-  else if (query.workspaceId !== undefined) where.push(`w.workspace = ${param(query.workspaceId)}`);
-  if (query.status === "running") where.push("n.node is not null");
-  if (query.status === "failed") where.push(`a.last_error_at > ${param(now - FAILED_WINDOW_MS)}`);
-  if (query.status === "expiring") where.push("a.expires_at is not null");
-  if (query.subAgents === "only") where.push("a.header->'parent'->>'agentId' is not null");
-  if (query.subAgents === "exclude") where.push("a.header->'parent'->>'agentId' is null");
-  if (query.q?.trim()) {
-    const pattern = param(like(query.q.trim()));
-    where.push(`(a.name ilike ${pattern} or a.header->>'key' ilike ${pattern} or a.id ilike ${pattern})`);
-  }
-  const limit = query.limit === undefined ? undefined : Math.min(Math.max(1, query.limit), AGENT_PAGE_MAX);
-  const { rows } = await ctx.db.query(`
-    select coalesce(a.header::jsonb->'metadata'->'application', '{}'::jsonb) as application_metadata, a.id, a.header->>'key' as key, a.name, a.type, a.model, a.expires_at, a.resume_failures, a.resume_after, a.header->'parent'->>'agentId' as parent, a.header->>'provisionHash' as config_hash,
-      a.last_active_at, a.last_error_at, a.last_error_class, w.workspace, n.node is not null as served
-    from agents a
-    left join actor_owners o on o.actor = a.id
-    left join runtime_nodes n on n.node = o.node and n.session = o.session and n.expires_at > now()
-    left join lateral (select workspace from workspace_assignments wa where wa.tenant = a.tenant and wa.kind = 'agent' and wa.resource = a.id order by wa.assigned_at desc, wa.sequence desc limit 1) w on true
-    where ${where.join(" and ")} order by a.id${limit === undefined ? "" : ` limit ${limit + 1}`}`, params);
-  const more = limit !== undefined && rows.length > limit;
-  const page = more ? rows.slice(0, limit) : rows;
-  const agents = page.map(row => {
-    const local = ctx.sessions.get(row.id);
+export function list(ctx: ConfigurationContext, tenant: string, query: AgentListQuery = {}) {
+  return listAgentPage(ctx.db, tenant, query, (id, served) => {
+    const local = ctx.sessions.get(id);
     const response = local?.response;
-    const running = ctx.supervisor.agents.has(row.id) || (!local && row.served);
-    // The configuration it has: equal hashes, equal configurations (an upsert of it changes nothing).
-    const configHash = (local?.header.provisionHash ?? row.config_hash) as string;
-    return { metadata: row.application_metadata as Record<string, unknown>, id: row.id as string, key: row.key as string | null, name: row.name as string, type: row.type as string, model: row.model as string, configHash, connected: !!response && !response.destroyed, running: running as boolean, expiresAt: row.expires_at as number | null,
-      resume: row.resume_failures ? { failures: row.resume_failures as number, after: Number(row.resume_after) } : null, ...(row.parent ? { parentAgentId: row.parent as string } : {}),
-      workspaceId: (row.workspace ?? null) as string | null,
-      lastActiveAt: row.last_active_at === null ? null : Number(row.last_active_at),
-      lastError: row.last_error_at === null ? null : { at: Number(row.last_error_at), class: row.last_error_class as string } };
+    return {
+      running: ctx.supervisor.agents.has(id) || (!local && served),
+      connected: !!response && !response.destroyed,
+      configHash: local?.header.provisionHash,
+    };
   });
-  // Served by a node but not loaded there is not running: the page can come out shorter, never wrong.
-  return { agents: query.status === "running" ? agents.filter(agent => agent.running) : agents, next: more ? encodeCursor(page.at(-1)!.id) : undefined };
 }
 
 /**

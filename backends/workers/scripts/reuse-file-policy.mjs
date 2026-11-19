@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 const source = await readFile(
-  new URL("../../../src/volumes.ts", import.meta.url),
+  new URL("../../../src/volume-reads.ts", import.meta.url),
   "utf8",
 );
 const take = (from, to) => {
@@ -27,7 +27,7 @@ const fileText =
   segment("export const essence", "/** A file's download:") +
   segment("export function safeName", "/** What an inline image") +
   `export const MOUNT_LIMIT = ${take("export const VOLUME_LIMITS", "/** A snapshot's labels:").match(/mounts: (\d+)/)[1]};\n` +
-  take("export function normalizePath", "const parentOf") +
+  take("export function normalizePath", "export const parentOf") +
   segment("export type LinkGrant")
     .replace("volume: string; ", "")
     .replace("one volume file", "one file")

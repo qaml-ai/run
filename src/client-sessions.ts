@@ -42,12 +42,12 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
-import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
+import { AgentHistory, historyPageInput, type HistoryPage } from "./history-pages.ts";
 import { INBOX_CHANNEL, inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { PARENT_KEYS, viaParent, type DelegateSettings } from "./multi-agent.ts";
 import { clock, random } from "./node-context.ts";
-import { always, reachable, sometimes } from "./assert.ts";
+import { always } from "./assert.ts";
 import * as tools from "./client-sessions/tools.ts";
 import * as configuration from "./client-sessions/configuration.ts";
 import * as events from "./client-sessions/events.ts";
@@ -57,9 +57,12 @@ import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
+import { cutoverInProgress, unsupportedV1Operation } from "./v1-v2-compatibility.ts";
+import { compatibilityEvents } from "./v1-compatibility-events.ts";
+import { compatibilityHistory } from "./v1-compatibility-history.ts";
 import { disableAgentTriggers } from "./triggers.ts";
 import { forgetAgentDreaming } from "../shared/dreaming.ts";
-import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
+import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, REQUEST_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
 /** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
 const RUN_OVERRUN_MS = 60_000;
@@ -117,7 +120,6 @@ export function loadDecision(request: RequestRecord, maxResumes = MAX_RESUMES): 
 
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
-const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
 /** A configuration's fields only an upsert (the tenant making the agent again with its key) sets: see `reconfiguration`. */
 const UPSERT_KEYS = ["metadata", "provisionHash", "name", "type", "tools", "fileTools", "codeMode", "toolsHash"];
 
@@ -527,7 +529,12 @@ export class ClientSessions {
     if (!busy) return Promise.resolve();
     return this.busyStep(session, async () => {
       if (session.busy) return;
-      const refused = await busy.hold(session.header.tenant, session.header.id, force);
+      let refused;
+      try { refused = await busy.hold(session.header.tenant, session.header.id, force); }
+      catch (error) {
+        if ((error as { code?: string })?.code === "CV201") throw cutoverInProgress();
+        throw error;
+      }
       if (refused) throw refused;
       session.busy = true;
     });
@@ -726,6 +733,26 @@ export class ClientSessions {
     this.idle.delete(id);
     for (const res of entry.watchers) if (!res.destroyed) res.end(events.reconnectFrame(reason));
     for (const wake of [...entry.polls]) wake();
+  }
+
+  v2RoutePublished(id: string) {
+    this.loadedElsewhere(id);
+    const session = this.sessions.get(id);
+    if (session) events.endStreams(session, false, "moved");
+  }
+
+  private checkedV2Watchers = 0;
+
+  private async checkV2Watchers(now: number) {
+    if (!this.options.v1Compatibility || now - this.checkedV2Watchers < IDLE_CHECK_MS) return;
+    this.checkedV2Watchers = now;
+    const watching = [...this.idle.keys()];
+    for (const [id, session] of this.sessions) {
+      if (session.response || session.watchers.size || session.polls.size) watching.push(id);
+    }
+    if (!watching.length) return;
+    const { rows } = await this.db.query<{ agent: string }>("select agent from agent_v2_routes where agent = any($1::text[])", [watching]);
+    for (const { agent } of rows) this.v2RoutePublished(agent);
   }
 
   /**
@@ -993,7 +1020,6 @@ export class ClientSessions {
         const notice = (record.params as { notice?: { metadata?: { to?: string } } } | undefined)?.notice;
         if (notice && notice.metadata?.to !== "child") {
           this.upsertRequest(session, { ...record, landOnly: STOPPED_NOTICE });
-          reachable("an abort reached a notification queued behind the turn, which lands without one");
           kept = true;
           continue;
         }
@@ -1439,6 +1465,15 @@ export class ClientSessions {
     return [...requests.values()].map(visible);
   }
 
+  /** A fenced agent's last durable v1 receipt. Only read after tenant ownership and the v2 route have been checked. */
+  async archivedRequest(id: string, requestId: string) {
+    return (await this.archivedRequests(id)).find(record => record.id === requestId);
+  }
+
+  archivedRequests(id: string) {
+    return this.storedRequests(id);
+  }
+
   /** S4 guest routes must check membership; admission rechecks it after preparation. S5 tags guest streams. */
   async removeMember(id: string, tenant: string, member: string) {
     if (!await this.owns(id, tenant)) return;
@@ -1543,15 +1578,7 @@ export class ClientSessions {
 
   /** A page of the agent's history (AgentHistory.page, or AgentHistory.pageAfter with `after`), read from Pi storage by ordinal wherever the agent runs. */
   private async historyPage(id: string, query: { before?: string; after?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
-    const before = query.before === undefined ? undefined : Number(query.before);
-    const after = query.after === undefined ? undefined : Number(query.after);
-    const limit = query.limit === undefined ? 50 : Number(query.limit);
-    const maxBytes = query.maxBytes === undefined ? undefined : Number(query.maxBytes);
-    if (before !== undefined && after !== undefined) throw new HttpError(400, "Ask for after or before, not both");
-    if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
-    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, "after is a message index");
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
-    if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
+    const { before, after, limit, maxBytes } = historyPageInput(query);
     // An agent starting here answers nothing yet: wait for it (it may write its journal's first entries as it starts).
     await this.sessions.get(id)?.starting?.catch(() => {});
     return after !== undefined ? this.historyReader.pageAfter(id, { after, limit, maxBytes }) : this.historyReader.page(id, { before, limit, maxBytes });
@@ -1588,6 +1615,37 @@ export class ClientSessions {
       if (header?.purged) throw new HttpError(410, "Session expired or revoked");
       if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      const compatibility = this.options.v1Compatibility;
+      const requestPath = `/clients/${header.id}/requests`;
+      const admission = c.req.method === "POST" && c.req.path === requestPath;
+      const migrated = await compatibility?.route(header.tenant, header.id, admission ? c.req.raw.signal : undefined);
+      if (compatibility && migrated) {
+        const archived = (requestId: string) => this.archivedRequest(header.id, requestId);
+        if (admission) {
+          const request = await readJson(body(c), FRAME_BYTES);
+          if (!validId(request?.id) || !REQUEST_METHODS.includes(request.method) || !request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new HttpError(400, "Invalid request");
+          if (request.method !== "prompt" || Object.keys(request.params).some(key => !["text", "actor"].includes(key))) throw unsupportedV1Operation();
+          const { text, actor } = request.params;
+          if (typeof text !== "string" || !text.trim() || (actor !== undefined && typeof actor !== "string")) throw new HttpError(400, "Invalid prompt");
+          return json(c, 202, await compatibility.prompt(migrated, request.id, { text, actor }, archived, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path.startsWith(requestPath + "/")) {
+          const requestId = decodeURIComponent(c.req.path.slice(requestPath.length + 1));
+          return json(c, 200, await compatibility.requestFor(migrated, requestId, c.req.query("wait"), archived, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/state`) {
+          return json(c, 200, await compatibility.state(migrated, this.archivedRequests(header.id), c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/history`) {
+          const { before, after, limit, maxBytes } = c.req.query();
+          return json(c, 200, await compatibilityHistory(compatibility, migrated, { before, after, limit, maxBytes }, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events`
+          && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
+          return compatibilityEvents(c, compatibility, migrated);
+        }
+        throw unsupportedV1Operation();
+      }
       // A watcher or a poll does not load the agent (see `watchAgent`).
       if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events` && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
         return events.watchAgent(this.eventContext, c, header, c.req.query("poll") === "1" ? "poll" : "watch");
@@ -1780,14 +1838,12 @@ export class ClientSessions {
     // was told was taken (its failure answers the retry too).
     const taken = async (record: RequestRecord) => {
       const pending = session.accepting?.get(record.id);
-      sometimes(!!pending, "a retry waited for its request's record to be durable");
       if (pending) await pending;
       // A record whose write failed is only in this memory: it was never taken, and the next load does not hold it.
       if (session.fault) throw session.fault;
       return { status: 200 as const, record: visible(session.requests.get(record.id) ?? record) };
     };
     const retried = existing();
-    sometimes(!!retried, "a request sent again with its id got the first one's record");
     if (retried) return taken(retried);
     if (session.running.size >= MAX_OPEN_REQUESTS) throw new HttpError(429, "Too many requests queued for this agent");
     // A spend limit applies at once, ahead of queued runs, so an application can set an allowance and then prompt.
@@ -2127,7 +2183,6 @@ export class ClientSessions {
     if (session.aborted?.delete(record.id)) {
       // A notification lands all the same, without its turn (see `stop`).
       if (method === "prompt" && params?.notice !== undefined && params.notice.metadata?.to !== "child") {
-        reachable("an abort reached a notification's run before its message landed, which landed without a turn");
         params = { ...params, landOnly: STOPPED_NOTICE };
       }
       // Ended as an abort, as the agent ends one it has (code aborted), not as a runtime failure.
@@ -2201,26 +2256,22 @@ export class ClientSessions {
     // A notification's or message's turn refused as it landed (`landNotice`): no owner asks the model for it.
     const refused = session.requests.get(record.id)?.landOnly;
     const refusedOutcome = (finished: unknown) => refused ? { ...finished as object, error: refused.message, code: refused.stopped, stopped: refused.stopped } : finished;
-    if (refused) reachable("a turn refused as its notification landed was resumed on another node, and kept the refusal");
     if (handoff && "continue" in handoff) return { result: await this.execute(session, record, refused ? { landOnly: refused } : {}, "continue") };
     // A resume whose turn is still suspended on the calls it answers: its node was lost before the agent took the answers
     // (the agent releases each call durably before running it, so one still waiting never ran). It runs again from its
     // inputs, as one whose turn never became active does; taken as the turn's outcome, it would end suspended with
     // nothing left to answer, and the approved call would never run.
     const suspended = (handoff?.finished as { stopped?: string } | undefined)?.stopped === "input_required";
-    if (suspended && record.method === "resume") reachable("a resume found its turn still suspended on the calls it answers");
-    else if (handoff) return { result: refusedOutcome(handoff.finished) };
-    // Its turn ended before its node was lost, which then never recorded the run's end: the outcome is the turn's.
-    else if (ended && await this.endedTurnOf(session, record, ended)) {
-      reachable("a resumed run took the outcome of its turn that had ended");
-      return { result: refusedOutcome(ended.finished) };
+    if (!(suspended && record.method === "resume")) {
+      if (handoff) return { result: refusedOutcome(handoff.finished) };
+      // Its turn ended before its node was lost, which then never recorded the run's end.
+      if (ended && await this.endedTurnOf(session, record, ended)) return { result: refusedOutcome(ended.finished) };
     }
     if (record.method === "resume") return { result: await this.execute(session, record, {}) };
     // A notification or message whose node was lost after its run began, before its message landed: it lands now, from its
     // record (the message is the runtime's, so nothing of it is unknown).
     const notice = record.method === "prompt" ? session.requests.get(record.id)?.notice as { notice?: unknown } | undefined : undefined;
     if (notice?.notice !== undefined) {
-      reachable("a child's notification whose node was lost before its message landed landed on the next owner");
       const params = { ...notice, requestId: record.id };
       if (refused) return { result: await this.execute(session, record, { ...params, landOnly: refused }) };
       const landing = await childSessions.landing(this.childrenContext, session, record, params, true);
@@ -2270,7 +2321,6 @@ export class ClientSessions {
       try { return await work(); }
       catch (error) {
         if (attempt >= RUN_START_ATTEMPTS || !RUN_METHODS.includes(record.method) || !transientStart(error)) throw error;
-        sometimes(true, "a run's start met a transient refusal and was tried again");
         console.error(JSON.stringify({ type: "run_start_retry", agent: session.header.id, request: record.id, attempt, error: safeError(error) }));
         await clock().sleep(Math.round(RUN_START_BACKOFF_MS * 2 ** (attempt - 1) * (0.5 + random().float())));
         // Given up, moved or stopped meanwhile: the run stays as it is, for whoever has it next.
@@ -2298,7 +2348,6 @@ export class ClientSessions {
       // as its turn did, and never runs after the stop.
       const stopped = session.requests.get(record.id)!;
       if (stopped.abortedAt !== undefined && stopped.began === undefined && RUN_METHODS.includes(record.method)) {
-        reachable("a batch's prompt a stop reached before it began ended aborted");
         const { params: _queued, ...ended } = stopped;
         const outcome: Outcome = { result: { error: "The run was aborted", code: "aborted" } };
         this.upsertRequest(session, { ...ended, state: "completed", outcome, endedAt: Date.now(), ...(session.announcing ? { announce: true as const } : {}) });
@@ -2309,7 +2358,6 @@ export class ClientSessions {
       // A prompt that reached an idle agent whose queue batches with a window waits out the window, so those sent with it join its turn.
       const window = this.batchWindow(session, record, params);
       if (window > 0) {
-        sometimes(true, "a prompt waited out its agent's batch window");
         await clock().sleep(window);
         if (this.closed || this.draining || session.fault || session.handedBack || session.requests.get(record.id)?.state !== "running") return;
       }
@@ -2482,7 +2530,6 @@ export class ClientSessions {
     // A prompt of a batch whose turn a lost node left (`batchedInto`): its message in history already (the agent found it,
     // `taken`), it completes naming that turn; otherwise it ran as a turn of its own.
     if (into && (value.result as { taken?: boolean } | undefined)?.taken) {
-      reachable("a batch's prompt whose turn a lost node left found its message taken already");
       const turn = session.requests.get(into);
       value = this.batchOutcome(turn?.state === "completed" ? turn.outcome : undefined, into);
     }
@@ -2569,7 +2616,6 @@ export class ClientSessions {
       if (record.method !== "prompt" || record.params === undefined || record.began !== undefined || record.abortedAt !== undefined || record.batchedInto || session.resuming.has(record.id) || !joins(lead, record)) break;
       batch.push(record);
     }
-    sometimes(batch.length > 0, "a turn took the prompts queued behind it as one batch");
     return batch;
   }
 
@@ -2610,13 +2656,11 @@ export class ClientSessions {
       if (!claimed) continue;
       const { batchedInto: _lead, ...queued } = member;
       if (member.abortedAt === undefined) { this.upsertRequest(session, queued); continue; }
-      reachable("a stop ended a batch's turn before it took one of the batch's prompts, which ended aborted");
       const { params: _queued, ...ended } = queued;
       const outcome: Outcome = { result: { error: "The run was aborted", code: "aborted" } };
       this.upsertRequest(session, { ...ended, state: "completed", outcome, endedAt: Date.now(), ...(session.announcing ? { announce: true as const } : {}) });
       this.publish(session, { type: "response", id: member.id, outcome });
     }
-    sometimes(claimed && taken.length < members.length, "a batch's turn ended without taking every prompt of its batch");
     return taken;
   }
 
@@ -3069,6 +3113,9 @@ export class ClientSessions {
   /** Expire sessions, keep SSE alive, and release idle agents' processes and memory. */
   private tick() {
     const now = Date.now();
+    void this.checkV2Watchers(now).catch(error => {
+      console.error(JSON.stringify({ type: "v2_cutover_watch_check_failed", error: safeError(error) }));
+    });
     const idleMs = this.options.idleMs ?? 5 * 60_000;
     for (const session of this.sessions.values()) {
       const id = session.header.id;

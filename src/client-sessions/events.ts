@@ -3,7 +3,7 @@ import type { ServerResponse } from "node:http";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { FRAME_BYTES, type ClientEvent, type TurnSnapshot } from "../../shared/client-protocol.ts";
+import { FRAME_BYTES, MAX_POLL_WAIT_MS, type ClientEvent, type TurnSnapshot } from "../../shared/client-protocol.ts";
 import { HttpError } from "../http.ts";
 import type { Db } from "../db.ts";
 import { LostClaim, underClaim } from "../ownership.ts";
@@ -55,8 +55,7 @@ export const MAX_BUFFERED_EVENTS = 512;
 export const MAX_WATCHERS = 32;
 export const MAX_TENANT_WATCHERS = 1024;
 export const MAX_NODE_WATCHERS = 4096;
-/** A long poll waits at most this long for an event. */
-export const MAX_POLL_WAIT_MS = 25_000;
+export { MAX_POLL_WAIT_MS } from "../../shared/client-protocol.ts";
 /** The most a snapshot's finished messages take; beyond it, a subscriber reads the turn from history. */
 export const TURN_SNAPSHOT_BYTES = 1_000_000;
 /** Tool progress published per call at most this often. */

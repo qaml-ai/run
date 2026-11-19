@@ -2,9 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "./append-log.ts";
-import type { Claim } from "../src/ownership.ts";
-import { buggify } from "../src/buggify.ts";
-import { reachable, sometimes } from "../src/assert.ts";
+import type { Claim } from "./actor-claim.ts";
 
 /**
  * The data plane: bulk state that is appended or written once. Coordination and
@@ -353,7 +351,7 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       const hash = createHash("sha256").update(text).digest("hex");
       // Content-addressed, so a blob another (even stale) writer created is the same bytes.
       try { await store.create(`blob-${hash}`, text); }
-      catch (error) { if (!(error instanceof PreconditionFailed)) throw error; reachable("a log's blob was stored already (by another writer, or before its answer was lost)"); }
+      catch (error) { if (!(error instanceof PreconditionFailed)) throw error; }
       return { seq: first + index, snapshot, body: null, blob: hash };
     }));
     if (!await tail.append(key, claim, rows, effects)) throw fence();
@@ -372,7 +370,6 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       const listing = await store.list();
       sizes = listing.bytes;
       const through = covered(listing);
-      sometimes(rows.some(row => row.seq <= through), "a compaction found rows its store already held (an earlier one stopped after writing)");
       const fresh = rows.filter(row => row.seq > through);
       for (const row of rows) if (row.blob) blobs.push(`blob-${row.blob}`);
       if (!fresh.length) return through;
@@ -384,7 +381,6 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       const size = (name: string) => listing.bytes?.get(name) ?? 0;
       const pendingBytes = pending.reduce((sum, sequence) => sum + size(segmentName(sequence)), 0) + texts.reduce((sum, text) => sum + Buffer.byteLength(text) + 1, 0);
       const fold = pending.length >= FOLD_SEGMENTS || pendingBytes > Math.max(FOLD_BYTES, base === undefined ? 0 : size(`snapshot-${segmentName(base)}`));
-      sometimes(fold, "a compaction folded a log into a snapshot");
       if (start < 0 && !fold) await store.create(segmentName(last), texts.join("\n") + "\n");
       else {
         // A rewrite among the rows replaces everything before it; otherwise fold Storage's records and the rows into one snapshot.
@@ -415,31 +411,34 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
       if (!fenced) { buffer = batch.concat(buffer); effects = done.concat(effects); retrying = true; }
       throw error;
     }
-    if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES || buggify("storage.compact.now")) void serialize(compact).catch(() => {});
+    if (tailRecords >= TAIL_RECORDS || tailBytes >= TAIL_BYTES) void serialize(compact).catch(() => {});
   };
 
   const read = async (): Promise<T[]> => {
     // The tail first: a compaction between the two reads then shows up in Storage, never in neither.
-    let rows: TailRow[], listing: Listing, records: T[];
     for (let attempt = 1; ; attempt++) {
-      rows = await tail.rows(key);
-      listing = await store.list();
-      // A compaction elsewhere may fold and delete what was listed: read again.
-      try { records = await stored(listing); break; }
-      catch (error) { if (attempt >= 3) throw error; }
+      const rows = await tail.rows(key);
+      const listing = await store.list();
+      // A concurrent compaction can remove either a listed segment or a tail row's blob.
+      try {
+        let records = await stored(listing);
+        const through = covered(listing);
+        let bodyBytes = 0;
+        for (const row of rows) {
+          bodyBytes += row.body?.length ?? 0;
+          if (row.seq <= through) continue;
+          const parsed = JSON.parse(await body(row));
+          if (row.snapshot) records = parsed;
+          else records.push(parsed);
+        }
+        tailRecords = rows.length;
+        tailBytes = bodyBytes;
+        if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
+        return records;
+      } catch (error) {
+        if (attempt >= 3) throw error;
+      }
     }
-    const through = covered(listing);
-    tailRecords = rows.length;
-    tailBytes = 0;
-    for (const row of rows) {
-      tailBytes += row.body?.length ?? 0;
-      if (row.seq <= through) continue;
-      const parsed = JSON.parse(await body(row));
-      if (row.snapshot) records = parsed;
-      else records.push(parsed);
-    }
-    if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
-    return records;
   };
 
   return {
