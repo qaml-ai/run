@@ -44,6 +44,16 @@ For an agent without a workspace, omit `--initial-commit`. To catch up a
 staged copy, pass the last `--previous` history receipt. Use
 `--attachments manifest.json` for history that references files.
 
+For a Camel Bots builder with a private `/workspace` and a shared `/bot`
+draft, add `--camel-bots-draft <v1-volume-id>` and provide the application's
+read-only Postgres connection in `CAMEL_BOTS_DATABASE_URL`. The command
+checks the builder's access to that exact open draft before and after copying
+the workspace. The receipt includes the bot, builder owner, and draft volume.
+Camel Bots keeps using the same shared draft through its app-owned tools, so
+collaborator edits and saved releases stay on the existing volume. An old
+history attachment from `/bot` needs its exact bytes copied to the private
+workspace and pinned by the attachment manifest.
+
 The app still needs to hold admission while it runs the final catch-up and
 changes the route. A staging receipt describes a verified copy at a point
 in time.

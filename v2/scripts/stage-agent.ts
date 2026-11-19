@@ -1,9 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
+import pg from "pg";
 import { AgentRuntime, type Mount } from "../../clients/node.ts";
 import type { RequestRecord } from "../../shared/client-protocol.ts";
 import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
+import { validVolumeId } from "../../src/volumes.ts";
 import { CamelRun, type V1HistoryImport } from "../sdk/src/index.ts";
 import { readV1History } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
@@ -14,10 +16,17 @@ interface SourceAgent {
   agentId: string;
 }
 
+type SharedDraftOwner = { owner: string; bot: string };
+interface SharedDraft {
+  volumeId: string;
+  verify(agentId: string, volumeId: string): Promise<SharedDraftOwner | null>;
+}
+
 interface StageOptions {
   initialCommit?: string;
   previous?: string;
   attachments?: V1HistoryImport["attachments"];
+  sharedDraft?: SharedDraft;
 }
 
 export async function readV1AgentState(source: SourceAgent) {
@@ -44,8 +53,23 @@ export async function readV1AgentState(source: SourceAgent) {
 /** Prepare and verify data for an already configured private v2 agent. Routing belongs to the caller. */
 export async function stageAgent(source: SourceAgent, v2: CamelRun, destination: string, options: StageOptions = {}) {
   const { mounts } = await readV1AgentState(source);
-  const mount = mounts[0];
-  if (mounts.length > 1 || (mount && (mount.path !== "/workspace" || mount.subpath || mount.mode !== "rw"))) {
+  const { sharedDraft } = options;
+  const mount = mounts.find(candidate => candidate.path === "/workspace");
+  let draftOwner: SharedDraftOwner | null = null;
+  if (sharedDraft) {
+    const draft = mounts.find(candidate => candidate.path === "/bot");
+    if (mounts.length !== 2 || !mount || !validVolumeId(sharedDraft.volumeId) ||
+        !draft || draft.volumeId !== sharedDraft.volumeId || draft.volumeId === mount.volumeId ||
+        draft.mode !== "rw" || draft.subpath || draft.notify || draft.instructions !== undefined) {
+      throw new Error("Expected /workspace and the exact Camel Bots draft volume at /bot");
+    }
+    draftOwner = await sharedDraft.verify(source.agentId, draft.volumeId);
+    if (!draftOwner) throw new Error("Camel Bots no longer grants this builder access to that open draft");
+    if (options.attachments?.some(entry => entry.files.some(file => /^\/bot(?:\/|$)/.test(file.path)))) {
+      throw new Error("A v1 /bot attachment must be copied and referenced explicitly from the v2 /workspace");
+    }
+  }
+  if ((!sharedDraft && mounts.length !== (mount ? 1 : 0)) || (mount && (mount.subpath || mount.mode !== "rw"))) {
     throw new Error("Staging supports a single writable v1 volume mounted at /workspace");
   }
   const target = await v2.agents.get(destination);
@@ -90,11 +114,13 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
       }
     }
 
-    const [{ mounts: currentMounts }, latest] = await Promise.all([
+    const [{ mounts: currentMounts }, latest, currentDraftOwner] = await Promise.all([
       readV1AgentState(source),
       readV1History(source.url, source.apiKey, source.agentId),
+      sharedDraft?.verify(source.agentId, sharedDraft.volumeId),
     ]);
     if (!isDeepStrictEqual(currentMounts, mounts) || !isDeepStrictEqual(latest.messages, history.messages) ||
+        (sharedDraft && !isDeepStrictEqual(currentDraftOwner, draftOwner)) ||
         (workspace && (await workspace.volume.info()).seq !== workspace.copy.seq)) {
       throw new Error("The v1 agent changed during staging");
     }
@@ -109,7 +135,22 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
   } catch (error) {
     throw new Error(`Staging verification failed: ${String(error)}. The v2 history was written with receipt ${imported.receipt}.`, { cause: error });
   }
-  return { source: source.agentId, destination: target.id, history: imported, workspace: workspace?.copy ?? null };
+  return {
+    source: source.agentId, destination: target.id, history: imported, workspace: workspace?.copy ?? null,
+    ...(sharedDraft && draftOwner ? { sharedDraft: { volumeId: sharedDraft.volumeId, ...draftOwner } } : {}),
+  };
+}
+
+/** Check the builder's current open draft in the application, including collaborator access. */
+export async function verifyCamelBotsDraft(db: pg.Pool, agentId: string, volumeId: string): Promise<SharedDraftOwner | null> {
+  const { rows } = await db.query<SharedDraftOwner>(`
+    select a.owner, b.bot
+    from builder_agents a join app_bots b on b.bot = a.open_bot
+    where a.agent = $1 and a.runtime in ('v1', 'hold') and b.draft_volume = $2
+      and (b.owner = a.owner or exists (
+        select 1 from bot_collaborators c where c.bot = b.bot and c.person = a.owner
+      ))`, [agentId, volumeId]);
+  return rows.length === 1 ? rows[0] : null;
 }
 
 function env(name: string): string {
@@ -121,20 +162,29 @@ function env(name: string): string {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
-    options: { "initial-commit": { type: "string" }, previous: { type: "string" }, attachments: { type: "string" } },
+    options: { "camel-bots-draft": { type: "string" }, "initial-commit": { type: "string" }, previous: { type: "string" }, attachments: { type: "string" } },
   });
   const [source, destination, ...extra] = positionals;
   if (!source || !destination || extra.length) {
-    throw new Error("Usage: node --experimental-strip-types v2/scripts/stage-agent.ts <v1-agent> <v2-agent> [--initial-commit sha] [--previous receipt] [--attachments manifest.json]");
+    throw new Error("Usage: node --experimental-strip-types v2/scripts/stage-agent.ts <v1-agent> <v2-agent> [--initial-commit sha] [--previous receipt] [--attachments manifest.json] [--camel-bots-draft vol_id]");
   }
+  const volumeId = values["camel-bots-draft"];
+  if (volumeId !== undefined && !validVolumeId(volumeId)) throw new Error("Invalid Camel Bots draft volume ID");
   const v2 = new CamelRun({ baseUrl: env("V2_URL"), apiKey: env("V2_API_KEY") });
+  let bots: pg.Pool | undefined;
   try {
+    let sharedDraft: SharedDraft | undefined;
+    if (volumeId !== undefined) {
+      const db = new pg.Pool({ connectionString: env("CAMEL_BOTS_DATABASE_URL"), connectionTimeoutMillis: 5_000, query_timeout: 10_000, max: 1 });
+      bots = db;
+      sharedDraft = { volumeId, verify: (agentId, id) => verifyCamelBotsDraft(db, agentId, id) };
+    }
     const attachments: V1HistoryImport["attachments"] = values.attachments
       ? JSON.parse(await readFile(values.attachments, "utf8"))
       : undefined;
     console.log(JSON.stringify(await stageAgent({ url: env("V1_URL"), apiKey: env("V1_API_KEY"), agentId: source }, v2,
-      destination, { initialCommit: values["initial-commit"], previous: values.previous, attachments })));
+      destination, { initialCommit: values["initial-commit"], previous: values.previous, attachments, sharedDraft })));
   } finally {
-    await v2.close();
+    await Promise.all([v2.close(), bots?.end()]);
   }
 }
