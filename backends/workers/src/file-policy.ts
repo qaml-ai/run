@@ -59,7 +59,7 @@ export function sniffContentType(head: Uint8Array, name: string): string {
   if (starts(head, [0x50, 0x4b, 0x03, 0x04])) return ["docx", "xlsx", "pptx"].includes(extension) ? EXTENSIONS[extension] : "application/zip";
   if (EXTENSIONS[extension]) return EXTENSIONS[extension];
   if (head.includes(0)) return "application/octet-stream";
-  try { new TextDecoder("utf-8", { fatal: true }).decode(head.subarray(0, Math.max(0, head.length - 3))); return "text/plain"; }
+  try { new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(head.subarray(0, Math.max(0, head.length - 3))); return "text/plain"; }
   catch { return "application/octet-stream"; }
 }
 

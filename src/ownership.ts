@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { Claim } from "../shared/actor-claim.ts";
+export type { Claim } from "../shared/actor-claim.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
@@ -11,9 +13,6 @@ export class NotOwner extends HttpError {
   owner: string;
   constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
 }
-
-/** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
-export interface Claim { actor: string; session: string; epoch: number }
 
 /** A write under a claim that is no longer current: another node may own the actor now. */
 export class LostClaim extends HttpError {
