@@ -1,5 +1,7 @@
 import { transaction, type Db } from "./db.ts";
 
+export const AGENT_V2_PUBLISHED = "agent_v2_published";
+
 /** Fence new v1 runs only after accepted work is durably idle. The caller holds application edits
  * and other ingress during the final copy and route publication. */
 export function fenceV1Agent(db: Db, tenant: string, agent: string, operation: string) {
@@ -60,6 +62,7 @@ export function publishV2AgentRoute(db: Db, source: { tenant: string; agent: str
       where agent_v2_routes.destination_tenant = excluded.destination_tenant
         and agent_v2_routes.destination_agent = excluded.destination_agent`,
     [source.tenant, source.agent, destination.tenant, destination.agent, Date.now() * 1000]);
+    if (rowCount === 1) await sql.query("select pg_notify($1, $2)", [AGENT_V2_PUBLISHED, source.agent]);
     return rowCount === 1;
   });
 }

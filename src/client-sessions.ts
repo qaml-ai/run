@@ -730,6 +730,26 @@ export class ClientSessions {
     for (const wake of [...entry.polls]) wake();
   }
 
+  v2RoutePublished(id: string) {
+    this.loadedElsewhere(id);
+    const session = this.sessions.get(id);
+    if (session) events.endStreams(session, false, "moved");
+  }
+
+  private checkedV2Watchers = 0;
+
+  private async checkV2Watchers(now: number) {
+    if (!this.options.v1Compatibility || now - this.checkedV2Watchers < IDLE_CHECK_MS) return;
+    this.checkedV2Watchers = now;
+    const watching = [...this.idle.keys()];
+    for (const [id, session] of this.sessions) {
+      if (session.response || session.watchers.size || session.polls.size) watching.push(id);
+    }
+    if (!watching.length) return;
+    const { rows } = await this.db.query<{ agent: string }>("select agent from agent_v2_routes where agent = any($1::text[])", [watching]);
+    for (const { agent } of rows) this.v2RoutePublished(agent);
+  }
+
   /**
    * What a subscriber reads after its cursor (its `Last-Event-ID`): the buffered events after it.
    * Cursor 0 is a new subscriber, which takes whatever is buffered; any other must be contiguous
@@ -3106,6 +3126,9 @@ export class ClientSessions {
   /** Expire sessions, keep SSE alive, and release idle agents' processes and memory. */
   private tick() {
     const now = Date.now();
+    void this.checkV2Watchers(now).catch(error => {
+      console.error(JSON.stringify({ type: "v2_cutover_watch_check_failed", error: safeError(error) }));
+    });
     const idleMs = this.options.idleMs ?? 5 * 60_000;
     for (const session of this.sessions.values()) {
       const id = session.header.id;
