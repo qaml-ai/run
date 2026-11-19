@@ -1,7 +1,7 @@
 import { sweepInboxReceipts } from "../../shared/inbox-answers.ts";
 import { monitorRequest } from "../../shared/monitors.ts";
 import { inputAudience, supersedesInput } from "../shared-agents.ts";
-import { createHash } from "node:crypto";
+import { resumeId } from "../v1-client-state.ts";
 import { errorText } from "../protocol.ts";
 import { canonical } from "../../shared/durable-json.ts";
 import { type ClientEvent, type RequestRecord } from "../../shared/client-protocol.ts";
@@ -29,8 +29,7 @@ export type InputContext = {
 /** A tool call as its inputs and retry name it: the model's call, or for a call from code `<codemode call>/<key>`. */
 export const callKey = (call: { toolCallId?: string; innerCallId?: string }) => call.innerCallId ? `${call.toolCallId}/${call.innerCallId}` : call.toolCallId!;
 
-/** The id of the run that resumes a suspension: one per suspension, so every path that resumes it makes the same request. */
-export const resumeId = (suspension: string) => `resume_${createHash("sha256").update(suspension).digest("hex").slice(0, 40)}`;
+export { resumeId };
 
 /** A batch of answers from a request: `{ answers: [{ id, action, content?, from?, actor? }] }`. */
 export const answerList = (body: any) => {

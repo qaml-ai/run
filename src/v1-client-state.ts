@@ -7,6 +7,11 @@ export const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "con
 
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
+export type ArchivedV1Input<Input> = { input: Input; approvers: string[] };
+
+/** One continuation per suspension, shared by every path that resumes it. */
+export const resumeId = (suspension: string) => `resume_${hash(suspension).slice(0, 40)}`;
+
 export const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(value);
 
 /**

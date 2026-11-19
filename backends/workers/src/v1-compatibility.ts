@@ -1,7 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { FRAME_BYTES, type RequestRecord } from "../../../shared/client-protocol.ts";
-import { expired, hash, REQUEST_METHODS, validId } from "../../../src/v1-client-state.ts";
+import { expired, hash, REQUEST_METHODS, resumeId, validId, type ArchivedV1Input } from "../../../src/v1-client-state.ts";
 import { HttpError } from "../../../src/core/http-error.ts";
+import { canonical } from "../../../shared/durable-json.ts";
+import { answerInput, mayAnswer, settledAlready, type Input, type Responder } from "./decision-inputs.ts";
+import { answerList } from "./input-policy.ts";
+import { actorInput } from "./security-policy.ts";
+import { senderInput } from "./sender.ts";
 import { compatibilityEventsResponse } from "../../../src/v1-compatibility-events.ts";
 import { compatibilityHistory } from "../../../src/v1-compatibility-history.ts";
 import { PromptInput } from "../../../src/v1-prompt-schema.ts";
@@ -9,8 +14,8 @@ import { unsupportedV1Operation, type CompatibilitySql, type V1Compatibility } f
 import { readText } from "./account-http.ts";
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 
-const tenantPaths = /^\/v1\/agents\/(client_[a-f0-9]{40})\/(prompt|mounts|events|state|history|requests\/[^/]+)$/;
-const agentPaths = /^\/clients\/(client_[a-f0-9]{40})\/(requests(?:\/[^/]+)?|events|state|history)$/;
+const tenantPaths = /^\/v1\/agents\/(client_[a-f0-9]{40})\/(prompt|mounts|events|state|history|inputs(?:\/[^/]+)?|requests\/[^/]+)$/;
+const agentPaths = /^\/clients\/(client_[a-f0-9]{40})\/(requests(?:\/[^/]+)?|events|state|history|inputs(?:\/[^/]+)?)$/;
 
 export function legacyAgentRequest(request: Request) {
   if (request.headers.has("upgrade")) return;
@@ -18,7 +23,8 @@ export function legacyAgentRequest(request: Request) {
   const match = agentPaths.exec(url.pathname) ?? tenantPaths.exec(url.pathname);
   if (!match) return;
   const [, agent, operation] = match;
-  if (request.method !== (["prompt", "requests"].includes(operation) ? "POST" : "GET")) return;
+  if (operation === "inputs" ? !["GET", "POST"].includes(request.method)
+    : request.method !== (["prompt", "requests"].includes(operation) || operation.startsWith("inputs/") ? "POST" : "GET")) return;
   const scoped = url.pathname.startsWith("/clients/");
   if (scoped && operation === "events" && url.searchParams.get("watch") !== "1" && url.searchParams.get("poll") !== "1") return;
   return { agent, operation, scoped };
@@ -79,7 +85,7 @@ export async function handleLegacyAgentRequest(
 
   if (!scoped) {
     const { rows: [source] } = await sql.query<{ mounts: unknown[] | null }>(
-      `select header->'mounts' as mounts from agents where id = $1 and tenant = $2 and not revoked
+      `select header->'mounts' as mounts from agents where id = $1 and tenant = $2 and not revoked and purged_at is null
         and (expires_at is null or expires_at > $3) and header->'run' is null`, [agent, tenant, Date.now()],
     );
     if (!source) throw unknownAgent();
@@ -97,6 +103,9 @@ export async function handleLegacyAgentRequest(
     );
     if (!row) throw archiveUnavailable();
     return row.receipt ?? undefined;
+  }
+  if (operation === "inputs" || operation.startsWith("inputs/")) {
+    return historicalInputs(request, sql, tenant, agent, operation, scoped, browser);
   }
   if (operation === "prompt") {
     const body = await promptBody(request);
@@ -142,4 +151,55 @@ export async function handleLegacyAgentRequest(
   }
   const id = decodeURIComponent(operation.slice("requests/".length));
   return json(await compatibility.requestFor(route, id, url.searchParams.get("wait") ?? undefined, archived, signal));
+}
+
+const inputStates = new Set(["pending", "answered", "declined", "cancelled", "expired", "superseded", "withdrawn"]);
+
+async function historicalInputs(
+  request: Request, sql: CompatibilitySql, tenant: string, agent: string,
+  operation: string, scoped: boolean, browser?: BrowserClaims,
+) {
+  const { rows: [archive] } = await sql.query<{ inputs: ArchivedV1Input<Input>[]; receipts: RequestRecord[] }>(
+    "select inputs, receipts from agent_v2_receipt_archives where tenant = $1 and agent = $2", [tenant, agent],
+  );
+  if (!archive) throw archiveUnavailable();
+  if (request.method === "GET") {
+    const state = new URL(request.url).searchParams.get("state");
+    if (!scoped && state !== null && !inputStates.has(state)) throw new HttpError(400, "Invalid input state");
+    const inputs = archive.inputs.map(entry => entry.input).filter(input => !state || input.state === state)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id)).slice(0, 100);
+    return json(browser ? readableMessage(browser, inputs) : inputs);
+  }
+
+  const via: Responder["via"] = scoped ? "agent" : "api";
+  const inputId = operation.startsWith("inputs/") ? decodeURIComponent(operation.slice("inputs/".length)) : undefined;
+  const body = await jsonBody(request, (inputId ? 256 : 1024) * 1024, scoped ? undefined : "{}");
+  const answers: { id: string; body: any }[] = inputId ? [{ id: inputId, body }] : answerList(body);
+  if (!answers.length || answers.length > 100 || new Set(answers.map(answer => answer.id)).size !== answers.length) {
+    throw new HttpError(400, "Answer 1 to 100 different inputs");
+  }
+  const byId = new Map(archive.inputs.map(entry => [entry.input.id, entry]));
+  const checked = answers.map(({ id, body }) => {
+    const entry = byId.get(id);
+    if (!entry) throw new HttpError(404, `Unknown input ${id}`);
+    const { input, approvers } = entry;
+    const by = { via, from: senderInput(body?.from), actor: actorInput(body?.actor) };
+    if (!mayAnswer(input, by, approvers)) throw new HttpError(403, "This person may not answer this input");
+    const answer = answerInput(input, body);
+    return { input, same: input.state !== "pending" && input.answer && !input.answer.by.system
+      && input.answer.action === answer.action && canonical(input.answer.content ?? null) === canonical(answer.content ?? null) };
+  });
+  const inputs = checked.map(answer => answer.input);
+  if (checked.some(answer => !answer.same)) {
+    const expired = inputs.find(input => input.answer?.by.system === "expired");
+    throw new HttpError(409, inputs.length === 1 ? settledAlready(inputs[0])
+      : expired ? settledAlready(expired) : "An input is already settled", undefined,
+      { input: inputs.length === 1 ? inputs[0] : inputs });
+  }
+  const requests = [...new Set(inputs.filter(input => input.blocking !== false).map(input => input.requestId))].map(suspension => {
+    const receipt = archive.receipts.find(record => record.id === resumeId(suspension));
+    if (!receipt || receipt.method !== "resume" || receipt.suspension !== suspension || receipt.state !== "completed") throw archiveUnavailable();
+    return receipt;
+  });
+  return json(inputId ? { input: inputs[0], request: requests[0] ?? null } : { inputs, requests });
 }

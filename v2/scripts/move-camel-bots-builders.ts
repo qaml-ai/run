@@ -3,9 +3,10 @@ import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import pg from "pg";
 import { databaseFromEnvironment, type Db } from "../../src/db.ts";
+import { unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
 import type { McpServerConfig, V1HistoryImport } from "../sdk/src/index.ts";
 import { CamelRun } from "../sdk/src/index.ts";
-import { moveAgent } from "./move-agent.ts";
+import { moveAgent, readClosedInputs } from "./move-agent.ts";
 import { stageAgent, verifyCamelBotsDraft } from "./stage-agent.ts";
 
 interface BuilderMove {
@@ -17,6 +18,7 @@ interface BuilderMove {
   previous?: string;
   draftVolumeId?: string;
   attachments?: V1HistoryImport["attachments"];
+  closedInputs?: true;
 }
 
 interface BuilderRoute {
@@ -198,6 +200,17 @@ export async function moveCamelBotsBuilder(
     }
 
     if (legacy === "v1" && !row.previous) throw new Error("stage_first");
+    // Read the original journal before the hold. The fence and publication compare it again under lock.
+    const closedInputs = legacy !== "v2" && row.closedInputs
+      ? await readClosedInputs(runtime, config.source.tenant, row.source)
+      : undefined;
+    if (legacy !== "v2" && row.closedInputs && !closedInputs) {
+      if (legacy === "fenced" && !await unfenceV1Agent(runtime, config.source.tenant, row.source, row.operation)) {
+        throw new Error("closed_input_fence_changed");
+      }
+      if (app.runtime === "hold") await withOwnerLock(sql, row.owner, () => updateRoute(sql, row, "hold", "v1"));
+      return { owner: row.owner, state: "deferred" as const };
+    }
     if (app.runtime === "v1") {
       const held = await withOwnerLock(sql, row.owner, async () => {
         const current = await ownerRoute(sql, row.owner);
@@ -216,7 +229,7 @@ export async function moveCamelBotsBuilder(
     let receipt: unknown;
     try {
       if (legacy !== "v2") {
-        const moved = await relocate(runtime, source, v2, { tenant: config.destinationTenant, agent: row.destination }, options);
+        const moved = await relocate(runtime, source, v2, { tenant: config.destinationTenant, agent: row.destination }, { ...options, closedInputs });
         if (moved.state === "deferred") {
           await releaseIfUnpublished();
           return { owner: row.owner, state: "deferred" as const };
@@ -268,7 +281,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       !/^\d{17,20}$/.test(row.owner) || !id.test(row.source) || !/^agt_[a-f0-9]{16}$/.test(row.destination) ||
       !uuid.test(row.operation) || (row.initialCommit !== undefined && !/^[a-f0-9]{64}$/.test(row.initialCommit)) ||
       (row.previous !== undefined && !/^[a-f0-9]{64}$/.test(row.previous)) ||
-      (row.draftVolumeId !== undefined && !id.test(row.draftVolumeId))) ||
+      (row.draftVolumeId !== undefined && !id.test(row.draftVolumeId)) ||
+      (row.closedInputs !== undefined && row.closedInputs !== true)) ||
       !unique(row => row.owner) || !unique(row => row.source) || !unique(row => row.destination) || !unique(row => row.operation)) {
     throw new Error("Invalid or duplicate builder migration manifest entries");
   }
