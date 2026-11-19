@@ -138,7 +138,7 @@ test("selects legacy decisions independently and sends each selected POST once",
   for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
     const response = await worker.fetch(post(host, authorization), env);
     assert.equal(response.status, 503);
-    assert.equal((await response.json()).code, "DECISIONS_UNAVAILABLE");
+    assert.deepEqual(await response.json(), { error: "Decisions are unavailable", code: "DECISIONS_UNAVAILABLE" });
   }
   assert.equal(route.mock.callCount(), 2);
   assert.equal(origin.mock.callCount(), 0);
