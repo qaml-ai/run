@@ -461,6 +461,7 @@ export interface SessionHooks {
 }
 /** `resume` continues a turn that waited on human input; the runtime makes it when the last input settles. */
 export const RUN_METHODS = ["prompt", "execute", "continue", "resume"];
+export const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
 /** Runs that call the model; code executions do not, so spend limits leave them alone. */
 export const MODEL_RUNS = ["prompt", "continue"];
 /**

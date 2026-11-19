@@ -8,6 +8,7 @@ import { handleLegacyAgentRequest } from "../src/v1-compatibility.ts";
 
 const agent = `client_${"a".repeat(40)}`;
 const destination = "ag_v2";
+const agentKey = "agent-key-used-before-cutover";
 const principal = { tenantId: "alice", kind: "api" };
 const mounts = [{ volumeId: "vol_test", path: "/workspace", mode: "rw" }];
 const receipt = {
@@ -24,7 +25,8 @@ function fixture({ published = true, hasArchive = true } = {}) {
       const rows: unknown[] = [];
       if (text.includes("from agents")) {
         assert.equal(values[0], agent);
-        if (values[1] === principal.tenantId) rows.push({ mounts });
+        if (values.length === 1) rows.push({ tenant: principal.tenantId, revoked: false, purged: false, expires_at: null, digest: hash(agentKey) });
+        else if (values[1] === principal.tenantId) rows.push({ mounts });
       } else if (text.includes("from agent_v2_cutovers")) {
         assert.equal(values[0], principal.tenantId);
         assert.equal(values[1], agent);
@@ -57,7 +59,9 @@ function fixture({ published = true, hasArchive = true } = {}) {
   });
   const request = (tail: string, init?: RequestInit, caller = principal) =>
     handleLegacyAgentRequest(new Request(`https://run.camelai.com/v1/agents/${agent}/${tail}`, init), sql, compatibility, caller);
-  return { request, forwarded };
+  const scoped = (tail: string, init?: RequestInit) =>
+    handleLegacyAgentRequest(new Request(`https://run.camelai.com/clients/${agent}/${tail}`, init), sql, compatibility, null);
+  return { request, scoped, forwarded };
 }
 
 test("answers legacy mounts before publication and leaves the active turn on its runtime", async () => {
@@ -97,4 +101,18 @@ test("keeps the original cursor namespace and propagates legacy replay errors", 
     events: [{ id: 42, data: { type: "snapshot", cursor: 42, requestId: null, turn: null } }],
   });
   await assert.rejects(request("events?poll=1&snapshot=0", { headers: { "Last-Event-ID": "41" } }), { status: 409, code: "REPLAY_GAP" });
+});
+
+test("keeps scoped agent credentials without permitting browser-origin requests", async () => {
+  const { scoped, forwarded } = fixture();
+  const headers = { Authorization: `Bearer ${agentKey}` };
+  await assert.rejects(scoped("requests/legacy"), { status: 401 });
+  await assert.rejects(scoped("requests/legacy", { headers: { ...headers, Origin: "https://other.invalid" } }), { status: 401 });
+  assert.deepEqual(await (await scoped("requests/legacy", { headers }))?.json(), receipt);
+  const retried = await scoped("requests", {
+    method: "POST", headers, body: JSON.stringify({ id: "legacy", method: "prompt", params: { text: "hello" } }),
+  });
+  assert.equal(retried?.status, 202);
+  assert.deepEqual(await retried?.json(), receipt);
+  assert.deepEqual(forwarded, []);
 });

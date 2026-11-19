@@ -222,14 +222,15 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     const env = this.env;
     if (!env.AGENT_V2_COMPAT_API_KEYS) return null;
     const list = request.method === "GET" && new URL(request.url).pathname === "/v1/agents";
-    if (!list && !legacyAgentRequest(request)) return null;
+    const target = legacyAgentRequest(request);
+    if (!list && !target) return null;
     try {
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
-      const browser = BrowserTokens.carries(bearer)
+      const browser = !target?.scoped && BrowserTokens.carries(bearer)
         ? new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(bearer!)
         : undefined;
-      const principal = browser ? null : await authenticateMoney(request, env);
+      const principal = browser || target?.scoped ? null : await authenticateMoney(request, env);
       const response = list
         ? await legacyAgentList(request, database(env), principal)
         : await legacyCompatibility(request, env, principal, browser);

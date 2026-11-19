@@ -5,6 +5,8 @@ import { Type } from "typebox";
 import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../clients/node.ts";
 import { serveTools } from "../../clients/server.ts";
 import { fenceV1Agent, publishV2AgentRoute, unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
+import { V1Compatibility } from "../../src/v1-v2-compatibility.ts";
+import { handleLegacyAgentRequest } from "../../backends/workers/src/v1-compatibility.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, until } from "../../tests/runtime-server.ts";
 import { CamelRun, parseSSE } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
@@ -292,6 +294,19 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const scopedSettled = await v1.call(`${scopedPath}/${scopedId}?wait=10`, { token: originalAgentToken });
   assert.equal(scopedSettled.status, 200, scopedSettled.text);
   assert.equal(scopedSettled.json.status, "completed");
+  const edge = V1Compatibility.configured(v1.db, JSON.stringify({ [tenantId]: apiKey }), `${workerUrl}/v2`)!;
+  // Exercise the Worker's adapter against the Node schema and the real local v2 Worker without a v1 API request.
+  const edgeRead = (path: string, token: string, principal: { tenantId: string; kind: string } | null) =>
+    handleLegacyAgentRequest(new Request(`https://run.camelai.com${path}`, { headers: { Authorization: `Bearer ${token}` } }), v1.db, edge, principal);
+  const edgeReceipt = await edgeRead(`${scopedPath}/${lastV1RequestId}`, originalAgentToken, null);
+  assert.equal(edgeReceipt?.status, 200);
+  assert.deepEqual(await edgeReceipt?.json(), lastV1Record);
+  const edgeRequest = await edgeRead(`${pathV1}/requests/${requestId}`, originalKey, { tenantId: "alice", kind: "api" });
+  assert.equal(edgeRequest?.status, 200);
+  assert.deepEqual(await edgeRequest?.json(), received.json);
+  const edgeMounts = await edgeRead(`${pathV1}/mounts`, originalKey, { tenantId: "alice", kind: "api" });
+  assert.equal(edgeMounts?.status, 200);
+  assert.ok((await edgeMounts?.json() as { path: string }[]).some(mount => mount.path === "/workspace"));
   assert.equal((await stagingAgent.history()).length, 8);
   const compatibleState = await v1.call(`${pathV1}/state`, { token: originalKey });
   assert.equal(compatibleState.status, 200, compatibleState.text);
