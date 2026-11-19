@@ -46,7 +46,7 @@ test("deleted modules still select importers; unmapped deletions fall back", () 
 }));
 
 test("infrastructure and helpers always run all tests", () => fixture((root) => {
-  for (const path of ["package.json", "package-lock.json", "tsconfig.json", "clients/tsconfig.test.json", "tests/database.ts", "tests/runtime-server.ts", "tests/sim/sim.ts", "scripts/test-shard.ts", "scripts/test-select.test.ts", "migrations/001.sql", ".github/workflows/ci.yml", ".github/ISSUE_TEMPLATE/bug.yml", "sandbox/file.rs", "Dockerfile", "plugins/unknown.ts"]) {
+  for (const path of ["package.json", "package-lock.json", "tsconfig.json", "clients/tsconfig.test.json", "tests/database.ts", "tests/runtime-server.ts", "scripts/test-shard.ts", "scripts/test-select.test.ts", "migrations/001.sql", ".github/workflows/ci.yml", ".github/ISSUE_TEMPLATE/bug.yml", "sandbox/file.rs", "Dockerfile", "plugins/unknown.ts"]) {
     const result = selectTests(root, [path]);
     assert.equal(result.full, true, path);
     assert.equal(result.files.length, 25);

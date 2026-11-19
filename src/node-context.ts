@@ -8,11 +8,9 @@ import { fetch as undiciFetch } from "undici";
 
 /**
  * How a node reaches anything outside its process: other nodes, model providers, MCP servers, webhook receivers, OAuth
- * and sign-in providers, channels' APIs, Stripe, ECS. Production's is the real network. A simulation gives each node
- * its own (NodeDeps.network), which routes to fakes and to the other nodes, and can drop, delay or partition.
+ * and sign-in providers, channels' APIs, Stripe, ECS. Tests can supply a network through NodeDeps.network.
  *
- * Not covered, because a simulation leaves them out: the AWS SDK's own clients (S3, which Storage replaces; SES, Secrets
- * Manager, ECS, Bedrock), Discord's voice WebSocket and UDP socket, and the confined processes' sockets (the code executor's).
+ * The AWS SDK's clients, Discord's voice WebSocket and UDP socket, and the code executor's sockets connect directly.
  */
 export type Network = {
   /** HTTP. */
@@ -37,12 +35,7 @@ export const REAL_NETWORK: Network = {
 };
 
 type Timer = ReturnType<typeof setTimeout>;
-/**
- * A node's time. Code calls it for the lease clock (src/ownership.ts) and where a simulator's process-wide fake timers
- * cannot reach: timers/promises, and performance imported from node:perf_hooks. Everything else reads the globals
- * (Date.now, performance.now, setTimeout...), which @sinonjs/fake-timers fakes for the whole process, consulting the
- * node's clock for its skew; AbortSignal.timeout, on Node's internal timers, the simulator replaces itself.
- */
+/** The clock used for ownership leases, timeouts, and retry delays. */
 export type Clock = {
   /** Milliseconds since the epoch, as Date.now. */
   now(): number;
@@ -66,11 +59,7 @@ export const REAL_CLOCK: Clock = {
   sleep: (ms, options) => sleep(ms, undefined, options),
 };
 
-/**
- * A node's randomness where it is not cryptographic: a peer chosen, jitter, sampling. Code that needs secure random
- * values (tokens, keys, ids a caller must not guess) calls node:crypto, which is always real in production; a simulator
- * patches node:crypto for the whole process, drawing from `bytes` of the node it runs for.
- */
+/** The node's random source for peer selection, retry jitter, and sampling. */
 export type Random = {
   /** A number in [0, 1), as Math.random. */
   float(): number;

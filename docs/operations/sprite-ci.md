@@ -40,7 +40,6 @@ scripts/sprite-ci.mjs --list              # the gates and what each runs
 | `workers-integration` | `validate-sprite.sh integration i/3`, 3 shards | `workers-tests.yml` integration |
 | `checks` | the ECS deploy script test, `npm run typecheck`, `npm run test:ui`, the console and studio builds, Workers `check:reuse` | `ci.yml` checks, and the generated-copies step of `workers-tests.yml` |
 | `docs` | CI's own script tests and the docs and OpenAPI tests, the same file list as CI | `ci.yml` docs |
-| `sim` | the simulator's fixed seeds 1 to 10, twice each | `ci.yml` sim |
 | `python` | the Python SDK tests, in a virtualenv on the sprite | `ci.yml` python |
 
 Not covered:
