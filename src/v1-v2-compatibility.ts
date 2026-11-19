@@ -39,6 +39,22 @@ export const v2Event = z.object({
   data: z.record(z.string(), z.unknown()),
 });
 export type V2Event = z.infer<typeof v2Event>;
+const historyMessage = z.object({
+  seq: z.number().int().positive(),
+  runId: z.string().nullable(),
+  role: z.enum(["user", "assistant", "tool", "system"]),
+  content: z.object({
+    text: z.string().optional(),
+    files: z.array(z.unknown()).optional(),
+    toolCalls: z.array(z.object({ id: z.string(), name: z.string(), args: z.record(z.string(), z.unknown()) })).optional(),
+    toolName: z.string().optional(),
+    toolCallId: z.string().optional(),
+    isError: z.boolean().optional(),
+    meta: z.record(z.string(), z.unknown()).optional(),
+  }),
+  createdAt: z.number().int().nonnegative(),
+});
+export type V2HistoryMessage = z.infer<typeof historyMessage>;
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const waitLimitMs = 25_000;
 
@@ -46,7 +62,7 @@ const waitLimitMs = 25_000;
 const runKeyPrefix = "v1-compat:";
 const runKey = (requestId: string) => runKeyPrefix + requestId;
 
-const unavailable = () => new HttpError(502, "The migrated agent's runtime did not return a valid response", "V2_RUNTIME_UNAVAILABLE");
+export const unavailable = () => new HttpError(502, "The migrated agent's runtime did not return a valid response", "V2_RUNTIME_UNAVAILABLE");
 const conflict = () => new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
 export const unsupportedV1Operation = () => new HttpError(501, "This operation has no v1 compatibility mapping for the migrated agent", "V1_COMPAT_UNSUPPORTED");
 
@@ -246,6 +262,14 @@ export class V1Compatibility {
     }).safeParse(data);
     if (!response.ok || !page.success) throw unavailable();
     return page.data;
+  }
+
+  async historyBatch(route: MigratedAgent, range: { after: number } | { before: number | "latest" }, limit: number, signal: AbortSignal) {
+    const cursor = "after" in range ? `after=${range.after}` : `before=${range.before}`;
+    const { response, data } = await this.call(route, `history?${cursor}&limit=${limit}`, undefined, signal);
+    const page = z.object({ messages: z.array(historyMessage).max(limit) }).safeParse(data);
+    if (!response.ok || !page.success) throw unavailable();
+    return page.data.messages;
   }
 
   async eventStream(route: MigratedAgent, after: number, controller: AbortController) {

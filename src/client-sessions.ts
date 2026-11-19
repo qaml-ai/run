@@ -42,7 +42,7 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
-import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
+import { AgentHistory, historyPageInput, type HistoryPage } from "./history-pages.ts";
 import { INBOX_CHANNEL, inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { PARENT_KEYS, viaParent, type DelegateSettings } from "./multi-agent.ts";
@@ -59,6 +59,7 @@ import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
 import { unsupportedV1Operation } from "./v1-v2-compatibility.ts";
 import { compatibilityEvents } from "./v1-compatibility-events.ts";
+import { compatibilityHistory } from "./v1-compatibility-history.ts";
 import { disableAgentTriggers } from "./triggers.ts";
 import { forgetAgentDreaming } from "../shared/dreaming.ts";
 import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
@@ -1574,15 +1575,7 @@ export class ClientSessions {
 
   /** A page of the agent's history (AgentHistory.page, or AgentHistory.pageAfter with `after`), read from Pi storage by ordinal wherever the agent runs. */
   private async historyPage(id: string, query: { before?: string; after?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
-    const before = query.before === undefined ? undefined : Number(query.before);
-    const after = query.after === undefined ? undefined : Number(query.after);
-    const limit = query.limit === undefined ? 50 : Number(query.limit);
-    const maxBytes = query.maxBytes === undefined ? undefined : Number(query.maxBytes);
-    if (before !== undefined && after !== undefined) throw new HttpError(400, "Ask for after or before, not both");
-    if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
-    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, "after is a message index");
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
-    if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
+    const { before, after, limit, maxBytes } = historyPageInput(query);
     // An agent starting here answers nothing yet: wait for it (it may write its journal's first entries as it starts).
     await this.sessions.get(id)?.starting?.catch(() => {});
     return after !== undefined ? this.historyReader.pageAfter(id, { after, limit, maxBytes }) : this.historyReader.page(id, { before, limit, maxBytes });
@@ -1638,6 +1631,10 @@ export class ClientSessions {
         }
         if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/state`) {
           return json(c, 200, await compatibility.state(migrated, this.archivedRequests(header.id), c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/history`) {
+          const { before, after, limit, maxBytes } = c.req.query();
+          return json(c, 200, await compatibilityHistory(compatibility, migrated, { before, after, limit, maxBytes }, c.req.raw.signal));
         }
         if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events`
           && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {

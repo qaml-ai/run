@@ -81,6 +81,7 @@ import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState }
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
 import { unsupportedV1Operation, type V1Compatibility } from "./v1-v2-compatibility.ts";
 import { compatibilityEvents } from "./v1-compatibility-events.ts";
+import { compatibilityHistory } from "./v1-compatibility-history.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -406,7 +407,7 @@ export function api(context: ApiContext) {
       const migrated = await context.v1Compatibility?.route(tenant, agent);
       if (migrated) {
         const supported = (c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path))
-          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:events|state|requests\/[^/]+)$/.test(c.req.path));
+          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:events|state|history|requests\/[^/]+)$/.test(c.req.path));
         if (!supported) throw unsupportedV1Operation();
         c.set("migratedAgent", migrated);
       }
@@ -830,6 +831,12 @@ export function api(context: ApiContext) {
   }), async c => {
     const { before, after, limit, maxBytes } = c.req.query();
     const tenant = c.var.principal.tenant, id = c.req.param("id")!, browser = c.var.principal.browser;
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      const history = await compatibilityHistory(context.v1Compatibility, c.var.migratedAgent, { before, after, limit, maxBytes }, c.req.raw.signal);
+      if (!browser) return json(c, 200, history);
+      if ("entries" in history) return json(c, 200, { ...history, entries: history.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) });
+      return json(c, 200, { messages: history.messages.map(message => readableMessage(browser, message)) });
+    }
     if (before !== undefined || after !== undefined || limit !== undefined || maxBytes !== undefined) {
       const page = await clients.historyPageFor(id, tenant, { before, after, limit, maxBytes });
       return json(c, 200, browser ? { ...page, entries: page.entries.map(entry => ({ ...entry, message: readableMessage(browser, entry.message) })) } : page);

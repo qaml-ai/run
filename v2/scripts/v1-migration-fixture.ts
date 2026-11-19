@@ -349,6 +349,21 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     assert.equal(record.json.status, "completed");
     assert.deepEqual(result, record.json.outcome.result);
     await until(() => sdkEvents.includes("message_update"), "Legacy SDK receives streamed text");
+    const transcript = await legacyAgent.history();
+    assert.deepEqual(transcript.messages.slice(0, sourceHistory.json.messages.length), sourceHistory.json.messages);
+    assert.equal(transcript.messages.at(-2)?.requestId, sdkRequestId);
+    const allHistory = await v1.call(`${pathV1}/history`, { token: originalKey });
+    assert.equal(allHistory.status, 200, allHistory.text);
+    assert.deepEqual(allHistory.json, transcript);
+    const tail = await legacyAgent.historyPage({ limit: 1 });
+    assert.equal(tail.total, transcript.messages.length);
+    assert.equal(tail.next, tail.total - 2);
+    assert.deepEqual(tail.entries.map(entry => entry.message), transcript.messages.slice(-2));
+    const head = await legacyAgent.historyPage({ after: 0, limit: 1 });
+    assert.equal(head.nextAfter, 2);
+    assert.deepEqual(head.entries.map(entry => entry.message), transcript.messages.slice(0, 2));
+    const older = await legacyAgent.historyPage({ before: tail.next, limit: 1 });
+    assert.deepEqual(older.entries.map(entry => entry.message), transcript.messages.slice(-4, -2));
   } finally {
     await legacyAgent.close();
   }
