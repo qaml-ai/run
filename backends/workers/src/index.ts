@@ -252,10 +252,13 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     const url = new URL(request.url);
     const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
     const mcpMetadata = request.method === "GET" && ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"].includes(url.pathname);
-    if (mcp || mcpMetadata) {
-      if (!env.MCP_LEGACY_API) return null;
+    const oauthTokens = env.LEGACY_OAUTH_TOKEN_ROUTES === "1" && ["POST", "OPTIONS"].includes(request.method)
+      && ["/oauth/token", "/oauth/revoke"].includes(url.pathname);
+    if (mcp || mcpMetadata || oauthTokens) {
+      if (!oauthTokens && !env.MCP_LEGACY_API) return null;
       try {
-        if (mcpMetadata) {
+        if (mcpMetadata || oauthTokens) {
+          if (oauthTokens && !env.AGENT_SESSION_SECRET) throw new CoreHttpError(503, "The OAuth issuer secret is unavailable");
           const headers = new Headers(request.headers);
           if (!headers.has("host")) headers.set("host", url.host);
           return await publicMoneyRoutes(new Request(request, { headers }), env, this.ctx) ?? null;

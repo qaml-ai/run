@@ -16,6 +16,13 @@ export default {
   ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     if (new URL(request.url).pathname === "/healthz") return worker.fetch(request, env, ctx);
+    // Supply a non-loopback edge IP for the rate-limit fixture.
+    const fixtureIp = request.headers.get("fixture-client-ip");
+    if (fixtureIp) {
+      const headers = new Headers(request.headers);
+      headers.set("cf-connecting-ip", fixtureIp);
+      request = new Request(request, { headers });
+    }
     const binding = (ctx.exports as unknown as { LegacyV1: { route(request: Request): Promise<Response | null> } }).LegacyV1;
     return await binding.route(request) ?? new Response("original-route", { status: 418 });
   },
