@@ -34,6 +34,7 @@ import {
   handleTranscriptionRequest,
 } from "./media.ts";
 import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts";
+import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
 import { toolIdentityKeys } from "./tool-identity.ts";
@@ -694,11 +695,15 @@ app.get("/v2/agents/:idOrKey/events", async (c) => {
   const accept = c.req.header("Accept") ?? "";
   if (accept.includes("text/event-stream")) {
     const url = new URL(c.req.url);
-    return stub.fetch(`https://agent.internal/events${url.search}`, {
-      method: "GET",
-      headers: { Accept: accept },
-      signal: c.req.raw.signal,
-    });
+    const after = Number(c.req.header("Last-Event-ID") ?? url.searchParams.get("after") ?? 0);
+    if (!Number.isSafeInteger(after) || after < 0) {
+      throw new ApiError(400, "invalid_request", "The event cursor must be a non-negative integer");
+    }
+    return bridgeEvents(stub, {
+      after,
+      runId: url.searchParams.get("runId") || null,
+      follow: url.searchParams.get("follow") === "1",
+    }, c.req.raw.signal);
   }
   const cursor = c.req.query("after");
   const after = cursor === "latest" ? "latest" : cursor ? Number(cursor) : 0;

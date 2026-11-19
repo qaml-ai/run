@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { unstable_startWorker } from "wrangler";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
-import { CamelRun, CamelRunError, defineTool } from "../sdk/src/index.ts";
+import { CamelRun, CamelRunError, defineTool, parseSSE, type SSEMessage } from "../sdk/src/index.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
@@ -772,6 +772,45 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(answered.status, "completed");
     assert.match(answered.text, /Yes, ship at 5pm/);
 
+    await camel.close();
+  });
+
+  it("keeps an idle SSE follow open, streams the next run, and replays after Last-Event-ID", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl,
+      adminKey: ADMIN_SECRET,
+      name: "sse-follow",
+      initialCreditsUsd: 10,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    const agent = await camel.agents.upsert("sse-follow", { model: "mock/default", builtins: [] });
+    const url = `${workerUrl}/v2/agents/${agent.id}/events`;
+    const headers = { Authorization: `Bearer ${apiKey}`, Accept: "text/event-stream" };
+    const signal = AbortSignal.timeout(7_000);
+    const unauthorized = await fetch(url, { headers: { Accept: "text/event-stream" }, signal });
+    assert.equal(unauthorized.status, 401);
+    await unauthorized.body?.cancel();
+
+    const stream = await fetch(url + "?follow=1", { headers, signal });
+    assert.equal(stream.status, 200);
+    const events: SSEMessage[] = [];
+    const collect = (async () => {
+      for await (const event of parseSSE(stream.body!, signal)) {
+        events.push(event);
+        if (event.event === "run_completed") return;
+      }
+      assert.fail("The follow stream closed before the run finished");
+    })();
+    const [run] = await Promise.all([agent.run("A run after subscribing to the idle agent"), collect]);
+    assert.equal(run.status, "completed");
+    assert.ok(events.some(event => event.event === "text_delta"));
+    assert.ok(events.every(event => JSON.parse(event.data).runId === run.id));
+    const runUrl = url + "?" + new URLSearchParams({ runId: run.id });
+    const replay = await fetch(runUrl, { headers: { ...headers, "Last-Event-ID": events[0]!.id! }, signal });
+    assert.equal(replay.status, 200);
+    const caughtUp: SSEMessage[] = [];
+    for await (const event of parseSSE(replay.body!, signal)) caughtUp.push(event);
+    assert.deepEqual(caughtUp, events.slice(1));
     await camel.close();
   });
 
