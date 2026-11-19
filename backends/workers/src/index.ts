@@ -283,8 +283,12 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
       && ["/oauth/token", "/oauth/revoke"].includes(url.pathname);
     const oauthRegistration = env.LEGACY_OAUTH_REGISTRATION === "1"
       && url.pathname === "/oauth/register" && ["POST", "OPTIONS"].includes(request.method);
+    const consoleStatic = /^\/console\/(?:assets\/[^/]+|email\/(?:logo\.png|silkscreen\.woff2)|favicon\.(?:ico|svg)|apple-touch-icon\.png)$/.test(url.pathname);
+    const consoleAuthAssets = !!env.PUBLIC_ASSETS && ["GET", "HEAD"].includes(request.method)
+      && (["/console", "/console/", "/console/reset", "/console/signup", "/console/verify"].includes(url.pathname) || consoleStatic);
     const oauthBrowser = env.LEGACY_OAUTH_BROWSER === "1" && (
-      (["GET", "HEAD"].includes(request.method) && /^\/(?:oauth\/authorize|console\/auth\/(?:methods|github|callback|google(?:\/callback)?))$/.test(url.pathname))
+      consoleAuthAssets
+      || (["GET", "HEAD"].includes(request.method) && /^\/(?:oauth\/authorize|console\/auth\/(?:methods|github|callback|google(?:\/callback)?))$/.test(url.pathname))
       || (request.method === "POST" && /^\/(?:oauth\/(?:authorize|password|signup)|console\/auth\/(?:password|signup|link|verify|reset(?:\/request)?|logout))$/.test(url.pathname)));
     const oauth = oauthTokens || oauthRegistration || oauthBrowser;
     if (mcp || mcpMetadata || jwks || oauth) {
@@ -299,7 +303,14 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
           if (oauth && !env.AGENT_SESSION_SECRET) throw new CoreHttpError(503, "The OAuth issuer secret is unavailable");
           const headers = new Headers(request.headers);
           if (!headers.has("host")) headers.set("host", url.host);
-          const response = await publicMoneyRoutes(new Request(request, { headers }), env, this.ctx);
+          const accountRequest = new Request(request, { headers });
+          if (consoleAuthAssets && consoleStatic && !publicOrigins(env, url.origin).alias(headers)) {
+            const asset = await env.PUBLIC_ASSETS!.fetch(accountRequest);
+            if (asset.status !== 404) return publicPageHeaders(request, asset);
+            await asset.body?.cancel();
+            return null;
+          }
+          const response = await publicMoneyRoutes(accountRequest, env, this.ctx);
           return response ? publicPageHeaders(request, response) : null;
         }
         if (request.method === "OPTIONS") return agentMcpPreflight();

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ConsoleAuth, type ConsoleAuthOptions } from "../../../src/console-auth.ts";
@@ -111,11 +116,44 @@ test("Worker registration and browser consent use the same OAuth identity and se
   const tenant = "fixture";
   const email = "fixture@example.test";
   const password = "synthetic browser login password";
+  const consoleDir = await mkdtemp(join(tmpdir(), "legacy-console-test-"));
+  t.after(() => rm(consoleDir, { recursive: true, force: true }));
+  await mkdir(join(consoleDir, "assets"));
+  await writeFile(join(consoleDir, "index.html"), "<!doctype html><title>Fixture console</title><script src='/console/assets/app.js'></script>");
+  await writeFile(join(consoleDir, "assets", "app.js"), "export {}");
+  const mailbox = new Map<string, {
+    authorization?: string;
+    sessionToken?: string | string[];
+    body: {
+      Destination: { ToAddresses: string[] };
+      FromEmailAddress: string;
+      ConfigurationSetName: string;
+      EmailTags: { Value: string }[];
+      Content: { Simple: { Body: { Text: { Data: string } } } };
+    };
+  }>();
+  const mailReceived = new EventTarget();
+  const sink = createServer(async (request, response) => {
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    mailbox.set(body.Destination.ToAddresses[0], { body, authorization: request.headers.authorization, sessionToken: request.headers["x-amz-security-token"] });
+    mailReceived.dispatchEvent(new Event("mail"));
+    response.writeHead(200, { "Content-Type": "application/json" }).end('{"MessageId":"fixture-send"}');
+  });
+  sink.listen(0, "127.0.0.1");
+  await once(sink, "listening");
+  t.after(() => new Promise<void>(resolve => sink.close(() => resolve())));
   const f = await startFixture({
     tenants: [{ id: tenant, token: "art_fixture-tenant-key", seedCredit: false }],
     vars: {
       AGENT_PUBLIC_URL: canonical, AGENT_PUBLIC_ALIASES: issuer, AGENT_ISSUER: issuer, AGENT_SESSION_SECRET: secret,
       LEGACY_OAUTH_REGISTRATION: "1", LEGACY_OAUTH_BROWSER: "1",
+      AGENT_CONSOLE_DIR: consoleDir, AGENT_OPEN_SIGNUP: "true", AGENT_ACCOUNT_EMAIL_FROM: "accounts@example.test",
+      AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET: "fixture-config-set", AGENT_ACCOUNT_SES_REGION: "us-west-2",
+      AGENT_ACCOUNT_SES_ACCESS_KEY_ID: "fixture-account-ses", AGENT_ACCOUNT_SES_SECRET_ACCESS_KEY: "fixture-only-ses-secret",
+      AGENT_ACCOUNT_SES_SESSION_TOKEN: "fixture-only-session",
+      MAIL_TEST_URL: `http://127.0.0.1:${(sink.address() as { port: number }).port}/v2/email/outbound-emails`,
     },
     entrypoint: fileURLToPath(new URL("./legacy-mcp-entry.ts", import.meta.url)),
   });
@@ -162,7 +200,10 @@ test("Worker registration and browser consent use the same OAuth identity and se
   assert.equal(signIn.status, 200);
   assert.equal(signIn.headers.get("x-robots-tag"), "noindex");
   assert.equal(signIn.headers.get("x-frame-options"), "DENY");
-  assert.match(await signIn.text(), /Sign in to camelRun/);
+  const signInPage = await signIn.text();
+  assert.match(signInPage, /Sign in to camelRun/);
+  assert.match(signInPage, /Forgot your password/);
+  assert.match(signInPage, /action="\/oauth\/signup"/);
   const oldCookie = (await legacyConsole.session(tenant, "github", "existing-login")).split(";")[0]!;
   const existing = await call(next, { headers: { ...canonicalHost, cookie: oldCookie } });
   assert.equal(existing.status, 200);
@@ -213,4 +254,34 @@ test("Worker registration and browser consent use the same OAuth identity and se
   const principal = await legacy.authenticate(`Bearer ${tokens.access_token}`);
   assert.equal(principal?.tenant, tenant);
   assert.equal(principal?.login, email);
+
+  const signupEmail = "signup@example.test";
+  const signup = await call("/oauth/signup", form({ next, email: signupEmail, password }));
+  assert.equal(signup.status, 200);
+  assert.match(await signup.text(), /Check your email/);
+  if (!mailbox.has(signupEmail)) await once(mailReceived, "mail", { signal: AbortSignal.timeout(10_000) });
+  const mail = mailbox.get(signupEmail);
+  assert.ok(mail);
+  assert.match(mail.authorization ?? "", /^AWS4-HMAC-SHA256 Credential=fixture-account-ses\/\d{8}\/us-west-2\/ses\/aws4_request,/);
+  assert.equal(mail.sessionToken, "fixture-only-session");
+  assert.equal(mail.body.ConfigurationSetName, "fixture-config-set");
+  assert.match(mail.body.FromEmailAddress, /<accounts@example.test>$/);
+  assert.deepEqual(mail.body.EmailTags.map((tag: { Value: string }) => tag.Value), ["camelrun-account", "verify"]);
+  const token = /https:\/\/run\.example\.test\/console\/verify#([A-Za-z0-9_-]{43})/.exec(mail.body.Content.Simple.Body.Text.Data)?.[1];
+  assert.ok(token);
+  const page = await call("/console/verify", { headers: canonicalHost });
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get("x-robots-tag"), "noindex");
+  assert.match(await page.text(), /Fixture console/);
+  assert.equal(await (await call("/console/assets/app.js", { headers: canonicalHost })).text(), "export {}");
+  assert.equal((await call("/console/assets/previous-build.js", { headers: canonicalHost })).status, 418);
+  const verify = await call("/console/auth/verify", {
+    method: "POST", headers: { ...canonicalHost, origin: canonical, "content-type": "application/json", "x-agent-runtime-console": "1" },
+    body: JSON.stringify({ token, password }),
+  });
+  assert.equal(verify.status, 200);
+  assert.equal((await verify.json() as { next: string }).next, next);
+  const signupCookie = verify.headers.get("set-cookie")!.split(";")[0]!;
+  const afterVerify = await call(next, { headers: { ...canonicalHost, cookie: signupCookie } });
+  assert.match(await afterVerify.text(), /Signed in as <strong>signup@example.test<\/strong>/);
 });
