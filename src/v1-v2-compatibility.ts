@@ -232,39 +232,54 @@ export class V1Compatibility {
     const cursor = route.event_base + state.data.cursor;
     if (!Number.isSafeInteger(cursor)) throw unavailable();
     const keyed = state.data.runs.map(run => {
-      return { id: this.v1RequestId(route, run), run };
+      if (run.agentId !== route.destination_agent) throw unavailable();
+      const v1Id = this.v1RequestId(run);
+      return { run, v1Id };
     });
-    const { rows } = await this.sql.query<{ request_id: string; fingerprint: string }>(
+    const v1Ids = keyed.flatMap(({ v1Id }) => v1Id === undefined ? [] : [v1Id]);
+    const { rows } = v1Ids.length ? await this.sql.query<{ request_id: string; fingerprint: string }>(
       "select request_id, fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = any($3::text[])",
-      [route.tenant, route.agent, keyed.map(({ id }) => id)],
-    );
+      [route.tenant, route.agent, v1Ids],
+    ) : { rows: [] };
     const fingerprints = new Map(rows.map(row => [row.request_id, row.fingerprint]));
-    const projected = keyed.map(({ id, run }) => {
-      const fingerprint = fingerprints.get(id);
+    const projected = keyed.map(({ v1Id, run }) => {
+      if (v1Id === undefined) return this.nativeRunView(run);
+      const fingerprint = fingerprints.get(v1Id);
       if (!fingerprint) throw unsupportedV1Operation();
-      return projectRun(run, id, fingerprint);
+      return projectRun(run, v1Id, fingerprint);
     });
     const activity = activityOf(projected);
-    const activeRun = keyed.find(({ run }) => run.id === state.data.activeRunId)?.id ?? null;
+    const activeRun = projected[state.data.runs.findIndex(run => run.id === state.data.activeRunId)]?.id ?? null;
     return { cursor, requests: [...source, ...projected], ...activity, activeRun };
   }
 
-  private v1RequestId(route: MigratedAgent, run: Run) {
+  private v1RequestId(run: Run) {
     const key = run.idempotencyKey;
-    const id = key?.startsWith(V1_COMPAT_REQUEST_PREFIX) ? key.slice(V1_COMPAT_REQUEST_PREFIX.length) : undefined;
-    if (run.agentId !== route.destination_agent) throw unavailable();
+    if (!key?.startsWith(V1_COMPAT_REQUEST_PREFIX)) return undefined;
+    const id = key.slice(V1_COMPAT_REQUEST_PREFIX.length);
     if (!validId(id)) throw unsupportedV1Operation();
     return id;
   }
 
-  async requestByRunId(route: MigratedAgent, runId: string, signal?: AbortSignal) {
+  private nativeRunView(run: Run) {
+    // The identity in a read-only native record describes its immutable run. Only stored legacy receipts authorize v1 replay.
+    return projectRun(run, run.idempotencyKey ?? run.id, `v2:${run.id}`);
+  }
+
+  private async readRun(route: MigratedAgent, runId: string, signal?: AbortSignal) {
     const { response, data } = await this.call(route, `runs/${encodeURIComponent(runId)}`, undefined, signal);
     const run = runResponse.safeParse(data);
-    if (!response.ok || !run.success || run.data.id !== runId) throw unavailable();
-    const id = this.v1RequestId(route, run.data);
+    if (!response.ok || !run.success || run.data.id !== runId || run.data.agentId !== route.destination_agent) throw unavailable();
+    return run.data;
+  }
+
+  async requestByRunId(route: MigratedAgent, runId: string, signal?: AbortSignal) {
+    const run = await this.readRun(route, runId, signal);
+    const id = this.v1RequestId(run);
+    if (id === undefined) return this.nativeRunView(run);
     const fingerprint = await this.fingerprint(route, id);
     if (!fingerprint) throw unsupportedV1Operation();
-    return projectRun(run.data, id, fingerprint);
+    return projectRun(run, id, fingerprint);
   }
 
   async eventPage(route: MigratedAgent, after: number | "latest", signal: AbortSignal) {

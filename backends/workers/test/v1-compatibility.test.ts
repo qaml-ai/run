@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { V1_COMPAT_REQUEST_PREFIX } from "../../../shared/client-protocol.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { hash } from "../../../src/client-sessions/state.ts";
 import { V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
@@ -17,9 +18,9 @@ const receipt = {
   outcome: { result: { reply: "earlier" } },
 };
 
-function fixture({ published = true, hasArchive = true } = {}) {
+function fixture({ published = true, hasArchive = true, history = false, historyAgent = destination } = {}) {
   const forwarded: string[] = [];
-  const fingerprints = new Map<string, string>();
+  const fingerprints = new Map<string, string>([["continued", receipt.fingerprint]]);
   const sql: Sql = {
     async query<R>(text: string, values = []) {
       const rows: unknown[] = [];
@@ -36,9 +37,16 @@ function fixture({ published = true, hasArchive = true } = {}) {
       } else if (text.startsWith("insert into agent_v2_requests")) {
         fingerprints.set(values[2], values[3]);
         return { rows: [] as R[], rowCount: 1 };
-      } else if (text.includes("from agent_v2_requests") && !text.includes("any(")) {
-        const fingerprint = fingerprints.get(values[2]);
-        if (fingerprint) rows.push({ fingerprint });
+      } else if (text.includes("from agent_v2_requests")) {
+        if (text.includes("any(")) {
+          for (const requestId of values[2] as string[]) {
+            const fingerprint = fingerprints.get(requestId);
+            if (fingerprint) rows.push({ request_id: requestId, fingerprint });
+          }
+        } else {
+          const fingerprint = fingerprints.get(values[2]);
+          if (fingerprint) rows.push({ fingerprint });
+        }
       } else {
         assert.fail(`Unhandled query: ${text}`);
       }
@@ -46,10 +54,40 @@ function fixture({ published = true, hasArchive = true } = {}) {
     },
   };
   const compatibility = V1Compatibility.configured(sql, '{"v2":"cr_live_v2.example-only"}', "https://v2.invalid/v2/", async (input, init) => {
-    const path = new URL(String(input)).pathname;
+    const url = new URL(String(input));
+    const path = url.pathname;
     forwarded.push(path);
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer cr_live_v2.example-only");
-    if (path.endsWith("/events")) return Response.json({ events: [], nextAfter: 0 });
+    const historyRun = (id: string) => ({
+      id, agentId: historyAgent,
+      idempotencyKey: id === "run_native" ? "native_request" : id === "run_legacy" ? V1_COMPAT_REQUEST_PREFIX + "continued" : null,
+      startedAt: 3, status: id === "run_keyless" ? "running" : "completed", text: "done", output: null, toolCalls: [],
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, error: null,
+    });
+    if (path.endsWith("/events")) {
+      if (!history) return Response.json({ events: [], nextAfter: 0 });
+      const events = [
+        { seq: 1, runId: "run_native", type: "run_started", data: {} },
+        { seq: 2, runId: "run_native", type: "tool_call_start", data: { callId: "call", name: "list_bots", args: {} } },
+        { seq: 3, runId: "run_native", type: "run_completed", data: {} },
+        { seq: 4, runId: "run_legacy", type: "run_completed", data: {} },
+      ];
+      return Response.json({ events: url.searchParams.get("after") === "latest" ? [] : events, nextAfter: events.length });
+    }
+    if (history && path.endsWith("/runs") && init?.method === "GET") return Response.json({
+      cursor: 4, activeRunId: "run_keyless", runs: ["run_native", "run_keyless", "run_legacy"].map(historyRun),
+    });
+    if (history && path.endsWith("/history")) {
+      const messages = [
+        { seq: 1, runId: null, role: "user", content: { meta: { v1: { role: "user", content: "before", requestId: "legacy" } } }, createdAt: 1 },
+        { seq: 2, runId: "run_native", role: "user", content: { text: "from the v2 app" }, createdAt: 2 },
+        { seq: 3, runId: "run_native", role: "tool", content: { toolName: "list_bots", toolCallId: "call", text: "listed" }, createdAt: 3 },
+        { seq: 4, runId: "run_keyless", role: "user", content: { text: "without a request key" }, createdAt: 4 },
+        { seq: 5, runId: "run_legacy", role: "user", content: { text: "from v1" }, createdAt: 5 },
+      ];
+      return Response.json({ messages: url.searchParams.has("before") ? messages.slice(-1) : messages });
+    }
+    if (history && path.includes("/runs/")) return Response.json(historyRun(path.split("/").at(-1)!));
     const { prompt, idempotencyKey } = JSON.parse(String(init?.body));
     assert.equal(prompt, "next");
     return Response.json({
@@ -115,4 +153,43 @@ test("keeps scoped agent credentials without permitting browser-origin requests"
   assert.equal(retried?.status, 202);
   assert.deepEqual(await retried?.json(), receipt);
   assert.deepEqual(forwarded, []);
+});
+
+test("shows imported, native v2, and later v1 turns under the original scoped key", async () => {
+  const { scoped } = fixture({ history: true });
+  const headers = { Authorization: `Bearer ${agentKey}` };
+  const response = await scoped("history?after=0&limit=10", { headers });
+  assert.equal(response?.status, 200);
+  const { entries, total } = await response!.json() as { entries: Array<{ message: { role: string; requestId?: string; toolName?: string } }>; total: number };
+  assert.equal(total, 5);
+  assert.deepEqual(entries.map(entry => [entry.message.role, entry.message.requestId ?? entry.message.toolName]), [
+    ["user", "legacy"], ["user", "native_request"], ["toolResult", "list_bots"], ["user", "run_keyless"], ["user", "continued"],
+  ]);
+  const wrongDestination = fixture({ history: true, historyAgent: "other_v2" });
+  await assert.rejects(wrongDestination.scoped("history?after=0&limit=10", { headers }), { status: 502, code: "V2_RUNTIME_UNAVAILABLE" });
+});
+
+
+
+test("native v2 runs appear in legacy state and events without creating v1 replay receipts", async () => {
+  const { scoped } = fixture({ history: true });
+  const headers = { Authorization: `Bearer ${agentKey}` };
+  const state = await (await scoped("state", { headers }))!.json() as {
+    activeRun: string; busy: boolean; cursor: number; requests: Array<{ id: string; fingerprint: string }>;
+  };
+  assert.equal(state.activeRun, "run_keyless");
+  assert.equal(state.busy, true);
+  assert.equal(state.cursor, 46);
+  assert.deepEqual(state.requests.map(({ id, fingerprint }) => [id, fingerprint]), [
+    ["legacy", receipt.fingerprint], ["native_request", "v2:run_native"], ["run_keyless", "v2:run_keyless"], ["continued", receipt.fingerprint],
+  ]);
+  const { events, cursor } = await (await scoped("events?poll=1&request=native_request", { headers }))!.json() as {
+    cursor: number; events: Array<{ id: number; data: { type: string; requestId?: string; id?: string; event?: { type: string } } }>;
+  };
+  assert.equal(cursor, 46);
+  assert.deepEqual(events.slice(1).map(({ id, data }) => [id, data.requestId ?? data.id, data.event?.type ?? data.type]), [
+    [43, "native_request", "agent_start"], [44, "native_request", "tool_execution_start"], [45, "native_request", "response"],
+  ]);
+  await assert.rejects(scoped("requests/native_request", { headers }), { status: 404 });
+  assert.deepEqual(await (await scoped("requests/legacy", { headers }))?.json(), receipt);
 });
