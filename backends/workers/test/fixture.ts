@@ -53,6 +53,8 @@ export async function startFixture(
     modelURL?: string;
     config?: string;
     schema?: string;
+    /** Connect the Worker through a restricted role while test setup retains the database owner. */
+    databaseRole?: { grants: string; fixtureUser: string };
     tenants?: { id: string; token?: string; tokenSha256?: string; billing?: 'prepaid' | 'none'; seedCredit?: boolean }[];
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
@@ -140,6 +142,14 @@ export async function startFixture(
   if (!parsed.password) parsed.password = "local-only-unused";
   parsed.pathname = `/${schema}`;
   parsed.search = "";
+  const fixturePassword = randomBytes(16).toString("hex");
+  if (options.databaseRole) {
+    const { fixtureUser } = options.databaseRole;
+    if (!/^[a-z][a-z0-9_]{0,62}$/.test(fixtureUser)) throw new Error("Unsafe local test role");
+    await admin.query(`create role ${fixtureUser} login password '${fixturePassword}'`);
+    // Drop database-scoped grants before dropping the shared Postgres role.
+    cleanups.splice(cleanups.length - 1, 0, async () => { await admin.query(`drop role ${fixtureUser}`); });
+  }
   const databaseUrl = parsed.toString(),
     db = new pg.Pool({ connectionString: databaseUrl, allowExitOnIdle: true });
   cleanups.push(() => closePool(db));
@@ -211,7 +221,12 @@ export async function startFixture(
     cleanups.push(() => daemon.close());
     camelfsVars = { CAMELFS_URL: daemon.url, CAMELFS_NOTIFY_KEY: notifyKey };
   }
-  config.hyperdrive[0].localConnectionString = databaseUrl;
+  if (options.databaseRole) {
+    await db.query(options.databaseRole.grants);
+    parsed.username = options.databaseRole.fixtureUser;
+    parsed.password = fixturePassword;
+  }
+  config.hyperdrive[0].localConnectionString = parsed.toString();
   config.vars = {
     ...config.vars,
     API_TOKEN: token,

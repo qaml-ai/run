@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sprite-test [options] [ref] [command...]: run camelRun tests at <ref> on the rt-pool sprites (sprites.dev, Fly.io).
-#   scripts/sprite-test                                   # the full suite at HEAD (sim files included, as CI runs them), as 8 shards on 8 sprites
+#   scripts/sprite-test                                   # the full suite at HEAD, as 8 shards on 8 sprites
 #   scripts/sprite-test origin/fix/x                      # the full suite at a ref
 #   scripts/sprite-test HEAD npm run typecheck             # any command, in the checkout
 #   scripts/sprite-test --dirty HEAD npm run build         # the working tree, without secrets, as a temporary commit
@@ -36,7 +36,7 @@ bin=sandbox/v8-exec/target/release/v8-exec; built=sandbox/v8-exec/target/release
     && [ -x "$bin" ] && echo "$build $(sha256sum < "$bin" | cut -d' ' -f1)" > "$built"; } || { echo "== building v8-exec failed"; exit 1; }
 [ -x "$bin" ] || { echo "== $bin is missing or not executable"; exit 1; }
 PREPARE
-sprite_default_job() { echo "env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 TEST_INCLUDE_SIM=true npm run -s test:shard -- $1/$2"; }
+sprite_default_job() { echo "env TEST_DATABASE_PER_FILE=true TEST_CONCURRENCY=6 npm run -s test:shard -- $1/$2"; }
 
 contract_baselines=0
 sprite_option() { [[ $1 == --contract-baselines ]] && contract_baselines=1; }
