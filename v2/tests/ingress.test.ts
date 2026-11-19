@@ -120,3 +120,57 @@ test("serves registration, token exchange, revocation and discovery on the exist
   assert.equal(route.mock.callCount(), 18);
   assert.equal(origin.mock.callCount(), 2);
 });
+
+test("selects legacy decisions independently and sends each selected POST once", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
+  const authorization = "Bearer fixture-decision-key";
+  const route = t.mock.fn(async (request: Request) => {
+    assert.equal(request.headers.get("authorization"), authorization);
+    assert.deepEqual(await request.json(), { state: "same body" });
+    return null;
+  });
+  const v1 = t.mock.fn(async () => { throw new Error("Unrelated compatibility binding"); });
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route: v1 }, LEGACY_DECISIONS: { route },
+    LEGACY_DECISIONS_CANARY_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex") };
+  const post = (host: string, auth: string) => new Request(`https://${host}/v1/decisions`, {
+    method: "POST", body: '{"state":"same body"}', headers: { authorization: auth },
+  });
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    const response = await worker.fetch(post(host, authorization), env);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, "DECISIONS_UNAVAILABLE");
+  }
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 0);
+  assert.equal((await worker.fetch(post("run.camelai.com", "Bearer other"), env)).status, 202);
+  assert.equal((await worker.fetch(post("example.com", authorization), env)).status, 202);
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 2);
+  assert.equal(v1.mock.callCount(), 0);
+});
+
+test("selects only exact authenticated Camel Bots and keeps all other POST bodies intact", async t => {
+  const bot = "1234567890abcdef";
+  const authorization = "Bearer fixture-shared-camel-bots";
+  const origin = t.mock.method(globalThis, "fetch", async (request: Request) => new Response(await request.text(), { status: 202 }));
+  const route = t.mock.fn(async (request: Request) => new Response(await request.text()));
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_DECISIONS: { route },
+    LEGACY_DECISIONS_BOTS_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex"), LEGACY_DECISIONS_BOTS: bot };
+  const post = (body: string, auth = authorization) => new Request("https://run.camelai.com/v1/decisions", {
+    method: "POST", body, headers: { authorization: auth },
+  });
+  const eligible = JSON.stringify({ state: "original body", context: { bot } });
+  const selected = await worker.fetch(post(eligible), env);
+  assert.equal(selected.status, 200);
+  assert.equal(await selected.text(), eligible);
+  const other = JSON.stringify({ state: "original body", context: { bot: "0011223344556677" } });
+  for (const [body, auth] of [[eligible, "Bearer wrong"], [other, authorization], ["{", authorization], [" ".repeat(2*1024*1024+1), authorization]]) {
+    const result = await worker.fetch(post(body, auth), env);
+    assert.equal(result.status, 202);
+    assert.equal(await result.text(), body);
+  }
+  assert.equal((await worker.fetch(post(eligible), { ...env, LEGACY_DECISIONS_BOTS: "bad" })).status, 202);
+  assert.equal((await worker.fetch(post(eligible), { V2: env.V2, LEGACY_DECISIONS: { route } })).status, 202);
+  assert.equal(route.mock.callCount(), 1);
+  assert.equal(origin.mock.callCount(), 6);
+});
