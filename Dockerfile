@@ -53,6 +53,8 @@ COPY src ./src
 COPY shared ./shared
 # The SDK history converter and Markdown parser (MIT), reused by the API and report email.
 COPY clients/history-formats.ts clients/markdown.ts ./clients/
+# The legacy compatibility API uses the v2 SDK's SSE parser.
+COPY v2/sdk/src/sse.ts ./v2/sdk/src/
 # The hosted MCP endpoint (/mcp) serves the camelrun CLI's MCP tools.
 COPY packages/cli/package.json ./packages/cli/package.json
 COPY packages/cli/src ./packages/cli/src
