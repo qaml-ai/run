@@ -16,14 +16,17 @@ import { listen, until } from "./runtime-server.ts";
 test("active v1 ECS leases prevent election, including when a peer returns after startup", async () => {
   const { db } = await testDatabase();
   const peer = () => db.query("insert into runtime_nodes (node,session,expires_at) values ('http://old',gen_random_uuid(),now()+interval '1 minute')");
+  const volumeOrigin = "http://volume:8792";
+  await db.query("insert into runtime_nodes (node,session,expires_at) values ($1,gen_random_uuid(),now()+interval '1 minute')", [volumeOrigin]);
   await peer();
   const signal = new AbortController().signal;
-  await assert.rejects(withMaintenanceElection(db, signal, async () => assert.fail("elected while old ECS is live")), /live lease/);
+  await assert.rejects(withMaintenanceElection(db, signal, async () => assert.fail("elected while old ECS is live"), volumeOrigin), /live lease/);
   await db.query("delete from runtime_nodes where node='http://old'");
+  await assert.rejects(withMaintenanceElection(db, signal, async () => assert.fail("excluded an unknown sidecar lease")), /live lease/);
   await assert.rejects(withMaintenanceElection(db, signal, async (selected, check) => {
     await peer();
     await runMaintenanceJobs([{ name: "never", intervalMs: 10, run: async () => assert.fail("polled while old ECS is live") }], selected, check, () => {});
-  }), /live lease/);
+  }, volumeOrigin), /live lease/);
 });
 
 test("one Postgres session keeps the election until its admitted poll drains", async () => {
@@ -52,7 +55,7 @@ test("one Postgres session keeps the election until its admitted poll drains", a
 
 test("the standalone runner settles a stale attempt, expires credit once and retries both signed outboxes", async t => {
   const { db, url } = await testDatabase();
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     AGENT_DATABASE_URL: url,
     AGENT_TENANT: "t",
     AGENT_OPERATOR_TOKEN: "test-mail-and-outboxes-operator",
@@ -62,15 +65,28 @@ test("the standalone runner settles a stale attempt, expires credit once and ret
     AGENT_SCHEDULER_INTERVAL_MS: "25",
     AGENT_USAGE_WEBHOOK_RETRY_MS: "25",
   };
+  const journeyId = randomUUID();
+  const journeySecret = `whsec_${Buffer.alloc(24, 1).toString("base64")}`;
+  const journeyBody = { event_id: journeyId, name: "run_credit_purchased" };
+  let journeyDelivered = false;
   const received: { path?: string; id: string; signature: string; timestamp: string; body: string }[] = [];
   const hookUrl = await listen(t, async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
+    if (req.url === "/api/journey/server-events") {
+      const expected = signedHeaders(journeyId, body, [journeySecret], Number(req.headers["webhook-timestamp"]) * 1_000);
+      journeyDelivered = req.headers["webhook-signature"] === expected["webhook-signature"] && JSON.parse(body).events[0].event_id === journeyId;
+      res.writeHead(journeyDelivered ? 200 : 401, { "Content-Type": "application/json" }).end(JSON.stringify({ accepted: [journeyId] }));
+      return;
+    }
     const retry = received.some(delivery => delivery.path === req.url);
     received.push({ path: req.url, id: String(req.headers["webhook-id"]), signature: String(req.headers["webhook-signature"]), timestamp: String(req.headers["webhook-timestamp"]), body });
     res.writeHead(retry ? 204 : 503).end();
   });
-  const accounts = new Accounts({ tenants: await tenantsFromEnvironment(env), db, secretsKey: env.AGENT_SECRETS_KEY });
+  env.AGENT_JOURNEY_URL = hookUrl;
+  env.AGENT_JOURNEY_SECRET = journeySecret;
+  await db.query("insert into journey_outbox (id, body, due, created_at) values ($1,$2,$3,$3)", [journeyId, journeyBody, Date.now()]);
+  const accounts = new Accounts({ tenants: await tenantsFromEnvironment(env), db, secretsKey: env.AGENT_SECRETS_KEY! });
   const webhooks = new Webhooks({ db, accounts, outbound: outboundFromEnvironment(env) });
   const standard = await webhooks.create("t", { url: `${hookUrl}/standard`, events: ["usage.recorded"] });
   const legacy = await webhooks.setUsageWebhook("t", `${hookUrl}/legacy`);
@@ -94,8 +110,9 @@ test("the standalone runner settles a stale attempt, expires credit once and ret
       assert.equal(worker.exitCode, null, logs);
       const { rows: [state] } = await db.query(`select (select state from model_attempts where id=$1) as attempt,
         (select count(*)::int from end_user_ledger where kind='expiry') as expiries,
-        (select count(*)::int from usage_webhook_outbox) + (select count(*)::int from webhook_deliveries) as due`, [attempt]);
-      return state.attempt === "settled" && state.expiries === 1 && state.due === 0;
+        (select count(*)::int from usage_webhook_outbox) + (select count(*)::int from webhook_deliveries) +
+        (select count(*)::int from journey_outbox where id=$2) as due`, [attempt, journeyId]);
+      return state.attempt === "settled" && state.expiries === 1 && state.due === 0 && journeyDelivered;
     }, "maintenance queues to settle");
   } finally {
     worker.kill("SIGTERM");

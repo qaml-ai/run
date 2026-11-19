@@ -3,6 +3,7 @@ import { BillingAlerts } from "./billing-alerts.ts";
 import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
 import { databaseFromEnvironment, type Db } from "./db.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
+import { emailAt, Journey, journeyConfig } from "./journey.ts";
 import { KeyScopes } from "./key-scopes.ts";
 import { safeError, setMetricService } from "./metrics.ts";
 import { ModelAttempts } from "./model-attempts.ts";
@@ -25,6 +26,7 @@ async function maintain(db: Db, env: NodeJS.ProcessEnv, signal: AbortSignal, che
     AWS_REGION: env.AWS_REGION, AWS_DEFAULT_REGION: env.AWS_DEFAULT_REGION,
     AGENT_SECRETS_KEY: env.AGENT_SECRETS_KEY, AGENT_SECRETS_KEY_ARN: env.AGENT_SECRETS_KEY_ARN,
     STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET, AGENT_STRIPE_SECRET_ARN: env.AGENT_STRIPE_SECRET_ARN,
+    AGENT_JOURNEY_SECRET: env.AGENT_JOURNEY_SECRET, AGENT_JOURNEY_SECRET_ARN: env.AGENT_JOURNEY_SECRET_ARN,
   });
   if (!secrets.secretsKey) throw new MaintenanceElectionError("Set AGENT_SECRETS_KEY or AGENT_SECRETS_KEY_ARN to the existing v1 encryption key");
   if ((env.AGENT_STRIPE_SECRET_ARN || env.STRIPE_SECRET_KEY || env.STRIPE_WEBHOOK_SECRET) && !secrets.stripe) {
@@ -32,6 +34,12 @@ async function maintain(db: Db, env: NodeJS.ProcessEnv, signal: AbortSignal, che
   }
   const stripe = secrets.stripe && new Stripe({ ...secrets.stripe, apiUrl: env.AGENT_STRIPE_API_URL });
   const accounts = new Accounts({ tenants, db, secretsKey: secrets.secretsKey, pricing: pricingFromEnvironment(env), publicUrl: env.AGENT_PUBLIC_URL, stripe });
+  const journeySettings = journeyConfig(env, secrets.journeySecret);
+  const journey = journeySettings && new Journey({
+    db, publicUrl: env.AGENT_PUBLIC_URL, ...journeySettings,
+    internal: (tenant, email) => tenants.has(tenant) || emailAt(journeySettings.internalEmailDomains, email),
+  });
+  accounts.billing.journey = journey;
   const outbound = outboundFromEnvironment(env);
   const keyScopes = new KeyScopes({ db, accounts, outbound });
   const endUsers = new EndUserCredits(db);
@@ -44,13 +52,18 @@ async function maintain(db: Db, env: NodeJS.ProcessEnv, signal: AbortSignal, che
   const mailConfig = billingMailConfig(env);
   const billingMailer = mailConfig && new BillingMailer({ db, alerts: new BillingAlerts(db, accounts), ...mailConfig });
   const topup = accounts.billing.autoTopup;
+  const schedulerIntervalMs = setting("AGENT_SCHEDULER_INTERVAL_MS", 5_000);
   const jobs: MaintenanceJob[] = [
-    { name: "webhooks", intervalMs: setting("AGENT_SCHEDULER_INTERVAL_MS", 5_000), run: signal => webhooks.send(undefined, signal) },
+    { name: "webhooks", intervalMs: schedulerIntervalMs, run: signal => webhooks.send(undefined, signal) },
     { name: "model_attempts", intervalMs: 60_000, run: () => modelAttempts.reconcile() },
     { name: "end_user_lots", intervalMs: 60_000, run: () => endUsers.expireDue() },
   ];
   if (billingMailer) jobs.push({ name: "billing_mail", intervalMs: 5_000, run: () => billingMailer.pump() });
   if (topup) jobs.push({ name: "stripe", intervalMs: 5_000, run: () => topup.pump() });
+  if (journey) jobs.push(
+    { name: "journey_delivery", intervalMs: schedulerIntervalMs, run: () => journey.send() },
+    { name: "journey_reconcile", intervalMs: 10 * 60_000, run: () => journey.reconcile() },
+  );
   const stopChecks = () => { void modelAttempts.drain().catch(() => {}); };
   signal.addEventListener("abort", stopChecks, { once: true });
   console.log(JSON.stringify({ type: "v1_maintenance_started", jobs: jobs.map(job => job.name) }));
@@ -74,7 +87,7 @@ async function main() {
   // Like the runtime's LISTEN connection, the session advisory lock belongs on direct Postgres.
   const db = await databaseFromEnvironment({ ...env, AGENT_DATABASE_HOST: env.AGENT_DATABASE_LISTEN_HOST || env.AGENT_DATABASE_HOST });
   try {
-    await withMaintenanceElection(db, shutdown.signal, (signal, check) => maintain(db, env, signal, check));
+    await withMaintenanceElection(db, shutdown.signal, (signal, check) => maintain(db, env, signal, check), env.AGENT_V1_MAINTENANCE_VOLUME_ORIGIN);
   } finally {
     await db.end();
   }

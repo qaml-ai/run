@@ -12,7 +12,15 @@ export function requireEcsStopped(args: string[]) {
 }
 
 /** Old ECS tasks do not take this lock. Their shutdown is a precondition, checked here against the runtime leases too. */
-export async function withMaintenanceElection(db: Pick<Db, "connect">, shutdown: AbortSignal, work: (signal: AbortSignal, check: () => Promise<void>) => Promise<void>) {
+export async function withMaintenanceElection(db: Pick<Db, "connect">, shutdown: AbortSignal,
+  work: (signal: AbortSignal, check: () => Promise<void>) => Promise<void>, volumeOrigin?: string) {
+  // The dedicated volume listener also publishes a lease and never runs these polls.
+  if (volumeOrigin !== undefined) {
+    const origin = URL.parse(volumeOrigin);
+    if (!origin || !["http:", "https:"].includes(origin.protocol) || origin.origin !== volumeOrigin || !origin.port) {
+      throw new MaintenanceElectionError("The v1 volume origin must be an exact HTTP origin with a port");
+    }
+  }
   const client = await db.connect();
   const election = new AbortController();
   const signal = AbortSignal.any([shutdown, election.signal]);
@@ -28,7 +36,9 @@ export async function withMaintenanceElection(db: Pick<Db, "connect">, shutdown:
   const check = async () => {
     try {
       election.signal.throwIfAborted();
-      const { rows } = await client.query<{ live: boolean }>("select exists (select 1 from runtime_nodes where expires_at > now()) as live");
+      const { rows } = await client.query<{ live: boolean }>(`select exists (
+        select 1 from runtime_nodes where expires_at > now() and node is distinct from $1
+      ) as live`, [volumeOrigin ?? null]);
       if (rows[0].live) throw new MaintenanceElectionError("A v1 runtime peer still holds a live lease");
     } catch (error) {
       election.abort(error);
