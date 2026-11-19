@@ -95,7 +95,9 @@ export class AgentDO extends DurableObject<Env> {
   private preRunHints = new Map<string, StartRunHints>();
   private activeRunId: string | null = null;
   private activeAbortController: AbortController | null = null;
-  private queueDraining = false;
+  private queueDrain: Promise<void> | null = null;
+  private inputResumeWork: Promise<RunRecord> | null = null;
+  private destroying = false;
   private runWaiters = new Map<string, Array<(rec: RunRecord) => void>>();
   private sseListeners = new Set<(ev: AgentEventRecord) => void>();
   private pendingWsCalls = new Map<string, PendingWsCall>();
@@ -1011,6 +1013,9 @@ export class AgentDO extends DurableObject<Env> {
     body: StartRunInput,
     hints?: StartRunHints,
   ): Promise<RunRecord> {
+    if (this.destroying) {
+      throw new ApiError(409, "agent_deleting", "Agent deletion is in progress");
+    }
     const cfg = this.requireConfig();
     const prompt = String(body.prompt ?? "");
     const whileRunning = body.whileRunning === "steer" ? "steer" : "queue";
@@ -1163,11 +1168,9 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private async drainRunQueue(): Promise<void> {
-    if (this.queueDraining || this.activeRunId) return;
-    this.queueDraining = true;
-
-    try {
-      while (true) {
+    if (this.destroying || this.queueDrain || this.activeRunId) return;
+    const drain = (async () => {
+      while (!this.destroying) {
         // Do not start a new queued run while another run is paused awaiting human input
         const pausedRow = this.ctx.storage.sql
           .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`)
@@ -1196,6 +1199,7 @@ export class AgentDO extends DurableObject<Env> {
         const canBatch = (run: (typeof queued)[number]) => run.spend_limit_usd === null && run.actor === null;
         if (canBatch(queued[0]!) && cfg.queue.mode === "batch" && cfg.queue.windowMs > 0) {
           await new Promise((r) => setTimeout(r, Math.min(cfg.queue.windowMs, 5_000)));
+          if (this.destroying) break;
           queued = readQueued();
           if (queued.length === 0) break;
         }
@@ -1236,9 +1240,13 @@ export class AgentDO extends DurableObject<Env> {
           followers.map((f) => f.id),
         );
       }
+    })();
+    this.queueDrain = drain;
+    try {
+      await drain;
     } finally {
-      this.queueDraining = false;
-      void this.scheduleNextAlarm();
+      this.queueDrain = null;
+      if (!this.destroying) void this.scheduleNextAlarm();
     }
   }
 
@@ -2183,6 +2191,9 @@ export class AgentDO extends DurableObject<Env> {
     body?: { approved?: boolean; answer?: unknown; wait?: boolean; actor?: string },
     trustedResponder = false,
   ): Promise<RunRecord> {
+    if (this.destroying) {
+      throw new ApiError(409, "agent_deleting", "Agent deletion is in progress");
+    }
     this.ensureSql();
     const rows = this.ctx.storage.sql
       .exec<{
@@ -2291,12 +2302,14 @@ export class AgentDO extends DurableObject<Env> {
         }
         this.activeRunId = null;
         this.activeAbortController = null;
+        this.inputResumeWork = null;
         this.notifyRunWaiters(inp.run_id);
         for (const id of followerIds) this.notifyRunWaiters(id);
         this.ctx.waitUntil(this.drainRunQueue());
       }
     })();
 
+    this.inputResumeWork = resumeWork;
     this.ctx.waitUntil(resumeWork);
     if (!wait) {
       return this.materializeRunRecord(inp.run_id);
@@ -2629,26 +2642,39 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   async destroyAgent(): Promise<{ deleted: true }> {
-    this.ensureSql();
-    const cfg = this.readConfigOrNull();
-    if (this.activeAbortController) {
-      this.activeAbortController.abort();
+    if (this.destroying) {
+      throw new ApiError(409, "agent_deleting", "Agent deletion is in progress");
     }
-    const vms = this.ctx.storage.sql
-      .exec<{ vm_id: string }>(`SELECT vm_id FROM vm_session`)
-      .toArray();
-    if (cfg?.lineage) {
-      const cfs = new CamelFsClient(this.env, cfg.tenantId);
-      for (const v of vms) {
-        await cfs.stopVm(v.vm_id, cfg.lineage).catch(() => {});
+    this.destroying = true;
+    try {
+      await this.abortRuns();
+      // A terminal event can reach clients before the turn releases its slot and
+      // the queue checks for another run. Keep SQLite available until that work settles.
+      await Promise.all([this.queueDrain, this.inputResumeWork]);
+      const cfg = this.readConfigOrNull();
+      if (cfg) {
+        for (const hint of this.preRunHints.values()) {
+          this.releaseUnusedPreacquiredHint(cfg.tenantId, hint);
+        }
       }
+      const vms = this.ctx.storage.sql
+        .exec<{ vm_id: string }>(`SELECT vm_id FROM vm_session`)
+        .toArray();
+      if (cfg?.lineage) {
+        const cfs = new CamelFsClient(this.env, cfg.tenantId);
+        for (const v of vms) {
+          await cfs.stopVm(v.vm_id, cfg.lineage).catch(() => {});
+        }
+      }
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      this.cachedConfig = null;
+      this.preRunHints.clear();
+      this.sqlReady = false;
+      return { deleted: true };
+    } finally {
+      this.destroying = false;
     }
-    await this.ctx.storage.deleteAlarm();
-    await this.ctx.storage.deleteAll();
-    this.cachedConfig = null;
-    this.preRunHints.clear();
-    this.sqlReady = false;
-    return { deleted: true };
   }
 
   // ---- Streaming & WebSocket Upgrade Endpoints ONLY ----
