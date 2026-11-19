@@ -26,7 +26,7 @@ if (process.env.AGENT_TEST_S3_BUCKET) {
 }
 
 test("a prefix-scoped S3 writer conditionally creates chunks without HEAD", async t => {
-  const { S3Client } = await import("@aws-sdk/client-s3");
+  const { S3Client, S3ServiceException } = await import("@aws-sdk/client-s3");
   const { s3Storage } = await import("../shared/s3-storage.ts");
   const calls: (string | undefined)[] = [];
   const statuses = [200, 412, 409];
@@ -48,7 +48,8 @@ test("a prefix-scoped S3 writer conditionally creates chunks without HEAD", asyn
   const storage = s3Storage({ bucket: "test", tail: await tail(), client, putBlobsWithoutHead: true });
   await storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1]));
   await storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1]));
-  await assert.rejects(storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1])), { $metadata: { httpStatusCode: 409 } });
+  await assert.rejects(storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1])),
+    error => error instanceof S3ServiceException && error.$metadata.httpStatusCode === 409);
   assert.deepEqual(calls, ["PUT", "PUT", "PUT"]);
 });
 
