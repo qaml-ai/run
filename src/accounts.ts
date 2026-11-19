@@ -316,7 +316,9 @@ export class Accounts {
 
   /** Which providers the tenant itself holds a key or endpoint for, the platform's aside (an account cannot set an Azure key). */
   async ownProviders(tenant: string): Promise<(provider: string) => boolean> {
-    const own = this.canStoreKeys && validTenant(tenant) ? new Set((await this.storedKeys(tenant)).map(key => key.provider)) : new Set<string>();
+    const own = this.canStoreKeys && validTenant(tenant)
+      ? new Set((await this.db.query("select provider from provider_keys where tenant = $1", [tenant])).rows.map(key => key.provider as string))
+      : new Set<string>();
     const endpoints = this.tenants.modelEndpoints(tenant) ?? {};
     return provider => provider !== AZURE && (own.has(provider) || !!this.tenants.apiKey(tenant, provider) || Object.hasOwn(endpoints, provider));
   }

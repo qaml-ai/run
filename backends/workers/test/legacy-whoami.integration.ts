@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { api, type ApiContext } from "../../../src/api.ts";
@@ -21,10 +22,13 @@ test("hosted whoami matches legacy identity without origin calls or database wri
   const operator = "operator-fixture-key", token = "art_fixture-account-key", other = "art_other-account-key";
   const config = JSON.stringify({ tenants: { operator: { tokenSha256: sha(operator), github: "Operator" } } });
   const role = `whoami_${randomBytes(8).toString("hex")}`;
+  const identityGrants = readFileSync(new URL("../ops/legacy-account-identity-grants.sql", import.meta.url), "utf8")
+    .replaceAll(':"compatibility_role"', role);
   const f = await startFixture({
     tenants: [{ id: "fixture", token }, { id: "other", token: other }],
     databaseRole: { fixtureUser: role, grants: `grant usage on schema public to ${role};
-      grant select on tenants, api_tokens, account_deletions, provider_keys, tenant_passwords, oauth_tokens, oauth_grants, console_sessions to ${role};` },
+      grant select on tenants, api_tokens, account_deletions, oauth_tokens, oauth_grants, console_sessions to ${role};
+      ${identityGrants}` },
     vars: { MODEL: "camelrun/default", AGENT_MODEL_FALLBACKS: "anthropic/claude-sonnet-5-5",
       AGENT_TENANTS_JSON: config, AGENT_PUBLIC_URL: origin, AGENT_PUBLIC_ALIASES: alias, AGENT_ISSUER: alias, AGENT_SESSION_SECRET: secret },
     entrypoint: fileURLToPath(new URL("./legacy-whoami-entry.ts", import.meta.url)),
