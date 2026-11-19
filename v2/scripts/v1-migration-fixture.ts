@@ -232,12 +232,24 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [nativeFileMessage] }), /matching pinned attachment/);
   const wrongSize = { ...nativeFileMessage, content: [nativeFileMessage.content[0], { ...nativeFileMessage.content[1], size: 2 }] };
   await assert.rejects(importFiles([wrongSize]), /differs in size/);
+  const toolCall = { role: "assistant", timestamp: 3, content: [{ type: "toolCall", id: "call_file", name: "make_file", arguments: {} }] };
+  const toolResult = { role: "toolResult", timestamp: 4, toolCallId: "call_file", toolName: "make_file", content: [
+    { type: "text", text: "File is ready" }, nativeFileMessage.content[1],
+  ] };
+  const historyWithFiles = [nativeFileMessage, toolCall, toolResult];
+  await assert.rejects(importFiles(historyWithFiles), /V1 message 2 has a workspace file without a matching pinned attachment/);
   assert.deepEqual(await attachmentHistory.history(), []);
-  assert.equal((await importFiles([nativeFileMessage])).count, 1);
-  const [importedAttachment] = await attachmentHistory.history();
+  assert.equal((await attachmentHistory.importV1History({ source: sourceAgent, messages: historyWithFiles,
+    attachments: [0, 2].map(messageIndex => ({ messageIndex, files: [attachment] })),
+  })).count, 3);
+  const [importedAttachment, , importedTool] = await attachmentHistory.history();
   const importedContent = importedAttachment?.content as { files?: Array<{ commit: string }>; meta?: { v1?: unknown } } | undefined;
   assert.equal(importedContent?.files?.[0]?.commit, attachmentCommit);
   assert.deepEqual(importedContent?.meta?.v1, nativeFileMessage);
+  assert.equal(importedTool?.role, "tool");
+  assert.deepEqual(importedTool?.content, { text: "File is ready", toolCallId: "call_file", toolName: "make_file",
+    meta: { v1: toolResult }, files: importedContent?.files,
+  });
 
   // A successful v2 write can lose its response. Recover its commit on an explicit rerun.
   let lostResponse = false;

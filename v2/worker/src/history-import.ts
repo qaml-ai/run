@@ -9,14 +9,15 @@ const file = z.object({
   size: z.number().int().nonnegative(),
   contentType: z.string(),
 });
+const workspaceContent = z.array(z.discriminatedUnion("type", [text, file]));
 const toolCall = z.object({ type: z.literal("toolCall"), id: z.string().min(1), name: z.string().min(1), arguments: z.record(z.string(), z.unknown()) });
 const thinking = z.object({ type: z.literal("thinking"), thinking: z.string() });
 const timestamp = z.number().int().nonnegative();
 const messageSchema = z.discriminatedUnion("role", [
   z.looseObject({ role: z.literal("system"), content: z.union([z.string(), z.array(text)]), timestamp }),
-  z.looseObject({ role: z.literal("user"), content: z.union([z.string(), z.array(z.discriminatedUnion("type", [text, file]))]), timestamp }),
+  z.looseObject({ role: z.literal("user"), content: z.union([z.string(), workspaceContent]), timestamp }),
   z.looseObject({ role: z.literal("assistant"), content: z.array(z.discriminatedUnion("type", [text, toolCall, thinking])), timestamp }),
-  z.looseObject({ role: z.literal("toolResult"), content: z.array(text), toolCallId: z.string().min(1), toolName: z.string().min(1), isError: z.boolean().optional(), timestamp }),
+  z.looseObject({ role: z.literal("toolResult"), content: workspaceContent, toolCallId: z.string().min(1), toolName: z.string().min(1), isError: z.boolean().optional(), timestamp }),
 ]);
 
 const importSchema = z.object({
@@ -53,9 +54,8 @@ export function parseV1History(body: unknown) {
     }
     const message = parsed.data;
     const files = attachments.get(index);
-    if (files && message.role !== "user") throw new ApiError(422, "invalid_history", `V1 message ${index} cannot have workspace attachments`);
     const sourceFileSizes = new Map<string, number>();
-    if (message.role === "user" && Array.isArray(message.content)) {
+    if ((message.role === "user" || message.role === "toolResult") && Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block.type !== "file") continue;
         const path = block.path.slice("/workspace/".length);
@@ -65,12 +65,20 @@ export function parseV1History(body: unknown) {
         sourceFileSizes.set(path, block.size);
       }
     }
+    if (files && message.role !== "user" && sourceFileSizes.size !== files.length) {
+      throw new ApiError(422, "invalid_history", `V1 message ${index} has extra workspace attachments`);
+    }
+    const workspaceFiles = {
+      ...(files ? { attachments: files } : {}),
+      ...(sourceFileSizes.size ? { sourceFileSizes } : {}),
+    };
     const content: StoredMessageContent = { meta: { v1: original } };
     content.text = typeof message.content === "string" ? message.content : message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
     if (message.role === "toolResult") {
       if (pending.get(message.toolCallId) !== message.toolName) throw new ApiError(422, "invalid_history", `V1 tool result at message ${index} has no matching call`);
       pending.delete(message.toolCallId);
-      return { role: "tool", content: { ...content, toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError }, createdAt: message.timestamp };
+      return { role: "tool", content: { ...content, toolCallId: message.toolCallId, toolName: message.toolName, isError: message.isError },
+        createdAt: message.timestamp, ...workspaceFiles };
     }
     if (pending.size) throw new ApiError(422, "invalid_history", `V1 tool results are missing before message ${index}`);
     if (message.role === "assistant") {
@@ -83,8 +91,7 @@ export function parseV1History(body: unknown) {
       }
       if (calls.length) content.toolCalls = calls;
     }
-    return { role: message.role, content, createdAt: message.timestamp, ...(files ? { attachments: files } : {}),
-      ...(sourceFileSizes.size ? { sourceFileSizes } : {}) };
+    return { role: message.role, content, createdAt: message.timestamp, ...workspaceFiles };
   });
   if (pending.size) throw new ApiError(422, "invalid_history", "V1 history ends with unanswered tool calls");
   return { source, previous, messages: imported };
