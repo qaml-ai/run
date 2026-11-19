@@ -40,10 +40,10 @@ export async function publicMoneyRoutes(request: Request, env: MoneyEnv, ctx: Ex
   const s = await services(env, request);
   return await publicAccountRoutes(request, s.account, ctx) ?? await billingPublicRoutes(request, env, s.billing);
 }
-export async function authenticateMoney(request: Request, env: MoneyEnv): Promise<AuthContext | null> {
+export async function authenticateMoney(request: Request, env: MoneyEnv, options?: { bearerOnly?: boolean }): Promise<AuthContext | null> {
   const s = await services(env, request);
   const principal = await s.keys.accounts.authenticate(request.headers.get('authorization') ?? undefined)
-    ?? await accountPrincipal(request, s.account);
+    ?? await accountPrincipal(request, s.account, options);
   // Agent MCP is mounted beside the REST API in src and accepts the same tenant credential.
   const agentMcp = /^\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(new URL(request.url).pathname);
   if (principal?.via === 'oauth' && new URL(request.url).pathname.startsWith('/v1/') && !agentMcp && !oauthAllows(request.method, new URL(request.url).pathname))

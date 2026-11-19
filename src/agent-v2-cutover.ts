@@ -1,4 +1,7 @@
 import { transaction, type Db } from "./db.ts";
+import type { RequestRecord } from "../shared/client-protocol.ts";
+
+export const AGENT_V2_PUBLISHED = "agent_v2_published";
 
 /** Fence new v1 runs only after accepted work is durably idle. The caller holds application edits
  * and other ingress during the final copy and route publication. */
@@ -37,8 +40,39 @@ export function fenceV1Agent(db: Db, tenant: string, agent: string, operation: s
 /** Undo a fence owned by this operation before it has published a v2 route. */
 export async function unfenceV1Agent(db: Db, tenant: string, agent: string, operation: string) {
   const { rowCount } = await db.query(
-    "delete from agent_v2_cutovers where agent = $1 and tenant = $2 and operation = $3",
+    `delete from agent_v2_cutovers where agent = $1 and tenant = $2 and operation = $3
+      and not exists (select 1 from agent_v2_routes where agent = $1 and tenant = $2)`,
     [agent, tenant, operation],
   );
   return rowCount === 1;
+}
+
+/** Publish the verified destination of one cutover. The operation must still own the fence.
+ * A published route is immutable, and its foreign key prevents reopening admission on v1. */
+export function publishV2AgentRoute(
+  db: Db,
+  source: { tenant: string; agent: string; operation: string },
+  destination: { tenant: string; agent: string },
+  archive: RequestRecord[],
+) {
+  return transaction(db, async sql => {
+    const key = [source.tenant, source.agent, source.operation];
+    const fence = await sql.query(`
+      select 1 from agent_v2_cutovers where tenant = $1 and agent = $2 and operation = $3 for update`, key);
+    if (fence.rowCount !== 1) return false;
+    const { rowCount } = await sql.query(`
+      insert into agent_v2_routes (tenant, agent, destination_tenant, destination_agent, event_base)
+      select tenant, id, $3, $4, greatest(last_cursor, reserved_cursor, $5)
+      from agents where tenant = $1 and id = $2
+      on conflict (tenant, agent) do update set destination_agent = excluded.destination_agent
+      where agent_v2_routes.destination_tenant = excluded.destination_tenant
+        and agent_v2_routes.destination_agent = excluded.destination_agent`,
+    [source.tenant, source.agent, destination.tenant, destination.agent, Date.now() * 1000]);
+    if (rowCount === 1) {
+      await sql.query(`insert into agent_v2_receipt_archives (tenant, agent, receipts) values ($1, $2, $3::jsonb)
+        on conflict (tenant, agent) do nothing`, [source.tenant, source.agent, JSON.stringify(archive)]);
+      await sql.query("select pg_notify($1, $2)", [AGENT_V2_PUBLISHED, source.agent]);
+    }
+    return rowCount === 1;
+  });
 }

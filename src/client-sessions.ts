@@ -42,7 +42,7 @@ import { actorInput, type AgentIdentity } from "./identity.ts";
 import { metadataInput, senderInput } from "./sender.ts";
 import { CodeGate, DEFAULT_CODE_CAPACITY } from "./codemode.ts";
 import { fileResponse, type FileRef } from "./files.ts";
-import { AgentHistory, PAGE_BYTES, type HistoryPage } from "./history-pages.ts";
+import { AgentHistory, historyPageInput, type HistoryPage } from "./history-pages.ts";
 import { INBOX_CHANNEL, inputView, resolution, type Input, type Responder } from "./inputs.ts";
 import { recordBillingFailure, recordHandoff, recordStart, safeError, Steps } from "./metrics.ts";
 import { PARENT_KEYS, viaParent, type DelegateSettings } from "./multi-agent.ts";
@@ -57,9 +57,12 @@ import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
+import { cutoverInProgress, unsupportedV1Operation } from "./v1-v2-compatibility.ts";
+import { compatibilityEvents } from "./v1-compatibility-events.ts";
+import { compatibilityHistory } from "./v1-compatibility-history.ts";
 import { disableAgentTriggers } from "./triggers.ts";
 import { forgetAgentDreaming } from "../shared/dreaming.ts";
-import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
+import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, REQUEST_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
 
 /** How far past its time limit a run may get before it is aborted, and twice this before its agent is stopped (`overrun`). */
 const RUN_OVERRUN_MS = 60_000;
@@ -117,7 +120,6 @@ export function loadDecision(request: RequestRecord, maxResumes = MAX_RESUMES): 
 
 /** Requests an agent may have accepted but not finished, queued runs included. */
 const MAX_OPEN_REQUESTS = 32;
-const REQUEST_METHODS = [...RUN_METHODS, "status", "abort", "steer", "configure"];
 /** A configuration's fields only an upsert (the tenant making the agent again with its key) sets: see `reconfiguration`. */
 const UPSERT_KEYS = ["metadata", "provisionHash", "name", "type", "tools", "fileTools", "codeMode", "toolsHash"];
 
@@ -527,7 +529,12 @@ export class ClientSessions {
     if (!busy) return Promise.resolve();
     return this.busyStep(session, async () => {
       if (session.busy) return;
-      const refused = await busy.hold(session.header.tenant, session.header.id, force);
+      let refused;
+      try { refused = await busy.hold(session.header.tenant, session.header.id, force); }
+      catch (error) {
+        if ((error as { code?: string })?.code === "CV201") throw cutoverInProgress();
+        throw error;
+      }
       if (refused) throw refused;
       session.busy = true;
     });
@@ -726,6 +733,26 @@ export class ClientSessions {
     this.idle.delete(id);
     for (const res of entry.watchers) if (!res.destroyed) res.end(events.reconnectFrame(reason));
     for (const wake of [...entry.polls]) wake();
+  }
+
+  v2RoutePublished(id: string) {
+    this.loadedElsewhere(id);
+    const session = this.sessions.get(id);
+    if (session) events.endStreams(session, false, "moved");
+  }
+
+  private checkedV2Watchers = 0;
+
+  private async checkV2Watchers(now: number) {
+    if (!this.options.v1Compatibility || now - this.checkedV2Watchers < IDLE_CHECK_MS) return;
+    this.checkedV2Watchers = now;
+    const watching = [...this.idle.keys()];
+    for (const [id, session] of this.sessions) {
+      if (session.response || session.watchers.size || session.polls.size) watching.push(id);
+    }
+    if (!watching.length) return;
+    const { rows } = await this.db.query<{ agent: string }>("select agent from agent_v2_routes where agent = any($1::text[])", [watching]);
+    for (const { agent } of rows) this.v2RoutePublished(agent);
   }
 
   /**
@@ -1438,6 +1465,15 @@ export class ClientSessions {
     return [...requests.values()].map(visible);
   }
 
+  /** A fenced agent's last durable v1 receipt. Only read after tenant ownership and the v2 route have been checked. */
+  async archivedRequest(id: string, requestId: string) {
+    return (await this.archivedRequests(id)).find(record => record.id === requestId);
+  }
+
+  archivedRequests(id: string) {
+    return this.storedRequests(id);
+  }
+
   /** S4 guest routes must check membership; admission rechecks it after preparation. S5 tags guest streams. */
   async removeMember(id: string, tenant: string, member: string) {
     if (!await this.owns(id, tenant)) return;
@@ -1542,15 +1578,7 @@ export class ClientSessions {
 
   /** A page of the agent's history (AgentHistory.page, or AgentHistory.pageAfter with `after`), read from Pi storage by ordinal wherever the agent runs. */
   private async historyPage(id: string, query: { before?: string; after?: string; limit?: string; maxBytes?: string }): Promise<HistoryPage> {
-    const before = query.before === undefined ? undefined : Number(query.before);
-    const after = query.after === undefined ? undefined : Number(query.after);
-    const limit = query.limit === undefined ? 50 : Number(query.limit);
-    const maxBytes = query.maxBytes === undefined ? undefined : Number(query.maxBytes);
-    if (before !== undefined && after !== undefined) throw new HttpError(400, "Ask for after or before, not both");
-    if (before !== undefined && (!Number.isSafeInteger(before) || before < 0)) throw new HttpError(400, "before is a message index");
-    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, "after is a message index");
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new HttpError(400, "limit is 1 to 500 messages");
-    if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 16_384 || maxBytes > PAGE_BYTES)) throw new HttpError(400, `maxBytes is 16384 to ${PAGE_BYTES} bytes`);
+    const { before, after, limit, maxBytes } = historyPageInput(query);
     // An agent starting here answers nothing yet: wait for it (it may write its journal's first entries as it starts).
     await this.sessions.get(id)?.starting?.catch(() => {});
     return after !== undefined ? this.historyReader.pageAfter(id, { after, limit, maxBytes }) : this.historyReader.page(id, { before, limit, maxBytes });
@@ -1587,6 +1615,37 @@ export class ClientSessions {
       if (header?.purged) throw new HttpError(410, "Session expired or revoked");
       if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      const compatibility = this.options.v1Compatibility;
+      const requestPath = `/clients/${header.id}/requests`;
+      const admission = c.req.method === "POST" && c.req.path === requestPath;
+      const migrated = await compatibility?.route(header.tenant, header.id, admission ? c.req.raw.signal : undefined);
+      if (compatibility && migrated) {
+        const archived = (requestId: string) => this.archivedRequest(header.id, requestId);
+        if (admission) {
+          const request = await readJson(body(c), FRAME_BYTES);
+          if (!validId(request?.id) || !REQUEST_METHODS.includes(request.method) || !request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new HttpError(400, "Invalid request");
+          if (request.method !== "prompt" || Object.keys(request.params).some(key => !["text", "actor"].includes(key))) throw unsupportedV1Operation();
+          const { text, actor } = request.params;
+          if (typeof text !== "string" || !text.trim() || (actor !== undefined && typeof actor !== "string")) throw new HttpError(400, "Invalid prompt");
+          return json(c, 202, await compatibility.prompt(migrated, request.id, { text, actor }, archived, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path.startsWith(requestPath + "/")) {
+          const requestId = decodeURIComponent(c.req.path.slice(requestPath.length + 1));
+          return json(c, 200, await compatibility.requestFor(migrated, requestId, c.req.query("wait"), archived, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/state`) {
+          return json(c, 200, await compatibility.state(migrated, this.archivedRequests(header.id), c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/history`) {
+          const { before, after, limit, maxBytes } = c.req.query();
+          return json(c, 200, await compatibilityHistory(compatibility, migrated, { before, after, limit, maxBytes }, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events`
+          && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
+          return compatibilityEvents(c, compatibility, migrated);
+        }
+        throw unsupportedV1Operation();
+      }
       // A watcher or a poll does not load the agent (see `watchAgent`).
       if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events` && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
         return events.watchAgent(this.eventContext, c, header, c.req.query("poll") === "1" ? "poll" : "watch");
@@ -3054,6 +3113,9 @@ export class ClientSessions {
   /** Expire sessions, keep SSE alive, and release idle agents' processes and memory. */
   private tick() {
     const now = Date.now();
+    void this.checkV2Watchers(now).catch(error => {
+      console.error(JSON.stringify({ type: "v2_cutover_watch_check_failed", error: safeError(error) }));
+    });
     const idleMs = this.options.idleMs ?? 5 * 60_000;
     for (const session of this.sessions.values()) {
       const id = session.header.id;

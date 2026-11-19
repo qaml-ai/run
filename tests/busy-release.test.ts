@@ -34,9 +34,13 @@ async function instantModel(t: { after: (fn: () => Promise<void>) => void }, bef
 
 test("a v2 cutover waits for an accepted model call and rejects new v1 calls once fenced", { timeout: 30_000 }, async t => {
   const f = await fixture(t, { busyLimit: 2 });
-  await f.db.query(`drop trigger reject_fenced_v1_run on busy_agents;
-    drop function reject_fenced_v1_run(); drop table agent_v2_cutovers;
-    delete from schema_migrations where name = '143_agent_v2_cutover.sql'`);
+  const cutoverMigrations = ["143_agent_v2_cutover.sql", "144_agent_v2_routes.sql", "145_agent_v2_receipt_archives.sql"];
+  await f.db.query(`drop trigger purge_v1_receipt_archive on agents;
+    drop function purge_v1_receipt_archive(); drop table agent_v2_receipt_archives;
+    drop table agent_v2_requests; drop table agent_v2_routes;
+    drop trigger reject_fenced_v1_run on busy_agents;
+    drop function reject_fenced_v1_run(); drop table agent_v2_cutovers`);
+  await f.db.query("delete from schema_migrations where name = any($1::text[])", [cutoverMigrations]);
   const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
   let calls = 0;
   f.setModel(await instantModel(t, async () => { calls++; entered.resolve(); await finish.promise; }));
@@ -48,7 +52,7 @@ test("a v2 cutover waits for an accepted model call and rejects new v1 calls onc
   await client.start(agent, "original", "prompt", params);
   try {
     await entered.promise;
-    assert.deepEqual(await migrate(f.db), ["143_agent_v2_cutover.sql"]);
+    assert.deepEqual(await migrate(f.db), cutoverMigrations);
     assert.equal(await fenceV1Agent(f.db, "default", id, operation), false);
     assert.equal(calls, 1);
   } finally {

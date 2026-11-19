@@ -1,3 +1,4 @@
+import { AwsClient } from "aws4fetch";
 import { z } from "zod";
 import { accountEmail, type AccountEmailKind } from "../../../src/account-emails.ts";
 
@@ -7,6 +8,10 @@ export interface MailEnv {
   AGENT_ACCOUNT_EMAIL_FROM?: string;
   AGENT_ACCOUNT_EMAIL_NAME?: string;
   AGENT_ACCOUNT_EMAIL_CONFIGURATION_SET?: string;
+  AGENT_ACCOUNT_SES_REGION?: string;
+  AGENT_ACCOUNT_SES_ACCESS_KEY_ID?: string;
+  AGENT_ACCOUNT_SES_SECRET_ACCESS_KEY?: string;
+  AGENT_ACCOUNT_SES_SESSION_TOKEN?: string;
   AGENT_BILLING_EMAIL_FROM?: string;
   AGENT_BILLING_EMAIL_NAME?: string;
   AGENT_BILLING_EMAIL_CONFIGURATION_SET?: string;
@@ -24,24 +29,38 @@ export interface MailMessage {
   kind?: "account" | "billing";
 }
 
-/** Cloudflare Email Sending needs a binding and verified sending domain, not AWS keys. */
+function accountSes(env: MailEnv) {
+  const region = env.AGENT_ACCOUNT_SES_REGION;
+  if (!region) return;
+  const accessKeyId = env.AGENT_ACCOUNT_SES_ACCESS_KEY_ID;
+  const secretAccessKey = env.AGENT_ACCOUNT_SES_SECRET_ACCESS_KEY;
+  if (!/^[a-z]{2}(?:-[a-z]+)+-\d+$/.test(region) || !accessKeyId || !secretAccessKey) {
+    throw new Error("Account SES requires a region and an account-sender AWS credential");
+  }
+  return { accessKeyId, secretAccessKey, sessionToken: env.AGENT_ACCOUNT_SES_SESSION_TOKEN, region };
+}
+
+export function canSendAccountMail(env: MailEnv) {
+  return Boolean((env.AGENT_ACCOUNT_EMAIL_FROM || env.EMAIL_FROM)
+    && (accountSes(env) || env.EMAIL || (env.TEST_MODE === "1" && env.MAIL_TEST_URL)));
+}
+
 export async function sendEmail(env: MailEnv, mail: MailMessage, signal?: AbortSignal) {
   const billing = mail.kind === "billing";
   const from = (billing ? env.AGENT_BILLING_EMAIL_FROM : env.AGENT_ACCOUNT_EMAIL_FROM) ?? env.EMAIL_FROM;
   if (!from || !z.email().safeParse(from).success) throw new Error("A valid email sender is required");
   const displayName = billing ? env.AGENT_BILLING_EMAIL_NAME ?? "camelRun Billing" : env.AGENT_ACCOUNT_EMAIL_NAME ?? "camelRun";
   if (!displayName.trim() || displayName.length > 80 || /[\r\n]/.test(displayName)) throw new Error("AGENT_ACCOUNT_EMAIL_NAME must be a single display name, at most 80 characters");
-  const message: EmailMessageBuilder = {
-    from: { email: from, name: displayName },
-    to: mail.to, subject: mail.subject, html: mail.html, text: mail.text,
-    ...(mail.headers?.length ? { headers: Object.fromEntries(mail.headers.map(h => [h.Name, h.Value])) } : {}),
-  };
+  const ses = billing ? undefined : accountSes(env);
+  let testUrl: URL | undefined;
   // The fake cannot send outside loopback, and is unavailable on a deployed experiment.
   if (env.TEST_MODE === "1" && env.MAIL_TEST_URL) {
-    const url = new URL(env.MAIL_TEST_URL);
-    if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("Mail fake must be loopback");
-    // The local SES sink exercises the source mail contract while the deployed
-    // transport uses Cloudflare Email Sending. Keep sender, tags and headers intact.
+    testUrl = new URL(env.MAIL_TEST_URL);
+    if (testUrl.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(testUrl.hostname)
+      || testUrl.username || testUrl.password || testUrl.hash) throw new Error("Mail fake must be loopback");
+  }
+  const endpoint = testUrl ?? (ses ? new URL(`https://email.${ses.region}.amazonaws.com/v2/email/outbound-emails`) : undefined);
+  if (endpoint) {
     const envelope = {
       FromEmailAddress: `=?UTF-8?B?${Buffer.from(displayName).toString("base64")}?= <${from}>`,
       Destination: { ToAddresses: [mail.to] },
@@ -51,14 +70,24 @@ export async function sendEmail(env: MailEnv, mail: MailMessage, signal?: AbortS
         Html: { Data: mail.html, Charset: "UTF-8" }, Text: { Data: mail.text, Charset: "UTF-8" },
       } } },
     };
-    const response = await fetch(url, { method: "POST", body: JSON.stringify(envelope), headers: { "Content-Type": "application/json" }, signal });
-    if (!response.ok) throw new Error("Mail fake refused delivery");
+    const init: RequestInit = { method: "POST", body: JSON.stringify(envelope), headers: { "Content-Type": "application/json" }, redirect: "manual", signal };
+    // SES has no idempotency key. Let the account flow handle an explicit failure.
+    const request = ses ? await new AwsClient({ ...ses, service: "ses", retries: 0 }).sign(endpoint, init) : new Request(endpoint, init);
+    const response = await fetch(request);
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Account mail delivery rejected (HTTP ${response.status})`);
+    }
     const result = await response.json() as { MessageId?: string };
     return { messageId: result.MessageId };
   }
   if (!env.EMAIL) throw new Error("Email Sending is not configured");
   signal?.throwIfAborted();
-  return env.EMAIL.send(message);
+  return env.EMAIL.send({
+    from: { email: from, name: displayName },
+    to: mail.to, subject: mail.subject, html: mail.html, text: mail.text,
+    ...(mail.headers?.length ? { headers: Object.fromEntries(mail.headers.map(h => [h.Name, h.Value])) } : {}),
+  });
 }
 
 /** Same background-send behavior as AccountMail in src, retained with waitUntil by its caller. */

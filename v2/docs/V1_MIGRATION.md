@@ -63,6 +63,71 @@ schedules, channel bindings, triggers, or open voice calls. Keep the fence
 after the application publishes the v2 route. If the cutover is abandoned
 before publication, run `unfence` with the same arguments.
 
+## Keep the existing v1 client
+
+The compatibility route preserves the v1 tenant key, agent token, agent ID, and
+request IDs. It covers plain text prompts, request receipts, agent state,
+watch streams, event polling, and transcript reads. V2 runs use the destination
+tenant's credits. File uploads, attached tools, voice, and the other v1 API
+families still require the v1 service.
+
+Deploy the v2 Worker, migrations 143 through 145, and a v1 service revision with
+`AGENT_V2_COMPAT_API_KEYS` on every ingress instance. The value is a JSON map
+from destination tenants to their v2 API keys. Keep those keys in the service's
+secret store. `AGENT_V2_COMPAT_URL` selects the v2 API and defaults to
+`https://run.camelai.com/v2`.
+
+For a verified client and an idle or finishing v1 agent, provision its private
+v2 destination and use the same connection variables as the importer.
+
+```sh
+node --experimental-strip-types v2/scripts/move-agent.ts \
+  <v1-tenant> <v1-agent-id> <operation-uuid> <v2-agent-id>
+```
+
+On `deferred`, rerun the same operation after the v1 work settles. For a
+workspace migration, hold volume edits across all writers before moving the
+agent and pass `--initial-commit`. Pass `--previous` after staging its history.
+The command fences v1 admission, verifies the final copy, and publishes the
+destination. A copy failure releases the fence. If publication is interrupted,
+retry with the same operation ID to read the authoritative route. Publication
+also saves the existing request receipts in the same transaction so older
+request IDs remain readable without ECS.
+
+The ingress can bind to the `LegacyV1` entrypoint exported by
+`backends/workers/src/legacy-entry.ts`. Its default HTTP handler returns 404.
+It answers agent listings and mount reads from the Node
+database. It serves the supported prompt, request, state, event, and history
+routes for a published agent, including the scoped `/clients` routes. A null
+result leaves the request on its existing route. An authentication, storage,
+or upstream failure returns an HTTP error.
+
+Use a Hyperdrive binding to the Node Postgres schema with query caching
+disabled. Give its role read access to `tenants`, `api_tokens`, `oauth_tokens`,
+`oauth_grants`, `console_sessions`, `account_deletions`, `agents`, `actor_owners`, `runtime_nodes`,
+`workspace_assignments`, `agent_v2_cutovers`, `agent_v2_routes`,
+`agent_v2_receipt_archives`, and `agent_v2_requests`. Prompt receipt
+reservation also needs insert access to `agent_v2_requests`. The migration
+command uses its own database role to publish routes and receipt archives.
+Apply `backends/workers/ops/legacy-credit-reads-grants.sql` before routing
+end-user detail reads to the Worker. A detail read can settle an expired
+credit lot and enqueues the same ledger and webhook records as the Node route.
+Use the existing v1 operator configuration and session signing secret for
+compatibility authentication. Connect `V2_LEGACY_RUNS` to the v2 Worker's
+`LegacyAgentRuns` service entrypoint. Only the compatibility Worker needs this
+binding. It verifies the published destination's tenant and agent and uses the
+agent's existing v2 permissions for runs, history, and events.
+
+When `MCP_LEGACY_API` is bound to the ingress's private ECS origin service,
+`LegacyV1` also serves `/mcp` and its OAuth discovery metadata. MCP retains
+the v1 bearer authorization and configured issuer. The generated MCP tools
+call the compatibility endpoints when available. Other MCP tool requests
+and OAuth consent, exchange, and revocation continue on their existing routes.
+
+Keep the v1 ingress and its archived request store reachable during the
+transition. Confirm older clients can complete their production workflows
+through an ingress independent of the ECS service before retiring ECS.
+
 ## Switch one cohort
 
 - Keep the v1 client and v2 client connected at the same time. Route by bot and

@@ -1,4 +1,6 @@
 import { HttpError } from "./http.ts";
+import { FULL_HISTORY_READ_BYTES, PAGE_BYTES } from "./core/history-page-input.ts";
+export { FULL_HISTORY_READ_BYTES, PAGE_BYTES, historyPageInput } from "./core/history-page-input.ts";
 import { legacyFormatRefused } from "./protocol.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { EntryRecord } from "@earendil-works/pi-durable";
@@ -17,10 +19,6 @@ export type HistoryEntry = { index: number; message: AgentMessage };
  */
 export type HistoryPage = { entries: HistoryEntry[]; next: number | null; total: number; split?: true; nextAfter?: number; truncated?: true };
 
-/** Full-history reads (export, fork) may load at most this many stored UTF-8 bytes. */
-export const FULL_HISTORY_READ_BYTES = 64 * 1024 * 1024;
-/** A page returns about this much at most, beyond its first turn. */
-export const PAGE_BYTES = 4_000_000;
 /** Rows read at a time while looking for where a page starts. */
 const ROWS = 128;
 /** The most stored bytes one page loads, whatever its turns: past it the page is refused, never read. */

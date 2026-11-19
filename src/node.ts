@@ -59,6 +59,8 @@ import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
 import { opsMcp } from "./ops-mcp.ts";
 import { api } from "./api.ts";
+import { V1Compatibility } from "./v1-v2-compatibility.ts";
+import { AGENT_V2_PUBLISHED } from "./agent-v2-cutover.ts";
 import { ScheduleMailer } from "./schedule-mailer.ts";
 import { calendarPrompt } from "./calendar.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -865,7 +867,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // A gateway credential is not necessarily an OpenRouter key; never send it to another origin.
     return entry?.baseUrl ? { baseUrl: entry.baseUrl } : entry?.apiKey;
   }, endUsers);
+  const v1Compatibility = V1Compatibility.fromEnv(db, env);
   const clients = new ClientSessions(supervisor, {
+    v1Compatibility,
     sharedAgents: deps.sharedAgents,
     runEvents: tenant => subscribers.runs(tenant),
     // A self-hosted runtime configured by its environment takes keys there too.
@@ -1050,6 +1054,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const [from, agent] = payload.split(" ");
       if (from !== node && agent) clients.loadedElsewhere(agent);
     },
+    ...(v1Compatibility ? { [AGENT_V2_PUBLISHED]: (agent: string) => clients.v2RoutePublished(agent) } : {}),
     [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
     // Work just left without an owner: a peer released agents with runs open, or ended a dead node's heartbeat.
     [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
@@ -1393,7 +1398,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ v1Compatibility, dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}), ...(calls ? { calls } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),

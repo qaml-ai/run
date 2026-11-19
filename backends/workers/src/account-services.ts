@@ -8,7 +8,7 @@ import { OAuth } from "./account-oauth.ts";
 import { publicOrigins, type PublicOrigins } from "./account-origins.ts";
 import { RateLimits, RateLimited } from "./account-rate-limits.ts";
 import { accountRateLimits } from "./account-rate-service.ts";
-import { AccountMail, type MailEnv } from "./account-mail.ts";
+import { AccountMail, canSendAccountMail, type MailEnv } from "./account-mail.ts";
 import { HttpError, readText } from "./account-http.ts";
 import type { Webhooks } from "./webhook-policy.ts";
 import { RuntimeSigner } from "./runtime-identity.ts";
@@ -75,8 +75,7 @@ export function accountServices(env: AccountEnv, accounts: Accounts, fallbackOri
   if (env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && !openSignup)
     throw new Error("Google sign-in lets anyone sign up; set AGENT_OPEN_SIGNUP=true to enable it, or remove its client");
   const passwords = new Passwords(accounts.db);
-  const mail = (env.EMAIL || (env.TEST_MODE === "1" && env.MAIL_TEST_URL)) && (env.AGENT_ACCOUNT_EMAIL_FROM || env.EMAIL_FROM)
-    ? new AccountMail(env, origin) : undefined;
+  const mail = canSendAccountMail(env) ? new AccountMail(env, origin) : undefined;
   const client = (c: Context) => limits.client(name => c.req.header(name), undefined).key;
   const test = env.TEST_MODE === "1";
   const journey = createJourney(env, accounts, origin);
@@ -145,9 +144,9 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   }
 }
 
-export async function accountPrincipal(request: Request, service: AccountServices) {
+export async function accountPrincipal(request: Request, service: AccountServices, options: { bearerOnly?: boolean } = {}) {
   const oauth = await service.oauth.authenticate(request.headers.get("Authorization") ?? undefined);
-  if (oauth) return oauth;
+  if (oauth || options.bearerOnly) return oauth;
   const principal = await service.auth.principal(request);
   if (principal && !["GET", "HEAD", "OPTIONS"].includes(request.method) && !service.auth.allowsMutation(request)) throw new HttpError(403, "Forbidden");
   return principal;
