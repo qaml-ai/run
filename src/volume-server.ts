@@ -40,7 +40,7 @@ if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new Error("AGENT_LEASE_TTL_
 const storageUsage = new StorageUsage(db);
 const storage = await openStorage(descriptor, postgresTail(db, { retryMs: ttlMs }), storageUsage.meter);
 const ownership = new Ownership(db, { node, ttlMs, volumeOnly: true, alive: probeNode });
-const accounts = new Accounts({ tenants, db, pricing: pricingFromEnvironment(env), publicUrl });
+const accounts = new Accounts({ tenants, db, pricing: pricingFromEnvironment(env), publicUrl, flushReceipts: false });
 const consoleAuth = new ConsoleAuth({ accounts, publicUrl, passwords: new Passwords(db) });
 const links = new FileLinks(sessionSecret, publicUrl);
 const volumes = clusterVolumes({
@@ -54,18 +54,31 @@ const app = volumeApp({ accounts, consoleAuth, volumes, links, sessionSecret, or
 await ownership.start();
 const receipts = sweepVolumeReceipts(db);
 const server = serve({ hostname: host, port, fetch: app.fetch }, () => console.log(JSON.stringify({ type: "volume_listening", port })));
+async function closeVolumes() {
+  for (const close of [
+    () => volumes.close(),
+    () => storageUsage.flush(),
+    () => ownership.close(),
+    () => pool.end(),
+  ]) {
+    try { await close(); } catch (error) {
+      console.error(error);
+      process.exitCode = 1;
+    }
+  }
+}
+
 let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => {
   if (stopping) return;
   stopping = true;
   clearInterval(receipts);
   server.close(error => {
-    void volumes.close().then(() => ownership.close()).then(() => pool.end()).then(() => {
-      if (error) throw error;
-    }).catch(error => {
+    if (error) {
       console.error(error);
       process.exitCode = 1;
-    });
+    }
+    void closeVolumes();
   });
 });
 process.on("SIGHUP", () => void tenants.reload().catch(error => console.error(error)));

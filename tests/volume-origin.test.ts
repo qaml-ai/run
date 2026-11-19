@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { getRequestListener } from "@hono/node-server";
+import pg from "pg";
 import { AgentRuntime } from "../clients/node.ts";
 import { memoryStorage } from "../shared/storage.ts";
 import { Accounts } from "../src/accounts.ts";
 import { FileLinks } from "../src/files.ts";
 import { internalRequests } from "../src/internal-requests.ts";
 import { postgresTail } from "../src/log-tail.ts";
+import { StorageUsage } from "../src/storage-usage.ts";
 import { Tenants } from "../src/tenants.ts";
 import { Ownership } from "../src/ownership.ts";
 import { clusterVolumes, VOLUME_ORIGIN_HEADER, volumeApp } from "../src/volume-app.ts";
@@ -19,18 +21,41 @@ import { testDatabase } from "./database.ts";
 const sessionSecret = "separate fixture session secret";
 const originToken = "separate fixture volume origin token";
 
-test("volume origin takes over and rolls back existing drafts without changing files, versions, or receipts", async () => {
-  const { db } = await testDatabase();
-  const storage = memoryStorage(postgresTail(db));
+test("volume origin with scoped SQL access takes over and rolls back existing drafts, versions, and receipts", async t => {
+  const { db, url, schema } = await testDatabase();
+  const role = `${schema}_volumes`;
+  const password = randomUUID();
+  await db.query(`create role ${role} login password '${password}'`);
+  const login = new URL(url);
+  login.username = role;
+  login.password = password;
+  const scopedDb = new pg.Pool({ connectionString: login.toString(), max: 4 });
+  t.after(async () => {
+    await scopedDb.end();
+    await db.query(`drop owned by ${role}`);
+    await db.query(`drop role ${role}`);
+  });
+  await db.query(`
+    grant usage on schema public to ${role};
+    grant select on tenants, api_tokens, account_deletions, console_sessions, agents,
+      credit_accounts, credit_spend_minutes, billing_disputes, billing_jobs to ${role};
+    grant select, insert, update on actor_owners, volumes, chunk_touches, storage_usage to ${role};
+    grant select, insert, update, delete on runtime_nodes, volume_snapshots, idempotency_keys to ${role};
+    grant select, insert, delete on log_records to ${role};
+    grant select, delete on volume_watchers to ${role};
+    grant insert on storage_gc to ${role};
+  `);
+  const objects = { logs: new Map<string, Map<string, string>>(), blobs: new Map<string, Uint8Array>() };
   const links = new FileLinks(sessionSecret, "https://run.camelai.test");
   const tokenSha256 = (token: string) => createHash("sha256").update(token).digest("hex");
   const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: {
-    bots: { tokenSha256: tokenSha256("bots-operator") },
+    bots: { tokenSha256: tokenSha256("bots-operator"), billing: "prepaid" },
     outsider: { tokenSha256: tokenSha256("outsider-operator") },
   } }) });
   await tenants.reload();
   const accounts = new Accounts({ db, tenants });
   const { token } = await accounts.createToken("bots", "existing drafts API key");
+  await db.query("insert into credit_accounts (tenant, balance) values ('bots', 1000)");
   const auth = (apiKey = token) => new Headers({ authorization: `Bearer ${apiKey}`, [VOLUME_ORIGIN_HEADER]: originToken });
   const consoleAuth = { principal: async () => undefined, allowsMutation: () => false };
 
@@ -41,15 +66,26 @@ test("volume origin takes over and rolls back existing drafts without changing f
     const address = server.address();
     assert(address && typeof address !== "string");
     const node = `http://127.0.0.1:${address.port}`;
-    const ownership = new Ownership(db, { node, volumeOnly });
-    const volumes = clusterVolumes({ ownership, db, storage, sessionSecret });
-    const app = volumeApp({ accounts, consoleAuth, volumes, links, sessionSecret, originToken });
+    const nodeDb = volumeOnly ? scopedDb : db;
+    const nodeAccounts = new Accounts({ db: nodeDb, tenants, flushReceipts: !volumeOnly });
+    const storageUsage = new StorageUsage(nodeDb);
+    const storage = memoryStorage(postgresTail(nodeDb), storageUsage.meter, objects);
+    const ownership = new Ownership(nodeDb, { node, volumeOnly });
+    const volumes = clusterVolumes({
+      ownership, db: nodeDb, storage, sessionSecret,
+      quota: async tenant => {
+        const limit = await nodeAccounts.billing.storageLimit(tenant);
+        return limit === undefined ? undefined : { limit, used: await storageUsage.tenantUsed(tenant) };
+      },
+    });
+    const app = volumeApp({ accounts: nodeAccounts, consoleAuth, volumes, links, sessionSecret, originToken });
     server.on("request", getRequestListener(app.fetch));
     await ownership.start();
     let closing: Promise<void> | undefined;
     const close = () => closing ??= (async () => {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       await volumes.close();
+      await storageUsage.flush();
       await ownership.close();
     })();
     const call = (path: string, init?: RequestInit) => fetch(node + path, { ...init, headers: { ...Object.fromEntries(auth()), ...init?.headers } });
@@ -59,6 +95,7 @@ test("volume origin takes over and rolls back existing drafts without changing f
   const legacy = await start(false);
   const origin = await start(true);
   try {
+    await assert.rejects(scopedDb.query("update agents set revoked = true"), /permission denied/);
     assert.equal((await origin.call("/healthz")).status, 200);
     assert.equal(await legacy.ownership.peer(), undefined, "do not route new agent work to the volume origin");
     assert.equal(await origin.ownership.peer(), legacy.node);
@@ -80,7 +117,7 @@ test("volume origin takes over and rolls back existing drafts without changing f
       legacy.call(file, { method: "PUT", body: "old worker", headers: { "if-match": String(fileVersion) } }),
       origin.call(file, { method: "PUT", body: "new origin", headers: { "if-match": String(fileVersion) } }),
     ]);
-    assert.deepEqual(pending.map(res => res.status).sort(), [201, 412]);
+    assert.deepEqual(pending.map(res => res.status).sort(), [201, 412], (await Promise.all(pending.map(res => res.text()))).join("\n"));
     const before = await (await origin.call(file)).text();
     const makeSnapshot = { method: "POST", body: '{"name":"published","pinned":true}', headers: { "idempotency-key": "draft-publish" } };
     const snapshotResponse = await legacy.call(`${volume}/snapshots`, makeSnapshot);
