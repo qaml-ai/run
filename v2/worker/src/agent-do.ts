@@ -1925,7 +1925,7 @@ export class AgentDO extends DurableObject<Env> {
     const config = this.requireConfig();
     const messages: StoredMessageContent[] = [];
     const cfs = new CamelFsClient(this.env, config.tenantId);
-    for (const { content, attachments } of input.messages) {
+    for (const { content, attachments, sourceFileSizes } of input.messages) {
       if (!attachments) {
         messages.push(content);
         continue;
@@ -1933,6 +1933,9 @@ export class AgentDO extends DurableObject<Env> {
       const lineage = config.lineage;
       if (!lineage) throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
       const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })));
+      if (files.some(file => sourceFileSizes?.has(file.path) && sourceFileSizes.get(file.path) !== file.size)) {
+        throw new ApiError(422, "invalid_history", "A pinned attachment differs in size from its v1 workspace file");
+      }
       messages.push({ ...content, files });
     }
     return this.ctx.storage.transactionSync(() => {

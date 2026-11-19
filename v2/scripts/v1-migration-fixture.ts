@@ -210,11 +210,34 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.equal((await stagingAgent.run("Continue from the copied history")).status, "completed");
   await assert.rejects(stage(secondStage.history.receipt), /destination already has activity/);
 
-  const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default" });
+  const attachmentRepo = await target.repos.create({ name: "attachment-check" });
+  const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default", repoId: attachmentRepo.repoId });
   await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [{
     role: "user", timestamp: 1, content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
   }] }), /unsupported role, attachment, or content block/);
   assert.deepEqual(await attachmentHistory.history(), []);
+
+  const filePath = "uploads/request/notes.txt";
+  const { commit: attachmentCommit } = await target.repos.write(attachmentRepo.repoId, { puts: [{ path: filePath, content: "abc" }] });
+  const nativeFileMessage = {
+    role: "user", timestamp: 2, content: [
+      { type: "text", text: "Read my file" },
+      { type: "file", path: `/workspace/${filePath}`, volume: "source-volume", version: 5, size: 3, contentType: "text/plain", chunks: [] },
+    ],
+  };
+  const attachment = { path: filePath, commit: attachmentCommit, contentType: "text/plain" };
+  const importFiles = (messages: unknown[]) => attachmentHistory.importV1History({
+    source: sourceAgent, messages, attachments: [{ messageIndex: 0, files: [attachment] }],
+  });
+  await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [nativeFileMessage] }), /matching pinned attachment/);
+  const wrongSize = { ...nativeFileMessage, content: [nativeFileMessage.content[0], { ...nativeFileMessage.content[1], size: 2 }] };
+  await assert.rejects(importFiles([wrongSize]), /differs in size/);
+  assert.deepEqual(await attachmentHistory.history(), []);
+  assert.equal((await importFiles([nativeFileMessage])).count, 1);
+  const [importedAttachment] = await attachmentHistory.history();
+  const importedContent = importedAttachment?.content as { files?: Array<{ commit: string }>; meta?: { v1?: unknown } } | undefined;
+  assert.equal(importedContent?.files?.[0]?.commit, attachmentCommit);
+  assert.deepEqual(importedContent?.meta?.v1, nativeFileMessage);
 
   // A successful v2 write can lose its response. Recover its commit on an explicit rerun.
   let lostResponse = false;
