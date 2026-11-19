@@ -1,4 +1,6 @@
-interface Env {
+import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
+
+interface Env extends LegacyVolumeOrigin {
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
@@ -23,13 +25,15 @@ async function selected(request: Request, fingerprint?: string): Promise<boolean
   return hex === fingerprint;
 }
 
-export function fetchLegacyApi(request: Request): Promise<Response> {
+const legacyApiHost = (hostname: string) => hostname === "run.camelai.com" || hostname === "agents.camelai.dev";
+
+export function fetchLegacyApi(request: Request, env: LegacyVolumeOrigin = {}): Promise<Response> {
   const { protocol, hostname, pathname, port } = new URL(request.url);
-  if (protocol !== "https:" || port || (hostname !== "run.camelai.com" && hostname !== "agents.camelai.dev") ||
+  if (protocol !== "https:" || port || !legacyApiHost(hostname) ||
       (!pathname.startsWith("/v1/") && !pathname.startsWith("/clients/"))) {
     return Promise.resolve(new Response(null, { status: 404 }));
   }
-  return fetch(request, { redirect: "manual" });
+  return legacyVolumes(request, env) ?? fetch(request, { redirect: "manual" });
 }
 
 export default {
@@ -37,6 +41,11 @@ export default {
     const { hostname, pathname } = new URL(request.url);
     if (hostname === "run.camelai.com" && (pathname === "/v2" || pathname.startsWith("/v2/"))) {
       return env.V2.fetch(request);
+    }
+
+    if (legacyApiHost(hostname)) {
+      const volume = legacyVolumes(request, env);
+      if (volume) return volume;
     }
 
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&

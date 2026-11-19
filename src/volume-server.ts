@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { Accounts } from "./accounts.ts";
 import { ConsoleAuth } from "./console-auth.ts";
-import { applyDatabase, databaseFromEnvironment, migrate } from "./db.ts";
+import { applyDatabase, databaseFromEnvironment } from "./db.ts";
 import { FileLinks } from "./files.ts";
 import { postgresTail } from "./log-tail.ts";
 import { Ownership, probeNode } from "./ownership.ts";
@@ -32,7 +32,8 @@ if (descriptor.kind === "file" && !descriptor.shared) throw new Error("Volume no
 const tenants = await tenantsFromEnvironment();
 const pool = await databaseFromEnvironment();
 const db = applyDatabase(pool);
-await migrate(db);
+// This service uses the legacy runtime schema and does not change it.
+await db.query("select 1 from volumes limit 0");
 const storageUsage = new StorageUsage(db);
 const storage = await openStorage(descriptor, postgresTail(db), storageUsage.meter);
 const ownership = new Ownership(db, { node, volumeOnly: true, alive: probeNode });

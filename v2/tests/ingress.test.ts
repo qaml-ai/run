@@ -120,3 +120,49 @@ test("serves registration, token exchange, revocation and discovery on the exist
   assert.equal(route.mock.callCount(), 18);
   assert.equal(origin.mock.callCount(), 2);
 });
+
+test("routes volume and signed file traffic to the configured origin through both entrypoints", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async (request: Request, init: RequestInit) => {
+    assert.equal(init.redirect, "manual");
+    if (new URL(request.url).hostname === "run.camelai.com") return new Response("ECS");
+    assert.equal(request.headers.get("authorization"), "Bearer original-key");
+    assert.equal(request.headers.get("x-camelrun-volume-origin"), "private origin token");
+    assert.equal(request.headers.get("x-agent-runtime-internal"), null);
+    if (request.method === "PUT") assert.equal(await request.text(), "updated");
+    return new Response(request.url, { status: 202, headers: { "X-File-Version": "7" } });
+  });
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_VOLUMES_ORIGIN: "https://volume-origin.example",
+    LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token",
+  };
+  const original = { authorization: "Bearer original-key", "x-camelrun-volume-origin": "caller supplied", "x-agent-runtime-internal": "forged" };
+  for (const path of ["/v1/volumes", "/v1/links/token/report%20A.pdf", "/v1/volumes/vol_example/files/report%20A.md?snapshot=snap_abc"]) {
+    for (const send of [worker.fetch, fetchLegacyApi]) {
+      const response = await send(new Request(`https://run.camelai.com${path}`, { headers: original }), env);
+      assert.equal(response.status, 202);
+      assert.equal(response.headers.get("x-file-version"), "7");
+      assert.equal(await response.text(), `https://volume-origin.example${path}`);
+    }
+  }
+  const file = "https://agents.camelai.dev/v1/volumes/vol_example/files/report.md";
+  assert.equal((await worker.fetch(new Request(file, { method: "PUT", body: "updated", headers: original }), env)).status, 202);
+  assert.equal(await (await worker.fetch(new Request("https://run.camelai.com/v1/volumes2"), env)).text(), "ECS");
+  assert.equal(await (await worker.fetch(new Request("https://run.camelai.com/v1/volumes"), { V2: env.V2 })).text(), "ECS");
+  assert.equal((await worker.fetch(new Request(file), { ...env, LEGACY_VOLUMES_ORIGIN_TOKEN: undefined })).status, 503);
+  assert.equal((await worker.fetch(new Request(file), { ...env, LEGACY_VOLUMES_ORIGIN: "invalid" })).status, 503);
+  assert.equal(origin.mock.callCount(), 9);
+});
+
+test("an enabled volume origin fails without retrying ECS", async t => {
+  const send = t.mock.method(globalThis, "fetch", async () => { throw new Error("unreachable"); });
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_VOLUMES_ORIGIN: "https://volume-origin.example",
+    LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token",
+  };
+  const response = await worker.fetch(new Request("https://run.camelai.com/v1/volumes"), env);
+  assert.equal(response.status, 502);
+  assert.equal((await response.json() as { code: string }).code, "VOLUME_ORIGIN_UNAVAILABLE");
+  assert.equal(send.mock.callCount(), 1);
+});

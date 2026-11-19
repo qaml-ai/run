@@ -10,6 +10,7 @@ import { internalRequests } from "../src/internal-requests.ts";
 import { postgresTail } from "../src/log-tail.ts";
 import { Ownership } from "../src/ownership.ts";
 import { clusterVolumes, VOLUME_ORIGIN_HEADER, volumeApp } from "../src/volume-app.ts";
+import ingress, { fetchLegacyApi } from "../v2/ingress/index.ts";
 import { testDatabase } from "./database.ts";
 
 const sessionSecret = "separate fixture session secret";
@@ -81,13 +82,14 @@ test("volume origin takes over and rolls back existing drafts without changing f
 
     await legacy.close();
     origin.ownership.forget(id);
+    const ingressEnv = {
+      V2: { fetch: async () => { throw new Error("volume request was misrouted to the v2 agent runtime"); } },
+      LEGACY_VOLUMES_ORIGIN: origin.node, LEGACY_VOLUMES_ORIGIN_TOKEN: originToken,
+    };
+    const apiUrl = "https://run.camelai.com";
     const draft = new AgentRuntime({
-      url: origin.node, apiKey: "bots",
-      fetch: (input, init) => {
-        const headers = new Headers(init?.headers);
-        headers.set(VOLUME_ORIGIN_HEADER, originToken);
-        return fetch(input, { ...init, headers });
-      },
+      url: apiUrl, apiKey: "bots",
+      fetch: (input, init) => ingress.fetch(new Request(input, init), ingressEnv),
     });
     try {
       const got = await draft.volume(id).read("src/package.json");
@@ -95,6 +97,11 @@ test("volume origin takes over and rolls back existing drafts without changing f
       const edit = await origin.call(file, { method: "PUT", body: "after takeover", headers: { "if-match": String(got.version) } });
       assert.equal(edit.status, 201, await edit.clone().text());
       assert.equal(await origin.ownership.owner(id), origin.node);
+      assert.equal(await (await fetchLegacyApi(new Request(apiUrl + file, { headers: { authorization: "Bearer bots" } }), ingressEnv)).text(), "after takeover");
+      const link = await draft.volume(id).link("src/package.json");
+      const download = await ingress.fetch(new Request(apiUrl + new URL(link.url).pathname), ingressEnv);
+      assert.equal(download.status, 200);
+      assert.equal(await download.text(), "after takeover");
       assert.equal(await (await origin.call(`${file}?snapshot=${snapshot.id}`)).text(), before);
       const replay = await origin.call(`${volume}/snapshots`, makeSnapshot);
       assert.equal(replay.headers.get("idempotent-replayed"), "true");
