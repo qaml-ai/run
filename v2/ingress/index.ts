@@ -5,6 +5,7 @@ interface Env {
 }
 
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}\/[^/]+(?:\/[^/]+)?$/;
+const legacyEndUserRead = /^\/v1\/end-users(?:\/[^/]+\/usage)?$/;
 
 async function selected(request: Request, fingerprint?: string): Promise<boolean> {
   if (!fingerprint) return true;
@@ -32,7 +33,8 @@ export default {
     }
 
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
-        (pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname)) &&
+        (pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
+         (request.method === "GET" && legacyEndUserRead.test(pathname))) &&
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
       if (compatible) return compatible;
