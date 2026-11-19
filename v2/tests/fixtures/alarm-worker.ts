@@ -1,7 +1,24 @@
-import app, { AgentDO as RuntimeAgentDO, TenantDO } from "../../worker/src/index.ts";
+import app, { AgentDO as RuntimeAgentDO, TenantDO as RuntimeTenantDO } from "../../worker/src/index.ts";
 import type { Env } from "../../worker/src/types.ts";
 
-export { TenantDO };
+export class TenantDO extends RuntimeTenantDO {
+  private modelIndexUpdatesEnabled = true;
+
+  setModelIndexUpdatesEnabled(enabled: boolean): void {
+    this.modelIndexUpdatesEnabled = enabled;
+  }
+
+  override async authorizeAndPrepareRun(params: Parameters<RuntimeTenantDO["authorizeAndPrepareRun"]>[0]) {
+    const result = await super.authorizeAndPrepareRun(params);
+    if (!this.modelIndexUpdatesEnabled) delete result.modelIndexUpdates;
+    return result;
+  }
+
+  override async updateAgentModel(...args: Parameters<RuntimeTenantDO["updateAgentModel"]>) {
+    if (!this.modelIndexUpdatesEnabled) throw new Error("The old tenant object has no model update RPC");
+    await super.updateAgentModel(...args);
+  }
+}
 
 export class AgentDO extends RuntimeAgentDO {
   async expireInputIn(seconds: number): Promise<void> {
@@ -40,6 +57,12 @@ export default {
   ...app,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const tenant = /^\/test-model-index\/([^/]+)$/.exec(url.pathname);
+    if (tenant && request.method === "POST") {
+      const stub = env.TENANT_DO.get(env.TENANT_DO.idFromName(tenant[1]!)) as unknown as TenantDO;
+      await stub.setModelIndexUpdatesEnabled(url.searchParams.get("enabled") === "true");
+      return new Response(null, { status: 204 });
+    }
     const match = /^\/test-alarm\/([^/]+)$/.exec(url.pathname);
     if (!match) return app.fetch(request, env, ctx);
     const stub = env.AGENT_DO.get(env.AGENT_DO.idFromName(match[1]!)) as unknown as AgentDO;

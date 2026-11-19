@@ -496,6 +496,7 @@ async function getAgentTarget(
     auth: prep.auth,
     agentId: prep.agentId,
     balanceUsd: prep.balanceUsd,
+    modelIndexUpdates: prep.modelIndexUpdates,
     stub: getAgentStub(env, prep.agentId),
   };
 }
@@ -637,11 +638,14 @@ app.get("/v2/agents/:idOrKey", async (c) => {
 });
 
 app.patch("/v2/agents/:idOrKey/model", async (c) => {
-  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const { stub, modelIndexUpdates } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
   const body = await c.req.json().catch(() => null) as { model?: unknown; expectedModel?: unknown } | null;
   if (typeof body?.model !== "string" || !body.model.trim() ||
       typeof body.expectedModel !== "string" || !body.expectedModel.trim()) {
     throw new ApiError(400, "invalid_request", "model and expectedModel are required");
+  }
+  if (!modelIndexUpdates) {
+    throw new ApiError(503, "model_update_unavailable", "The tenant is still using an earlier runtime version");
   }
   return c.json(await stub.updateModelIfIdle(body.model.trim(), body.expectedModel.trim()));
 });

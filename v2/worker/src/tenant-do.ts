@@ -1091,6 +1091,7 @@ export class TenantDO extends DurableObject<Env> {
     balanceUsd: number;
     slotAcquired: boolean;
     prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
+    modelIndexUpdates?: true;
   }> {
     const profile = this.readProfileOrNull();
     if (!profile) {
@@ -1168,6 +1169,7 @@ export class TenantDO extends DurableObject<Env> {
       balanceUsd: profile.balanceUsd,
       slotAcquired,
       prefetchedProvider,
+      ...(params.operation === "admin" ? { modelIndexUpdates: true } : {}),
     };
   }
 
