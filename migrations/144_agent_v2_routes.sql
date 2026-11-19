@@ -3,6 +3,7 @@ create table agent_v2_routes (
   agent text not null,
   destination_tenant text not null,
   destination_agent text not null,
+  event_base bigint not null,
   primary key (tenant, agent),
   foreign key (tenant, agent) references agent_v2_cutovers (tenant, agent),
   unique (destination_tenant, destination_agent)

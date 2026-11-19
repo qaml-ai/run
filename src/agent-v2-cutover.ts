@@ -53,12 +53,13 @@ export function publishV2AgentRoute(db: Db, source: { tenant: string; agent: str
       select 1 from agent_v2_cutovers where tenant = $1 and agent = $2 and operation = $3 for update`, key);
     if (fence.rowCount !== 1) return false;
     const { rowCount } = await sql.query(`
-      insert into agent_v2_routes (tenant, agent, destination_tenant, destination_agent)
-      values ($1, $2, $3, $4)
+      insert into agent_v2_routes (tenant, agent, destination_tenant, destination_agent, event_base)
+      select tenant, id, $3, $4, greatest(last_cursor, reserved_cursor, $5)
+      from agents where tenant = $1 and id = $2
       on conflict (tenant, agent) do update set destination_agent = excluded.destination_agent
       where agent_v2_routes.destination_tenant = excluded.destination_tenant
         and agent_v2_routes.destination_agent = excluded.destination_agent`,
-    [source.tenant, source.agent, destination.tenant, destination.agent]);
+    [source.tenant, source.agent, destination.tenant, destination.agent, Date.now() * 1000]);
     return rowCount === 1;
   });
 }

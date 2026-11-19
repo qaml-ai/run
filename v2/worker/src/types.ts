@@ -166,6 +166,7 @@ export interface RunRecord {
   actor?: string;
   idempotencyKey: string | null;
   startedAt: number;
+  endedAt?: number;
   status: RunStatus;
   text: string;
   output: unknown;

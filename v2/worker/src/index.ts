@@ -679,6 +679,11 @@ app.post("/v2/agents/:idOrKey/runs", async (c) => {
   }
 });
 
+app.get("/v2/agents/:idOrKey/runs", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
+  return c.json(await stub.getRunState());
+});
+
 app.get("/v2/agents/:idOrKey/runs/:runId", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
   return c.json(await stub.getRun(c.req.param("runId"), c.req.query("by") === "idempotency-key"));

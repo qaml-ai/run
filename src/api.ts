@@ -405,7 +405,7 @@ export function api(context: ApiContext) {
       const migrated = await context.v1Compatibility?.route(tenant, agent);
       if (migrated) {
         const supported = (c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path))
-          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/requests\/[^/]+$/.test(c.req.path));
+          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:state|requests\/[^/]+)$/.test(c.req.path));
         if (!supported) throw unsupportedV1Operation();
         c.set("migratedAgent", migrated);
       }
@@ -782,7 +782,10 @@ export function api(context: ApiContext) {
       : { show: data => own(data) ? (reader ? reader.show(data) : data) : undefined, until: reader?.until ?? Infinity });
   });
   route(createRoute({ method: "get", path: "/v1/agents/{id}/state", request: { params: agentId }, security: readers, responses: { 200: reply("Request state and the stream's cursor; for a browser token, each request only as how it ended", schema.SessionState) } }), async c => {
-    const state = await clients.stateFor(c.req.param("id")!, c.var.principal.tenant);
+    const id = c.req.param("id")!;
+    const state = c.var.migratedAgent && context.v1Compatibility
+      ? await context.v1Compatibility.state(c.var.migratedAgent, clients.archivedRequests(id), c.req.raw.signal)
+      : await clients.stateFor(id, c.var.principal.tenant);
     return json(c, 200, c.var.principal.browser ? { ...state, requests: state.requests.map(readableRequest) } : state);
   });
   const DreamConfigSchema = z.strictObject({enabled:z.boolean(),volumeId:z.string(),schedule:z.strictObject({time:z.string(),timeZone:z.string()}),analyzerModel:z.string().optional(),organizerModel:z.string().optional(),endUser:z.string().optional(),acrossUsers:z.boolean().optional(),budgetUsd:z.number().positive(),instructions:z.string().max(16000)});

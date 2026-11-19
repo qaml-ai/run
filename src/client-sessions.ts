@@ -1442,7 +1442,11 @@ export class ClientSessions {
 
   /** A fenced agent's last durable v1 receipt. Only read after tenant ownership and the v2 route have been checked. */
   async archivedRequest(id: string, requestId: string) {
-    return (await this.storedRequests(id)).find(record => record.id === requestId);
+    return (await this.archivedRequests(id)).find(record => record.id === requestId);
+  }
+
+  archivedRequests(id: string) {
+    return this.storedRequests(id);
   }
 
   /** S4 guest routes must check membership; admission rechecks it after preparation. S5 tags guest streams. */
@@ -1610,6 +1614,9 @@ export class ClientSessions {
         if (operator === undefined && c.req.method === "GET" && c.req.path.startsWith(requestPath + "/")) {
           const requestId = decodeURIComponent(c.req.path.slice(requestPath.length + 1));
           return json(c, 200, await compatibility.requestFor(migrated, requestId, c.req.query("wait"), archived, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/state`) {
+          return json(c, 200, await compatibility.state(migrated, this.archivedRequests(header.id), c.req.raw.signal));
         }
         throw unsupportedV1Operation();
       }

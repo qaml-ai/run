@@ -5,7 +5,7 @@ import { canonical } from "../shared/durable-json.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import { RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
 import type { PromptInput } from "./api-schemas.ts";
-import { validId } from "./client-sessions/state.ts";
+import { activityOf, validId } from "./client-sessions/state.ts";
 import type { Sql } from "./db.ts";
 import { HttpError } from "./core/http-error.ts";
 
@@ -14,13 +14,16 @@ type Route = {
   agent: string;
   destination_tenant: string;
   destination_agent: string;
+  event_base: number;
 };
 type ArchivedRequest = (requestId: string) => Promise<RequestRecord | undefined>;
 
 const runResponse = z.object({
+  id: z.string(),
   agentId: z.string(),
-  idempotencyKey: z.string(),
+  idempotencyKey: z.string().nullable(),
   startedAt: z.number(),
+  endedAt: z.number().optional(),
   status: z.enum(["queued", "running", "input_required", "completed", "failed", "cancelled"]),
   text: z.string(),
   output: z.unknown(),
@@ -33,7 +36,8 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const waitLimitMs = 25_000;
 
 // Reserve a separate key namespace for the v1 request IDs.
-const runKey = (requestId: string) => `v1-compat:${sha(requestId)}`;
+const runKeyPrefix = "v1-compat:";
+const runKey = (requestId: string) => runKeyPrefix + requestId;
 
 const unavailable = () => new HttpError(502, "The migrated agent's runtime did not return a valid response", "V2_RUNTIME_UNAVAILABLE");
 const conflict = () => new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
@@ -53,6 +57,7 @@ function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
     ...base,
     began,
     state: "completed",
+    ...(run.endedAt === undefined ? {} : { endedAt: run.endedAt }),
     status,
     ...(error ? { error } : {}),
     ...(stopped ? { stopped } : {}),
@@ -111,7 +116,7 @@ export class V1Compatibility {
 
   async route(tenant: string, agent: string): Promise<Route | undefined> {
     const { rows } = await this.sql.query<Route>(
-      "select tenant, agent, destination_tenant, destination_agent from agent_v2_routes where tenant = $1 and agent = $2",
+      "select tenant, agent, destination_tenant, destination_agent, event_base from agent_v2_routes where tenant = $1 and agent = $2",
       [tenant, agent],
     );
     return rows[0];
@@ -136,27 +141,31 @@ export class V1Compatibility {
     return false;
   }
 
-  private async run(route: Route, id: string, body?: object, signal?: AbortSignal): Promise<Run | undefined> {
+  private async call(route: Route, path: string, body?: object, signal?: AbortSignal) {
     const key = this.credentials.get(route.destination_tenant);
     if (!key) throw new HttpError(503, "The migrated agent's runtime credential is unavailable", "V2_CREDENTIAL_UNAVAILABLE");
     const agent = encodeURIComponent(route.destination_agent);
-    const idempotencyKey = runKey(id);
-    const url = new URL(body ? `agents/${agent}/runs` : `agents/${agent}/runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`, this.baseUrl);
+    const url = new URL(`agents/${agent}/${path}`, this.baseUrl);
     const headers = new Headers({ authorization: `Bearer ${key}` });
     if (body) headers.set("content-type", "application/json");
     const timeout = AbortSignal.timeout(5_000);
-    let response: Response;
-    let data: unknown;
     try {
-      response = await this.request(url, {
+      const response = await this.request(url, {
         method: body ? "POST" : "GET", headers, redirect: "error",
-        body: body && JSON.stringify({ ...body, idempotencyKey, wait: false }),
+        body: body && JSON.stringify(body),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
-      data = await response.json();
+      return { response, data: await response.json() as unknown };
     } catch {
       throw unavailable();
     }
+  }
+
+  private async run(route: Route, id: string, body?: object, signal?: AbortSignal): Promise<Run | undefined> {
+    const idempotencyKey = runKey(id);
+    const { response, data } = await this.call(route,
+      body ? "runs" : `runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`,
+      body && { ...body, idempotencyKey, wait: false }, signal);
     if (!response.ok) {
       const failure = z.object({ error: z.object({ code: z.string() }) }).safeParse(data);
       const code = failure.data?.error.code;
@@ -168,6 +177,38 @@ export class V1Compatibility {
     const run = runResponse.safeParse(data);
     if (!run.success || run.data.agentId !== route.destination_agent || run.data.idempotencyKey !== idempotencyKey) throw unavailable();
     return run.data;
+  }
+
+  async state(route: Route, archived: Promise<RequestRecord[]>, signal?: AbortSignal) {
+    const [{ response, data }, source] = await Promise.all([this.call(route, "runs", undefined, signal), archived]);
+    const state = z.object({
+      cursor: z.number().int().nonnegative(),
+      activeRunId: z.string().nullable(),
+      runs: z.array(runResponse),
+    }).safeParse(data);
+    if (!response.ok || !state.success) throw unavailable();
+    const cursor = route.event_base + state.data.cursor;
+    if (!Number.isSafeInteger(cursor)) throw unavailable();
+    const keyed = state.data.runs.map(run => {
+      const key = run.idempotencyKey;
+      const id = key?.startsWith(runKeyPrefix) ? key.slice(runKeyPrefix.length) : undefined;
+      if (run.agentId !== route.destination_agent) throw unavailable();
+      if (!validId(id)) throw unsupportedV1Operation();
+      return { id, run };
+    });
+    const { rows } = await this.sql.query<{ request_id: string; fingerprint: string }>(
+      "select request_id, fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = any($3::text[])",
+      [route.tenant, route.agent, keyed.map(({ id }) => id)],
+    );
+    const fingerprints = new Map(rows.map(row => [row.request_id, row.fingerprint]));
+    const projected = keyed.map(({ id, run }) => {
+      const fingerprint = fingerprints.get(id);
+      if (!fingerprint) throw unsupportedV1Operation();
+      return projectRun(run, id, fingerprint);
+    });
+    const activity = activityOf(projected);
+    const activeRun = keyed.find(({ run }) => run.id === state.data.activeRunId)?.id ?? null;
+    return { cursor, requests: [...source, ...projected], ...activity, activeRun };
   }
 
   async prompt(route: Route, id: string, body: z.infer<typeof PromptInput>, archived: ArchivedRequest, signal?: AbortSignal) {

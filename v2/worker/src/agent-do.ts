@@ -939,6 +939,7 @@ export class AgentDO extends DurableObject<Env> {
       ...(row.actor ? { actor: row.actor } : {}),
       idempotencyKey: row.idempotency_key,
       startedAt: row.started_at,
+      ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
       status: row.status as RunStatus,
       text: row.text,
       output: row.output_json ? JSON.parse(row.output_json) : null,
@@ -1717,6 +1718,21 @@ export class AgentDO extends DurableObject<Env> {
       return this.materializeRunRecord(row.id);
     }
     return this.materializeRunRecord(runId);
+  }
+
+  async getRunState(): Promise<{ cursor: number; activeRunId: string | null; runs: RunRecord[] }> {
+    this.ensureSql();
+    const sql = this.ctx.storage.sql;
+    const open = sql.exec<{ id: string }>("SELECT id FROM runs WHERE status IN ('queued', 'running', 'input_required') ORDER BY started_at, rowid").toArray();
+    const recent = sql.exec<{ id: string }>(`
+      SELECT id FROM runs WHERE status IN ('completed', 'failed', 'cancelled')
+      ORDER BY started_at DESC, rowid DESC LIMIT 64`).toArray();
+    const cursor = sql.exec<{ seq: number }>("SELECT coalesce(max(seq), 0) AS seq FROM events").one().seq;
+    return {
+      cursor,
+      activeRunId: this.activeRunId,
+      runs: [...recent.reverse(), ...open].map(({ id }) => this.materializeRunRecord(id)),
+    };
   }
 
   async getRunsWithPendingInputs(): Promise<RunRecord[]> {

@@ -273,6 +273,16 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.equal(scopedSettled.status, 200, scopedSettled.text);
   assert.equal(scopedSettled.json.status, "completed");
   assert.equal((await stagingAgent.history()).length, 8);
+  const compatibleState = await v1.call(`${pathV1}/state`, { token: originalKey });
+  assert.equal(compatibleState.status, 200, compatibleState.text);
+  assert.equal(compatibleState.json.busy, false);
+  assert.equal(compatibleState.json.queuedRuns, 0);
+  assert.equal(compatibleState.json.activeRun, null);
+  for (const id of [lastV1RequestId, requestId, scopedId]) {
+    assert.equal(compatibleState.json.requests.find((row: { id: string }) => row.id === id)?.state, "completed");
+  }
+  const originalState = await v1.call(`/clients/${stagedAgentId}/state`, { token: originalAgentToken });
+  assert.deepEqual(originalState.json, compatibleState.json);
   await assert.rejects(stagingAgent.importV1History({
     source: stagedAgentId, previous: secondStage.history.receipt, messages: sourceHistory.json.messages,
   }), /destination already has activity/);
