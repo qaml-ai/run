@@ -832,7 +832,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   });
 
   it("switches an agent model only once its paused and queued turns are done", async (t) => {
-    const { apiKey } = await CamelRun.createTenant({
+    const { apiKey, tenantId } = await CamelRun.createTenant({
       baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "model-switch", initialCreditsUsd: 10,
     });
     const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
@@ -849,6 +849,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     };
 
     assert.equal((await patchModel("mock/default", agent.agentToken!)).status, 403);
+    const headers = { Authorization: `Bearer ${apiKey}` };
+    const modelIndexFixture = `${workerUrl}/test-model-index/${tenantId}`;
+    assert.equal((await fetch(modelIndexFixture, { method: "POST" })).status, 204);
+    const unavailable = await patchModel("mock/default");
+    assert.equal(unavailable.status, 503);
+    assert.equal(unavailable.body.error?.code, "model_update_unavailable");
+    const previousState = await fetch(`${workerUrl}/v2/agents/${agent.id}`, { headers });
+    assert.equal((await previousState.json() as { model: string }).model, "mock/default");
+    assert.equal((await fetch(modelIndexFixture + "?enabled=true", { method: "POST" })).status, 204);
     assert.equal((await patchModel("mock/another")).body.error?.code, "model_changed");
     const paused = await agent.run('Pause [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
@@ -867,7 +876,6 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const same = await camel.agents.upsert("model-switch", { instructions: "Retain the selected model" });
     assert.equal(same.id, agent.id);
     assert.equal(same.agentToken, agent.agentToken);
-    const headers = { Authorization: `Bearer ${apiKey}` };
     const stateRes = await fetch(`${workerUrl}/v2/agents/${agent.id}`, { headers });
     const state = await stateRes.json() as { model: string; messageCount: number };
     assert.equal(state.model, "mock/sol");
