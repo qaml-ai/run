@@ -4,8 +4,10 @@ interface Env {
 
 export default {
   fetch(request: Request, env: Env): Promise<Response> {
-    const { pathname } = new URL(request.url);
-    if (pathname === "/v2" || pathname.startsWith("/v2/")) return env.V2.fetch(request);
+    const { hostname, pathname } = new URL(request.url);
+    if (hostname === "run.camelai.com" && (pathname === "/v2" || pathname.startsWith("/v2/"))) {
+      return env.V2.fetch(request);
+    }
 
     // On a Workers Route this sends the original request to the hostname's
     // configured origin. Preserve redirects, streams, and WebSocket upgrades.

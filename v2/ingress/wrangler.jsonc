@@ -10,7 +10,8 @@
     { "binding": "V2", "service": "camelrun-v2-prod" }
   ],
   "routes": [
-    { "pattern": "run.camelai.com/*", "zone_name": "camelai.com" }
+    { "pattern": "run.camelai.com/*", "zone_name": "camelai.com" },
+    { "pattern": "agents.camelai.dev/*", "zone_name": "camelai.dev" }
   ],
   "observability": {
     "enabled": true,

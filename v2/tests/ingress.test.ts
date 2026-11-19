@@ -25,3 +25,16 @@ test("dispatches native and legacy requests once, preserving the origin response
   assert.equal(native.mock.callCount(), 2);
   assert.equal(origin.mock.callCount(), 4);
 });
+
+test("preserves routes and the request host on the legacy alias", async t => {
+  const response = new Response(null, { status: 204 });
+  const origin = t.mock.method(globalThis, "fetch", async () => response);
+  const native = t.mock.fn(async (_request: Request) => new Response(null));
+  const env = { V2: { fetch: native } };
+  for (const path of ["/v2/health", "/mcp", "/.well-known/oauth-protected-resource", "/v1/billing/stripe/webhook"]) {
+    const request = new Request("https://agents.camelai.dev" + path);
+    assert.equal(await worker.fetch(request, env), response);
+    assert.deepEqual(origin.mock.calls.at(-1)?.arguments, [request, { redirect: "manual" }]);
+  }
+  assert.equal(native.mock.callCount(), 0);
+});
