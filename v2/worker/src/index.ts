@@ -556,7 +556,8 @@ app.put("/v2/agents/:key", async (c) => {
         id: prep.agentId,
         tenantId: prep.tenantId,
         key,
-        model: prep.model,
+        model: input.model ?? defCfg?.model,
+        initialModel: prep.model,
         instructions: input.instructions ?? defCfg?.instructions,
         definition: input.definition,
         tools: input.tools ?? defCfg?.tools,
@@ -604,7 +605,7 @@ app.put("/v2/agents/:key", async (c) => {
       agentToken,
       repoId: prep.repoId,
       branch: prep.branch,
-      model: prep.model,
+      model: initResult.config.model,
       created: prep.created,
       ...(initResult.run ? { run: initResult.run } : {}),
     },
@@ -622,6 +623,16 @@ app.get("/v2/agents", async (c) => {
 app.get("/v2/agents/:idOrKey", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
   return c.json(await stub.getState());
+});
+
+app.patch("/v2/agents/:idOrKey/model", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const body = await c.req.json().catch(() => null) as { model?: unknown; expectedModel?: unknown } | null;
+  if (typeof body?.model !== "string" || !body.model.trim() ||
+      typeof body.expectedModel !== "string" || !body.expectedModel.trim()) {
+    throw new ApiError(400, "invalid_request", "model and expectedModel are required");
+  }
+  return c.json(await stub.updateModelIfIdle(body.model.trim(), body.expectedModel.trim()));
 });
 
 app.delete("/v2/agents/:idOrKey", async (c) => {
