@@ -138,6 +138,16 @@ Keep the v1 ingress and its archived request store reachable during the
 transition. Confirm older clients can complete their production workflows
 through an ingress independent of the ECS service before retiring ECS.
 
+The private volume origin uses the existing v1 credentials, volume IDs,
+tenant checks and signed links. `LEGACY_VOLUMES_ROLLOUT` selects all methods
+for `all` or an explicit comma-separated volume allowlist.
+`LEGACY_VOLUMES_READ_ROLLOUT` independently selects only `GET` requests with
+the same values. An explicit list selects individual volumes and their signed
+links; only `all` also selects the volume collection. Leave the read selector
+unset to retain current routing. A selected origin failure returns an error
+without retrying another owner. These selectors do not start background jobs
+or move storage away from AWS.
+
 ## Batch prepared Camel Bots builders
 
 Run `v2/scripts/move-camel-bots-builders.ts manifest.json` to stage a batch.

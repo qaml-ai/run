@@ -253,3 +253,61 @@ test("routes only selected volumes and their signed links during rollout", async
   assert.equal(sidecar.mock.callCount(), 4);
   assert.equal(ecs.mock.callCount(), 12);
 });
+
+test("a volume read allowlist changes only GET routing and preserves the existing write rollout", async t => {
+  const ecs = t.mock.method(globalThis, "fetch", async () => new Response("ECS"));
+  const sidecar = t.mock.fn(async (request: Request) => {
+    assert.equal(request.headers.get("authorization"), "Bearer original-key");
+    assert.equal(request.headers.get("x-camelrun-volume-origin"), "private origin token");
+    assert.equal(request.headers.get("x-agent-runtime-internal"), null);
+    return new Response("volume origin");
+  });
+  const reading = "vol_111111111111111111111111";
+  const writing = "vol_222222222222222222222222";
+  const other = "vol_333333333333333333333333";
+  const signed = (volume: string) => `/v1/links/${Buffer.from(JSON.stringify({ volume })).toString("base64url")}.signature/file`;
+  const env = {
+    V2: { fetch: async () => new Response(null) }, LEGACY_VOLUMES: { fetch: sidecar },
+    LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token", LEGACY_VOLUMES_ROLLOUT: writing,
+    LEGACY_VOLUMES_READ_ROLLOUT: ` ${reading} `,
+  };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const send of [worker.fetch, fetchLegacyApi]) {
+      const request = (path: string, method = "GET") => new Request(`https://${host}${path}`, {
+        method, headers: { authorization: "Bearer original-key", "x-agent-runtime-internal": "forged" },
+      });
+      for (const path of [`/v1/volumes/${reading}/files?prefix=src%2F`, signed(reading)]) {
+        assert.equal(await (await send(request(path), env)).text(), "volume origin");
+        for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+          assert.equal(await (await send(request(path, method), env)).text(), "ECS");
+        }
+      }
+      for (const path of ["/v1/volumes", `/v1/volumes?ids=${reading}`, `/v1/volumes/${other}`, signed(other)]) {
+        assert.equal(await (await send(request(path), env)).text(), "ECS");
+      }
+      assert.equal(await (await send(request(`/v1/volumes/${writing}/files`, "PUT"), env)).text(), "volume origin");
+      assert.equal(await (await send(request(`/v1/volumes/${reading}`), { ...env, LEGACY_VOLUMES_READ_ROLLOUT: undefined })).text(), "ECS");
+    }
+  }
+  assert.equal(sidecar.mock.callCount(), 12);
+  assert.equal(ecs.mock.callCount(), 68);
+});
+
+test("all volume reads includes collections but does not retry ECS on a selected origin failure", async t => {
+  const ecs = t.mock.method(globalThis, "fetch", async () => new Response("ECS"));
+  const sidecar = t.mock.fn(async () => new Response("volume origin"));
+  const env = {
+    V2: { fetch: async () => new Response(null) }, LEGACY_VOLUMES: { fetch: sidecar },
+    LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token", LEGACY_VOLUMES_READ_ROLLOUT: "all",
+  };
+  for (const send of [worker.fetch, fetchLegacyApi]) {
+    const url = "https://run.camelai.com/v1/volumes?ids=vol_111111111111111111111111";
+    assert.equal(await (await send(new Request(url), env)).text(), "volume origin");
+    assert.equal(await (await send(new Request(url, { method: "POST" }), env)).text(), "ECS");
+    assert.equal((await send(new Request(url), { ...env, LEGACY_VOLUMES_ORIGIN_TOKEN: undefined })).status, 503);
+    const unavailable = { ...env, LEGACY_VOLUMES: { fetch: async () => { throw new Error("unreachable"); } } };
+    assert.equal((await send(new Request(url), unavailable)).status, 502);
+  }
+  assert.equal(sidecar.mock.callCount(), 2);
+  assert.equal(ecs.mock.callCount(), 2);
+});
