@@ -94,8 +94,9 @@ retry with the same operation ID to read the authoritative route. Publication
 also saves the existing request receipts in the same transaction so older
 request IDs remain readable without ECS.
 
-The ingress can bind to the old Workers service's named `LegacyV1` entrypoint
-for these paths. It answers agent listings and mount reads from the Node
+The ingress can bind to the `LegacyV1` entrypoint exported by
+`backends/workers/src/legacy-entry.ts`. Its default HTTP handler returns 404.
+It answers agent listings and mount reads from the Node
 database. It serves the supported prompt, request, state, event, and history
 routes for a published agent, including the scoped `/clients` routes. A null
 result leaves the request on its existing route. An authentication, storage,
@@ -103,13 +104,22 @@ or upstream failure returns an HTTP error.
 
 Use a Hyperdrive binding to the Node Postgres schema with query caching
 disabled. Give its role read access to `tenants`, `api_tokens`, `oauth_tokens`,
-`oauth_grants`, `console_sessions`, `agents`, `actor_owners`, `runtime_nodes`,
+`oauth_grants`, `console_sessions`, `account_deletions`, `agents`, `actor_owners`, `runtime_nodes`,
 `workspace_assignments`, `agent_v2_cutovers`, `agent_v2_routes`,
 `agent_v2_receipt_archives`, and `agent_v2_requests`. Prompt receipt
 reservation also needs insert access to `agent_v2_requests`. The migration
 command uses its own database role to publish routes and receipt archives.
 Use the existing v1 operator configuration and session signing secret for
-compatibility authentication. Bind `CAMELRUN_V2_COMPAT` to the v2 Worker.
+compatibility authentication. Connect `V2_LEGACY_RUNS` to the v2 Worker's
+`LegacyAgentRuns` service entrypoint. Only the compatibility Worker needs this
+binding. It verifies the published destination's tenant and agent and uses the
+agent's existing v2 permissions for runs, history, and events.
+
+When `MCP_LEGACY_API` is bound to the ingress's private ECS origin service,
+`LegacyV1` also serves `/mcp` and its OAuth discovery metadata. MCP retains
+the v1 bearer authorization and configured issuer. The generated MCP tools
+call the compatibility endpoints when available. Other MCP tool requests
+and OAuth consent, exchange, and revocation continue on their existing routes.
 
 Keep the v1 ingress and its archived request store reachable during the
 transition. Confirm older clients can complete their production workflows

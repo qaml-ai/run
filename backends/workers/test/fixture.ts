@@ -57,6 +57,7 @@ export async function startFixture(
     vars?: Record<string, string>;
     /** A local-test entrypoint, e.g. the backend-neutral contract fixture wrapper. */
     entrypoint?: string;
+    loopbackServices?: Record<string, string>;
     /** Disable the authenticated repo tier to test missing configuration. */
     noCamelfsTier?: boolean;
     /** Clock shared with Worker entrypoints that freeze Date.now. */
@@ -171,6 +172,9 @@ export async function startFixture(
     await readFile(join(root, options.config ?? "wrangler.test.jsonc"), "utf8"),
   );
   config.main = options.entrypoint ?? join(root, "test/worker-entry.ts");
+  if (options.loopbackServices) config.services = [
+    ...(config.services ?? []), ...Object.entries(options.loopbackServices).map(([binding, entrypoint]) => ({ binding, service: config.name, entrypoint })),
+  ];
   if (config.assets?.directory) config.assets.directory = join(root, config.assets.directory);
   if (options.vars?.AGENT_CONSOLE_DIR) config.assets = { directory: options.vars.AGENT_CONSOLE_DIR, binding: "ASSETS", run_worker_first: true, not_found_handling: "single-page-application" };
   config.$schema = join(root, "node_modules/wrangler/config-schema.json");
