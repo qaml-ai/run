@@ -534,7 +534,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         body: JSON.stringify({ model: "mock/sol", expectedModel: "mock/default" }),
       });
       assert.equal(switchDuringTool.status, 409);
-      assert.equal((await switchDuringTool.json()).error.code, "agent_busy");
+      const response = await switchDuringTool.json() as { error: { code: string } };
+      assert.equal(response.error.code, "agent_busy");
       second = await agent.steer(londonPrompt, { actor: "second-member", idempotencyKey: "second", wait: false });
       assert.equal(second.status, "queued");
       assert.equal(second.batchedInto, null);
@@ -795,18 +796,19 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
         body: JSON.stringify({ model: "mock/sol", expectedModel }),
       });
-      return { status: response.status, body: await response.json() };
+      const body = await response.json() as { error?: { code: string }; model?: string; changed?: boolean };
+      return { status: response.status, body };
     };
 
     assert.equal((await patchModel("mock/default", agent.agentToken!)).status, 403);
-    assert.equal((await patchModel("mock/another")).body.error.code, "model_changed");
+    assert.equal((await patchModel("mock/another")).body.error?.code, "model_changed");
     const paused = await agent.run('Pause [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
     const queued = await agent.submit("Next old-model turn", { idempotencyKey: "before-switch" });
     assert.equal(queued.status, "queued");
     const busy = await patchModel("mock/default");
     assert.equal(busy.status, 409);
-    assert.equal(busy.body.error.code, "agent_busy");
+    assert.equal(busy.body.error?.code, "agent_busy");
 
     await agent.answerInput(paused.inputs[0]!.id, { answer: "Continue" });
     const drained = await agent.run("Next old-model turn", { idempotencyKey: "before-switch" });
@@ -818,11 +820,13 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(same.id, agent.id);
     assert.equal(same.agentToken, agent.agentToken);
     const headers = { Authorization: `Bearer ${apiKey}` };
-    const state = await fetch(`${workerUrl}/v2/agents/${agent.id}`, { headers }).then(res => res.json());
+    const stateRes = await fetch(`${workerUrl}/v2/agents/${agent.id}`, { headers });
+    const state = await stateRes.json() as { model: string; messageCount: number };
     assert.equal(state.model, "mock/sol");
     assert.ok(state.messageCount >= 4);
-    const { agents } = await fetch(`${workerUrl}/v2/agents`, { headers }).then(res => res.json());
-    assert.equal(agents.find((row: { id: string }) => row.id === agent.id).model, "mock/sol");
+    const listRes = await fetch(`${workerUrl}/v2/agents`, { headers });
+    const { agents } = await listRes.json() as { agents: Array<{ id: string; model: string }> };
+    assert.equal(agents.find(row => row.id === agent.id)?.model, "mock/sol");
   });
 
   it("keeps an idle SSE follow open, streams the next run, and replays after Last-Event-ID", async () => {
