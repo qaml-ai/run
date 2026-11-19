@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT (shipped in the MIT-licensed SDK, @camelai/run)
 export const FRAME_BYTES = 1_100_000;
+/** A long poll waits at most this long for an event. */
+export const MAX_POLL_WAIT_MS = 25_000;
 /** A v2 run submitted through the v1 compatibility route carries its legacy request ID in this namespace. */
 export const V1_COMPAT_REQUEST_PREFIX = "v1-compat:";
 /**

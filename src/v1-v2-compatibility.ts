@@ -4,7 +4,7 @@ import { z } from "zod";
 import { canonical } from "../shared/durable-json.ts";
 import { V1_COMPAT_REQUEST_PREFIX, type RequestRecord } from "../shared/client-protocol.ts";
 import { RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
-import type { PromptInput } from "./api-schemas.ts";
+import type { PromptInput } from "./v1-prompt-schema.ts";
 import { activityOf, validId } from "./client-sessions/state.ts";
 import type { Sql } from "./db.ts";
 import { HttpError } from "./core/http-error.ts";
@@ -120,7 +120,10 @@ export class V1Compatibility {
   }
 
   static fromEnv(sql: Sql, env = process.env) {
-    const configured = env.AGENT_V2_COMPAT_API_KEYS;
+    return V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
+  }
+
+  static configured(sql: Sql, configured?: string, baseUrl?: string, request: typeof fetch = fetch) {
     if (configured === undefined) return undefined;
     let keys: Record<string, string>;
     try {
@@ -133,12 +136,12 @@ export class V1Compatibility {
         throw new Error("AGENT_V2_COMPAT_API_KEYS must contain a v2 API key for each destination tenant");
       }
     }
-    const url = URL.parse(env.AGENT_V2_COMPAT_URL ?? "https://run.camelai.com/v2");
+    const url = URL.parse(baseUrl ?? "https://run.camelai.com/v2");
     const local = url?.protocol === "http:" && url.hostname === "127.0.0.1";
     if (!url || (!local && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || !/^\/v2\/?$/.test(url.pathname)) {
       throw new Error("AGENT_V2_COMPAT_URL must be an HTTPS or loopback /v2 API URL");
     }
-    return new V1Compatibility(sql, new URL("/v2/", url), new Map(Object.entries(keys)));
+    return new V1Compatibility(sql, new URL("/v2/", url), new Map(Object.entries(keys)), request);
   }
 
   async route(tenant: string, agent: string, admissionSignal?: AbortSignal): Promise<MigratedAgent | undefined> {

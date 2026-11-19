@@ -1,4 +1,5 @@
 import { transaction, type Db } from "./db.ts";
+import type { RequestRecord } from "../shared/client-protocol.ts";
 
 export const AGENT_V2_PUBLISHED = "agent_v2_published";
 
@@ -48,7 +49,12 @@ export async function unfenceV1Agent(db: Db, tenant: string, agent: string, oper
 
 /** Publish the verified destination of one cutover. The operation must still own the fence.
  * A published route is immutable, and its foreign key prevents reopening admission on v1. */
-export function publishV2AgentRoute(db: Db, source: { tenant: string; agent: string; operation: string }, destination: { tenant: string; agent: string }) {
+export function publishV2AgentRoute(
+  db: Db,
+  source: { tenant: string; agent: string; operation: string },
+  destination: { tenant: string; agent: string },
+  archive: RequestRecord[],
+) {
   return transaction(db, async sql => {
     const key = [source.tenant, source.agent, source.operation];
     const fence = await sql.query(`
@@ -62,7 +68,11 @@ export function publishV2AgentRoute(db: Db, source: { tenant: string; agent: str
       where agent_v2_routes.destination_tenant = excluded.destination_tenant
         and agent_v2_routes.destination_agent = excluded.destination_agent`,
     [source.tenant, source.agent, destination.tenant, destination.agent, Date.now() * 1000]);
-    if (rowCount === 1) await sql.query("select pg_notify($1, $2)", [AGENT_V2_PUBLISHED, source.agent]);
+    if (rowCount === 1) {
+      await sql.query(`insert into agent_v2_receipt_archives (tenant, agent, receipts) values ($1, $2, $3::jsonb)
+        on conflict (tenant, agent) do nothing`, [source.tenant, source.agent, JSON.stringify(archive)]);
+      await sql.query("select pg_notify($1, $2)", [AGENT_V2_PUBLISHED, source.agent]);
+    }
     return rowCount === 1;
   });
 }

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import { AgentRuntime, type Mount } from "../../clients/node.ts";
+import type { RequestRecord } from "../../shared/client-protocol.ts";
 import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
 import { CamelRun, type V1HistoryImport } from "../sdk/src/index.ts";
 import { readV1History } from "./migrate-history.ts";
@@ -19,7 +20,7 @@ interface StageOptions {
   attachments?: V1HistoryImport["attachments"];
 }
 
-async function sourceState(source: SourceAgent): Promise<Mount[]> {
+export async function readV1AgentState(source: SourceAgent) {
   const base = `/v1/agents/${encodeURIComponent(source.agentId)}`;
   async function get<T>(path: string): Promise<T> {
     const response = await fetchWithoutRedirects(fetch, new URL(base + path, source.url), {
@@ -30,19 +31,19 @@ async function sourceState(source: SourceAgent): Promise<Mount[]> {
     return await response.json() as T;
   }
   const [state, pending, mounts] = await Promise.all([
-    get<{ requests: { state: string }[] }>("/state"),
+    get<{ requests: RequestRecord[] }>("/state"),
     get<unknown[]>("/inputs?state=pending"),
     get<Mount[]>("/mounts"),
   ]);
-  if (state.requests.some(({ state }) => state === "running" || state === "queued") || pending.length) {
+  if (state.requests.some(receipt => receipt.state !== "completed") || pending.length) {
     throw new Error("The v1 agent has active work or pending input");
   }
-  return mounts;
+  return { mounts, receipts: state.requests };
 }
 
 /** Prepare and verify data for an already configured private v2 agent. Routing belongs to the caller. */
 export async function stageAgent(source: SourceAgent, v2: CamelRun, destination: string, options: StageOptions = {}) {
-  const mounts = await sourceState(source);
+  const { mounts } = await readV1AgentState(source);
   const mount = mounts[0];
   if (mounts.length > 1 || (mount && (mount.path !== "/workspace" || mount.subpath || mount.mode !== "rw"))) {
     throw new Error("Staging supports a single writable v1 volume mounted at /workspace");
@@ -89,8 +90,8 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
       }
     }
 
-    const [currentMounts, latest] = await Promise.all([
-      sourceState(source),
+    const [{ mounts: currentMounts }, latest] = await Promise.all([
+      readV1AgentState(source),
       readV1History(source.url, source.apiKey, source.agentId),
     ]);
     if (!isDeepStrictEqual(currentMounts, mounts) || !isDeepStrictEqual(latest.messages, history.messages) ||

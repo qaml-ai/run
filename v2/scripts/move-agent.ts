@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { fenceV1Agent, publishV2AgentRoute, unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
 import { databaseFromEnvironment, type Db } from "../../src/db.ts";
 import { CamelRun } from "../sdk/src/index.ts";
-import { stageAgent } from "./stage-agent.ts";
+import { readV1AgentState, stageAgent } from "./stage-agent.ts";
 
 type Source = Parameters<typeof stageAgent>[0] & { tenant: string; operation: string };
 type StageOptions = NonNullable<Parameters<typeof stageAgent>[3]>;
@@ -25,10 +25,11 @@ export async function moveAgent(db: Db, source: Source, v2: CamelRun, destinatio
     return { state: "deferred", source: key.agent, destination: destination.agent } as const;
   }
 
-  let receipt;
+  let receipt, receipts;
   try {
     receipt = await stageAgent(source, v2, destination.agent, options);
     if (receipt.destination !== destination.agent) throw new Error("Specify the destination's canonical v2 agent ID");
+    ({ receipts } = await readV1AgentState(source));
   } catch (error) {
     try {
       if (!await unfenceV1Agent(db, key.tenant, key.agent, key.operation)) {
@@ -40,7 +41,7 @@ export async function moveAgent(db: Db, source: Source, v2: CamelRun, destinatio
     throw error;
   }
   // After an uncertain commit, retry with this operation to read the authoritative route.
-  if (!await publishV2AgentRoute(db, key, destination)) throw new Error("The verified v2 destination could not be published");
+  if (!await publishV2AgentRoute(db, key, destination, receipts)) throw new Error("The verified v2 destination could not be published");
   return { state: "published", ...receipt } as const;
 }
 

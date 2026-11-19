@@ -24,6 +24,8 @@ import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
+import { legacyAgentList } from "./legacy-agent-list.ts";
+import { legacyAgentRequest, legacyCompatibility } from "./v1-compatibility.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers, sweepSnapshots } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -213,6 +215,30 @@ function httpFailure(error: unknown, env: Env): Response {
     { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
 }
 
+/** The ingress only sends these proven paths here. A miss still belongs to the original runtime. */
+export class LegacyV1 extends WorkerEntrypoint<Env> {
+  async route(request: Request): Promise<Response | null> {
+    const env = this.env;
+    if (!env.AGENT_V2_COMPAT_API_KEYS) return null;
+    const list = request.method === "GET" && new URL(request.url).pathname === "/v1/agents";
+    if (!list && !legacyAgentRequest(request)) return null;
+    try {
+      await apiRequest(request, env);
+      const bearer = request.headers.get("authorization") ?? undefined;
+      const browser = BrowserTokens.carries(bearer)
+        ? new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(bearer!)
+        : undefined;
+      const principal = browser ? null : await authenticateMoney(request, env);
+      const response = list
+        ? await legacyAgentList(request, database(env), principal)
+        : await legacyCompatibility(request, env, principal, browser);
+      return response ? publicPageHeaders(request, corsResponse(request, response)) : null;
+    } catch (error) {
+      return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+    }
+  }
+}
+
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const hostPath = new URL(request.url).pathname;
@@ -303,6 +329,10 @@ const worker = {
       }
       let auth = browser ? null : await authenticateMoney(request, env)
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
+      const migrated = env.AGENT_V2_COMPAT_API_KEYS && (
+        await legacyAgentList(request, database(env), auth) ?? await legacyCompatibility(request, env, auth, browser)
+      );
+      if (migrated) return migrated;
       if (path === "/mcp") {
         if (!auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
@@ -795,3 +825,4 @@ const worker = {
   },
 };
 export default worker satisfies ExportedHandler<Env, DeliveryMessage>;
+import { WorkerEntrypoint } from "cloudflare:workers";

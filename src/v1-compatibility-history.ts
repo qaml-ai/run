@@ -1,5 +1,5 @@
 import { HttpError } from "./core/http-error.ts";
-import { FULL_HISTORY_READ_BYTES, PAGE_BYTES, historyPageInput } from "./history-pages.ts";
+import { FULL_HISTORY_READ_BYTES, PAGE_BYTES, historyPageInput } from "./core/history-page-input.ts";
 import { unavailable, unsupportedV1Operation, type MigratedAgent, type V1Compatibility, type V2HistoryMessage } from "./v1-v2-compatibility.ts";
 
 type HistoryMessage = Record<string, unknown> & { role: string };

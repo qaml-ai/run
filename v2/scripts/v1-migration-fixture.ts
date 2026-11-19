@@ -237,15 +237,20 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const promptDuringFence = v1.call(`/v1/agents/${stagedAgentId}/prompt`, {
     token: originalKey, body: { text: lastV1Prompt, requestId: lastV1RequestId },
   });
-  assert.equal(await publishV2AgentRoute(v1.db, { ...fenced, operation: randomUUID() }, destination), false);
+  assert.equal(await publishV2AgentRoute(v1.db, { ...fenced, operation: randomUUID() }, destination, []), false);
   assert.equal((await move()).state, "published");
   const held = await promptDuringFence;
   assert.equal(held.status, 202, held.text);
   assert.deepEqual(held.json, lastV1Record);
   assert.match(await openV1Watch.text(), /event: reconnect\nretry: 0\ndata: \{"type":"reconnect","reason":"moved"/);
   assert.equal((await move()).state, "published");
-  assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
-  assert.equal(await publishV2AgentRoute(v1.db, fenced, { ...destination, agent: history.id }), false);
+  assert.equal(await publishV2AgentRoute(v1.db, fenced, destination, []), true);
+  assert.equal(await publishV2AgentRoute(v1.db, fenced, { ...destination, agent: history.id }, []), false);
+  assert.deepEqual((await v1.db.query(
+    `select receipt from agent_v2_receipt_archives a, jsonb_array_elements(a.receipts) as receipt
+      where a.tenant = $1 and a.agent = $2 and receipt->>'id' = $3`,
+    ["alice", stagedAgentId, lastV1RequestId],
+  )).rows[0]?.receipt, lastV1Record);
   assert.equal(await unfenceV1Agent(v1.db, "alice", stagedAgentId, operation), false);
 
   const pathV1 = `/v1/agents/${stagedAgentId}`;

@@ -1,9 +1,9 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
-import { FRAME_BYTES, type ClientEvent, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
+import { FRAME_BYTES, MAX_POLL_WAIT_MS, type ClientEvent, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { parseSSE } from "../v2/sdk/src/sse.ts";
-import { MAX_POLL_WAIT_MS, type StreamReader } from "./client-sessions/events.ts";
+import type { StreamReader } from "./client-sessions/events.ts";
 import { HttpError } from "./core/http-error.ts";
 import { unsupportedV1Operation, v2Event, type MigratedAgent, type V1Compatibility, type V2Event } from "./v1-v2-compatibility.ts";
 
