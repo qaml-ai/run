@@ -84,6 +84,7 @@ export async function runtimeSecrets(env = process.env) {
       endpoint: env.AGENT_AZURE_OPENAI_ENDPOINT, apiKey: env.AGENT_AZURE_OPENAI_API_KEY,
       imageDeployment: env.AGENT_AZURE_IMAGE_DEPLOYMENT, transcriptionDeployment: env.AGENT_AZURE_TRANSCRIPTION_DEPLOYMENT,
       realtimeDeployment: env.AGENT_AZURE_REALTIME_DEPLOYMENT, realtimeModels: env.AGENT_AZURE_REALTIME_MODELS, apiVersion: env.AGENT_AZURE_OPENAI_API_VERSION, models: env.AGENT_AZURE_OPENAI_MODELS,
+      modelResources: env.AGENT_AZURE_OPENAI_MODEL_RESOURCES ? JSON.parse(env.AGENT_AZURE_OPENAI_MODEL_RESOURCES) : undefined,
     }, "AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY");
   }
   return {

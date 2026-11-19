@@ -60,7 +60,11 @@ export interface ApiToken {
   lastUsedAt?: number | null;
 }
 export interface CreateTokenInput { name?: string; scopes?: string[]; expiresInSeconds?: number; }
-export interface ProviderConfig { apiKey: string; baseUrl?: string; }
+export interface ProviderConfig {
+  apiKey: string;
+  baseUrl?: string;
+  modelAliases?: Record<string, string>;
+}
 
 export interface BillingUsageEntry {
   day?: string;

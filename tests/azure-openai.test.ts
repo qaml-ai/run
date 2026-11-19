@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AZURE_API_VERSION, azureCredentials, azureOpenAIConfig, azureRealtimeCredentials, azureRealtimeDeployment } from "../src/azure-openai.ts";
+import { AZURE_API_VERSION, azureChatCredentials, azureCredentials, azureOpenAIConfig, azureRealtimeCredentials, azureRealtimeDeployment } from "../src/azure-openai.ts";
+import { getModel, reasoningFloor } from "../src/pi-catalog.ts";
 import { safetyRefusal } from "../src/images.ts";
 import { Transcriber, TranscriptionFailed, type TranscriptionProvider } from "../src/transcription.ts";
 import { until } from "./runtime-server.ts";
@@ -20,6 +21,24 @@ test("Azure OpenAI settings: an https endpoint and a key, deployments defaulting
     apiKey: "", baseUrl: "https://camel.openai.azure.com/openai/deployments/gpt-transcribe", query: `api-version=${AZURE_API_VERSION}`,
     model: "gpt-transcribe", secrets: { "api-key": "k" }, via: "azure", fallback: { apiKey: "sk-platform" },
   });
+});
+
+test("Azure GPT-6.2 Sol uses Responses, low minimum effort, and can use a separate resource", () => {
+  const id = "gpt-6.2-sol";
+  const model = getModel("azure", id)!;
+  assert.equal(model.api, "azure-openai-responses");
+  assert.equal(reasoningFloor(model), "low");
+  assert.equal(model.contextWindow, 1_050_000);
+  assert.equal(model.maxTokens, 128_000);
+  const modelResources = { [id]: { endpoint: "https://second.openai.azure.com", apiKey: "second-key" } };
+  const resource = { endpoint: "https://first.openai.azure.com", apiKey: "first-key" };
+  const models = { [id]: "sol-deployment", "gpt-6.1-sol": "earlier-deployment" };
+  const azure = azureOpenAIConfig({ ...resource, models, modelResources }, "TEST")!;
+  assert.deepEqual(azureChatCredentials(azure), {
+    baseUrl: "https://first.openai.azure.com/openai/v1", apiKey: "first-key", deployments: models,
+    modelResources: { [id]: { baseUrl: "https://second.openai.azure.com/openai/v1", apiKey: "second-key" } },
+  });
+  assert.throws(() => azureOpenAIConfig({ ...resource, modelResources }, "TEST"), /needs a matching models entry/);
 });
 
 test("realtime on Azure: gpt-realtime-2.1's deployment by default, other models by realtimeModels, \"\" keeping every realtime session on OpenAI", () => {

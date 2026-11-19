@@ -422,11 +422,51 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     source: stagedAgentId, previous: secondStage.history.receipt, messages: sourceHistory.json.messages,
   }), /destination already has activity/);
 
-  const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default" });
+  const attachmentRepo = await target.repos.create({ name: "attachment-check" });
+  const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default", repoId: attachmentRepo.repoId });
   await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [{
     role: "user", timestamp: 1, content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
   }] }), /unsupported role, attachment, or content block/);
   assert.deepEqual(await attachmentHistory.history(), []);
+
+  const filePath = "uploads/request/notes.txt";
+  const { commit: attachmentCommit } = await target.repos.write(attachmentRepo.repoId, { puts: [{ path: filePath, content: "abc" }] });
+  const nativeFileMessage = {
+    role: "user", timestamp: 2, content: [
+      { type: "text", text: "Read my file" },
+      { type: "file", path: `/workspace/${filePath}`, volume: "source-volume", version: 5, size: 3, contentType: "text/plain", chunks: [] },
+    ],
+  };
+  const attachment = { path: filePath, commit: attachmentCommit, contentType: "text/plain" };
+  const importFiles = (messages: unknown[]) => attachmentHistory.importV1History({
+    source: sourceAgent, messages, attachments: [{ messageIndex: 0, files: [attachment] }],
+  });
+  await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [nativeFileMessage] }), /matching pinned attachment/);
+  const wrongSize = { ...nativeFileMessage, content: [nativeFileMessage.content[0], { ...nativeFileMessage.content[1], size: 2 }] };
+  await assert.rejects(importFiles([wrongSize]), /differs in size/);
+  const toolCall = { role: "assistant", timestamp: 3, content: [{ type: "toolCall", id: "call_file", name: "make_file", arguments: {} }] };
+  const toolResult = { role: "toolResult", timestamp: 4, toolCallId: "call_file", toolName: "make_file", content: [
+    { type: "text", text: "File is ready" }, nativeFileMessage.content[1], nativeFileMessage.content[1],
+  ] };
+  const historyWithFiles = [nativeFileMessage, toolCall, toolResult];
+  await assert.rejects(importFiles(historyWithFiles), /V1 message 2 has a workspace file without a matching pinned attachment/);
+  const pinnedFiles = [{ messageIndex: 0, files: [attachment] }, { messageIndex: 2, files: [attachment, attachment] }];
+  const conflict = { ...toolResult, content: [toolResult.content[0], toolResult.content[1], { ...toolResult.content[2], version: 6 }] };
+  await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [nativeFileMessage, toolCall, conflict],
+    attachments: pinnedFiles,
+  }), /matching pinned attachment/);
+  assert.deepEqual(await attachmentHistory.history(), []);
+  assert.equal((await attachmentHistory.importV1History({ source: sourceAgent, messages: historyWithFiles,
+    attachments: pinnedFiles,
+  })).count, 3);
+  const [importedAttachment, , importedTool] = await attachmentHistory.history();
+  const importedContent = importedAttachment?.content as { files?: Array<{ commit: string }>; meta?: { v1?: unknown } } | undefined;
+  assert.equal(importedContent?.files?.[0]?.commit, attachmentCommit);
+  assert.deepEqual(importedContent?.meta?.v1, nativeFileMessage);
+  assert.equal(importedTool?.role, "tool");
+  assert.deepEqual(importedTool?.content, { text: "File is ready", toolCallId: "call_file", toolName: "make_file",
+    meta: { v1: toolResult }, files: importedContent?.files,
+  });
 
   // A successful v2 write can lose its response. Recover its commit on an explicit rerun.
   let lostResponse = false;
