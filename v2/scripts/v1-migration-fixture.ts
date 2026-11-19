@@ -190,10 +190,23 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const stagingRepo = await target.repos.create({ name: "agent-staging" });
   const stagingAgent = await target.agents.upsert("staged-agent", { model: "mock/default", repoId: stagingRepo.repoId });
   const from = { url: v1.base, apiKey: OPERATOR, agentId: stagedAgentId };
-  const stage = (previous?: string) => stageAgent(from, target, stagingAgent.id, { initialCommit: stagingRepo.commit, previous });
+  const staleSummary = new CamelRun({
+    baseUrl: workerUrl,
+    apiKey,
+    fetch: async (url, init) => {
+      const response = await fetch(url, { ...init, body: typeof init?.body === "string" ? init.body : undefined });
+      if (init?.method === "GET" && url.endsWith(`/repos/${stagingRepo.repoId}`) && response.ok) {
+        return Response.json({ ...await response.json() as object, commit: stagingRepo.commit });
+      }
+      return response;
+    },
+  });
+  t.after(() => staleSummary.close());
+  const stage = (previous?: string) => stageAgent(from, staleSummary, stagingAgent.id, { initialCommit: stagingRepo.commit, previous });
   const firstStage = await stage();
   assert.equal(firstStage.history.count, 2);
   assert.ok(firstStage.workspace?.snapshotCommits[stagedSnapshot.id]);
+  assert.notEqual(firstStage.workspace?.head, stagingRepo.commit);
   assert.equal((await target.repos.read(stagingRepo.repoId, { path: "notes.md" })).content, "kept on v2");
   assert.deepEqual(await stage(), firstStage);
   const lastV1Prompt = "A turn before cutover";

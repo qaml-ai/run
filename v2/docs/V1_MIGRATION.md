@@ -44,6 +44,16 @@ For an agent without a workspace, omit `--initial-commit`. To catch up a
 staged copy, pass the last `--previous` history receipt. Use
 `--attachments manifest.json` for history that references files.
 
+For a Camel Bots builder with a private `/workspace` and a shared `/bot`
+draft, add `--camel-bots-draft <v1-volume-id>` and provide the application's
+read-only Postgres connection in `CAMEL_BOTS_DATABASE_URL`. The command
+checks the builder's access to that exact open draft before and after copying
+the workspace. The receipt includes the bot, builder owner, and draft volume.
+Camel Bots keeps using the same shared draft through its app-owned tools, so
+collaborator edits and saved releases stay on the existing volume. An old
+history attachment from `/bot` needs its exact bytes copied to the private
+workspace and pinned by the attachment manifest.
+
 The app still needs to hold admission while it runs the final catch-up and
 changes the route. A staging receipt describes a verified copy at a point
 in time.
@@ -127,6 +137,30 @@ and OAuth consent, exchange, and revocation continue on their existing routes.
 Keep the v1 ingress and its archived request store reachable during the
 transition. Confirm older clients can complete their production workflows
 through an ingress independent of the ECS service before retiring ECS.
+
+## Batch prepared Camel Bots builders
+
+Run `v2/scripts/move-camel-bots-builders.ts manifest.json` to stage a batch.
+Each entry names `owner`, `source` (the existing public agent ID),
+`destination` (the prepared v2 agent ID), and a unique `operation` UUID.
+Also include `initialCommit` for the target workspace and `draftVolumeId`
+if the builder has a shared draft mounted. Include `attachments` for any
+history messages with linked files. Each linked file needs a pinned commit
+at its original workspace path. Prepare each target with the builder's normal
+model, instructions, signed owner identity, and `/builder/mcp/v2` tools
+before staging. Supply `V1_URL`, `V1_API_KEY`, `V1_TENANT`, `V2_URL`,
+`BUILDER_V2_TENANT` (the app deployment's JSON secret), `CAMEL_BOTS_ORIGIN`,
+`CAMEL_BOTS_DATABASE_URL`, and the runtime database connection.
+
+Store the returned history receipt as `previous` in the same manifest entry.
+Run with `--apply` after deploying the app's admission wait and placing
+independent workspace edits behind the app's owner lock. The tool waits
+for a later invocation when work remains active. It briefly holds app
+admission, takes the runtime's durable idle fence, catches up the copy,
+then publishes both routes. A published runtime route can be finished by
+running the same manifest and operation again. Keep the original UUID and
+receipt. A new request whose wait expires can retry using its original web
+message ID. Shared drafts stay in their existing app-owned volume.
 
 ## Switch one cohort
 
