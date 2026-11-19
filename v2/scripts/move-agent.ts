@@ -2,11 +2,20 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { fenceV1Agent, publishV2AgentRoute, unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
 import { databaseFromEnvironment, type Db } from "../../src/db.ts";
+import { ClosedV1InputWitness } from "../../src/agent-v2-input-witness.ts";
+import { postgresTail } from "../../src/log-tail.ts";
+import { openStorage, storageFromEnvironment } from "../../shared/storage-config.ts";
 import { CamelRun } from "../sdk/src/index.ts";
 import { readV1AgentState, stageAgent } from "./stage-agent.ts";
 
 type Source = Parameters<typeof stageAgent>[0] & { tenant: string; operation: string };
-type StageOptions = NonNullable<Parameters<typeof stageAgent>[3]>;
+type StageOptions = NonNullable<Parameters<typeof stageAgent>[3]> & { closedInputs?: ClosedV1InputWitness };
+
+export async function readClosedInputs(db: Db, tenant: string, agent: string) {
+  const descriptor = storageFromEnvironment(process.env.AGENT_DATA_DIR ?? "data");
+  if (descriptor.kind === "file" && !descriptor.shared) throw new Error("Closed input proof requires the source's shared log storage");
+  return ClosedV1InputWitness.read(db, await openStorage(descriptor, postgresTail(db)), tenant, agent);
+}
 
 /** The operator has provisioned and checked the v2 configuration and gated independent edits.
  * Rerun deferred agents once the v1 admission fence confirms all accepted work has settled. */
@@ -21,7 +30,7 @@ export async function moveAgent(db: Db, source: Source, v2: CamelRun, destinatio
     }
     return { state: "published", source: key.agent, destination: destination.agent } as const;
   }
-  if (!await fenceV1Agent(db, key.tenant, key.agent, key.operation)) {
+  if (!await fenceV1Agent(db, key.tenant, key.agent, key.operation, options.closedInputs)) {
     return { state: "deferred", source: key.agent, destination: destination.agent } as const;
   }
 
@@ -41,7 +50,12 @@ export async function moveAgent(db: Db, source: Source, v2: CamelRun, destinatio
     throw error;
   }
   // After an uncertain commit, retry with this operation to read the authoritative route.
-  if (!await publishV2AgentRoute(db, key, destination, receipts)) throw new Error("The verified v2 destination could not be published");
+  if (!await publishV2AgentRoute(db, key, destination, receipts, options.closedInputs)) {
+    if (!await unfenceV1Agent(db, key.tenant, key.agent, key.operation)) {
+      throw new Error("Publication was refused and its v1 fence could not be released");
+    }
+    return { state: "deferred", source: key.agent, destination: destination.agent } as const;
+  }
   return { state: "published", ...receipt } as const;
 }
 

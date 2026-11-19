@@ -26,10 +26,10 @@ const receipt = (id: string, at: number, result: object, fields?: Partial<Reques
 async function fixture() {
   const { db } = await testDatabase();
   await db.query(`insert into agents (id, tenant, header, revision, name, type, model, cursor_clean, last_cursor, reserved_cursor)
-    values ($1, $2, '{}', 1, 'test', 'test', 'm', true, 100, 200)`, [agent, tenant]);
+    values ($1, $2, JSONB '{"sources":{"humanInput":{"approvers":["original-approver"]}}}', 1, 'test', 'test', 'm', true, 100, 200)`, [agent, tenant]);
   await db.query("insert into actor_owners (actor, epoch) values ($1, 3)", [agent]);
   await db.query(`insert into agent_inputs (id, tenant, agent, request_id, tool_call_id, kind, state, input, answer, created_at, expires_at, version)
-    values ($1, $2, $3, $4, 'call', 'question', 'answered', '{"message":"Question","detail":{"questions":[]},"responders":{}}', '{"action":"accept","by":{"via":"api"},"at":5}', 2, 100, 2)`,
+    values ($1, $2, $3, $4, 'call', 'question', 'answered', '{"message":"Question","detail":{"questions":[]},"responders":{},"requestState":"opaque-tool-state"}', '{"action":"accept","by":{"via":"api"},"at":5}', 2, 100, 2)`,
   [input, tenant, agent, origin]);
 
   const pi = await PostgresPiStorage.open(db, agent);
@@ -77,6 +77,12 @@ test("requires the resume after the recorded answer and rechecks archived receip
   assert.ok(latest);
   assert.equal(await fenceV1Agent(db, tenant, agent, key.operation, latest), true);
   assert.equal(await publishV2AgentRoute(db, key, dest, archive, latest), true);
+  const saved = (await db.query("select inputs from agent_v2_receipt_archives where tenant=$1 and agent=$2", [tenant, agent])).rows[0].inputs;
+  assert.equal(saved[0].input.id, input);
+  assert.equal(saved[0].input.version, 3);
+  assert.deepEqual(saved[0].approvers, ["original-approver"]);
+  assert.equal(JSON.stringify(saved).includes("opaque-tool-state"), false);
+  assert.equal((await db.query("select id from agent_inputs where id=$1", [input])).rowCount, 1);
   assert.equal(await unfenceV1Agent(db, tenant, agent, key.operation), false);
   await pi.close(context);
 });

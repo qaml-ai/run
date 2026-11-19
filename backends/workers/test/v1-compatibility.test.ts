@@ -3,6 +3,9 @@ import test from "node:test";
 import { V1_COMPAT_REQUEST_PREFIX } from "../../../shared/client-protocol.ts";
 import { canonical } from "../../../shared/durable-json.ts";
 import { hash } from "../../../src/client-sessions/state.ts";
+import { resumeId, type ArchivedV1Input } from "../../../src/v1-client-state.ts";
+import type { BrowserClaims } from "../src/browser-tokens.ts";
+import type { Input } from "../src/decision-inputs.ts";
 import { V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import type { Sql } from "../src/postgres.ts";
 import { handleLegacyAgentRequest } from "../src/v1-compatibility.ts";
@@ -18,7 +21,18 @@ const receipt = {
   outcome: { result: { reply: "earlier" } },
 };
 
-function fixture({ published = true, hasArchive = true, history = false, historyAgent = destination } = {}) {
+const archivedId = `inp_${"f".repeat(32)}`;
+const archivedInput: ArchivedV1Input<Input> = {
+  input: {
+    id: archivedId, tenant: "alice", agent, requestId: receipt.id, toolCallId: "call", kind: "approval",
+    message: "Can the tool run?", detail: {}, responders: { audience: ["expected"] }, state: "answered",
+    answer: { action: "accept", by: { via: "api", actor: "expected" }, at: 10 }, createdAt: 1, expiresAt: 100,
+  },
+  approvers: ["delegate"],
+};
+const resumed = { ...receipt, id: resumeId(receipt.id), method: "resume", suspension: receipt.id, began: 11, endedAt: 13 };
+
+function fixture({ published = true, hasArchive = true, history = false, historyAgent = destination, hasResume = true } = {}) {
   const forwarded: string[] = [];
   const fingerprints = new Map<string, string>([["continued", receipt.fingerprint]]);
   const sql: Sql = {
@@ -33,7 +47,9 @@ function fixture({ published = true, hasArchive = true, history = false, history
         assert.equal(values[1], agent);
         if (published) rows.push({ tenant: values[0], agent, destination_tenant: "v2", destination_agent: destination, event_base: 42 });
       } else if (text.includes("from agent_v2_receipt_archives")) {
-        if (hasArchive) rows.push(values[2] ? { receipt: values[2] === receipt.id ? receipt : null } : { receipts: [receipt] });
+        if (hasArchive) rows.push(values[2] ? { receipt: values[2] === receipt.id ? receipt : null }
+          : text.includes("select inputs") ? { inputs: [archivedInput], receipts: hasResume ? [receipt, resumed] : [receipt] }
+          : { receipts: [receipt] });
       } else if (text.startsWith("insert into agent_v2_requests")) {
         fingerprints.set(values[2], values[3]);
         return { rows: [] as R[], rowCount: 1 };
@@ -95,8 +111,8 @@ function fixture({ published = true, hasArchive = true, history = false, history
       output: null, toolCalls: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, error: null,
     });
   })!;
-  const request = (tail: string, init?: RequestInit, caller = principal) =>
-    handleLegacyAgentRequest(new Request(`https://run.camelai.com/v1/agents/${agent}/${tail}`, init), sql, compatibility, caller);
+  const request = (tail: string, init?: RequestInit, caller = principal, browser?: BrowserClaims) =>
+    handleLegacyAgentRequest(new Request(`https://run.camelai.com/v1/agents/${agent}/${tail}`, init), sql, compatibility, caller, browser);
   const scoped = (tail: string, init?: RequestInit) =>
     handleLegacyAgentRequest(new Request(`https://run.camelai.com/clients/${agent}/${tail}`, init), sql, compatibility, null);
   return { request, scoped, forwarded };
@@ -192,4 +208,34 @@ test("native v2 runs appear in legacy state and events without creating v1 repla
   ]);
   await assert.rejects(scoped("requests/native_request", { headers }), { status: 404 });
   assert.deepEqual(await (await scoped("requests/legacy", { headers }))?.json(), receipt);
+});
+
+test("serves historical inputs and identical answers from the archive without resubmitting work", async () => {
+  const { request, scoped, forwarded } = fixture();
+  const post = (body: unknown) => ({ method: "POST", body: JSON.stringify(body) });
+  assert.deepEqual(await (await request("inputs"))?.json(), [archivedInput.input]);
+  assert.deepEqual(await (await request("inputs?state=pending"))?.json(), []);
+  assert.deepEqual(await (await request("inputs?state=answered"))?.json(), [archivedInput.input]);
+  await assert.rejects(request("inputs?state=nope"), { status: 400 });
+  await assert.rejects(request("inputs", undefined, { ...principal, tenantId: "different" }), { status: 404 });
+  const correct = { action: "accept", actor: "delegate" };
+  const single = await request(`inputs/${archivedId}`, post(correct));
+  assert.equal(single?.status, 200);
+  assert.deepEqual(await single?.json(), { input: archivedInput.input, request: resumed });
+  const viaAgent = await scoped("inputs", { ...post({ answers: [{ id: archivedId, ...correct }] }),
+    headers: { authorization: `Bearer ${agentKey}` } });
+  assert.equal(viaAgent?.status, 200);
+  assert.deepEqual(await viaAgent?.json(), { inputs: [archivedInput.input], requests: [resumed] });
+  await assert.rejects(scoped("inputs", { ...post({ answers: [{ id: archivedId, ...correct }] }),
+    headers: { authorization: "Bearer different" } }), { status: 401 });
+  await assert.rejects(request(`inputs/${archivedId}`, post({ ...correct, actor: "wrong" })), { status: 403 });
+  await assert.rejects(request(`inputs/${archivedId}`, post({ ...correct, action: "decline" })),
+    { status: 409, details: { input: archivedInput.input } });
+  const browser: BrowserClaims = { v: 1, agent, tenant: principal.tenantId, scopes: ["inputs"], exp: Date.now() + 5000 };
+  assert.deepEqual(await (await request("inputs", undefined, principal, browser))?.json(), [archivedInput.input]);
+  await assert.rejects(request(`inputs/${archivedId}`, post(correct), principal, browser), { status: 403 });
+  await assert.rejects(request("inputs", undefined, principal, { ...browser, scopes: ["history"] }), { status: 403 });
+  assert.deepEqual(forwarded, []);
+  assert.equal(await fixture({ published: false }).request("inputs"), undefined);
+  await assert.rejects(fixture({ hasResume: false }).request(`inputs/${archivedId}`, post(correct)), { status: 503 });
 });

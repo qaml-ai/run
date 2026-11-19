@@ -9,7 +9,8 @@ import { piRunning } from "./pi-durable/agent.ts";
 import { JournalHistory, HOST_USER_KIND } from "./pi-durable/history.ts";
 import { SESSION_CONVERSATION_ID } from "./pi-durable/seed.ts";
 import { PostgresPiStorage } from "./pi-durable/storage.ts";
-import { resumeId } from "./v1-client-state.ts";
+import { decodeStoredInput, inputView, type Input } from "./inputs.ts";
+import { resumeId, type ArchivedV1Input } from "./v1-client-state.ts";
 
 type SourceRevision = {
   revision: string;
@@ -18,12 +19,14 @@ type SourceRevision = {
   reserved_cursor: string | null;
   pi_version: string;
   inputs: string;
+  approvers: unknown;
 };
 
 async function sourceRevision(sql: Sql, tenant: string, agent: string) {
   const { rows: [row] } = await sql.query<SourceRevision>(`
     select a.revision::text, o.epoch::text as owner_epoch, a.last_cursor::text, a.reserved_cursor::text,
       p.next_seq::text as pi_version,
+      a.header #> '{sources,humanInput,approvers}' as approvers,
       coalesce((select jsonb_agg(to_jsonb(i) order by i.id) from agent_inputs i where i.agent = a.id), '[]'::jsonb)::text as inputs
     from agents a join actor_owners o on o.actor = a.id
       join pi_durable_metadata p on p.session_id = a.id
@@ -37,7 +40,8 @@ async function sourceRevision(sql: Sql, tenant: string, agent: string) {
 const sameRevision = (expected: SourceRevision, actual: SourceRevision | undefined) => !!actual &&
   expected.owner_epoch === actual.owner_epoch && expected.revision === actual.revision &&
   expected.last_cursor === actual.last_cursor && expected.reserved_cursor === actual.reserved_cursor &&
-  expected.pi_version === actual.pi_version && expected.inputs === actual.inputs;
+  expected.pi_version === actual.pi_version && expected.inputs === actual.inputs &&
+  isDeepStrictEqual(expected.approvers, actual.approvers);
 
 type StoredInput = {
   id: string;
@@ -104,12 +108,17 @@ export class ClosedV1InputWitness {
   private readonly agent: string;
   private readonly source: SourceRevision;
   private readonly inputReceipts: readonly RequestRecord[];
+  readonly archivedInputs: readonly ArchivedV1Input<Input>[];
 
-  private constructor(tenant: string, agent: string, source: SourceRevision, inputReceipts: readonly RequestRecord[]) {
+  private constructor(
+    tenant: string, agent: string, source: SourceRevision, inputReceipts: readonly RequestRecord[],
+    archivedInputs: readonly ArchivedV1Input<Input>[],
+  ) {
     this.tenant = tenant;
     this.agent = agent;
     this.source = source;
     this.inputReceipts = inputReceipts;
+    this.archivedInputs = archivedInputs;
   }
 
   /** The source must use v1's shared, claim-fenced journal storage, as production does. This does no writes. */
@@ -118,7 +127,11 @@ export class ClosedV1InputWitness {
     if (!before || before.inputs === "[]") return;
     const rows: StoredInput[] = JSON.parse(before.inputs);
     if (rows.some(row => !object(row.input) || typeof row.input.message !== "string" ||
-      !object(row.input.detail) || !object(row.input.responders))) return;
+      !object(row.input.detail) || !object(row.input.responders) ||
+      (row.input.detail.attachments !== undefined &&
+        (!Array.isArray(row.input.detail.attachments) || row.input.detail.attachments.length)))) return;
+    const approvers = before.approvers ?? [];
+    if (!Array.isArray(approvers) || approvers.some(approver => typeof approver !== "string")) return;
     const pi = await PostgresPiStorage.openExisting(db, agent);
     if (!pi) return;
     try {
@@ -137,7 +150,12 @@ export class ClosedV1InputWitness {
       });
       if (!proof.ok || !sameRevision(before, await sourceRevision(db, tenant, agent))) return;
       const ids = new Set(rows.filter(row => row.blocking).map(row => resumeId(row.request_id)));
-      return new ClosedV1InputWitness(tenant, agent, before, receipts.filter(receipt => ids.has(receipt.id)).map(visible));
+      const archivedInputs = rows.map(row => {
+        const input = decodeStoredInput(row);
+        return { input: inputView(input), approvers: input.stored.fixedResponders ? [] : approvers };
+      });
+      return new ClosedV1InputWitness(tenant, agent, before,
+        receipts.filter(receipt => ids.has(receipt.id)).map(visible), archivedInputs);
     } finally { await pi.close(context); }
   }
 

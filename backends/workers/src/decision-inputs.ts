@@ -317,6 +317,7 @@ const row = (value: any): InputRow => {
 };
 /** An input as callers see it: never how its call is retried. */
 export const inputView = ({ stored: _stored, ...input }: InputRow): Input => input;
+export { row as decodeStoredInput };
 
 /** The webhook event for an input asked (`input.requested`) or settled (`input.resolved`), written with the row's change: its ids and key facts. */
 const inputEvent = (type: "input.requested" | "input.resolved", input: InputRow): WebhookEvent => webhookEvent(type, input.tenant, {

@@ -78,8 +78,14 @@ export function publishV2AgentRoute(
         and agent_v2_routes.destination_agent = excluded.destination_agent`,
     [source.tenant, source.agent, destination.tenant, destination.agent, Date.now() * 1000, !!closedInputs]);
     if (rowCount === 1) {
-      await sql.query(`insert into agent_v2_receipt_archives (tenant, agent, receipts) values ($1, $2, $3::jsonb)
-        on conflict (tenant, agent) do nothing`, [source.tenant, source.agent, JSON.stringify(archive)]);
+      const archiveKey = [source.tenant, source.agent, JSON.stringify(archive)];
+      if (closedInputs) {
+        await sql.query(`insert into agent_v2_receipt_archives (tenant, agent, receipts, inputs) values ($1, $2, $3::jsonb, $4::jsonb)
+          on conflict (tenant, agent) do nothing`, [...archiveKey, JSON.stringify(closedInputs.archivedInputs)]);
+      } else {
+        await sql.query(`insert into agent_v2_receipt_archives (tenant, agent, receipts) values ($1, $2, $3::jsonb)
+          on conflict (tenant, agent) do nothing`, archiveKey);
+      }
       await sql.query("select pg_notify($1, $2)", [AGENT_V2_PUBLISHED, source.agent]);
     }
     return rowCount === 1;
