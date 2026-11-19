@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintChannelId, openSecret, randomId, sealSecret } from "./crypto.ts";
-import { getProviderLookupCandidates } from "./providers.ts";
+import { DEFAULT_MODEL_ID, getProviderLookupCandidates } from "./providers.ts";
 import {
   ApiError,
   extractApiError,
@@ -156,6 +156,7 @@ export class TenantDO extends DurableObject<Env> {
         token_hash TEXT NOT NULL UNIQUE,
         sealed_token TEXT NOT NULL,
         model TEXT NOT NULL,
+        model_revision INTEGER NOT NULL DEFAULT 0,
         repo_id TEXT,
         branch TEXT NOT NULL DEFAULT 'refs/heads/main',
         definition_slug TEXT,
@@ -202,6 +203,10 @@ export class TenantDO extends DurableObject<Env> {
         updated_at INTEGER NOT NULL
       );
     `);
+    if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agents_index)")
+      .toArray().some(({ name }) => name === "model_revision")) {
+      this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN model_revision INTEGER NOT NULL DEFAULT 0");
+    }
     this.schemaReady = true;
   }
 
@@ -911,7 +916,7 @@ export class TenantDO extends DurableObject<Env> {
     definitionSlug: string | null;
     definitionConfig: AgentUpsertInput | null;
     slotAcquired: boolean;
-    prefetchedProvider?: { credentials: ProviderCredentials | null };
+    prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
   }> {
     const profile = this.readProfileOrNull();
     if (!profile) {
@@ -967,7 +972,7 @@ export class TenantDO extends DurableObject<Env> {
         defCfg?.model ??
         existing?.model ??
         params.defaultModel ??
-        "openrouter/meta/muse-ember";
+        DEFAULT_MODEL_ID;
       const repoId =
         params.input.repoId !== undefined
           ? params.input.repoId
@@ -991,7 +996,6 @@ export class TenantDO extends DurableObject<Env> {
         `INSERT INTO agents_index (id, agent_key, token_hash, sealed_token, model, repo_id, branch, definition_slug, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
          ON CONFLICT(id) DO UPDATE SET
-           model = excluded.model,
            repo_id = excluded.repo_id,
            branch = excluded.branch,
            definition_slug = COALESCE(excluded.definition_slug, agents_index.definition_slug),
@@ -1038,7 +1042,7 @@ export class TenantDO extends DurableObject<Env> {
       };
     });
 
-    let prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
+    let prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
     if (params.preacquireRunId) {
       if (txResult.sealedProviderRow) {
         const apiKey = await openSecret(
@@ -1046,6 +1050,7 @@ export class TenantDO extends DurableObject<Env> {
           this.env.VAULT_SECRET,
         );
         prefetchedProvider = {
+          model: txResult.model,
           credentials: {
             provider: txResult.sealedProviderRow.provider,
             apiKey,
@@ -1053,7 +1058,7 @@ export class TenantDO extends DurableObject<Env> {
           },
         };
       } else {
-        prefetchedProvider = { credentials: null };
+        prefetchedProvider = { model: txResult.model, credentials: null };
       }
     }
 
@@ -1093,7 +1098,7 @@ export class TenantDO extends DurableObject<Env> {
     agentId: string;
     balanceUsd: number;
     slotAcquired: boolean;
-    prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
+    prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
   }> {
     const profile = this.readProfileOrNull();
     if (!profile) {
@@ -1158,7 +1163,7 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     const wantProvider = params.includeProviderCredentials ?? Boolean(params.preacquireRunId);
-    let prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
+    let prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
     if (wantProvider) {
       const lookup = getProviderLookupCandidates(this.env, model);
       const sealedRow = lookup.isMock ? null : this.findSealedProviderRow(lookup.candidates);
@@ -1170,7 +1175,7 @@ export class TenantDO extends DurableObject<Env> {
           baseUrl: sealedRow.base_url,
         };
       }
-      prefetchedProvider = { credentials };
+      prefetchedProvider = { model, credentials };
     }
 
     return {
@@ -1212,6 +1217,16 @@ export class TenantDO extends DurableObject<Env> {
       entry.branch,
       entry.definitionSlug,
       now,
+    );
+  }
+
+  async updateAgentModel(agentId: string, model: string, revision: number): Promise<void> {
+    this.requireProfile();
+    this.ctx.storage.sql.exec(
+      "UPDATE agents_index SET model = ?1, model_revision = ?2 WHERE id = ?3 AND model_revision <= ?2",
+      model,
+      revision,
+      agentId,
     );
   }
 

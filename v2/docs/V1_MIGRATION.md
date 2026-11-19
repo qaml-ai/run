@@ -48,6 +48,21 @@ The app still needs to hold admission while it runs the final catch-up and
 changes the route. A staging receipt describes a verified copy at a point
 in time.
 
+After holding application edits and ingress, use the v1 control database to
+fence an idle source before the final catch-up. Migration `143_agent_v2_cutover.sql`
+adds the fence to the admission write already used by deployed v1 nodes.
+
+```sh
+node --experimental-strip-types scripts/ops/agent-v2-cutover.ts \
+  fence <v1-tenant> <v1-agent-id> <operation-uuid>
+```
+
+Retry with the same operation ID after an uncertain result. The command
+refuses agents with open or recoverable work, input records, running children,
+schedules, channel bindings, triggers, or open voice calls. Keep the fence
+after the application publishes the v2 route. If the cutover is abandoned
+before publication, run `unfence` with the same arguments.
+
 ## Switch one cohort
 
 - Keep the v1 client and v2 client connected at the same time. Route by bot and

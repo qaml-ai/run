@@ -1,12 +1,10 @@
 import { InlineCodemodeSandbox, loadQuickJSWasm, type CodemodeRunOptions } from "@earendil-works/pi-codemode";
 import type { CodeSandboxes } from "../src/codemode-pi-launcher.ts";
 
-// Read once, as this module loads: the simulation refuses real I/O once it runs.
 const wasm = await loadQuickJSWasm();
 
 /**
- * Code mode on Pi's own QuickJS, on this thread: for tests and the simulation, which run without v8-exec. `opened`
- * counts the scripts it started.
+ * Run code mode tests on Pi's in-process QuickJS sandbox. `opened` counts scripts started.
  */
 export function inlineSandboxes(): CodeSandboxes & { opened: number } {
   const sandboxes = Object.assign((options: Parameters<CodeSandboxes>[0]) => {

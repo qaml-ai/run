@@ -10,7 +10,7 @@ type ReadonlySqliteDatabase = { prepare(sql: string): { all(...params: (string |
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
     DatabaseSync: new (path: string, options: { readOnly: true }) => ReadonlySqliteDatabase;
 };
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { openNodeSqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { validKey } from "../../shared/storage.ts";
@@ -20,7 +20,7 @@ import { clock } from "../node-context.ts";
 import { timedStorage } from "../metrics.ts";
 import type { SystemMessage } from "@earendil-works/pi-ai";
 
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { apply, type Op } from "@earendil-works/chord/delta";
 import { StorageRequestError } from "@earendil-works/pi-durable";
 import { placeEntries, type Placement } from "./ordinals.ts";

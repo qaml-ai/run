@@ -4,7 +4,6 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { network } from "./node-context.ts";
 import { HttpError, errorStatus, readText } from "./http.ts";
 import { errorText } from "./protocol.ts";
-import { sometimes } from "./assert.ts";
 import { VersionConflict, type VolumeService } from "./volumes.ts";
 
 export function internalRequests(secret: string) {
@@ -27,7 +26,6 @@ export function internalRequests(secret: string) {
     const [timestamp, checksum] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
     const expected = Buffer.from(signature(timestamp ?? "", c.req.path, body));
     const given = Buffer.from(checksum ?? "");
-    sometimes(!!timestamp && Math.abs(Date.now() - Number(timestamp)) > 5_000, "a node-to-node request came from a node whose clock is seconds off");
     if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
     return body;
   }

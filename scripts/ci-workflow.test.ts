@@ -11,7 +11,7 @@ const gate = workflow.split("      - name: Require successful checks or intentio
   .split("        run: |\n")[1].split("      - name:")[0];
 
 function passes({ tests = true, image = true, reused = false, event = "push", ref = "refs/heads/main", results = {} as Record<string, string> } = {}) {
-  const states = { reuse: event === "push" ? "success" : "skipped", changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", sim: "success", image: "success", docs: "success", publish: "success", camelfsd: "success", "guest-image": "success", ...results };
+  const states = { reuse: event === "push" ? "success" : "skipped", changes: "success", checks: "success", quick: "skipped", python: "success", test: "success", image: "success", docs: "success", publish: "success", camelfsd: "success", "guest-image": "success", ...results };
   const needs = workflow.split("  ci:\n")[1].match(/needs: \[(.+)\]/)![1].split(", ");
   assert.deepEqual(Object.keys(states).sort(), needs.sort(), "every required job has a fake state");
   const script = gate.replaceAll("${{ needs.changes.outputs.tests }}", String(tests))
@@ -26,7 +26,7 @@ function passes({ tests = true, image = true, reused = false, event = "push", re
 
 test("CI gate requires every check and main publication", () => {
   assert.ok(passes());
-  for (const job of ["changes", "checks", "python", "test", "sim", "image", "docs", "publish"]) {
+  for (const job of ["changes", "checks", "python", "test", "image", "docs", "publish"]) {
     for (const result of ["failure", "cancelled", "skipped"]) {
       assert.equal(passes({ results: { [job]: result } }), false, `${job}: ${result}`);
     }
@@ -44,7 +44,7 @@ test("drafts never report CI success, so no merge can rest on their fast checks"
 });
 
 test("PRs require images only when image inputs changed", () => {
-  const options = { tests: false, event: "pull_request", ref: "refs/pull/303/merge", results: { python: "skipped", test: "skipped", sim: "skipped", publish: "skipped" } };
+  const options = { tests: false, event: "pull_request", ref: "refs/pull/303/merge", results: { python: "skipped", test: "skipped", publish: "skipped" } };
   assert.ok(passes(options));
   assert.equal(passes({ ...options, results: { ...options.results, image: "skipped" } }), false);
   assert.ok(passes({ ...options, image: false, results: { ...options.results, image: "skipped" } }));
@@ -59,7 +59,7 @@ test("superseded PR cancellation covers the workflow and only PR matrices fail f
   const concurrency = workflow.split("concurrency:\n")[1].split("jobs:\n")[0];
   assert.match(concurrency, /github\.event\.pull_request\.number/);
   assert.match(concurrency, /cancel-in-progress: \$\{\{ github\.ref != 'refs\/heads\/main' \}\}/);
-  const matrix = workflow.split("  test:\n")[1].split("  sim:\n")[0];
+  const matrix = workflow.split("  test:\n")[1].split("  image:\n")[0];
   assert.match(matrix, /fail-fast: \$\{\{ github\.event_name == 'pull_request' \}\}/);
   const nightly = readFileSync(new URL("../.github/workflows/nightly.yml", import.meta.url), "utf8");
   assert.match(nightly, /cancel-in-progress: false/);
@@ -68,17 +68,16 @@ test("superseded PR cancellation covers the workflow and only PR matrices fail f
 test("ready PR gate reports failed and cancelled dependencies rather than skipping", () => {
   const options = { event: "pull_request", ref: "refs/pull/7/merge", results: { publish: "skipped" } };
   assert.ok(passes(options));
-  for (const job of ["changes", "checks", "python", "test", "sim", "image", "docs"]) {
+  for (const job of ["changes", "checks", "python", "test", "image", "docs"]) {
     for (const result of ["failure", "cancelled", "skipped"]) assert.equal(passes({ ...options, results: { ...options.results, [job]: result } }), false, `${job}: ${result}`);
   }
-  const matrix = workflow.split("  test:\n")[1].split("  sim:\n")[0];
+  const matrix = workflow.split("  test:\n")[1].split("  image:\n")[0];
   assert.match(matrix, /needs\.reuse\.outputs\.process == 'true'/);
   assert.match(matrix, /TEST_FILES: \$\{\{ needs\.changes\.outputs\.selected \}\}/);
-  assert.match(matrix, /TEST_INCLUDE_SIM: \$\{\{ github\.event_name == 'pull_request' \}\}/);
 });
 
 test("reuse only permits intentional skips on main and still requires inline, images and publication", () => {
-  const skipped = { checks: "skipped", docs: "skipped", python: "skipped", sim: "skipped" };
+  const skipped = { checks: "skipped", docs: "skipped", python: "skipped" };
   assert.ok(passes({ reused: true, results: skipped }));
   assert.equal(passes({ results: skipped }), false);
   for (const job of ["test", "image", "publish", "changes", "reuse"]) {
@@ -109,7 +108,7 @@ test("only a full process proof removes process shards; PRs and failed lookups r
     }
   }
   assert.equal(jobs.reuse.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
-  for (const name of ["checks", "docs", "python", "sim"]) {
+  for (const name of ["checks", "docs", "python"]) {
     const condition = jobs[name].if.slice(3, -2);
     const runs = (passed: string, result = "skipped", cancelled = false) => Function("needs", "cancelled", `return ${condition}`)(
       { changes: { result: "success", outputs: { tests: "true" } }, reuse: { result, outputs: { passed } } }, () => cancelled);

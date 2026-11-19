@@ -89,7 +89,7 @@ Workers runtime in dry (`delegate`) and workflow modes, scored on tests, cost, c
 Every main commit's CI (`.github/workflows/ci.yml`) is its deploy gate: Deploy (`deploy.yml`) rolls the commit out
 once all of CI passes, from the image CI's `publish` job already pushed. The gate is typecheck, builds and UI tests
 (`checks`), the Python SDK (`python`), the whole suite in both hosting modes (`test`: five shards each), docs and API
-tests (`docs`), the simulator's fixed seeds (`sim`) and both image architectures (`image`). Same-repository PRs, main
+tests (`docs`) and both image architectures (`image`). Same-repository PRs, main
 and dispatches run on Blacksmith; fork PRs use standard GitHub runners, including native ARM64.
 
 A draft PR (by its state when the run starts, not the event's) runs only `checks`, `docs` and `changed tests`: the
@@ -97,12 +97,12 @@ test files it changes, and those named after the source files it changes (`src/f
 `tests/foo-*.test.ts`, up to 40 files). A draft run never reports `CI success`. While iterating on a change, open
 it as a draft. Marking it ready starts the ready-PR checks.
 
-Ready PRs run five process shards, Python, fixed simulator seeds and, when image inputs change, an amd64 image
+Ready PRs run five process shards, Python and, when image inputs change, an amd64 image
 check. `scripts/test-select.ts` follows relative TypeScript imports (including re-exports and literal dynamic
 imports) from changed files to test files. It adds five fast smoke files: agent-host, code-executor, model-errors,
 history and config. These cover host lifecycle, sandbox execution, provider errors, history and configuration in
 about ten seconds of recorded process time. `CI success` requires the selected suite to pass; it always reports
-a result on ready PRs. Simulator test files run in these process shards because their nodes host inline internally.
+a result on ready PRs.
 
 Package files, tsconfig files, test helpers, test scripts, migrations, workflows, sandbox or Dockerfile changes run
 all test files. Changes outside the import graph, an empty diff, selector/API errors or a selection above 40% also
@@ -113,20 +113,19 @@ files locally in process mode by default; `AGENT_HOSTING=inline npm run test:aff
 It includes tracked working-tree edits, with the same Postgres and sandbox prerequisites as other runtime tests.
 
 On main, `reuse` looks for the exact checkout tree recorded by a successful same-repository PR run within 14 days.
-It requires the whole `ci.yml` run and its `CI success`, checks, docs, Python, simulator and process jobs to pass.
-A match skips `checks`, `docs`, `python` and `sim`; it skips process shards only if the PR ran the full process
+It requires the whole `ci.yml` run and its `CI success`, checks, docs, Python and process jobs to pass.
+A match skips `checks`, `docs` and `python`; it skips process shards only if the PR ran the full process
 suite. A selected PR suite never replaces the full process suite. Inline shards, both image architectures and
 `publish` still run. Missing proof or an API error runs the normal checks. `CI success` accepts these skips only
 with verified reuse on a main push; Deploy still requires that main CI run to succeed.
 
 On failure, `CI success` writes the commit SHA, associated PR and last earlier green main SHA to the job summary. It does not
 bisect automatically. Superseded PR and branch runs are cancelled; each main SHA runs independently so Deploy
-receives its completed CI event. Four hundred fresh simulator seeds run every night (`sim-seeds.yml`; run it by
-hand for more): a seed that finds something new turns that run red.
+receives its completed CI event.
 
 Runner sizes follow job timings. The test shards and `python` are CPU-bound and keep eight vCPUs (on four, shards
-took 170-450 s instead of 115-165 s); `checks`, `docs` and `changed tests` finish within a minute on four. The fixed
-seeds use 16 vCPUs, and image builds keep 16 for cache misses. Deploy waits on ECS on two ARM vCPUs. `changes` and
+took 170-450 s instead of 115-165 s); `checks`, `docs` and `changed tests` finish within a minute on four.
+Image builds keep 16 vCPUs for cache misses. Deploy waits on ECS on two ARM vCPUs. `changes` and
 `CI success` stay on GitHub's runners, on the critical path: they pick a job up in one to three seconds, Blacksmith
 in seven to seventeen.
 

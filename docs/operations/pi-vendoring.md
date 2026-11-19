@@ -39,12 +39,16 @@ published to npm. The self-host image is the runtime image, which has Pi install
    rewrites `PI_COMMIT` and `LICENSE`. It stops when one of them depends on a Pi package it does not ship (add it to the
    list in the script, to `overrides`, and to the table above) or when a package's license is not MIT. `npm install`
    updates `package-lock.json` with the new tarballs' integrity.
+
+   Set `PI_KEEP_CATALOG=1` to build pi-ai with the model data already vendored. If the new Pi commit adds a provider or
+   model API, set `PI_CATALOG_ADDITIONS` to a directory containing the relevant provider JSON from the matching Pi release.
+   The build keeps the existing models and prices and validates the combined catalog.
 2. Review the upstream changes: the `changes` link in `PI_COMMIT`, and the `[Unreleased]` sections of
    `packages/durable/CHANGELOG.md` and `packages/ai/CHANGELOG.md` there. Look for breaking changes, new document or task
    versions (below), and new dependencies (their licenses must be permissive, see `CONTRIBUTING.md`).
 3. `npm run typecheck`, then the Pi suites one file at a time (`pi-durable-*`, `agent-host`, `compaction`,
    `landed-compaction`, `close-turn-at-load`, `history-pages`, `stream-deltas`, `loop-reliability`), then `npm test`
-   and `AGENT_HOSTING=inline npm test`, and `npm run sim` when recovery changed.
+   and `AGENT_HOSTING=inline npm test`.
 4. Open a PR with the sha, the upstream changes that matter to us, and a release note in `docs/operations/unreleased/`.
 
 ## Our patches

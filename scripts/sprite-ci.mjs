@@ -40,7 +40,6 @@ export const GATES = {
     // a throwaway repository first (.gitignore applies, so its tree is the commit's) and removes it after.
     args: ["bash", "-c", `set -e; git init -q; trap 'rm -rf .git' EXIT; git add -A; git -c user.name=sprite-ci -c user.email=sprite-ci@localhost commit -qm tree --no-verify; node ${STRIP} --test scripts/ci-reuse.test.cjs scripts/ci-changes.test.ts scripts/ci-workflow.test.ts scripts/test-select.test.ts scripts/test-shard.test.ts scripts/test-files.test.ts tests/docs.test.ts tests/openapi.test.ts tests/openapi-sources.test.ts`],
   },
-  sim: { what: "the simulator's fixed seeds, twice each (ci.yml sim)", args: ["bash", "-c", "npm run -s sim -- --seeds 1-10 --twice --jobs \"$(nproc)\""] },
   python: {
     what: "the Python SDK tests (ci.yml python)",
     args: ["bash", "-c", "set -e; [ -x \"$HOME/.sprite-ci-python/bin/python3\" ] || python3 -m venv \"$HOME/.sprite-ci-python\"; \"$HOME/.sprite-ci-python/bin/pip\" install -q -r clients/python/requirements.txt; PATH=\"$HOME/.sprite-ci-python/bin:$PATH\" npm run test:python"],

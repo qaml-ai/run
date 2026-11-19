@@ -93,6 +93,11 @@ Worker. The deploy creates its own Durable Objects. Supply a separate
 `TOOL_IDENTITY_PRIVATE_JWK` secret for Camel Bots tool signing. Bootstrap new v2
 tenants and issue v2 credentials for the clients joining the rollout.
 
+Set `AZURE_OPENAI_SOL_ENDPOINT` to the Azure resource serving the
+`gpt-6.2-sol` deployment and `AZURE_OPENAI_SOL_API_KEY` to its key before
+selecting `azure/gpt-6.2-sol` as the Worker default. The same route serves
+explicit model requests and uses low reasoning effort.
+
 Build and check the release with the v2 package's pinned Wrangler:
 
 ```sh
