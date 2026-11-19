@@ -279,9 +279,8 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private writeConfig(cfg: AgentConfig): void {
-    const now = Date.now();
+    const now = Math.max(Date.now(), (this.cachedConfig?.updatedAt ?? 0) + 1);
     cfg.updatedAt = now;
-    this.cachedConfig = cfg;
     this.ctx.storage.sql.exec(
       `INSERT INTO config (id, config_json, updated_at)
        VALUES (1, ?1, ?2)
@@ -289,6 +288,7 @@ export class AgentDO extends DurableObject<Env> {
       JSON.stringify(cfg),
       now,
     );
+    this.cachedConfig = cfg;
   }
 
   private buildAdapter(): TurnStorageAdapter {
@@ -1557,6 +1557,7 @@ export class AgentDO extends DurableObject<Env> {
       id: string;
       tenantId: string;
       key: string;
+      initialModel?: string;
     },
     initialRun?: { input: StartRunInput; hints?: StartRunHints },
   ): Promise<{ config: AgentConfig; created: boolean; run?: RunRecord }> {
@@ -1570,6 +1571,7 @@ export class AgentDO extends DurableObject<Env> {
       model:
         incoming.model ??
         existing?.model ??
+        incoming.initialModel ??
         this.env.DEFAULT_MODEL ??
         DEFAULT_MODEL_ID,
       instructions: incoming.instructions ?? existing?.instructions ?? "",
@@ -1600,17 +1602,52 @@ export class AgentDO extends DurableObject<Env> {
       updatedAt: now,
     };
     this.writeConfig(merged);
+    const indexSync = existing && incoming.model !== undefined
+      ? this.syncIndexedModel(merged)
+      : undefined;
 
     if (initialRun) {
       // `drainRunQueue().finally()` will invoke `scheduleNextAlarm()` once finished.
+      if (indexSync) {
+        this.ctx.waitUntil(indexSync.catch((error) => {
+          console.error("Agent model index update failed", { agentId: merged.id, error });
+        }));
+      }
       const run = await this.enqueueOrRunInternal(initialRun.input, initialRun.hints);
       return { config: merged, created: !existing, run };
     }
 
+    await indexSync;
     if (existing) {
       await this.scheduleNextAlarm();
     }
     return { config: merged, created: !existing };
+  }
+
+  private async syncIndexedModel(config: AgentConfig): Promise<void> {
+    await getTenantStub(this.env, config.tenantId).updateAgentModel(config.id, config.model, config.updatedAt);
+  }
+
+  async updateModelIfIdle(model: string, expectedModel: string): Promise<{ model: string; changed: boolean }> {
+    this.ensureSql();
+    const cfg = this.requireConfig();
+    if (cfg.model === model) {
+      await this.syncIndexedModel(cfg);
+      return { model, changed: false };
+    }
+    if (cfg.model !== expectedModel) {
+      throw new ApiError(409, "model_changed", "The agent model changed");
+    }
+    const pending = this.ctx.storage.sql.exec(
+      "SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1",
+    ).toArray().length > 0;
+    if (this.activeRunId || pending) {
+      throw new ApiError(409, "agent_busy", "The agent has work in progress");
+    }
+    const updated = { ...cfg, model };
+    this.writeConfig(updated);
+    await this.syncIndexedModel(updated);
+    return { model, changed: true };
   }
 
   async seedFork(payload: {
