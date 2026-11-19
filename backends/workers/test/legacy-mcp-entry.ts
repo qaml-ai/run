@@ -12,6 +12,26 @@ export class FixtureLegacyOrigin extends WorkerEntrypoint {
   }
 }
 
+export class FixtureLegacyDestination extends WorkerEntrypoint {
+  async route(tenant: string, agent: string, request: Request) {
+    if (tenant !== `tnt_${"1".repeat(16)}` || agent !== `agt_${"2".repeat(16)}`) return new Response(null, { status: 404 });
+    const url = new URL(request.url);
+    const prefix = `/v2/agents/${agent}`;
+    const idempotencyKey = "v1-compat:fixture-prompt";
+    if (url.pathname === `${prefix}/history` && request.method === "GET") return Response.json({ messages: [] });
+    if (request.method === "POST" && url.pathname === `${prefix}/runs`) {
+      const body = await request.json() as { idempotencyKey: string; prompt: string; wait: boolean };
+      if (body.prompt !== "Run on the private destination" || body.idempotencyKey !== idempotencyKey || body.wait !== false) {
+        return new Response(null, { status: 422 });
+      }
+    } else if (request.method !== "GET" || decodeURIComponent(url.pathname) !== `${prefix}/runs/${idempotencyKey}` || url.searchParams.get("by") !== "idempotency-key") {
+      return new Response(null, { status: 404 });
+    }
+    return Response.json({ id: "run_fixture", agentId: agent, idempotencyKey, startedAt: 1, endedAt: 2, status: "completed",
+      text: "From v2", output: null, toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, error: null });
+  }
+}
+
 export default {
   ...worker,
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {

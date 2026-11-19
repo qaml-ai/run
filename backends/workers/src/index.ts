@@ -219,6 +219,27 @@ function httpFailure(error: unknown, env: Env): Response {
     { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
 }
 
+async function legacyRuntimeRequest(send: (request: Request) => Promise<Response>, url: string, init: RequestInit) {
+  const { signal, ...wire } = init;
+  // Worker RPC cannot serialize an explicit AbortSignal on a Request.
+  signal?.throwIfAborted();
+  const request = new Request(url, wire);
+  if (!signal) return send(request);
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+  const onAbort = () => rejectAbort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const response = send(request).then(result => {
+      if (signal.aborted) void result.body?.cancel().catch(() => {});
+      return result;
+    });
+    return await Promise.race([response, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** Runs before the pilot's directory, whose stored agent headers differ from Node's. */
 function legacyCompatibility(
   request: Request,
@@ -230,8 +251,9 @@ function legacyCompatibility(
   const sql = database(env);
   const service = env.V2_LEGACY_RUNS;
   const compatibility = service
-    ? new V1Compatibility(sql, (route, path, init) => service.route(route.destination_tenant, route.destination_agent,
-      new Request(`https://legacy-v2.internal/v2/agents/${encodeURIComponent(route.destination_agent)}/${path}`, init)))
+    ? new V1Compatibility(sql, (route, path, init) => legacyRuntimeRequest(
+      request => service.route(route.destination_tenant, route.destination_agent, request),
+      `https://legacy-v2.internal/v2/agents/${encodeURIComponent(route.destination_agent)}/${path}`, init))
     : V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
   if (!compatibility) return;
   return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
