@@ -6,7 +6,7 @@ test("dispatches native and legacy requests once, preserving the origin response
   const legacyRedirect = new Response(null, { status: 307, headers: { Location: "/login" } });
   const origin = t.mock.method(globalThis, "fetch", async () => legacyRedirect);
   const nativeFailure = new Response(null, { status: 503 });
-  const native = t.mock.fn(async () => nativeFailure);
+  const native = t.mock.fn(async (_request: Request) => nativeFailure);
   const env = { V2: { fetch: native } };
 
   for (const path of ["/v2", "/v2/agents/example/runs"]) {
