@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
+import pg from "pg";
 import { Type } from "typebox";
 import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../clients/node.ts";
 import { serveTools } from "../../clients/server.ts";
+import { TEST_DATABASE_URL } from "../../tests/database.ts";
 import { listen, OPERATOR, runtime } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
-import { stageAgent } from "./stage-agent.ts";
+import { stageAgent, verifyCamelBotsDraft } from "./stage-agent.ts";
 
 export async function rehearseSignedTools(t: TestContext, workerUrl: string, adminKey: string) {
   const { tenantId, apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey, name: "Signed tools", initialCreditsUsd: 10 });
@@ -168,8 +170,11 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const stagedVolume = source.volume((await source.createVolume({ name: "agent-staging" })).id);
   await stagedVolume.write("notes.md", "kept on v2");
   const stagedSnapshot = await stagedVolume.snapshot({ name: "saved" });
+  const draft = source.volume((await source.createVolume({ name: "shared-bot-draft" })).id);
+  await draft.write("draft-only.ts", "live edits stay in the bot volume");
+  const draftSnapshot = await draft.snapshot({ name: "saved bot draft", pinned: true });
   const agentToStage = await v1.call("/v1/agents", { body: {
-    mounts: [{ volumeId: stagedVolume.id, path: "/workspace", mode: "rw" }],
+    mounts: [{ volumeId: draft.id, path: "/bot", mode: "rw" }, { volumeId: stagedVolume.id, path: "/workspace", mode: "rw" }],
   } });
   assert.equal(agentToStage.status, 201, agentToStage.text);
   const stagedAgentId = agentToStage.json.id as string;
@@ -177,12 +182,56 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const stagingRepo = await target.repos.create({ name: "agent-staging" });
   const stagingAgent = await target.agents.upsert("staged-agent", { model: "mock/default", repoId: stagingRepo.repoId });
   const from = { url: v1.base, apiKey: OPERATOR, agentId: stagedAgentId };
-  const stage = (previous?: string) => stageAgent(from, target, stagingAgent.id, { initialCommit: stagingRepo.commit, previous });
+  const openDraft = { owner: "fixture-owner", bot: "fixture-bot" };
+  const app = new pg.Pool({ connectionString: TEST_DATABASE_URL, max: 1, idleTimeoutMillis: 0 });
+  t.after(() => app.end());
+  await app.query(`
+    create temporary table app_bots (bot text primary key, owner text, draft_volume text);
+    create temporary table builder_agents (owner text primary key, agent text, open_bot text, runtime text);
+    create temporary table bot_collaborators (bot text, person text)
+  `);
+  await app.query("insert into pg_temp.app_bots values ($1, 'other-owner', $2)", [openDraft.bot, draft.id]);
+  await app.query("insert into pg_temp.builder_agents values ($1, $2, $3, 'hold')", [openDraft.owner, stagedAgentId, openDraft.bot]);
+  let verifiedDraft = 0;
+  const sharedDraft = { volumeId: draft.id, verify: async (agentId: string, volumeId: string) => {
+    assert.equal(agentId, stagedAgentId);
+    assert.equal(volumeId, draft.id);
+    verifiedDraft++;
+    return verifyCamelBotsDraft(app, agentId, volumeId);
+  } };
+  const stage = (previous?: string) => stageAgent(from, target, stagingAgent.id, { initialCommit: stagingRepo.commit, previous, sharedDraft });
+  await assert.rejects(stageAgent(from, target, stagingAgent.id), /single writable v1 volume/);
+  await assert.rejects(stageAgent(from, target, stagingAgent.id, {
+    sharedDraft: { ...sharedDraft, volumeId: stagedVolume.id },
+  }), /exact Camel Bots draft volume/);
+  await assert.rejects(stage(), /no longer grants this builder access/);
+  assert.equal(verifiedDraft, 1);
+  await app.query("insert into pg_temp.bot_collaborators values ($1, $2)", [openDraft.bot, openDraft.owner]);
   const firstStage = await stage();
   assert.equal(firstStage.history.count, 2);
   assert.ok(firstStage.workspace?.snapshotCommits[stagedSnapshot.id]);
+  assert.equal(firstStage.workspace?.snapshotCommits[draftSnapshot.id], undefined);
+  assert.deepEqual(firstStage.sharedDraft, { ...openDraft, volumeId: draft.id });
+  assert.equal(verifiedDraft, 3);
+  await assert.rejects(target.repos.read(stagingRepo.repoId, { path: "draft-only.ts" }), /not found/i);
+  assert.equal(Buffer.from((await draft.read("draft-only.ts", { snapshot: draftSnapshot.id })).data).toString(), "live edits stay in the bot volume");
+  await assert.rejects(stageAgent(from, target, stagingAgent.id, {
+    initialCommit: stagingRepo.commit, sharedDraft, attachments: [
+      { messageIndex: 0, files: [{ path: "/bot/draft-only.ts", commit: stagingRepo.commit, contentType: "text/plain" }] },
+    ],
+  }), /must be copied and referenced explicitly/);
   assert.equal((await target.repos.read(stagingRepo.repoId, { path: "notes.md" })).content, "kept on v2");
   assert.deepEqual(await stage(), firstStage);
+  await draft.write("draft-only.ts", "collaborator kept editing");
+  let ownershipChecks = 0;
+  await assert.rejects(stageAgent(from, target, stagingAgent.id, {
+    initialCommit: stagingRepo.commit, sharedDraft: { ...sharedDraft, verify: async (agentId, volumeId) => {
+      if (++ownershipChecks === 2) await app.query("delete from pg_temp.bot_collaborators where bot = $1 and person = $2", [openDraft.bot, openDraft.owner]);
+      return verifyCamelBotsDraft(app, agentId, volumeId);
+    } },
+  }), /agent changed during staging.*written with receipt [0-9a-f]+/);
+  await app.query("update pg_temp.app_bots set owner = $1 where bot = $2", [openDraft.owner, openDraft.bot]);
+  assert.equal(Buffer.from((await draft.read("draft-only.ts")).data).toString(), "collaborator kept editing");
   await v1.prompt(stagedAgentId, "A turn before cutover");
   await stagedVolume.write("notes.md", "updated before cutover");
   let receiptAfterLateEdit: string | undefined;
@@ -200,7 +249,7 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   });
   t.after(() => lateEditTarget.close());
   await assert.rejects(stageAgent(from, lateEditTarget, stagingAgent.id, {
-    initialCommit: stagingRepo.commit, previous: firstStage.history.receipt,
+    initialCommit: stagingRepo.commit, previous: firstStage.history.receipt, sharedDraft,
   }), /v1 agent changed during staging.*written with receipt [0-9a-f]+/);
   assert.ok(receiptAfterLateEdit);
   const secondStage = await stage(receiptAfterLateEdit);
