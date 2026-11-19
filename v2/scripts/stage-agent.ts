@@ -128,9 +128,10 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
     }
     if (workspace) {
       const { copy, volume } = workspace;
-      const [snapshots, repo] = await Promise.all([volume.snapshots(), v2.repos.get(copy.repoId)]);
+      // The repository summary's commit is updated asynchronously after writes.
+      const [snapshots, branch] = await Promise.all([volume.snapshots(), v2.repos.ls(copy.repoId, { recursive: false })]);
       if (snapshots.length !== Object.keys(copy.snapshotCommits).length ||
-          snapshots.some(snapshot => !Object.hasOwn(copy.snapshotCommits, snapshot.id)) || repo.commit !== copy.head) {
+          snapshots.some(snapshot => !Object.hasOwn(copy.snapshotCommits, snapshot.id)) || branch.commit !== copy.head) {
         throw new Error("The workspace changed during staging");
       }
     }
