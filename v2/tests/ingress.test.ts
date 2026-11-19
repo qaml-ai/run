@@ -135,6 +135,7 @@ test("routes volume and signed file traffic to the configured origin through bot
     V2: { fetch: async () => new Response(null) },
     LEGACY_VOLUMES: { fetch: boundFetch },
     LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token",
+    LEGACY_VOLUMES_ROLLOUT: "all",
   };
   const original = { authorization: "Bearer original-key", "x-camelrun-volume-origin": "caller supplied", "x-agent-runtime-internal": "forged" };
   for (const path of ["/v1/volumes", "/v1/links/token/report%20A.pdf", "/v1/volumes/vol_example/files/report%20A.md?snapshot=snap_abc"]) {
@@ -161,10 +162,40 @@ test("an enabled volume origin fails without retrying ECS", async t => {
     V2: { fetch: async () => new Response(null) },
     LEGACY_VOLUMES: { fetch: send },
     LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token",
+    LEGACY_VOLUMES_ROLLOUT: "all",
   };
   const response = await worker.fetch(new Request("https://run.camelai.com/v1/volumes"), env);
   assert.equal(response.status, 502);
   assert.equal((await response.json() as { code: string }).code, "VOLUME_ORIGIN_UNAVAILABLE");
   assert.equal(send.mock.callCount(), 1);
   assert.equal(origin.mock.callCount(), 0);
+});
+
+test("routes only selected volumes and their signed links during rollout", async t => {
+  const ecs = t.mock.method(globalThis, "fetch", async () => new Response("ECS"));
+  const sidecar = t.mock.fn(async () => new Response("volume origin"));
+  const selected = "vol_111111111111111111111111";
+  const other = "vol_222222222222222222222222";
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_VOLUMES: { fetch: sidecar },
+    LEGACY_VOLUMES_ORIGIN_TOKEN: "private origin token",
+    LEGACY_VOLUMES_ROLLOUT: selected,
+  };
+  function signedPath(volume: string) {
+    const payload = Buffer.from(JSON.stringify({ volume, path: "/fichier-écrit" })).toString("base64url");
+    return `/v1/links/${payload}.signature/fichier-%C3%A9crit`;
+  }
+  for (const send of [worker.fetch, fetchLegacyApi]) {
+    const request = (path: string) => new Request(`https://run.camelai.com${path}`);
+    for (const path of [`/v1/volumes/${selected}/files/draft.ts`, signedPath(selected)]) {
+      assert.equal(await (await send(request(path), env)).text(), "volume origin");
+    }
+    for (const path of ["/v1/volumes", `/v1/volumes?ids=${selected}`, `/v1/volumes/${other}`, signedPath(other), "/v1/links/_.signature/file"]) {
+      assert.equal(await (await send(request(path), env)).text(), "ECS");
+    }
+    assert.equal(await (await send(request(`/v1/volumes/${selected}`), { ...env, LEGACY_VOLUMES_ROLLOUT: undefined })).text(), "ECS");
+  }
+  assert.equal(sidecar.mock.callCount(), 4);
+  assert.equal(ecs.mock.callCount(), 12);
 });
