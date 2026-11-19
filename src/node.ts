@@ -1,3 +1,4 @@
+import { internalRequests } from "./internal-requests.ts";
 import { Vault } from "./core/vault.ts";
 import { checkCode, checkRequest, MONITOR_LIMITS } from "../shared/monitors.ts";
 import { nodeDreaming } from "./dreaming.ts";
@@ -78,15 +79,15 @@ import { github as githubChannel } from "./channels-github.ts";
 import { nodeGitHubApps } from "./github-apps.ts";
 import { webhook } from "./channels-webhook.ts";
 import { email, emailReceiver, type EmailOptions } from "./channels-email.ts";
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readText, shedBodies, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, shedBodies, signInHint } from "./http.ts";
 import { limitRefused } from "./limit-hits.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
-import { VersionConflict, VolumeService } from "./volumes.ts";
+import { VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
@@ -282,6 +283,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const { env, root, port, maxAgents, maxAgentsPerTenant, retireMaxMs, leaseTtlMs, orphanMs, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs, publicUrl, systemPrompt } = config;
   const { tenants, secrets, db, sandbox } = deps;
   const sessionSecret = sessionSecretOf(secrets);
+  const { signature: internalSignature, signedPost, signedBody, volumePeer, mountVolumeOperations } = internalRequests(sessionSecret);
   const pricing = pricingFromEnvironment(env);
   if (config.ignored.length) console.error(JSON.stringify({ type: "settings_ignored", settings: config.ignored, reason: "removed: the legacy agent engine and the host transcript; every agent runs on Pi durable, its history in Pi's journal" }));
   // Control plane: coordination and small mutable state in Postgres.
@@ -695,29 +697,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return peer ? { node: peer } : undefined;
   }
 
-  /** Node-to-node requests are signed with the session secret all nodes share. */
-  const internalSignature = (timestamp: string, path: string, body: string) =>
-    createHmac("sha256", sessionSecret!).update(`internal:${timestamp}:${path}:${createHash("sha256").update(body).digest("hex")}`).digest("hex");
-
-  function signedPost(owner: string, path: string, payload: unknown, timeoutMs = 15_000, signal?: AbortSignal) {
-    const body = JSON.stringify(payload);
-    const timestamp = String(Date.now());
-    return network().fetch(new URL(path, owner), {
-      method: "POST", body, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-      headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, body)}` },
-    });
-  }
-
-  /** Read a node-to-node request's body, or undefined when its signature is missing, stale or wrong. */
-  async function signedBody(c: Context): Promise<string | undefined> {
-    const body = await readText(c.req.raw.body, 1_100_000);
-    const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
-    const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
-    const given = Buffer.from(signature ?? "");
-    if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
-    return body;
-  }
-
   /** Submit a request to an agent wherever it is served: here, or on the node that owns it. */
   async function submitAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) {
     const owner = await clients.ownerElsewhere(agent);
@@ -791,13 +770,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
 
   const volumes = new VolumeService({
     db, storage, ownership, idleMs,
-    // Volume operations on another node keep their status (and a conflict's current version).
-    peer: async (owner, path, payload) => {
-      const response = await signedPost(owner, path, payload, 30_000);
-      const value = await response.json().catch(() => ({})) as any;
-      if (response.ok) return value;
-      throw Object.assign(new HttpError(response.status, value.error ?? `Volume owner answered HTTP ${response.status}`), value.current !== undefined ? { current: value.current } : {});
-    },
+    peer: volumePeer,
     deliver: submitAnywhere,
     // Uploads, file writes and tool outputs: refused once prepaid credit is spent, and past the tenant's storage limit.
     quota: async tenant => {
@@ -1353,17 +1326,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
     }
   });
-  app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
-    let body: string | undefined;
-    try { body = await signedBody(c); } catch { return c.body(null, 413); }
-    if (body === undefined) return c.body(null, 401);
-    try {
-      const { tenant, op, args } = JSON.parse(body);
-      return c.json(await volumes.handle(c.req.param("id"), tenant, op, args));
-    } catch (error) {
-      return c.json({ error: errorText(error), ...(error instanceof VersionConflict ? { current: error.current } : {}) }, errorStatus(error, 400) as ContentfulStatusCode);
-    }
-  });
+  mountVolumeOperations(app, volumes);
   app.all("/internal/*", c => c.body(null, 404));
   // The pages people use (the console, its sign-in and billing routes, OAuth's sign-in page) are no one's search result.
   // After forwarding, so the node that answers a request is the one that marks it.
