@@ -20,6 +20,8 @@ export interface Env {
   TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;
   OPENAI_API_KEY?: string;
+  AZURE_OPENAI_SOL_ENDPOINT?: string;
+  AZURE_OPENAI_SOL_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
@@ -203,7 +205,7 @@ export interface StartRunInput {
 export interface StartRunHints {
   runId?: string;
   preacquiredSlot?: boolean;
-  prefetchedProvider?: { credentials: ProviderCredentials | null };
+  prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
   prefetchedBalanceUsd?: number;
 }
 

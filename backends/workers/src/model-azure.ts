@@ -4,6 +4,7 @@ export type ModelAzureEnv = {
   AGENT_AZURE_OPENAI_ENDPOINT?: string;
   AGENT_AZURE_OPENAI_API_KEY?: string;
   AGENT_AZURE_OPENAI_MODELS?: string;
+  AGENT_AZURE_OPENAI_MODEL_RESOURCES?: string;
   TEST_MODE?: string;
 };
 
@@ -13,6 +14,7 @@ export function modelAzure(env: ModelAzureEnv) {
     endpoint: env.AGENT_AZURE_OPENAI_ENDPOINT,
     apiKey: env.AGENT_AZURE_OPENAI_API_KEY,
     models: env.AGENT_AZURE_OPENAI_MODELS,
+    modelResources: env.AGENT_AZURE_OPENAI_MODEL_RESOURCES ? JSON.parse(env.AGENT_AZURE_OPENAI_MODEL_RESOURCES) : undefined,
     imageDeployment: "", transcriptionDeployment: "", realtimeDeployment: "",
   }, "AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY");
   if (azure && env.TEST_MODE !== "1" && new URL(azure.endpoint).protocol !== "https:")

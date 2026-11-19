@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import { Type } from "typebox";
 import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../clients/node.ts";
 import { serveTools } from "../../clients/server.ts";
-import { listen, OPERATOR, runtime } from "../../tests/runtime-server.ts";
+import { fenceV1Agent } from "../../src/agent-v2-cutover.ts";
+import { listen, OPERATOR, runtime, until } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
@@ -115,7 +117,7 @@ export async function rehearseSignedTools(t: TestContext, workerUrl: string, adm
 }
 
 export async function rehearseMigration(t: TestContext, workerUrl: string, adminKey: string) {
-  const v1 = await runtime(t, () => ({ content: "fixture" }));
+  const v1 = await runtime(t, () => ({ content: "fixture" }), { AGENT_IDLE_MS: "1000", AGENT_IDLE_COMPACTION: "0" });
   const source = new AgentRuntime({ url: v1.base, apiKey: OPERATOR });
   const { apiKey } = await CamelRun.createTenant({
     baseUrl: workerUrl,
@@ -203,6 +205,10 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     initialCommit: stagingRepo.commit, previous: firstStage.history.receipt,
   }), /v1 agent changed during staging.*written with receipt [0-9a-f]+/);
   assert.ok(receiptAfterLateEdit);
+  const operation = randomUUID();
+  await until(() => fenceV1Agent(v1.db, "alice", stagedAgentId, operation), "the source to become durably idle");
+  const refused = await v1.call(`/v1/agents/${stagedAgentId}/prompt`, { body: { text: "A prompt that raced the cutover" } });
+  assert.match(refused.json.error, /^AGENT_V2_CUTOVER:/);
   const secondStage = await stage(receiptAfterLateEdit);
   assert.equal(secondStage.history.count, 4);
   assert.ok(secondStage.workspace!.seq > firstStage.workspace!.seq);
