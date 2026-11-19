@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Accounts } from "../src/accounts.ts";
 import { BillingAlerts } from "../src/billing-alerts.ts";
+import { billingCallbacks } from "../src/billing-callbacks.ts";
 import { billingEmail } from "../src/billing-emails.ts";
 import { BillingMailer, billingMailConfig } from "../src/billing-mailer.ts";
 import { postLedger } from "../src/billing.ts";
@@ -164,7 +165,7 @@ test("only signed, configured and correlated SES feedback suppresses a billing r
   finally { rmSync(dir, { recursive:true, force:true }); }
   const certUrl = `https://sns.us-west-2.amazonaws.com/billing-${randomUUID()}.pem`;
   const mailer = new BillingMailer({ db, alerts, origin:"https://example.test", from:MAIL.AGENT_BILLING_EMAIL_FROM, configurationSet:"billing", topics:[TOPIC], fetch: (async (url: string | URL) => new Response(String(url) === certUrl ? cert : "unknown")) as typeof fetch });
-  const app = mailer.feedback();
+  const app = billingCallbacks({ webhook: async () => assert.fail("SNS request reached Stripe settlement") }, mailer);
   function message(event: any, extra: Record<string,string> = {}) {
     const m: Record<string,string> = { Type:"Notification", Message: JSON.stringify(event), MessageId:randomUUID(), Timestamp:new Date().toISOString(), TopicArn:TOPIC, ...extra };
     const signed = ["Message","MessageId","Timestamp","TopicArn","Type"].map(k=>`${k}\n${m[k]}\n`).join("");

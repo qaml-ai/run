@@ -24,6 +24,7 @@ import { OpenAPIHono, createRoute, z, type RouteConfig } from "@hono/zod-openapi
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { BillingAlerts } from "./billing-alerts.ts";
+import { receiveStripeWebhook } from "./billing-callbacks.ts";
 import type { Accounts, Principal } from "./accounts.ts";
 import type { ClientSessions } from "./client-sessions.ts";
 import { answerList } from "./client-sessions/inputs.ts";
@@ -307,10 +308,7 @@ export function api(context: ApiContext) {
   });
 
   // Stripe's webhook authenticates by its signature, not a token, so it comes before the check below.
-  app.post("/v1/billing/stripe/webhook", async c => {
-    const payload = await readText(c.req.raw.body, 1024 * 1024);
-    return json(c, 200, await accounts.billing.webhook(payload, c.req.header("stripe-signature")));
-  });
+  app.post("/v1/billing/stripe/webhook", async c => json(c, 200, await receiveStripeWebhook(c.req.raw, accounts.billing)));
   // Token possession only proves the mailbox. Neither route grants account access.
   // The token travels in a JSON body, not a logged URL; GET never confirms consent.
   for (const action of ["inspect", "confirm"] as const) route(createRoute({
