@@ -315,12 +315,12 @@ export class Webhooks {
   stop() { if (this.timer) clearInterval(this.timer); this.timer = undefined; }
 
   /** Send every due delivery, the usage webhook's and the endpoints', claiming batches so no two nodes send one at once. */
-  async send(now = Date.now()) {
-    if (this.sending) return;
+  async send(now = Date.now(), signal?: AbortSignal) {
+    if (this.sending || signal?.aborted) return;
     this.sending = true;
     try {
-      await this.sendFrom("usage_webhook_outbox", now, row => this.usageReceiver(row.tenant));
-      await this.sendFrom("webhook_deliveries", now, row => this.endpointReceiver(row.tenant, row.endpoint));
+      await this.sendFrom("usage_webhook_outbox", now, row => this.usageReceiver(row.tenant), signal);
+      await this.sendFrom("webhook_deliveries", now, row => this.endpointReceiver(row.tenant, row.endpoint), signal);
     } finally {
       this.sending = false;
       if (this.again) { this.again = false; this.kick(); }
@@ -337,19 +337,23 @@ export class Webhooks {
     void this.send().catch(error => console.error(JSON.stringify({ type: "webhook_scan_failed", error: errorText(error) })));
   }
 
-  private async sendFrom(table: "usage_webhook_outbox" | "webhook_deliveries", now: number, receiver: (row: any) => Promise<Receiver | undefined>) {
+  private async sendFrom(table: "usage_webhook_outbox" | "webhook_deliveries", now: number, receiver: (row: any) => Promise<Receiver | undefined>, signal?: AbortSignal) {
+    if (signal?.aborted) return;
     await this.db.query(`delete from ${table} where created_at < $1`, [now - MAX_AGE_MS]);
-    for (;;) {
+    while (!signal?.aborted) {
       const { rows } = await this.db.query(`
         update ${table} set due = $2, attempts = attempts + 1
         where id in (select id from ${table} where due <= $1 order by due limit ${CLAIM_BATCH} for update skip locked)
         returning *`, [Date.now(), Date.now() + LEASE_MS]);
       const receivers = new Map<string, Promise<Receiver | undefined>>();
-      await Promise.all(rows.map(async row => {
+      // Each claimed delivery must finish before another process takes over, even if one retry write fails.
+      const results = await Promise.allSettled(rows.map(async row => {
         const key = row.endpoint ?? row.tenant;
         if (!receivers.has(key)) receivers.set(key, receiver(row));
         await this.deliver(table, row, await receivers.get(key));
       }));
+      const failed = results.find(result => result.status === "rejected");
+      if (failed) throw failed.reason;
       if (rows.length < CLAIM_BATCH) break;
     }
   }
