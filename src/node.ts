@@ -1,3 +1,4 @@
+import { internalRequests } from "./internal-requests.ts";
 import { Vault } from "./core/vault.ts";
 import { checkCode, checkRequest, MONITOR_LIMITS } from "../shared/monitors.ts";
 import { nodeDreaming } from "./dreaming.ts";
@@ -59,6 +60,8 @@ import { hostedMcp } from "./hosted-mcp.ts";
 import { agentMcp } from "./agent-mcp.ts";
 import { opsMcp } from "./ops-mcp.ts";
 import { api } from "./api.ts";
+import { V1Compatibility } from "./v1-v2-compatibility.ts";
+import { AGENT_V2_PUBLISHED } from "./agent-v2-cutover.ts";
 import { ScheduleMailer } from "./schedule-mailer.ts";
 import { calendarPrompt } from "./calendar.ts";
 import { Scheduler } from "./scheduler.ts";
@@ -76,15 +79,15 @@ import { github as githubChannel } from "./channels-github.ts";
 import { nodeGitHubApps } from "./github-apps.ts";
 import { webhook } from "./channels-webhook.ts";
 import { email, emailReceiver, type EmailOptions } from "./channels-email.ts";
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createAdaptorServer, type HttpBindings } from "@hono/node-server";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
-import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readText, shedBodies, signInHint } from "./http.ts";
+import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, shedBodies, signInHint } from "./http.ts";
 import { limitRefused } from "./limit-hits.ts";
 import { outcomeEnding, type RequestRecord } from "../shared/client-protocol.ts";
-import { VersionConflict, VolumeService } from "./volumes.ts";
+import { VolumeService } from "./volumes.ts";
 import { FILE_LIMITS, FileLinks } from "./files.ts";
 import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from "./ecs.ts";
 import { cgroupMemory } from "./process-memory.ts";
@@ -133,8 +136,6 @@ import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Duplex } from "node:stream";
 import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
-import { buggify } from "./buggify.ts";
-import { sometimes } from "./assert.ts";
 import { chargesPlatform } from "./core/key-source.ts";
 
 /** Idle keep-alive sockets stay open this long: past the ALB's idle timeout (infra/terraform alb_idle_timeout, 360 s). */
@@ -178,10 +179,7 @@ export type NodeDeps = {
   random?: Random;
   /** Where inline agents run code: this process's v8-exec runner unless given (codemode-pi-launcher.ts); `close` lets its processes go. */
   codeSandbox?: CodeSandboxes & { close?(): void };
-  /**
-   * The data plane every node shares, given the node's log tail and storage meter: AGENT_STORAGE's unless given (a
-   * simulation's in-memory store).
-   */
+  /** Override the AGENT_STORAGE data plane with a store using this node's log tail and storage meter. */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
   /** Test hooks for client-held calls. */
   voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "submitStreaming">>;
@@ -261,7 +259,7 @@ export type RuntimeNode = {
   close(): Promise<void>;
   /** Read the tenants again (SIGHUP): a bad file or secret is rejected whole, and the tenants loaded before stay. */
   reloadTenants(): Promise<void>;
-  /** Run `work` as this node: in its context, if it was given one (a simulation calling in), else as it is. */
+  /** Run `work` in this node’s context when it has one. */
   run<T>(work: () => T): T;
 };
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
@@ -285,6 +283,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   const { env, root, port, maxAgents, maxAgentsPerTenant, retireMaxMs, leaseTtlMs, orphanMs, hosting, toolTimeoutMs, runLimits, streamTimeouts, runRetentionSeconds, idleMs, publicUrl, systemPrompt } = config;
   const { tenants, secrets, db, sandbox } = deps;
   const sessionSecret = sessionSecretOf(secrets);
+  const { signature: internalSignature, signedPost, signedBody, volumePeer, mountVolumeOperations } = internalRequests(sessionSecret);
   const pricing = pricingFromEnvironment(env);
   if (config.ignored.length) console.error(JSON.stringify({ type: "settings_ignored", settings: config.ignored, reason: "removed: the legacy agent engine and the host transcript; every agent runs on Pi durable, its history in Pi's journal" }));
   // Control plane: coordination and small mutable state in Postgres.
@@ -698,30 +697,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     return peer ? { node: peer } : undefined;
   }
 
-  /** Node-to-node requests are signed with the session secret all nodes share. */
-  const internalSignature = (timestamp: string, path: string, body: string) =>
-    createHmac("sha256", sessionSecret!).update(`internal:${timestamp}:${path}:${createHash("sha256").update(body).digest("hex")}`).digest("hex");
-
-  function signedPost(owner: string, path: string, payload: unknown, timeoutMs = 15_000, signal?: AbortSignal) {
-    const body = JSON.stringify(payload);
-    const timestamp = String(Date.now());
-    return network().fetch(new URL(path, owner), {
-      method: "POST", body, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-      headers: { "Content-Type": "application/json", "x-agent-runtime-internal": `${timestamp}.${internalSignature(timestamp, path, body)}` },
-    });
-  }
-
-  /** Read a node-to-node request's body, or undefined when its signature is missing, stale or wrong. */
-  async function signedBody(c: Context): Promise<string | undefined> {
-    const body = await readText(c.req.raw.body, 1_100_000);
-    const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
-    const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
-    const given = Buffer.from(signature ?? "");
-    sometimes(!!timestamp && Math.abs(Date.now() - Number(timestamp)) > 5_000, "a node-to-node request came from a node whose clock is seconds off");
-    if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
-    return body;
-  }
-
   /** Submit a request to an agent wherever it is served: here, or on the node that owns it. */
   async function submitAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }) {
     const owner = await clients.ownerElsewhere(agent);
@@ -795,13 +770,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
 
   const volumes = new VolumeService({
     db, storage, ownership, idleMs,
-    // Volume operations on another node keep their status (and a conflict's current version).
-    peer: async (owner, path, payload) => {
-      const response = await signedPost(owner, path, payload, 30_000);
-      const value = await response.json().catch(() => ({})) as any;
-      if (response.ok) return value;
-      throw Object.assign(new HttpError(response.status, value.error ?? `Volume owner answered HTTP ${response.status}`), value.current !== undefined ? { current: value.current } : {});
-    },
+    peer: volumePeer,
     deliver: submitAnywhere,
     // Uploads, file writes and tool outputs: refused once prepaid credit is spent, and past the tenant's storage limit.
     quota: async tenant => {
@@ -871,7 +840,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // A gateway credential is not necessarily an OpenRouter key; never send it to another origin.
     return entry?.baseUrl ? { baseUrl: entry.baseUrl } : entry?.apiKey;
   }, endUsers);
+  const v1Compatibility = V1Compatibility.fromEnv(db, env);
   const clients = new ClientSessions(supervisor, {
+    v1Compatibility,
     sharedAgents: deps.sharedAgents,
     runEvents: tenant => subscribers.runs(tenant),
     // A self-hosted runtime configured by its environment takes keys there too.
@@ -1056,6 +1027,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       const [from, agent] = payload.split(" ");
       if (from !== node && agent) clients.loadedElsewhere(agent);
     },
+    ...(v1Compatibility ? { [AGENT_V2_PUBLISHED]: (agent: string) => clients.v2RoutePublished(agent) } : {}),
     [ENDPOINTS_CHANNEL]: tenant => subscribers.forget(tenant),
     // Work just left without an owner: a peer released agents with runs open, or ended a dead node's heartbeat.
     [ORPHANS_CHANNEL]: payload => { if (orphanMs && payload.split(" ")[0] !== node) void clients.resumeSoon(); },
@@ -1354,17 +1326,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
       return c.json({ error: errorText(error) }, errorStatus(error, 400) as ContentfulStatusCode);
     }
   });
-  app.post("/internal/volumes/:id{vol_[a-f0-9]{24}}/ops", async c => {
-    let body: string | undefined;
-    try { body = await signedBody(c); } catch { return c.body(null, 413); }
-    if (body === undefined) return c.body(null, 401);
-    try {
-      const { tenant, op, args } = JSON.parse(body);
-      return c.json(await volumes.handle(c.req.param("id"), tenant, op, args));
-    } catch (error) {
-      return c.json({ error: errorText(error), ...(error instanceof VersionConflict ? { current: error.current } : {}) }, errorStatus(error, 400) as ContentfulStatusCode);
-    }
-  });
+  mountVolumeOperations(app, volumes);
   app.all("/internal/*", c => c.body(null, 404));
   // The pages people use (the console, its sign-in and billing routes, OAuth's sign-in page) are no one's search result.
   // After forwarding, so the node that answers a request is the one that marks it.
@@ -1399,7 +1361,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     if (refused) throw typeof refused === "string" ? new HttpError(402, refused, "SPEND_LIMIT") : refused;
     await rateLimits.run(tenant);
   };
-  app.route("/", api({ dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
+  app.route("/", api({ v1Compatibility, dreaming, triggers, applyDb: db, computers, accounts, endUsers, journey, billingAlerts: { service: billingAlerts, emailEnabled: !!billingMailer }, help, clients, consoleAuth, oauth, createAgent, modelProviders, defaultModel: async tenant => { const chosen = await defaultModelFor(tenant); return modelReference(chosen); }, keyScopes, webhooks, scheduler, accountDeletions, githubApps, vault, ...(config.idempotencyLockMs !== undefined ? { idempotencyLockMs: config.idempotencyLockMs } : {}), channels, volumes, definitions, links, fileUrls, browserTokens, get browserUrl() { return browserUrl === undefined ? links.publicUrl : browserUrl || undefined; }, submit: submitAnywhere, verifyKeys: config.verifyKeys,
     rateLimits, clientAddress: c => requestClient(c).address, runRetentionSeconds, requestAnywhere, ...(voice ? { voice } : {}), ...(calls ? { calls } : {}),
     transcriptions: {
       transcriber, outbound: outbound.withoutOrigins(),
@@ -1801,7 +1763,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // waiting on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
     await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns(signal === "memory" ? "memory" : "drain"); });
     // A second signal may come at any moment, and the node stops waiting for its turns.
-    if (buggify("drain.stop_waiting")) drainDeadline = 0;
     for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
       if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: safeError(error) })));
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -1810,7 +1771,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // sends SIGTERM. Outside ECS the fallback releases this wait.
     if (signal === "memory") await finishMemoryDrain.promise;
     const unfinished = clients.inFlight();
-    sometimes(unfinished > 0, "a drain released turns still running");
     await step("agents", () => clients.close());
     // Usage is in memory until flushed: write what the turns recorded now, before the slower close steps eat into the
     // time left before SIGKILL (stopTimeout). What later steps record goes in the flush after them.

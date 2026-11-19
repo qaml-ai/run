@@ -30,6 +30,12 @@ const ADDED: Record<string, Record<string, { from: string; name: string; cost: M
     },
   },
   azure: {
+    "gpt-6.2-sol": {
+      from: "gpt-6.1-sol", name: "GPT-6.2 Sol", contextWindow: 1_050_000,
+      cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [
+        { inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 },
+      ] },
+    },
     "deepseek-v4.1-flash": {
       from: "deepseek-v4-pro", name: "DeepSeek V4.1 Flash", input: ["text", "image"], contextWindow: 1_048_576,
       cost: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 }, compat: { maxTokensField: "max_tokens" },

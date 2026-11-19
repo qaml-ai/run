@@ -1,7 +1,9 @@
+import { V1_COMPAT_REQUEST_PREFIX } from "../../../shared/client-protocol.ts";
 import { CamelFsClient } from "./camelfs.ts";
 import { openSecret, randomId } from "./crypto.ts";
 import {
-  calculateCostUsd,
+  addModelUsage,
+  addVmUsage,
   getModelContextWindow,
   streamModelResponse,
   type ConversationMessage,
@@ -25,10 +27,10 @@ import {
   type AgentConfig,
   type Env,
   type PendingInputView,
-  type ProviderCredentials,
   type RunRecord,
   type RunFile,
   type RunUsage,
+  type StartRunHints,
   type StoredMessage,
   type ToolCallInvocation,
   type ToolCallSummary,
@@ -185,9 +187,7 @@ export async function performCompaction(
         generated += chunk.delta;
       } else if (chunk.type === "done" && options?.run) {
         const { id, usage } = options.run;
-        usage.inputTokens += chunk.inputTokens;
-        usage.outputTokens += chunk.outputTokens;
-        usage.costUsd = calculateCostUsd(config.model, usage.inputTokens, usage.outputTokens, usage.vmMs);
+        addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens);
         await adapter.recordModelUsage(id, "compaction", chunk.inputTokens, chunk.outputTokens, usage);
       }
     }
@@ -343,7 +343,7 @@ export async function runAgentTurn(
     outputSchema: Record<string, unknown> | null;
     maxSteps: number;
     signal: AbortSignal;
-    prefetchedProvider?: { credentials: ProviderCredentials | null };
+    prefetchedProvider?: StartRunHints["prefetchedProvider"];
     prefetchedBalanceUsd?: number;
   },
 ): Promise<RunRecord> {
@@ -453,8 +453,7 @@ export async function resumePausedTurn(
       for (const f of files) filesChangedSet.add(f);
     },
     (ms) => {
-      usage.vmMs += ms;
-      usage.costUsd = calculateCostUsd(config.model, usage.inputTokens, usage.outputTokens, usage.vmMs);
+      addVmUsage(usage, config.model, ms);
     },
     params.signal,
   );
@@ -661,7 +660,7 @@ async function continueTurnLoop(
     filesChangedSet: Set<string>;
     usage: RunUsage;
     signal: AbortSignal;
-    prefetchedProvider?: { credentials: ProviderCredentials | null };
+    prefetchedProvider?: StartRunHints["prefetchedProvider"];
   },
 ): Promise<RunRecord> {
   const { runId, maxSteps, outputSchema, approvedToolCallIds, filesChangedSet, usage } = state;
@@ -686,13 +685,7 @@ async function continueTurnLoop(
         for (const f of files) filesChangedSet.add(f);
       },
       (ms) => {
-        usage.vmMs += ms;
-        usage.costUsd = calculateCostUsd(
-          config.model,
-          usage.inputTokens,
-          usage.outputTokens,
-          usage.vmMs,
-        );
+        addVmUsage(usage, config.model, ms);
       },
       state.signal,
     );
@@ -728,6 +721,7 @@ async function continueTurnLoop(
       }
     }
 
+    const legacyEvents = adapter.getRunRecord(runId).idempotencyKey?.startsWith(V1_COMPAT_REQUEST_PREFIX);
     for (let step = state.startStep; step < maxSteps; step++) {
       if (state.signal.aborted) {
         throw new ApiError(499, "cancelled", "Run aborted");
@@ -762,6 +756,9 @@ async function continueTurnLoop(
 
       let stepText = "";
       const stepToolCalls: ToolCallInvocation[] = [];
+      const timestamp = Date.now();
+      const assistant = { role: "assistant", timestamp, model: config.model };
+      if (legacyEvents) adapter.emitEvent(runId, "message_start", { step, message: { ...assistant, content: [] } });
 
       for await (const chunk of streamModelResponse({
         env: adapter.env,
@@ -773,7 +770,7 @@ async function continueTurnLoop(
         outputSchema,
         signal: state.signal,
         purpose: "turn",
-        prefetchedProvider: state.prefetchedProvider,
+        prefetchedProvider: state.prefetchedProvider?.model === config.model ? state.prefetchedProvider : undefined,
       })) {
         if (state.signal.aborted && chunk.type !== "done") {
           throw new ApiError(499, "cancelled", "Run aborted");
@@ -789,14 +786,7 @@ async function continueTurnLoop(
             args: chunk.args,
           });
         } else if (chunk.type === "done") {
-          usage.inputTokens += chunk.inputTokens;
-          usage.outputTokens += chunk.outputTokens;
-          usage.costUsd = calculateCostUsd(
-            config.model,
-            usage.inputTokens,
-            usage.outputTokens,
-            usage.vmMs,
-          );
+          addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens);
           await adapter.recordModelUsage(runId, "response", chunk.inputTokens, chunk.outputTokens, usage);
         }
       }
@@ -810,6 +800,16 @@ async function continueTurnLoop(
       adapter.appendMessage(runId, "assistant", {
         text: stepText,
         toolCalls: stepToolCalls.length > 0 ? stepToolCalls : undefined,
+      });
+      if (legacyEvents) adapter.emitEvent(runId, "message_end", {
+        step,
+        message: {
+          ...assistant,
+          content: [
+            ...(stepText ? [{ type: "text", text: stepText }] : []),
+            ...stepToolCalls.map(({ id, name, args }) => ({ type: "toolCall", id, name, arguments: args })),
+          ],
+        },
       });
 
       // If no tool calls were requested, validate outputSchema (if any) and complete!

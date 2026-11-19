@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileStorage, memoryStorage, segmentLog, type Storage, type StorageMeter, type SegmentStore } from "../shared/storage.ts";
@@ -22,6 +24,34 @@ if (process.env.AGENT_TEST_S3_BUCKET) {
   const { s3Storage } = await import("../shared/s3-storage.ts");
   backends.push(["s3", async (_t, meter) => s3Storage({ bucket: process.env.AGENT_TEST_S3_BUCKET!, region: process.env.AWS_REGION ?? "us-west-2", prefix: `tests/${randomUUID()}`, tail: await tail(), meter })]);
 }
+
+test("a prefix-scoped S3 writer conditionally creates chunks without HEAD", async t => {
+  const { S3Client, S3ServiceException } = await import("@aws-sdk/client-s3");
+  const { s3Storage } = await import("../shared/s3-storage.ts");
+  const calls: (string | undefined)[] = [];
+  const statuses = [200, 412, 409];
+  const server = createServer((request, response) => {
+    request.resume();
+    calls.push(request.method);
+    response.statusCode = request.method === "PUT" && request.headers["if-none-match"] === "*" ? statuses.shift()! : 403;
+    response.end();
+  }).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => { server.close(); });
+  const address = server.address();
+  assert(address && typeof address === "object");
+  const client = new S3Client({
+    region: "us-west-2", endpoint: `http://127.0.0.1:${address.port}`, forcePathStyle: true,
+    credentials: { accessKeyId: "fixture", secretAccessKey: "fixture" },
+  });
+  t.after(() => client.destroy());
+  const storage = s3Storage({ bucket: "test", tail: await tail(), client, putBlobsWithoutHead: true });
+  await storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1]));
+  await storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1]));
+  await assert.rejects(storage.writeBlob("chunks/t/ab/abc", new Uint8Array([1])),
+    error => error instanceof S3ServiceException && error.$metadata.httpStatusCode === 409);
+  assert.deepEqual(calls, ["PUT", "PUT", "PUT"]);
+});
 
 test("log emptiness refuses tail and compacted data without reading bodies or needing object sizes", async () => {
   const real = await tail();

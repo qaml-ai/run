@@ -10,15 +10,17 @@ import { meteredSegments, PreconditionFailed, removeSegments, segmentLog, validK
  * `meter`, every object created or deleted is reported to it, with its size. `endpoint`
  * (and `forcePathStyle`) name an S3-compatible service instead: MinIO, R2.
  */
-export function s3Storage(options: { bucket: string; prefix?: string; region?: string; endpoint?: string; forcePathStyle?: boolean; client?: S3Client; tail: LogTail; meter?: StorageMeter }): Storage {
+export function s3Storage(options: { bucket: string; prefix?: string; region?: string; endpoint?: string; forcePathStyle?: boolean; putBlobsWithoutHead?: boolean; client?: S3Client; tail: LogTail; meter?: StorageMeter }): Storage {
   const client = options.client ?? new S3Client({ region: options.region, ...(options.endpoint ? { endpoint: options.endpoint } : {}), ...(options.forcePathStyle ? { forcePathStyle: true } : {}) });
   const bucket = options.bucket;
   const base = (options.prefix ?? "").replace(/^\/+|\/+$/g, "");
   const objectKey = (key: string) => (base ? `${base}/${key}` : key);
   // The same key rules as the file backend, so a key valid in development is valid here and nothing else is.
   const at = (key: string) => objectKey(validKey(key));
-  const conditionFailed = (error: unknown) => error instanceof S3ServiceException &&
-    (error.$metadata.httpStatusCode === 412 || error.$metadata.httpStatusCode === 409 || error.name === "PreconditionFailed" || error.name === "ConditionalRequestConflict");
+  const alreadyExists = (error: unknown) => error instanceof S3ServiceException &&
+    (error.$metadata.httpStatusCode === 412 || error.name === "PreconditionFailed");
+  const conditionFailed = (error: unknown) => alreadyExists(error) || error instanceof S3ServiceException &&
+    (error.$metadata.httpStatusCode === 409 || error.name === "ConditionalRequestConflict");
   const missing = (error: unknown) => error instanceof S3ServiceException && (error.name === "NoSuchKey" || error.$metadata.httpStatusCode === 404);
 
   async function list(prefix: string) {
@@ -86,11 +88,17 @@ export function s3Storage(options: { bucket: string; prefix?: string; region?: s
       } catch (error) { if (missing(error)) return undefined; throw error; }
     },
     async writeBlob(key, data) {
-      // A HEAD is cheaper than re-uploading a chunk that is already stored.
-      try { await client.send(new HeadObjectCommand({ Bucket: bucket, Key: at(key) })); return; }
-      catch (error) { if (!missing(error)) throw error; }
-      try { await client.send(new PutObjectCommand({ Bucket: bucket, Key: at(key), Body: data, ContentType: "application/octet-stream", IfNoneMatch: "*" })); }
-      catch (error) { if (!conditionFailed(error)) throw error; return; }
+      const object = { Bucket: bucket, Key: at(key) };
+      // HEAD saves uploading an existing chunk, but S3 conceals missing objects from prefix-scoped roles.
+      if (!options.putBlobsWithoutHead) {
+        try { await client.send(new HeadObjectCommand(object)); return; }
+        catch (error) { if (!missing(error)) throw error; }
+      }
+      try { await client.send(new PutObjectCommand({ ...object, Body: data, ContentType: "application/octet-stream", IfNoneMatch: "*" })); }
+      catch (error) {
+        if (options.putBlobsWithoutHead ? !alreadyExists(error) : !conditionFailed(error)) throw error;
+        return;
+      }
       options.meter?.(key, data.byteLength);
     },
     async removeBlobs(prefix) {

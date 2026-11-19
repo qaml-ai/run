@@ -24,7 +24,7 @@ import { FlexWait, asksFlex, flexFallbackDeltaUsd, flexWaitMs } from "./model-fl
 
 /** `flexWaitSeconds`: how long a call asked on flex waits for flex capacity before the default tier takes it (model-flex-wait.ts). */
 export type ModelRequestSettings = AgentConfiguration & { requestId?: string; outputReminded?: boolean; flexWaitSeconds?: number; output?: { schema?: Record<string, unknown>; [key: string]: unknown } };
-export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string> };
+export type ModelCredentials = { apiKey?: string; baseUrl?: string; headers?: Record<string, string>; region?: string; bearer?: true; identity?: true; deployments?: Record<string, string>; modelResources?: Record<string, { apiKey: string; baseUrl: string }> };
 export type ModelHooks = {
   agentId?: () => Promise<string>;
   authorizeRepoFile?: (file:import("./attachment-policy.ts").RepoFileRef)=>Promise<boolean>;
@@ -75,7 +75,9 @@ export function withSettings(provider: Provider, hooks: ModelHooks, env: ModelTi
       model = { ...boundedModel(selected, config.runLimits?.contextTokens), ...(env.TEST_MODEL === "1" ? { baseUrl: model.baseUrl, api: model.api, runtimeApi: selected.api } : {}) };
     }
     const selected = model;
-    const credential = await hooks.credentials?.(model.provider, invocation);
+    const resolved = await hooks.credentials?.(model.provider, invocation);
+    const resource = resolved?.modelResources && Object.hasOwn(resolved.modelResources, model.id) ? resolved.modelResources[model.id] : undefined;
+    const credential = resource ? { ...resolved, ...resource } : resolved;
     if (hooks.credentials && !credential && config.keyScope)
       throw new Error(`No ${model.provider} API key is configured for key scope ${config.keyScope} or this tenant; set one with PUT /v1/key-scopes/${config.keyScope}/providers/${model.provider}`);
     if (credential?.baseUrl) {

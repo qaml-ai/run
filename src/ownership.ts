@@ -1,19 +1,16 @@
 import { randomUUID } from "node:crypto";
+import type { Claim } from "../shared/actor-claim.ts";
+export type { Claim } from "../shared/actor-claim.ts";
 import { transaction, type Db, type Sql } from "./db.ts";
 import { HttpError } from "./http.ts";
 import { safeError } from "./metrics.ts";
 import { clock, network, random } from "./node-context.ts";
-import { buggify } from "./buggify.ts";
-import { reachable, sometimes } from "./assert.ts";
 
 /** Another live node owns this agent; the server forwards the request there. */
 export class NotOwner extends HttpError {
   owner: string;
   constructor(owner: string) { super(503, `This agent is served by another node; retry`); this.owner = owner; }
 }
-
-/** This node's ownership of one actor. Writes that only the owner may make are conditional on it. */
-export interface Claim { actor: string; session: string; epoch: number }
 
 /** A write under a claim that is no longer current: another node may own the actor now. */
 export class LostClaim extends HttpError {
@@ -103,6 +100,7 @@ export class Ownership {
   private peers?: { nodes: string[]; until: number };
   /** How often the heartbeat is renewed. */
   readonly heartbeatMs: number;
+  private readonly volumeOnly: boolean;
   private readonly alive?: (node: string) => Promise<boolean>;
   private readonly reaped = new Set<(nodes: string[]) => void>();
   private reaping = false;
@@ -114,14 +112,16 @@ export class Ownership {
    * `alive`, when given, says whether a peer whose heartbeat is late still runs (see `reap`); nodes use
    * `probeNode`. It must answer true unless the peer's process is certainly gone.
    */
-  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number; alive?: (node: string) => Promise<boolean>; memoryHigh?: () => boolean }) {
+  constructor(db: Db, options: { node: string; ttlMs?: number; cacheMs?: number; alive?: (node: string) => Promise<boolean>; memoryHigh?: () => boolean; volumeOnly?: boolean }) {
     this.db = db;
     this.node = options.node;
     this.ttlMs = options.ttlMs ?? 90_000;
     this.cacheMs = options.cacheMs ?? 5_000;
     this.heartbeatMs = Math.max(10, Math.min(Math.floor(this.ttlMs / 6), 3_000));
     this.freshMs = FRESH_RENEWALS * this.heartbeatMs;
-    this.alive = options.alive;
+    this.volumeOnly = options.volumeOnly ?? false;
+    // A volume-only node participates in ownership without ending agent-node heartbeats.
+    this.alive = this.volumeOnly ? undefined : options.alive;
     this.memoryHigh = options.memoryHigh ?? (() => false);
   }
 
@@ -181,8 +181,10 @@ export class Ownership {
       const session = this.session;
       const started = clock().monotonic();
       await this.db.query(`
-        insert into runtime_nodes (node, session, expires_at, memory_high) values ($1, $2, now() + $3 * interval '1 millisecond', $4)
-        on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at, draining = false, memory_retiring = false, memory_high = excluded.memory_high`, [this.node, session, this.ttlMs, this.memoryHigh()]);
+        insert into runtime_nodes (node, session, expires_at, memory_high, draining)
+        values ($1, $2, now() + $3 * interval '1 millisecond', $4, $5)
+        on conflict (node) do update set session = excluded.session, expires_at = excluded.expires_at,
+          draining = excluded.draining, memory_retiring = false, memory_high = excluded.memory_high`, [this.node, session, this.ttlMs, this.memoryHigh(), this.volumeOnly]);
       if (session !== this.session) return;
       this.registered = true;
       this.arm(started);
@@ -203,11 +205,9 @@ export class Ownership {
     // Measured before the write, so the local deadline never passes the published expiry.
     const started = clock().monotonic();
     try {
-      if (buggify("ownership.renew.fails")) throw new Error("BUGGIFY: the heartbeat renewal failed");
       // Only a live heartbeat is renewed: one that expired, or that a peer ended (`reap`), may have lost its actors.
       const { rowCount } = await this.db.query("update runtime_nodes set expires_at = now() + $3 * interval '1 millisecond', memory_high = $4 where node = $1 and session = $2 and expires_at > now()", [this.node, session, this.ttlMs, this.memoryHigh()]);
       if (session !== this.session) return;
-      sometimes(!rowCount, "a renewal found its heartbeat ended");
       if (!rowCount) this.fence("heartbeat_replaced");
       else {
         this.arm(started);
@@ -241,13 +241,12 @@ export class Ownership {
       const ended: string[] = [];
       await Promise.all(rows.map(async ({ node, session }) => {
         // A probe that times out counts as gone, as a partitioned peer's does.
-        if (!buggify("ownership.reap.probe_times_out") && await this.alive!(node)) return;
+        if (await this.alive!(node)) return;
         const { rowCount } = await this.db.query(`
           delete from runtime_nodes where node = $1 and session = $2 and expires_at > now() and expires_at < now() + $3 * interval '1 millisecond'`,
           [node, session, lateMs]);
         if (!rowCount) return;
         ended.push(node);
-        reachable("a late peer's heartbeat was ended");
         console.log(JSON.stringify({ type: "node_reaped", node, by: this.node }));
       }));
       if (!ended.length) return ended;
@@ -309,7 +308,6 @@ export class Ownership {
   /** Stop serving every actor, then rejoin under a new session on the next acquire. */
   fence(reason: string) {
     if (!this.registered) return;
-    reachable("a node fenced itself");
     console.error(JSON.stringify({ type: "self_fence", node: this.node, reason }));
     clock().clearTimeout(this.watchdog);
     clock().clearTimeout(this.staleTimer);
@@ -326,6 +324,7 @@ export class Ownership {
 
   /** Take an actor. Returns this node's claim on it, or the node that serves it now. */
   async acquire(actor: string): Promise<{ claim: Claim } | { owner: string }> {
+    if (this.volumeOnly && !/^vol_[a-f0-9]{24}$/.test(actor)) throw new Error("Volume nodes can only own volumes");
     if (this.draining) {
       const owner = await this.owner(actor);
       if (owner && owner !== this.node) return { owner };
@@ -347,9 +346,7 @@ export class Ownership {
             or not exists (select 1 from runtime_nodes n where n.node = o.node and n.session = o.session and n.expires_at > now()))
         returning epoch`, [actor, this.node, session]);
       this.owners.delete(actor);
-      sometimes(attempt > 0, "an acquire tried again after a heartbeat expired between its statements");
       if (rows[0]) {
-        sometimes(rows[0].epoch > 1, "an actor was taken again, under a later epoch");
         return { claim: { actor, session, epoch: rows[0].epoch } };
       }
       const owner = await this.owner(actor);
@@ -453,7 +450,7 @@ export class Ownership {
   async undrain() {
     this.draining = false;
     this.forget();
-    await this.db.query("update runtime_nodes set draining = false, memory_retiring = false where node = $1 and session = $2", [this.node, this.session]);
+    await this.db.query("update runtime_nodes set draining = $3, memory_retiring = false where node = $1 and session = $2", [this.node, this.session, this.volumeOnly]);
   }
 
   /** Leave the cluster: dropping the heartbeat frees every actor this node still names. */

@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { createSecureContext, type SecureContext } from "node:tls";
 import pg from "pg";
 import { secretReader } from "./secrets.ts";
-import { sometimes } from "./assert.ts";
 import { clock, random } from "./node-context.ts";
 
 /**
@@ -13,8 +12,7 @@ import { clock, random } from "./node-context.ts";
  * coordination (ownership, claims, counters, indexes). Storage keeps bulk data.
  *
  * `Db` is what the runtime asks of it, and all it may: queries, a connection held for a transaction (`transaction`),
- * the pool's counts for the node's load line, and ending it. pg.Pool is the production one; a simulation passes another
- * (an in-process Postgres, or a wrapper that injects faults). LISTEN has a connection of its own (NodeDeps.listen), and
+ * the pool's counts for the node's load line, and ending it. Production uses pg.Pool. Tests can supply their own Db. LISTEN has a connection of its own (NodeDeps.listen), and
  * NOTIFY is a query. Answers are as pg gives them with the parser below: bigint columns as numbers.
  */
 export type Db = Sql & {
@@ -359,7 +357,6 @@ export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, opt
     catch (error) {
       const code = (error as { code?: unknown }).code;
       if (attempt >= TRANSACTION_ATTEMPTS || typeof code !== "string" || !RERUN_CODES.has(code)) throw error;
-      sometimes(true, "a transaction that lost a race ran again");
       await clock().sleep(Math.floor((10 + random().float() * 40) * attempt));
     }
   }

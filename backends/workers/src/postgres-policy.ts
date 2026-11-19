@@ -10,8 +10,6 @@ import { clock } from "./money-host.ts";
 
 const random = () => ({ float: Math.random });
 
-const sometimes = (_condition: boolean, _message: string) => {};
-
 const AUTH_FAILED = "28P01";
 
 const UNAVAILABLE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "57P01", "57P02", "57P03", "53300", AUTH_FAILED]);
@@ -48,7 +46,6 @@ export async function transaction<T>(db: Db, work: (sql: Sql) => Promise<T>, opt
     catch (error) {
       const code = (error as { code?: unknown }).code;
       if (attempt >= TRANSACTION_ATTEMPTS || typeof code !== "string" || !RERUN_CODES.has(code)) throw error;
-      sometimes(true, "a transaction that lost a race ran again");
       await clock().sleep(Math.floor((10 + random().float() * 40) * attempt));
     }
   }
