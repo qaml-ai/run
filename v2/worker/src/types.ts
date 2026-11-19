@@ -206,7 +206,7 @@ export interface StartRunInput {
 export interface StartRunHints {
   runId?: string;
   preacquiredSlot?: boolean;
-  prefetchedProvider?: { credentials: ProviderCredentials | null };
+  prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
   prefetchedBalanceUsd?: number;
 }
 

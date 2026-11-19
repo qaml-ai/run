@@ -163,6 +163,7 @@ export class TenantDO extends DurableObject<Env> {
         token_hash TEXT NOT NULL UNIQUE,
         sealed_token TEXT NOT NULL,
         model TEXT NOT NULL,
+        model_revision INTEGER NOT NULL DEFAULT 0,
         repo_id TEXT,
         branch TEXT NOT NULL DEFAULT 'refs/heads/main',
         definition_slug TEXT,
@@ -212,6 +213,10 @@ export class TenantDO extends DurableObject<Env> {
     const providerColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(provider_keys)").toArray();
     if (!providerColumns.some(({ name }) => name === "model_aliases_json")) {
       this.ctx.storage.sql.exec("ALTER TABLE provider_keys ADD COLUMN model_aliases_json TEXT");
+    }
+    if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agents_index)")
+      .toArray().some(({ name }) => name === "model_revision")) {
+      this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN model_revision INTEGER NOT NULL DEFAULT 0");
     }
     this.schemaReady = true;
   }
@@ -921,7 +926,7 @@ export class TenantDO extends DurableObject<Env> {
     definitionSlug: string | null;
     definitionConfig: AgentUpsertInput | null;
     slotAcquired: boolean;
-    prefetchedProvider?: { credentials: ProviderCredentials | null };
+    prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
   }> {
     const profile = this.readProfileOrNull();
     if (!profile) {
@@ -1001,7 +1006,6 @@ export class TenantDO extends DurableObject<Env> {
         `INSERT INTO agents_index (id, agent_key, token_hash, sealed_token, model, repo_id, branch, definition_slug, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
          ON CONFLICT(id) DO UPDATE SET
-           model = excluded.model,
            repo_id = excluded.repo_id,
            branch = excluded.branch,
            definition_slug = COALESCE(excluded.definition_slug, agents_index.definition_slug),
@@ -1044,10 +1048,10 @@ export class TenantDO extends DurableObject<Env> {
       };
     });
 
-    let prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
+    let prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
     if (params.preacquireRunId) {
       const row = txResult.sealedProviderRow;
-      prefetchedProvider = { credentials: row && await this.openProviderCredentials(row) };
+      prefetchedProvider = { model: txResult.model, credentials: row && await this.openProviderCredentials(row) };
     }
 
     return {
@@ -1086,7 +1090,7 @@ export class TenantDO extends DurableObject<Env> {
     agentId: string;
     balanceUsd: number;
     slotAcquired: boolean;
-    prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
+    prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
   }> {
     const profile = this.readProfileOrNull();
     if (!profile) {
@@ -1151,11 +1155,11 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     const wantProvider = params.includeProviderCredentials ?? Boolean(params.preacquireRunId);
-    let prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
+    let prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
     if (wantProvider) {
       const lookup = getProviderLookupCandidates(this.env, model);
       const sealedRow = lookup.isMock ? null : this.findSealedProviderRow(lookup.candidates);
-      prefetchedProvider = { credentials: sealedRow && await this.openProviderCredentials(sealedRow) };
+      prefetchedProvider = { model, credentials: sealedRow && await this.openProviderCredentials(sealedRow) };
     }
 
     return {
@@ -1197,6 +1201,16 @@ export class TenantDO extends DurableObject<Env> {
       entry.branch,
       entry.definitionSlug,
       now,
+    );
+  }
+
+  async updateAgentModel(agentId: string, model: string, revision: number): Promise<void> {
+    this.requireProfile();
+    this.ctx.storage.sql.exec(
+      "UPDATE agents_index SET model = ?1, model_revision = ?2 WHERE id = ?3 AND model_revision <= ?2",
+      model,
+      revision,
+      agentId,
     );
   }
 

@@ -26,10 +26,10 @@ import {
   type AgentConfig,
   type Env,
   type PendingInputView,
-  type ProviderCredentials,
   type RunRecord,
   type RunFile,
   type RunUsage,
+  type StartRunHints,
   type StoredMessage,
   type ToolCallInvocation,
   type ToolCallSummary,
@@ -342,7 +342,7 @@ export async function runAgentTurn(
     outputSchema: Record<string, unknown> | null;
     maxSteps: number;
     signal: AbortSignal;
-    prefetchedProvider?: { credentials: ProviderCredentials | null };
+    prefetchedProvider?: StartRunHints["prefetchedProvider"];
     prefetchedBalanceUsd?: number;
   },
 ): Promise<RunRecord> {
@@ -659,7 +659,7 @@ async function continueTurnLoop(
     filesChangedSet: Set<string>;
     usage: RunUsage;
     signal: AbortSignal;
-    prefetchedProvider?: { credentials: ProviderCredentials | null };
+    prefetchedProvider?: StartRunHints["prefetchedProvider"];
   },
 ): Promise<RunRecord> {
   const { runId, maxSteps, outputSchema, approvedToolCallIds, filesChangedSet, usage } = state;
@@ -765,7 +765,7 @@ async function continueTurnLoop(
         outputSchema,
         signal: state.signal,
         purpose: "turn",
-        prefetchedProvider: state.prefetchedProvider,
+        prefetchedProvider: state.prefetchedProvider?.model === config.model ? state.prefetchedProvider : undefined,
       })) {
         if (state.signal.aborted && chunk.type !== "done") {
           throw new ApiError(499, "cancelled", "Run aborted");
