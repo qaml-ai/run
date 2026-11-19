@@ -272,7 +272,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       JSON.stringify(
         {
           ...baseConfig,
-          main: join(ROOT, "worker/src/index.ts"),
+          main: join(ROOT, "tests/fixtures/alarm-worker.ts"),
           vars: {
             ADMIN_SECRET,
             VAULT_SECRET,
@@ -1218,6 +1218,34 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await camel.close();
   });
 
+  it("routes provider model aliases without changing the agent model or billing", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "provider-aliases", initialCreditsUsd: 1,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    const model = "azure/deepseek-v4.1-flash";
+    const baseUrl = `${auxUrl}/v1`;
+    await camel.providers.set("azure", {
+      apiKey: "initial-key",
+      baseUrl,
+      modelAliases: { "deepseek-v4.1-flash": "deployment-flash" },
+    });
+    await camel.providers.set("azure", { apiKey: "rotated-key", baseUrl });
+
+    const agent = await camel.agents.upsert("aliased-agent", { model });
+    const run = await agent.run("Use the configured Azure deployment.");
+    assert.equal(run.status, "completed");
+    assert.match(run.text, /SSE upstream \(deployment-flash\) saw/);
+    assert.equal(agent.model, model);
+    assert.equal(run.usage.costUsd, 0.0000174);
+
+    await camel.providers.set("azure", { apiKey: "rotated-key", baseUrl, modelAliases: {} });
+    const unaliased = await agent.run("Use the upstream model name directly.");
+    assert.equal(unaliased.status, "completed");
+    assert.match(unaliased.text, /SSE upstream \(deepseek-v4\.1-flash\) saw/);
+    await camel.close();
+  });
+
   it("8. AES-GCM sealed upstream OpenAI SSE provider, definitions inheritance, schedules CRUD, and batch coalescing", async () => {
     const { apiKey } = await CamelRun.createTenant({
       baseUrl: workerUrl,
@@ -1361,5 +1389,55 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const content = (await agent.history()).find(message => message.runId === attributed.id && message.role === "user")?.content;
     assert.ok(content && typeof content === "object" && "meta" in content);
     assert.deepEqual(content.meta, { actor: "returning-member", requestId: "attributed" });
+  });
+
+  it("drains already accepted turns when a pending input expires without another request", async (t) => {
+    const { apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "expired-input-queue" });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    const agent = await camel.agents.upsert("expired-input-queue", { model: "mock/default", builtins: ["human"] });
+    const paused = await agent.run('Pause [CALL:ask_human {"question":"Continue?"}]');
+    assert.equal(paused.status, "input_required");
+    const queued = await agent.submit("This turn must survive without a new request", { idempotencyKey: "queued" });
+    assert.equal(queued.status, "queued");
+    const control = `${workerUrl}/test-alarm/${agent.id}`;
+    assert.equal((await fetch(control, { method: "POST" })).status, 204);
+    const deadline = Date.now() + 8000;
+    let status: unknown;
+    do {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      status = await (await fetch(`${control}?runId=${queued.id}`)).json();
+    } while (status !== "completed" && Date.now() < deadline);
+    assert.equal(status, "completed");
+    assert.equal(await (await fetch(`${control}?runId=${paused.id}`)).json(), "failed");
+    const replay = await agent.run("Do not run this again", { idempotencyKey: "queued" });
+    assert.equal(replay.id, queued.id);
+    const messages = await agent.history();
+    assert.equal(messages.filter(message => message.runId === queued.id && message.role === "user").length, 1);
+  });
+
+  it("wakes a reset isolate for an accepted turn and flags the overdue queue", async (t) => {
+    const { apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "reset-queue-watch" });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    const agent = await camel.agents.upsert("reset-queue-watch", {
+      model: "mock/default", builtins: [], queue: { mode: "batch", windowMs: 2000 },
+    });
+    const queued = await agent.submit("Recover this accepted turn", { idempotencyKey: "recover" });
+    assert.equal(queued.status, "queued");
+    const control = `${workerUrl}/test-alarm/${agent.id}`;
+    const statusUrl = `${control}?runId=${queued.id}`;
+    assert.equal((await fetch(statusUrl, { method: "POST" })).status, 204);
+
+    const deadline = Date.now() + 8000;
+    let status: unknown;
+    do {
+      await new Promise(resolve => setTimeout(resolve, 125));
+      status = await (await fetch(statusUrl)).json();
+    } while (status !== "completed" && Date.now() < deadline);
+    assert.equal(status, "completed");
+    assert.match(await (await fetch(control)).json() as string, new RegExp(`^${queued.id}:`));
+    const history = await agent.history();
+    assert.equal(history.filter(message => message.runId === queued.id && message.role === "user").length, 1);
   });
 });
