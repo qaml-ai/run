@@ -19,9 +19,7 @@ export async function serveHostedMcp(request: Request, options: { publicOrigin: 
   const encoded = new Uint8Array(bytes); let offset = 0;
   for (const chunk of chunks) { encoded.set(chunk, offset); offset += chunk.byteLength; }
   const body = new TextDecoder().decode(encoded);
-  let messages: any[] = [];
-  try { const parsed = JSON.parse(body); messages = Array.isArray(parsed) ? parsed : [parsed]; } catch { /* SDK returns the parse error. */ }
   const authorization = request.headers.get('Authorization') ?? '';
   const api = new Api({ url: options.publicOrigin, apiKey: authorization.slice(7) }, options.fetch);
-  return transport(request, createServer(() => api), body, messages.some(message => message?.method === 'tools/call'), {});
+  return transport(request, createServer(() => api), body, false, {});
 }

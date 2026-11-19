@@ -248,8 +248,8 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
   async route(request: Request): Promise<Response | null> {
     const env = this.env;
     const url = new URL(request.url);
-    const mcp = url.pathname === "/mcp";
-    const mcpMetadata = ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"].includes(url.pathname);
+    const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
+    const mcpMetadata = request.method === "GET" && ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"].includes(url.pathname);
     if (mcp || mcpMetadata) {
       if (!env.MCP_LEGACY_API) return null;
       try {

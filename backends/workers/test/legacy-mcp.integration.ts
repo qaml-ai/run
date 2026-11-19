@@ -34,6 +34,12 @@ test("the named hosted MCP Worker preserves bearer credentials and issuer discov
   assert.equal(protectedResource.resource, `${issuer}/mcp`);
   assert.deepEqual(protectedResource.authorization_servers, [issuer]);
   assert.equal((await fetch(`${f.url}/oauth/token`, { method: "POST" })).status, 418);
+  const framing = await fetch(`${f.url}/mcp`, {
+    method: "POST", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json, text/event-stream", "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "whoami", arguments: {} } }),
+  });
+  assert.match(framing.headers.get("content-type")!, /^application\/json\b/);
+  assert.equal((await framing.json() as { id: number }).id, 1);
 
   for (const [token, via] of [[apiKey, "token"], [oauth, "oauth"]]) {
     const client = new Client({ name: "legacy-workerd-test", version: "1" });
