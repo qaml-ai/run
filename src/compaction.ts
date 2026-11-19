@@ -262,13 +262,14 @@ function authorize(model: Model<Api>, asked: any, credentials: Credentials, sink
  */
 function azureOptions(model: Model<Api>, options: any, credentials: Credentials, modelHeaders: Record<string, string> | null | undefined, sink: UsageSink): [Model<Api>, any] {
   const deployment = (model.api === "azure-openai-responses" || model.api === "openai-completions") && credentials.deployments && Object.hasOwn(credentials.deployments, model.id) ? credentials.deployments[model.id] : undefined;
-  if (!credentials.baseUrl || !deployment) throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
-  if (model.api === "openai-completions") return [{ ...model, id: deployment, baseUrl: credentials.baseUrl }, {
-    ...options, apiKey: credentials.apiKey, headers: { ...options?.headers, ...modelHeaders, "api-key": credentials.apiKey }, fetch: callFetch(sink),
+  const resource = credentials.modelResources && Object.hasOwn(credentials.modelResources, model.id) ? credentials.modelResources[model.id] : credentials;
+  if (!resource.baseUrl || !deployment) throw new Error(`No azure deployment is configured for ${model.provider}/${model.id} on this runtime; move the agent to a model you can use (GET /v1/models?available=true)`);
+  if (model.api === "openai-completions") return [{ ...model, id: deployment, baseUrl: resource.baseUrl }, {
+    ...options, apiKey: resource.apiKey, headers: { ...options?.headers, ...modelHeaders, "api-key": resource.apiKey }, fetch: callFetch(sink),
   }];
   return [model, {
-    ...options, apiKey: credentials.apiKey, headers: { ...options?.headers, ...modelHeaders }, fetch: callFetch(sink),
-    env: { AZURE_OPENAI_BASE_URL: credentials.baseUrl, AZURE_OPENAI_API_VERSION: AZURE_CHAT_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` },
+    ...options, apiKey: resource.apiKey, headers: { ...options?.headers, ...modelHeaders }, fetch: callFetch(sink),
+    env: { AZURE_OPENAI_BASE_URL: resource.baseUrl, AZURE_OPENAI_API_VERSION: AZURE_CHAT_API_VERSION, AZURE_OPENAI_DEPLOYMENT_NAME_MAP: `${model.id}=${deployment}` },
   }];
 }
 

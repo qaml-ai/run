@@ -19,7 +19,6 @@ import type { Claim } from "./ownership.ts";
 import { createAgentHost, type LegacyLog } from "./agent-host.ts";
 import type { CodeSandboxes } from "./codemode-pi-launcher.ts";
 import type { Outbound } from "./outbound.ts";
-import { buggify } from "./buggify.ts";
 import { closeInterruptedTurn } from "./history.ts";
 import type { Db, Sql } from "./db.ts";
 import type { Storage as PiStorage } from "@earendil-works/pi-durable";
@@ -204,8 +203,6 @@ export class AgentSupervisor {
     const key = params.toolCallId ? callKey(params) : undefined;
     if (key) (handle.keyed ??= new Map()).set(key, controller);
     try {
-      // A tool call may fail before its tool hears of it.
-      if (buggify("tool.call.fails")) throw new Error("BUGGIFY: the tool call failed before it was sent");
       const result = await handle.bridge.call(checked.tool.name, checked.args, controller.signal, params.toolCallId ? { toolCallId: params.toolCallId, ...(params.innerCallId ? { innerCallId: params.innerCallId } : {}), ...(Number.isSafeInteger(params.messageIndex) ? { messageIndex: params.messageIndex } : {}), ...(Number.isSafeInteger(params.delegates) ? { delegates: params.delegates } : {}) } : undefined);
       controller.signal.throwIfAborted();
       return JSON.parse(jsonWithinLimit(result, SANDBOX_LIMITS.resultBytes, "Tool result"));

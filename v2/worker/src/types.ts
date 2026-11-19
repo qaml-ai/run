@@ -20,6 +20,8 @@ export interface Env {
   TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;
   OPENAI_API_KEY?: string;
+  AZURE_OPENAI_SOL_ENDPOINT?: string;
+  AZURE_OPENAI_SOL_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
@@ -166,6 +168,7 @@ export interface RunRecord {
   actor?: string;
   idempotencyKey: string | null;
   startedAt: number;
+  endedAt?: number;
   status: RunStatus;
   text: string;
   output: unknown;
@@ -203,7 +206,7 @@ export interface StartRunInput {
 export interface StartRunHints {
   runId?: string;
   preacquiredSlot?: boolean;
-  prefetchedProvider?: { credentials: ProviderCredentials | null };
+  prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
   prefetchedBalanceUsd?: number;
 }
 
@@ -265,6 +268,7 @@ export interface ProviderCredentials {
   provider: string;
   apiKey: string;
   baseUrl?: string | null;
+  modelAliases?: Record<string, string>;
 }
 
 export type ModelStreamChunk =

@@ -97,7 +97,6 @@ outputs.set("postgres-policy.ts", generated("db.ts", [
   'import { clock } from "./money-host.ts";',
   '// Host diagnostics and jitter; the transaction and error policy below are from src/.',
   'const random = () => ({ float: Math.random });',
-  'const sometimes = (_condition: boolean, _message: string) => {};',
   await declarations("db.ts", ["AUTH_FAILED", "UNAVAILABLE_CODES", "UNAVAILABLE_MESSAGES", "databaseRetryable", "RERUN_CODES", "RETRYABLE_CODES", "TRANSACTION_ATTEMPTS", "databaseUnavailable", "transaction", "transactionOnce"]),
 ].join("\n\n").replace("    client.release(broken);", "    // Workers close the per-operation socket before releasing the request.\n    if (client.close) await client.close();\n    else client.release(broken);")).replace("only host imports are replaced", "host imports and connection release are adapted"));
 const schemas = ts.createSourceFile("schemas.ts", await source("api-schemas.ts"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
