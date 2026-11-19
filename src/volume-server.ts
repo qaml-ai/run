@@ -38,7 +38,11 @@ await db.query("select 1 from volumes limit 0");
 const ttlMs = Number(env.AGENT_LEASE_TTL_MS ?? 90_000);
 if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new Error("AGENT_LEASE_TTL_MS must be a positive integer");
 const storageUsage = new StorageUsage(db);
-const storage = await openStorage(descriptor, postgresTail(db, { retryMs: ttlMs }), storageUsage.meter);
+const storage = await openStorage(
+  descriptor.kind === "s3" ? { ...descriptor, putBlobsWithoutHead: true } : descriptor,
+  postgresTail(db, { retryMs: ttlMs }),
+  storageUsage.meter,
+);
 const ownership = new Ownership(db, { node, ttlMs, volumeOnly: true });
 const accounts = new Accounts({ tenants, db, pricing: pricingFromEnvironment(env), publicUrl, flushReceipts: false });
 const consoleAuth = new ConsoleAuth({ accounts, publicUrl, passwords: new Passwords(db) });
