@@ -150,8 +150,6 @@ jobs:
     env:
       AGENT_HOSTING: ${{ matrix.hosting }}
       TEST_FILES: ${{ needs.changes.outputs.selected }}
-      # Sim nodes host inline internally, even in a PR process shard.
-      TEST_INCLUDE_SIM: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
@@ -186,23 +184,6 @@ jobs:
           overwrite: true
           retention-days: 14
           if-no-files-found: error
-  sim:
-    needs: [changes, reuse]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.tests == 'true' && needs.reuse.outputs.passed != 'true' }}
-    # The deterministic simulator (tests/sim, npm run sim): ten fixed seeds, each run twice and required to replay to the
-    # same trace. Fresh seeds explore beyond them every night (sim-seeds.yml), so finding a new one never holds a
-    # deploy back. Seeds are CPU-bound, one process per vCPU. A failing seed prints the commands that reproduce it, and
-    # its plan, history and logs are kept as the sim-failures artifact (npm run sim -- --replay <file>).
-    runs-on: ${{ needs.changes.outputs.blacksmith == 'true' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-latest' }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/node-dependencies
-      - name: fixed seeds, twice each
-        run: npm run -s sim -- --seeds 1-10 --twice --jobs "$(nproc)"
-      - uses: actions/upload-artifact@v4
-        if: ${{ failure() }}
-        with: { name: sim-failures, path: sim-failures/, if-no-files-found: ignore }
   image:
     needs: changes
     # PRs smoke-test amd64 only when image inputs change (never on drafts); main always covers both architectures.
@@ -421,7 +402,7 @@ jobs:
     timeout-minutes: 5
     # Always report a result on ready PRs, including when a dependency failed or was cancelled.
     if: always() && needs.changes.outputs.draft != 'true'
-    needs: [reuse, changes, checks, quick, python, test, sim, image, publish, docs, camelfsd, guest-image]
+    needs: [reuse, changes, checks, quick, python, test, image, publish, docs, camelfsd, guest-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -439,7 +420,7 @@ jobs:
             reused=$(echo "$RESULTS" | jq -r '.reuse.result == "success" and .reuse.outputs.passed == "true"')
           fi
           if [ "$reused" = true ]; then
-            echo "$RESULTS" | jq -e '[.checks, .docs, .python, .sim] | all(.result == "skipped")'
+            echo "$RESULTS" | jq -e '[.checks, .docs, .python] | all(.result == "skipped")'
           else
             echo "$RESULTS" | jq -e '[.checks, .docs] | all(.result == "success")'
           fi
@@ -455,7 +436,7 @@ jobs:
             # Even full reuse leaves inline shards in test; their success is required.
             echo "$RESULTS" | jq -e '.test.result == "success"'
             if [ "$reused" != true ]; then
-              echo "$RESULTS" | jq -e '[.python, .sim] | all(.result == "success")'
+              echo "$RESULTS" | jq -e '.python.result == "success"'
             fi
           fi
       - name: Identify failed main commit

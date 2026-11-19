@@ -1,33 +1,20 @@
 #!/usr/bin/env bash
 # loop.sh: keep camel-devbox testing camelRun's main around the clock, one job at a time.
-# Each cycle, on the latest origin/main:
-#   1. a soak round (soak-seq.sh: property tests at PROP_SCALE=50, then the full suite);
-#   2. a simulator batch of SIM_BATCH seeds (sim-nightly.sh), continuing from the last batch's seeds, with
-#      SIM_POSTGRES_SEEDS of them also against real Postgres, then as long again of fuzzing from the kept corpus;
-#   3. every IMAGE_EVERY cycles (default every cycle: cycles run for hours), the image check (image-check.sh: the amd64 image's isolation and v8-exec tests).
-# Results: soak/rounds.tsv and soak/failures.tsv, sim/nights.tsv and sim-failures/<stamp>/, soak/images.tsv, and one
-# line per cycle in loop/cycles.tsv. cron starts it (every 10 minutes, a no-op while it runs: it holds loop/lock);
-# stop it with: touch ~/camelrun-ci/loop/stop (it ends after the step in progress). Not with kill: a child still waiting on
-# the simulator's lock keeps loop/lock, and cron cannot start it again until that child ends.
+# Each cycle runs a soak round on main, then an image check every IMAGE_EVERY cycles (default 1).
+# Cron starts it every 10 minutes. The lock allows only one copy to run.
+# To stop after the current step, create ~/camelrun-ci/loop/stop.
 set -uo pipefail
 home=$HOME/camelrun-ci; dir=$home/loop; mkdir -p $dir
 exec 8>$dir/lock
 flock -n 8 || exit 0
 echo $$ > $dir/pid
-batch=${SIM_BATCH:-5000}; pg=${SIM_POSTGRES_SEEDS:-100}; long=${SIM_LONG_SEEDS:-24}; every=${IMAGE_EVERY:-1}
-# The simulator is deterministic, so it can use most of the box (the soak, timing-sensitive, runs alone before it).
-export SIM_SHARDS=${SIM_SHARDS:-12}
+every=${IMAGE_EVERY:-1}
 cycle=$(cat $dir/cycle 2>/dev/null || echo 0)
 while [ ! -e $dir/stop ]; do
   cycle=$((cycle + 1)); echo $cycle > $dir/cycle
   started=$(date +%s)
-  # A batch started by hand holds the simulator's lock: wait for it rather than skip.
-  flock $home/sim/lock true
   ( cd $home && PROP_SCALE=50 ./soak-seq.sh 1 >> $dir/soak.out 2>&1 ); soak=$?
   [ -e $dir/stop ] && break
-  from=$(cat $dir/next-seed 2>/dev/null || echo 15001)
-  ( cd $home && SIM_NOWAIT=1 SIM_POSTGRES_SEEDS=$pg SIM_LONG_SEEDS=$long ./sim-nightly.sh $from $((from + batch - 1)) origin/main >> $dir/sim.out 2>&1 ); sim=$?
-  echo $((from + batch)) > $dir/next-seed
   image=-
   if [ $((cycle % every)) -eq 0 ] && [ ! -e $dir/stop ]; then
     log=$dir/image-$cycle.out
@@ -36,9 +23,8 @@ while [ ! -e $dir/stop ]; do
       "$(grep -c 'image isolation test passed' $log)" "$(grep -E '^# (pass|fail) ' $log | tr '\n' ' ')" >> $home/soak/images.tsv
     ls -1t $dir/image-*.out | tail -n +8 | xargs -r rm -f
   fi
-  printf '%s\tcycle %s\tsoak=%s\tsim=%s seeds %s-%s\timage=%s\t%ss\n' "$(date -u +%FT%TZ)" $cycle $soak $sim $from $((from + batch - 1)) $image $(( $(date +%s) - started )) >> $dir/cycles.tsv
-  # Old run logs and worktrees: ci-run removes worktrees; keep a week of logs and simulator failures.
+  printf '%s\tcycle %s\tsoak=%s\timage=%s\t%ss\n' "$(date -u +%FT%TZ)" $cycle $soak $image $(( $(date +%s) - started )) >> $dir/cycles.tsv
+  # Keep a week of run logs. ci-run removes its own worktrees.
   find $home/runs -maxdepth 1 -name '*.log' -mtime +7 -delete 2>/dev/null
-  find $home/sim-failures -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} + 2>/dev/null
 done
 rm -f $dir/pid

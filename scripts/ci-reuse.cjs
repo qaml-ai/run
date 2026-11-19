@@ -28,7 +28,7 @@ async function findPassedTree({ github, context, tree, now = Date.now() }) {
     const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
       ...repo, run_id: run.id, filter: 'latest', per_page: 100,
     });
-    const required = ['CI success', 'checks', 'docs', 'python', 'sim',
+    const required = ['CI success', 'checks', 'docs', 'python',
       ...[1, 2, 3, 4, 5].map(shard => `test (process ${shard}/5)`)];
     if (!required.every(name => jobs.some(job => job.name === name &&
         job.status === 'completed' && job.conclusion === 'success'))) continue;

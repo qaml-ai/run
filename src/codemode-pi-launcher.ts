@@ -225,7 +225,7 @@ export function createPiV8Launcher(options: PiV8Options = {}): Launcher {
   };
 }
 
-/** Where an agent's code runs: v8-exec in production; a test or the simulation may give Pi's in-process sandbox. */
+/** Where an agent's code runs: v8-exec in production; tests can supply Pi's in-process sandbox. */
 export type CodeSandboxes = (options: CodemodeSandboxBaseOptions & PiV8Options) => CodemodeSandboxBase;
 
 export class PiV8Sandbox extends CodemodeSandboxBase {

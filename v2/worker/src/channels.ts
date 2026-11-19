@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getAgentStub } from "./agent-do.ts";
 import {
   computeRawHmacHex,
@@ -134,7 +135,7 @@ export async function handleChannelInbound(
   }
 
   const mergedModel =
-    channelCfg.model ?? defCfg?.model ?? env.DEFAULT_MODEL ?? "openrouter/meta/muse-ember";
+    channelCfg.model ?? defCfg?.model ?? env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID;
   const mergedInstructions =
     channelCfg.instructions ?? defCfg?.instructions ?? `Channel agent for ${row.name}.`;
 

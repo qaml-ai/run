@@ -119,6 +119,9 @@ disabled. Give its role read access to `tenants`, `api_tokens`, `oauth_tokens`,
 `agent_v2_receipt_archives`, and `agent_v2_requests`. Prompt receipt
 reservation also needs insert access to `agent_v2_requests`. The migration
 command uses its own database role to publish routes and receipt archives.
+Apply `backends/workers/ops/legacy-credit-reads-grants.sql` before routing
+end-user detail reads to the Worker. A detail read can settle an expired
+credit lot and enqueues the same ledger and webhook records as the Node route.
 Use the existing v1 operator configuration and session signing secret for
 compatibility authentication. Connect `V2_LEGACY_RUNS` to the v2 Worker's
 `LegacyAgentRuns` service entrypoint. Only the compatibility Worker needs this

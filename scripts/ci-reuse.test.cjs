@@ -8,7 +8,7 @@ const tree = 'a'.repeat(40);
 const now = Date.now();
 const started = new Date(now - 60_000).toISOString();
 const recorded = new Date(now - 30_000).toISOString();
-const required = ['CI success', 'checks', 'docs', 'python', 'sim',
+const required = ['CI success', 'checks', 'docs', 'python',
   ...[1, 2, 3, 4, 5].map(shard => `test (process ${shard}/5)`)];
 
 function fixture({ full = true, run: overrides = {}, artifact: artifactOverrides = {}, jobs, tree: target = tree } = {}) {

@@ -6,8 +6,8 @@
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Message, SystemMessage } from "@earendil-works/pi-ai";
-import type { Context, JsonValue } from "@earendil-works/chord";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { Op } from "@earendil-works/chord/delta";
 import type { JsonObject, Storage, StorageWrite, DocumentId, DocumentContent, EntryId, EntryRecord, Cursor } from "@earendil-works/pi-durable";

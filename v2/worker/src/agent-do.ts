@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
-import { calculateCostUsd } from "./providers.ts";
+import { DEFAULT_MODEL_ID, calculateCostUsd } from "./providers.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -78,6 +78,16 @@ interface PendingWsCall {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
+
+const RUN_WATCH_INTERVAL_MS = 60_000;
+const RUN_STALL_AFTER_MS = 5 * RUN_WATCH_INTERVAL_MS;
+const RUN_LIFECYCLE_EVENTS = new Set([
+  "run_queued", "run_started", "run_resumed", "input_required",
+  "run_completed", "run_failed", "run_cancelled",
+]);
+const EXPECTED_RUN_FAILURES = new Set([
+  "insufficient_credits", "run_spend_limit_exceeded", "spend_limit_exceeded", "input_expired",
+]);
 
 export class AgentDO extends DurableObject<Env> {
   private sqlReady = false;
@@ -250,6 +260,7 @@ export class AgentDO extends DurableObject<Env> {
         this.ctx.storage.sql.exec(
           `UPDATE runs SET status = 'queued', batched_into = NULL WHERE status = 'running'`,
         );
+        for (const { id } of orphaned) this.logRunLifecycle(id, "run_recovered");
       }
       const hasQueued = this.ctx.storage.sql
         .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'queued' LIMIT 1`)
@@ -279,9 +290,8 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private writeConfig(cfg: AgentConfig): void {
-    const now = Date.now();
+    const now = Math.max(Date.now(), (this.cachedConfig?.updatedAt ?? 0) + 1);
     cfg.updatedAt = now;
-    this.cachedConfig = cfg;
     this.ctx.storage.sql.exec(
       `INSERT INTO config (id, config_json, updated_at)
        VALUES (1, ?1, ?2)
@@ -289,6 +299,7 @@ export class AgentDO extends DurableObject<Env> {
       JSON.stringify(cfg),
       now,
     );
+    this.cachedConfig = cfg;
   }
 
   private buildAdapter(): TurnStorageAdapter {
@@ -662,6 +673,10 @@ export class AgentDO extends DurableObject<Env> {
       data,
       createdAt: now,
     };
+    if (runId && RUN_LIFECYCLE_EVENTS.has(type)) {
+      const code = (data.error as { code?: unknown } | undefined)?.code ?? data.code;
+      this.logRunLifecycle(runId, type, typeof code === "string" ? code : undefined);
+    }
 
     const wsPayload = JSON.stringify({
       type: "event",
@@ -1066,8 +1081,10 @@ export class AgentDO extends DurableObject<Env> {
         spendLimitUsd ?? null,
         actor ?? null,
       );
+      this.logRunLifecycle(steerRunId, "run_queued");
 
       if (!wait) {
+        this.logRunLifecycle(steerRunId, "run_completed");
         return this.materializeRunRecord(steerRunId);
       }
 
@@ -1080,6 +1097,7 @@ export class AgentDO extends DurableObject<Env> {
         Date.now(),
         steerRunId,
       );
+      this.logRunLifecycle(steerRunId, `run_${settledTarget.status}`, settledTarget.error?.code);
       return this.materializeRunRecord(steerRunId);
     }
 
@@ -1123,6 +1141,8 @@ export class AgentDO extends DurableObject<Env> {
       queueMode: cfg.queue.mode,
     });
 
+    // Persist a wake-up before acknowledging acceptance so eviction can recover the queue.
+    await this.scheduleNextAlarm();
     const drainPromise = this.drainRunQueue();
     this.ctx.waitUntil(drainPromise);
 
@@ -1150,7 +1170,7 @@ export class AgentDO extends DurableObject<Env> {
       while (true) {
         // Do not start a new queued run while another run is paused awaiting human input
         const pausedRow = this.ctx.storage.sql
-          .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'input_required' LIMIT 1`)
+          .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`)
           .toArray();
         if (pausedRow.length > 0) break;
 
@@ -1327,6 +1347,10 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
+    this.finalizeFollowers(primaryRecord, followerIds);
+  }
+
+  private finalizeFollowers(primaryRecord: RunRecord, followerIds: string[]): void {
     for (const fid of followerIds) {
       this.ctx.storage.sql.exec(
         `UPDATE runs
@@ -1340,6 +1364,58 @@ export class AgentDO extends DurableObject<Env> {
         Date.now(),
         fid,
       );
+      if (primaryRecord.status !== "input_required") {
+        this.logRunLifecycle(fid, `run_${primaryRecord.status}`, primaryRecord.error?.code);
+      }
+    }
+  }
+
+  private pausedFollowerIds(runId: string): string[] {
+    return this.ctx.storage.sql.exec<{ id: string }>(
+      "SELECT id FROM runs WHERE batched_into = ? AND status = 'input_required'",
+      runId,
+    ).toArray().map(({ id }) => id);
+  }
+
+  private logRunLifecycle(runId: string, event: string, code?: string): void {
+    const fields = { event, runId, agentId: this.readConfigOrNull()?.id, code };
+    if (event === "run_failed" && !EXPECTED_RUN_FAILURES.has(code ?? "")) {
+      console.error({ message: "Agent turn failed", ...fields });
+    } else {
+      console.info({ message: "Agent turn lifecycle", ...fields });
+    }
+  }
+
+  private watchableRuns(): Array<{ id: string; status: string; started_at: number }> {
+    const sql = this.ctx.storage.sql;
+    const oldest = (status: string) => sql.exec<{ id: string; status: string; started_at: number }>(
+      "SELECT id, status, started_at FROM runs WHERE status = ? AND batched_into IS NULL ORDER BY started_at LIMIT 1",
+      status,
+    ).toArray();
+    const running = oldest("running");
+    // The queue intentionally waits when the agent has asked for input.
+    return oldest("input_required").length > 0 ? running : [...running, ...oldest("queued")];
+  }
+
+  private reportStalledRuns(now: number): void {
+    const sql = this.ctx.storage.sql;
+    for (const run of this.watchableRuns()) {
+      if (now - run.started_at < RUN_STALL_AFTER_MS) continue;
+      const lastEvent = sql.exec<{ created_at: number }>(
+        "SELECT created_at FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT 1",
+        run.id,
+      ).toArray()[0];
+      const lastProgressAt = lastEvent?.created_at ?? run.started_at;
+      if (now - lastProgressAt < RUN_STALL_AFTER_MS) continue;
+      const key = `last_stall_${run.status}`;
+      const marker = `${run.id}:${lastProgressAt}`;
+      const previous = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = ?", key).toArray()[0];
+      if (previous?.v === marker) continue;
+      console.error({
+        message: "Agent turn stalled", event: "run_stalled", agentId: this.requireConfig().id, runId: run.id,
+        status: run.status, ageMs: now - run.started_at, noProgressMs: now - lastProgressAt,
+      });
+      sql.exec("INSERT OR REPLACE INTO runtime_kv (k, v) VALUES (?, ?)", key, marker);
     }
   }
 
@@ -1349,6 +1425,9 @@ export class AgentDO extends DurableObject<Env> {
 
     const now = Date.now();
     const candidates: number[] = [];
+    if (this.watchableRuns().length > 0) {
+      candidates.push((Math.floor(now / RUN_WATCH_INTERVAL_MS) + 1) * RUN_WATCH_INTERVAL_MS);
+    }
 
     const delivery = this.ctx.storage.sql.exec<{ due: number | null }>(
       "SELECT MIN(next_attempt_at) AS due FROM app_webhook_deliveries",
@@ -1400,6 +1479,8 @@ export class AgentDO extends DurableObject<Env> {
     if (candidates.length > 0) {
       const earliest = Math.max(now + 250, Math.min(...candidates));
       await this.ctx.storage.setAlarm(earliest);
+    } else {
+      await this.ctx.storage.deleteAlarm();
     }
   }
 
@@ -1419,18 +1500,26 @@ export class AgentDO extends DurableObject<Env> {
       .toArray();
     for (const inp of expiredInputs) {
       this.ctx.storage.sql.exec(`UPDATE inputs SET status = 'expired' WHERE id = ?1`, inp.id);
-      this.ctx.storage.sql.exec(
+      const expired = this.ctx.storage.sql.exec(
         `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'input_required'`,
         JSON.stringify({ code: "input_expired", message: "Pending human input timed out" }),
         now,
         inp.run_id,
       );
+      if (!expired.rowsWritten) continue;
       this.recordAndBroadcastEvent(inp.run_id, "run_failed", {
         runId: inp.run_id,
         error: { code: "input_expired", message: "Pending human input timed out" },
       });
       this.notifyRunWaiters(inp.run_id);
+      const followerIds = this.pausedFollowerIds(inp.run_id);
+      this.finalizeFollowers(this.materializeRunRecord(inp.run_id), followerIds);
+      for (const id of followerIds) this.notifyRunWaiters(id);
     }
+
+    this.reportStalledRuns(now);
+    await this.scheduleNextAlarm();
+    this.ctx.waitUntil(this.drainRunQueue());
 
     // 2. Clean up expired VM session leases
     const expiredVms = this.ctx.storage.sql
@@ -1506,7 +1595,12 @@ export class AgentDO extends DurableObject<Env> {
         await deliverWebhookMessage(this.env, JSON.parse(message_json), true);
         this.ctx.storage.sql.exec("DELETE FROM app_webhook_deliveries WHERE id = ?", id);
       } catch (error) {
-        console.error("App webhook delivery failed", { id, error });
+        const delivery = { id, attempt: attempts + 1, code: extractApiError(error)?.code };
+        if (attempts === 2) {
+          console.error({ message: "App turn webhook delivery delayed", ...delivery });
+        } else {
+          console.warn({ message: "App turn webhook delivery retry", ...delivery });
+        }
         const delay = 1_000 * 2 ** Math.min(attempts, 8);
         this.ctx.storage.sql.exec(
           "UPDATE app_webhook_deliveries SET attempts = attempts + 1, next_attempt_at = ? WHERE id = ?",
@@ -1558,6 +1652,7 @@ export class AgentDO extends DurableObject<Env> {
       id: string;
       tenantId: string;
       key: string;
+      initialModel?: string;
     },
     initialRun?: { input: StartRunInput; hints?: StartRunHints },
   ): Promise<{ config: AgentConfig; created: boolean; run?: RunRecord }> {
@@ -1571,8 +1666,9 @@ export class AgentDO extends DurableObject<Env> {
       model:
         incoming.model ??
         existing?.model ??
+        incoming.initialModel ??
         this.env.DEFAULT_MODEL ??
-        "openrouter/meta/muse-ember",
+        DEFAULT_MODEL_ID,
       instructions: incoming.instructions ?? existing?.instructions ?? "",
       definition:
         incoming.definition !== undefined
@@ -1601,17 +1697,52 @@ export class AgentDO extends DurableObject<Env> {
       updatedAt: now,
     };
     this.writeConfig(merged);
+    const indexSync = existing && incoming.model !== undefined
+      ? this.syncIndexedModel(merged)
+      : undefined;
 
     if (initialRun) {
       // `drainRunQueue().finally()` will invoke `scheduleNextAlarm()` once finished.
+      if (indexSync) {
+        this.ctx.waitUntil(indexSync.catch((error) => {
+          console.error("Agent model index update failed", { agentId: merged.id, error });
+        }));
+      }
       const run = await this.enqueueOrRunInternal(initialRun.input, initialRun.hints);
       return { config: merged, created: !existing, run };
     }
 
+    await indexSync;
     if (existing) {
       await this.scheduleNextAlarm();
     }
     return { config: merged, created: !existing };
+  }
+
+  private async syncIndexedModel(config: AgentConfig): Promise<void> {
+    await getTenantStub(this.env, config.tenantId).updateAgentModel(config.id, config.model, config.updatedAt);
+  }
+
+  async updateModelIfIdle(model: string, expectedModel: string): Promise<{ model: string; changed: boolean }> {
+    this.ensureSql();
+    const cfg = this.requireConfig();
+    if (cfg.model === model) {
+      await this.syncIndexedModel(cfg);
+      return { model, changed: false };
+    }
+    if (cfg.model !== expectedModel) {
+      throw new ApiError(409, "model_changed", "The agent model changed");
+    }
+    const pending = this.ctx.storage.sql.exec(
+      "SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1",
+    ).toArray().length > 0;
+    if (this.activeRunId || pending) {
+      throw new ApiError(409, "agent_busy", "The agent has work in progress");
+    }
+    const updated = { ...cfg, model };
+    this.writeConfig(updated);
+    await this.syncIndexedModel(updated);
+    return { model, changed: true };
   }
 
   async seedFork(payload: {
@@ -1769,6 +1900,7 @@ export class AgentDO extends DurableObject<Env> {
           now,
           qr.id,
         );
+        this.recordAndBroadcastEvent(qr.id, "run_cancelled", { runId: qr.id });
         this.notifyRunWaiters(qr.id);
       }
     }
@@ -1846,7 +1978,7 @@ export class AgentDO extends DurableObject<Env> {
     const config = this.requireConfig();
     const messages: StoredMessageContent[] = [];
     const cfs = new CamelFsClient(this.env, config.tenantId);
-    for (const { content, attachments } of input.messages) {
+    for (const { content, attachments, sourceFileSizes } of input.messages) {
       if (!attachments) {
         messages.push(content);
         continue;
@@ -1854,6 +1986,9 @@ export class AgentDO extends DurableObject<Env> {
       const lineage = config.lineage;
       if (!lineage) throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
       const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })));
+      if (files.some(file => sourceFileSizes?.has(file.path) && sourceFileSizes.get(file.path) !== file.size)) {
+        throw new ApiError(422, "invalid_history", "A pinned attachment differs in size from its v1 workspace file");
+      }
       messages.push({ ...content, files });
     }
     return this.ctx.storage.transactionSync(() => {
@@ -2115,6 +2250,7 @@ export class AgentDO extends DurableObject<Env> {
     const resumeWork = (async () => {
       const cfg = this.requireConfig();
       const tenantStub = getTenantStub(this.env, cfg.tenantId);
+      const followerIds = this.pausedFollowerIds(inp.run_id);
       let slotAcquired = false;
       const abortController = new AbortController();
       this.activeRunId = inp.run_id;
@@ -2135,8 +2271,20 @@ export class AgentDO extends DurableObject<Env> {
           },
           signal: abortController.signal,
         });
-        await this.settleAndFinalizeFollowers(rec, []);
+        await this.settleAndFinalizeFollowers(rec, followerIds);
         return rec;
+      } catch (error) {
+        const apiErr = extractApiError(error);
+        const code = apiErr?.code ?? "run_failed";
+        const message = apiErr?.message ?? (error instanceof Error ? error.message : String(error));
+        this.ctx.storage.sql.exec(
+          "UPDATE runs SET status = 'failed', error_json = ?, ended_at = ? WHERE id = ?",
+          JSON.stringify({ code, message }), Date.now(), inp.run_id,
+        );
+        this.recordAndBroadcastEvent(inp.run_id, "run_failed", { runId: inp.run_id, error: { code, message } });
+        const failed = this.materializeRunRecord(inp.run_id);
+        this.finalizeFollowers(failed, followerIds);
+        return failed;
       } finally {
         if (slotAcquired) {
           await tenantStub.releaseSlot(inp.run_id).catch(() => {});
@@ -2144,7 +2292,8 @@ export class AgentDO extends DurableObject<Env> {
         this.activeRunId = null;
         this.activeAbortController = null;
         this.notifyRunWaiters(inp.run_id);
-        void this.drainRunQueue();
+        for (const id of followerIds) this.notifyRunWaiters(id);
+        this.ctx.waitUntil(this.drainRunQueue());
       }
     })();
 
