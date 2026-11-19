@@ -1265,7 +1265,7 @@ export class AgentDO extends DurableObject<Env> {
         outputSchema,
         maxSteps,
         signal: abortController.signal,
-        prefetchedProvider: hints?.prefetchedProvider?.model === cfg.model ? hints.prefetchedProvider : undefined,
+        prefetchedProvider: hints?.prefetchedProvider,
         prefetchedBalanceUsd: hints?.prefetchedBalanceUsd,
       });
 
