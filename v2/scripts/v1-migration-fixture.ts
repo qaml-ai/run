@@ -9,6 +9,7 @@ import { listen, OPERATOR, OTHER_OPERATOR, runtime, until } from "../../tests/ru
 import { CamelRun, parseSSE } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
+import { moveAgent } from "./move-agent.ts";
 import { stageAgent } from "./stage-agent.ts";
 
 export async function rehearseSignedTools(t: TestContext, workerUrl: string, adminKey: string) {
@@ -225,6 +226,9 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.equal(sourceHistory.status, 200, sourceHistory.text);
   const fenced = { tenant: "alice", agent: stagedAgentId, operation };
   const destination = { tenant: tenantId, agent: stagingAgent.id };
+  const move = () => moveAgent(v1.db, { ...from, tenant: fenced.tenant, operation }, target, destination, {
+    initialCommit: stagingRepo.commit, previous: secondStage.history.receipt,
+  });
   const openV1Watch = await fetch(`${v1.base}/v1/agents/${stagedAgentId}/events?snapshot=1`, {
     headers: { Authorization: `Bearer ${originalKey}` },
     signal: AbortSignal.timeout(15_000),
@@ -234,11 +238,12 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     token: originalKey, body: { text: lastV1Prompt, requestId: lastV1RequestId },
   });
   assert.equal(await publishV2AgentRoute(v1.db, { ...fenced, operation: randomUUID() }, destination), false);
-  assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
+  assert.equal((await move()).state, "published");
   const held = await promptDuringFence;
   assert.equal(held.status, 202, held.text);
   assert.deepEqual(held.json, lastV1Record);
   assert.match(await openV1Watch.text(), /event: reconnect\nretry: 0\ndata: \{"type":"reconnect","reason":"moved"/);
+  assert.equal((await move()).state, "published");
   assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
   assert.equal(await publishV2AgentRoute(v1.db, fenced, { ...destination, agent: history.id }), false);
   assert.equal(await unfenceV1Agent(v1.db, "alice", stagedAgentId, operation), false);
