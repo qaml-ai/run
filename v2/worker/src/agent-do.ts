@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
+import { calculateCostUsd } from "./providers.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -27,6 +28,7 @@ import {
   type AgentEventRecord,
   type Env,
   type PendingInputView,
+  type QueueMessagePayload,
   type RpcStub,
   type RunRecord,
   type RunStatus,
@@ -40,7 +42,7 @@ import {
   type ToolCallSummary,
 } from "./types.ts";
 import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
-import { enqueueWebhookEvent } from "./webhooks.ts";
+import { deliverWebhookMessage, enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
 interface WsAttachment {
@@ -88,6 +90,7 @@ export class AgentDO extends DurableObject<Env> {
   private sseListeners = new Set<(ev: AgentEventRecord) => void>();
   private pendingWsCalls = new Map<string, PendingWsCall>();
   private lastDreamedSeq = 0;
+  private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
 
   private ensureSql(): void {
     if (this.sqlReady) return;
@@ -150,6 +153,13 @@ export class AgentDO extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, seq ASC);
+      CREATE TABLE IF NOT EXISTS app_webhook_deliveries (
+        id TEXT PRIMARY KEY,
+        message_json TEXT NOT NULL,
+        next_attempt_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_app_webhook_deliveries_due ON app_webhook_deliveries(next_attempt_at);
       CREATE TABLE IF NOT EXISTS inputs (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL,
@@ -214,6 +224,13 @@ export class AgentDO extends DurableObject<Env> {
         created_at INTEGER NOT NULL
       );
     `);
+    const runColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(runs)").toArray();
+    if (!runColumns.some((column) => column.name === "spend_limit_usd")) {
+      this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN spend_limit_usd REAL");
+    }
+    if (!runColumns.some((column) => column.name === "actor")) {
+      this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN actor TEXT");
+    }
     this.sqlReady = true;
 
     // Recover from isolate eviction/restart: load persisted dream watermark
@@ -428,9 +445,40 @@ export class AgentDO extends DurableObject<Env> {
         );
       },
       getRunRecord: (runId) => this.materializeRunRecord(runId),
+      getRunSpendLimit: (runId) => this.runSpendLimit(runId),
+      recordModelUsage: async (runId, kind, input, output, usage) => {
+        const actor = this.runActor(runId);
+        if (!actor) return;
+        const cfg = this.requireConfig();
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec("UPDATE runs SET usage_json = ? WHERE id = ?", JSON.stringify(usage), runId);
+          this.enqueueAppWebhook(cfg.tenantId, "usage.recorded", {
+            agentId: cfg.id,
+            runId,
+            actor,
+            context: cfg.toolIdentity?.context,
+            model: cfg.model,
+            kind,
+            input,
+            output,
+            cost: { usd: calculateCostUsd(cfg.model, input, output), source: "catalog" },
+          });
+        });
+        await this.scheduleNextAlarm();
+      },
       makeToolContext: (runId, approvedSet, onFilesChanged, onVmMs, signal) =>
         this.createToolExecutionContext(runId, approvedSet, onFilesChanged, onVmMs, signal),
     };
+  }
+
+  private enqueueAppWebhook(tenantId: string, eventType: string, payload: Record<string, unknown>): void {
+    const event: Extract<QueueMessagePayload, { kind: "webhook" }> = {
+      kind: "webhook", tenantId, eventType, eventId: randomId("evt", 16), createdAt: Date.now(), payload,
+    };
+    this.ctx.storage.sql.exec(
+      "INSERT INTO app_webhook_deliveries (id, message_json, next_attempt_at) VALUES (?, ?, ?)",
+      event.eventId, JSON.stringify(event), event.createdAt,
+    );
   }
 
   private createToolExecutionContext(
@@ -440,10 +488,12 @@ export class AgentDO extends DurableObject<Env> {
     onVmMs: (ms: number) => void,
     signal?: AbortSignal,
   ): ToolExecutionContext {
+    const actor = this.runActor(runId);
     return {
       env: this.env,
       config: this.requireConfig(),
       runId,
+      actor,
       approvedToolCallIds,
       signal,
       ensureAgentRepo: async () => this.ensureAgentRepository(),
@@ -534,8 +584,12 @@ export class AgentDO extends DurableObject<Env> {
         );
       },
       runInlineSubprompt: async (prompt: string, opts?: Record<string, unknown>) => {
+        if (this.runSpendLimit(runId) !== null) {
+          throw new ApiError(409, "nested_run_spend_limit", "A capped run cannot start an independent workflow model run");
+        }
         const subRun = await this.enqueueOrRunInternal({
           prompt,
+          actor,
           wait: true,
           outputSchema:
             opts?.outputSchema && typeof opts.outputSchema === "object"
@@ -547,11 +601,12 @@ export class AgentDO extends DurableObject<Env> {
     };
   }
 
-  private async ensureAgentRepository(): Promise<{
+  async ensureAgentRepository(): Promise<{
     repoId: string;
     lineage: string;
     branch: string;
   }> {
+    this.ensureSql();
     const cfg = this.requireConfig();
     const tenantStub = getTenantStub(this.env, cfg.tenantId);
 
@@ -567,15 +622,20 @@ export class AgentDO extends DurableObject<Env> {
       return { repoId: cfg.repoId, lineage: repo.lineage, branch: cfg.branch };
     }
 
-    const created = await tenantStub.createRepo({ name: `${cfg.key}-repo` });
-    cfg.repoId = created.repoId;
-    cfg.lineage = created.lineage;
-    if (!cfg.branch) cfg.branch = created.defaultRef;
-    this.writeConfig(cfg);
-
-    await tenantStub.updateAgentRepo(cfg.id, cfg.repoId, cfg.branch);
-
-    return { repoId: created.repoId, lineage: created.lineage, branch: cfg.branch };
+    async function provision(stub: typeof tenantStub) {
+      const created = await stub.createRepo({ name: `${cfg.key}-repo` });
+      const branch = cfg.branch || created.defaultRef;
+      await stub.updateAgentRepo(cfg.id, created.repoId, branch);
+      return { repoId: created.repoId, lineage: created.lineage, branch };
+    }
+    this.repoProvisioning ??= provision(tenantStub);
+    try {
+      const repo = await this.repoProvisioning;
+      this.writeConfig({ ...this.requireConfig(), ...repo });
+      return repo;
+    } finally {
+      this.repoProvisioning = undefined;
+    }
   }
 
   private recordAndBroadcastEvent(
@@ -632,7 +692,22 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
-    if (
+    const actor = runId && ["run_started", "run_resumed", "run_completed", "run_failed", "run_cancelled", "input_required"].includes(type)
+      ? this.runActor(runId)
+      : undefined;
+    if (actor) {
+      const cfg = this.requireConfig();
+      this.enqueueAppWebhook(cfg.tenantId, type === "input_required" ? "run.input_required" : `run.${type.slice(4)}`, {
+        agentId: cfg.id,
+        agentKey: cfg.key,
+        runId,
+        actor,
+        context: cfg.toolIdentity?.context,
+        ...(type === "run_completed" ? { text: data.text } : {}),
+        ...(type === "run_failed" ? { error: data.error ?? { code: data.code, message: data.message } } : {}),
+      });
+      this.ctx.waitUntil(this.scheduleNextAlarm());
+    } else if (
       type === "run_completed" ||
       type === "run_failed" ||
       type === "run_cancelled" ||
@@ -808,6 +883,7 @@ export class AgentDO extends DurableObject<Env> {
     const rows = this.ctx.storage.sql
       .exec<{
         id: string;
+        actor: string | null;
         idempotency_key: string | null;
         status: string;
         while_running: string;
@@ -860,6 +936,7 @@ export class AgentDO extends DurableObject<Env> {
     return {
       id: row.id,
       agentId: cfg.id,
+      ...(row.actor ? { actor: row.actor } : {}),
       idempotencyKey: row.idempotency_key,
       startedAt: row.started_at,
       status: row.status as RunStatus,
@@ -923,6 +1000,17 @@ export class AgentDO extends DurableObject<Env> {
     const whileRunning = body.whileRunning === "steer" ? "steer" : "queue";
     const wait = body.wait !== undefined ? Boolean(body.wait) : true;
     const maxSteps = Math.max(1, Math.min(100, Number(body.maxSteps ?? 25)));
+    const spendLimitUsd = body.spendLimitUsd;
+    if (spendLimitUsd !== undefined && (!Number.isFinite(spendLimitUsd) || spendLimitUsd < 0)) {
+      throw new ApiError(400, "invalid_spend_limit", "spendLimitUsd must be a finite non-negative number");
+    }
+    if (spendLimitUsd !== undefined && whileRunning === "steer") {
+      throw new ApiError(400, "invalid_spend_limit", "A run with a spend limit must use whileRunning: queue");
+    }
+    const actor = body.actor;
+    if (actor !== undefined && (typeof actor !== "string" || !actor.trim() || actor.length > 200)) {
+      throw new ApiError(400, "invalid_actor", "actor must be a non-empty string of at most 200 characters");
+    }
     const idempotencyKey = body.idempotencyKey?.trim() || null;
 
     if (idempotencyKey) {
@@ -947,7 +1035,7 @@ export class AgentDO extends DurableObject<Env> {
     }
 
     // Mid-turn steering when a run is currently executing!
-    if (whileRunning === "steer" && this.activeRunId) {
+    if (whileRunning === "steer" && this.activeRunId && actor === this.runActor(this.activeRunId)) {
       this.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
       const targetRunId = this.activeRunId;
       const steerId = randomId("str", 6);
@@ -963,8 +1051,8 @@ export class AgentDO extends DurableObject<Env> {
       );
 
       this.ctx.storage.sql.exec(
-        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, batched_into, text, usage_json, max_steps, started_at, ended_at)
-         VALUES (?1, ?2, ?3, 'steer', ?4, ?5, '', ?6, ?7, ?8, ?9)`,
+        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, batched_into, text, usage_json, max_steps, started_at, ended_at, spend_limit_usd, actor)
+         VALUES (?1, ?2, ?3, 'steer', ?4, ?5, '', ?6, ?7, ?8, ?9, ?10, ?11)`,
         steerRunId,
         idempotencyKey,
         wait ? "running" : "completed",
@@ -974,6 +1062,8 @@ export class AgentDO extends DurableObject<Env> {
         maxSteps,
         now,
         wait ? null : now,
+        spendLimitUsd ?? null,
+        actor ?? null,
       );
 
       if (!wait) {
@@ -1005,8 +1095,8 @@ export class AgentDO extends DurableObject<Env> {
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
-        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at)
-         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8)`,
+        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at, spend_limit_usd, actor)
+         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8, ?9, ?10)`,
         runId,
         idempotencyKey,
         whileRunning,
@@ -1015,6 +1105,8 @@ export class AgentDO extends DurableObject<Env> {
         JSON.stringify(emptyUsage()),
         maxSteps,
         now,
+        spendLimitUsd ?? null,
+        actor ?? null,
       );
       if (files.length > 0) {
         this.ctx.storage.sql.exec(
@@ -1039,6 +1131,16 @@ export class AgentDO extends DurableObject<Env> {
     return this.waitForRunSettlement(runId);
   }
 
+  private runSpendLimit(runId: string): number | null {
+    return this.ctx.storage.sql.exec<{ spend_limit_usd: number | null }>("SELECT spend_limit_usd FROM runs WHERE id = ?1", runId)
+      .one().spend_limit_usd;
+  }
+
+  private runActor(runId: string): string | undefined {
+    return this.ctx.storage.sql.exec<{ actor: string | null }>("SELECT actor FROM runs WHERE id = ?1", runId)
+      .toArray()[0]?.actor ?? undefined;
+  }
+
   private async drainRunQueue(): Promise<void> {
     if (this.queueDraining || this.activeRunId) return;
     this.queueDraining = true;
@@ -1054,36 +1156,34 @@ export class AgentDO extends DurableObject<Env> {
         const cfg = this.requireConfig();
 
         // Check if any queued run exists
-        let queued = this.ctx.storage.sql
+        const readQueued = () => this.ctx.storage.sql
           .exec<{
             id: string;
             prompt: string;
             output_schema_json: string | null;
             max_steps: number;
+            spend_limit_usd: number | null;
+            actor: string | null;
           }>(
-            `SELECT id, prompt, output_schema_json, max_steps FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
+            `SELECT id, prompt, output_schema_json, max_steps, spend_limit_usd, actor FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
           )
           .toArray();
+        let queued = readQueued();
         if (queued.length === 0) break;
 
         // If batch mode has a coalescing window, wait briefly so concurrent arrivals coalesce!
-        if (cfg.queue.mode === "batch" && cfg.queue.windowMs > 0) {
+        const canBatch = (run: (typeof queued)[number]) => run.spend_limit_usd === null && run.actor === null;
+        if (canBatch(queued[0]!) && cfg.queue.mode === "batch" && cfg.queue.windowMs > 0) {
           await new Promise((r) => setTimeout(r, Math.min(cfg.queue.windowMs, 5_000)));
-          queued = this.ctx.storage.sql
-            .exec<{
-              id: string;
-              prompt: string;
-              output_schema_json: string | null;
-              max_steps: number;
-            }>(
-              `SELECT id, prompt, output_schema_json, max_steps FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
-            )
-            .toArray();
+          queued = readQueued();
           if (queued.length === 0) break;
         }
 
         const primary = queued[0]!;
-        const followers = cfg.queue.mode === "batch" ? queued.slice(1) : [];
+        const firstIndividual = queued.findIndex((run) => !canBatch(run));
+        const followers = cfg.queue.mode === "batch" && firstIndividual !== 0
+          ? queued.slice(1, firstIndividual === -1 ? undefined : firstIndividual)
+          : [];
 
         const combinedPrompt =
           followers.length > 0
@@ -1160,6 +1260,7 @@ export class AgentDO extends DurableObject<Env> {
       const finalRecord = await runAgentTurn(adapter, {
         runId,
         prompt,
+        actor: this.runActor(runId),
         files,
         outputSchema,
         maxSteps,
@@ -1247,6 +1348,11 @@ export class AgentDO extends DurableObject<Env> {
 
     const now = Date.now();
     const candidates: number[] = [];
+
+    const delivery = this.ctx.storage.sql.exec<{ due: number | null }>(
+      "SELECT MIN(next_attempt_at) AS due FROM app_webhook_deliveries",
+    ).one();
+    if (delivery.due !== null) candidates.push(delivery.due);
 
     // 1. Next due schedule
     const schedRows = this.ctx.storage.sql
@@ -1382,7 +1488,31 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
-    await this.scheduleNextAlarm();
+    try {
+      await this.deliverDueAppWebhooks(now);
+    } finally {
+      await this.scheduleNextAlarm();
+    }
+  }
+
+  private async deliverDueAppWebhooks(now: number): Promise<void> {
+    const deliveries = this.ctx.storage.sql.exec<{ id: string; message_json: string; attempts: number }>(
+      "SELECT id, message_json, attempts FROM app_webhook_deliveries WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 10",
+      now,
+    ).toArray();
+    await Promise.all(deliveries.map(async ({ id, message_json, attempts }) => {
+      try {
+        await deliverWebhookMessage(this.env, JSON.parse(message_json), true);
+        this.ctx.storage.sql.exec("DELETE FROM app_webhook_deliveries WHERE id = ?", id);
+      } catch (error) {
+        console.error("App webhook delivery failed", { id, error });
+        const delay = 1_000 * 2 ** Math.min(attempts, 8);
+        this.ctx.storage.sql.exec(
+          "UPDATE app_webhook_deliveries SET attempts = attempts + 1, next_attempt_at = ? WHERE id = ?",
+          Date.now() + delay, id,
+        );
+      }
+    }));
   }
 
   private fetchStoredEvents(afterSeq: number, runIdFilter: string | null): AgentEventRecord[] {
@@ -1899,7 +2029,7 @@ export class AgentDO extends DurableObject<Env> {
 
   async respondToInput(
     inputId: string,
-    body?: { approved?: boolean; answer?: unknown; wait?: boolean },
+    body?: { approved?: boolean; answer?: unknown; wait?: boolean; actor?: string },
     trustedResponder = false,
   ): Promise<RunRecord> {
     this.ensureSql();
@@ -1920,6 +2050,10 @@ export class AgentDO extends DurableObject<Env> {
     const inp = rows[0];
     if (!inp) {
       throw new ApiError(404, "input_not_found", `Input '${inputId}' not found`);
+    }
+    const actor = this.runActor(inp.run_id);
+    if (actor && (!trustedResponder || body?.actor !== actor)) {
+      throw new ApiError(403, "input_actor_mismatch", "Only the run's actor can respond to its inputs");
     }
     if (inp.status !== "pending") {
       throw new ApiError(

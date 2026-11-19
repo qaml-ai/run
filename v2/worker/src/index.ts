@@ -635,12 +635,20 @@ app.delete("/v2/agents/:idOrKey", async (c) => {
   return c.json({ deleted: true });
 });
 
+app.put("/v2/agents/:idOrKey/repo", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  return c.json(await stub.ensureAgentRepository());
+});
+
 app.post("/v2/agents/:idOrKey/runs", async (c) => {
   const creds = await parseRequestCredentials(c.env, c.req.raw);
   if (creds.kind === "admin") {
     throw new ApiError(401, "unauthorized", "Missing Bearer token");
   }
   const body = (await c.req.json()) as StartRunInput;
+  if (body.actor !== undefined && creds.kind !== "tenant") {
+    throw new ApiError(403, "forbidden", "A tenant credential is required to set the run actor");
+  }
   const preacquireRunId = body.whileRunning !== "steer" ? randomId("run", 8) : undefined;
   const tenantStub = getTenantStub(c.env, creds.tenantId);
   const prep = await tenantStub.authorizeAndPrepareRun({
@@ -747,7 +755,11 @@ app.post("/v2/agents/:idOrKey/inputs/:inputId", async (c) => {
     approved?: boolean;
     answer?: unknown;
     wait?: boolean;
+    actor?: string;
   };
+  if (body.actor !== undefined && auth.kind !== "tenant") {
+    throw new ApiError(403, "forbidden", "A tenant credential is required to set the input actor");
+  }
   return c.json(await stub.respondToInput(c.req.param("inputId"), body, auth.kind === "tenant"));
 });
 

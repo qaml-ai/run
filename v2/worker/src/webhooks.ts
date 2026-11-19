@@ -68,9 +68,10 @@ export async function processEventsQueueBatch(
   }
 }
 
-async function deliverWebhookMessage(
+export async function deliverWebhookMessage(
   env: Env,
   item: Extract<QueueMessagePayload, { kind: "webhook" }>,
+  required = false,
 ): Promise<void> {
   const hooks = await getTenantStub(env, item.tenantId).listEnabledWebhookTargets();
   if (hooks.length === 0) return;
@@ -98,6 +99,7 @@ async function deliverWebhookMessage(
 
       const res = await fetch(hook.url, {
         method: "POST",
+        ...(required ? { signal: AbortSignal.timeout(10_000) } : {}),
         headers: {
           "Content-Type": "application/json",
           "X-CamelRun-Signature": signature,
@@ -107,7 +109,7 @@ async function deliverWebhookMessage(
         },
         body: envelope,
       });
-      if (!res.ok && res.status >= 500) {
+      if (!res.ok && (required || res.status >= 500)) {
         throw new Error(`Webhook ${hook.id} failed with HTTP ${res.status}`);
       }
     }),

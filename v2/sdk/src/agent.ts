@@ -116,7 +116,7 @@ export class AgentHandle {
     const wait = options?.wait ?? true;
     let rec = await this.transport.requestJson<RunRecord<TOutput>>(
       "POST", `${this.basePath}/runs`,
-      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor },
       { signal: options?.signal },
     );
     if (wait) {
@@ -138,14 +138,14 @@ export class AgentHandle {
   async submit<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "wait">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
-      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor },
       { signal: options?.signal });
   }
 
   async steer<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "whileRunning" | "files">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
-      { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: "steer", ...(options?.wait !== undefined ? { wait: options.wait } : {}), outputSchema: options?.outputSchema, maxSteps: options?.maxSteps },
+      { prompt, idempotencyKey: options?.idempotencyKey, whileRunning: "steer", ...(options?.wait !== undefined ? { wait: options.wait } : {}), outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor },
       { signal: options?.signal });
   }
 
@@ -224,7 +224,7 @@ export class AgentHandle {
     return this.transport.requestJson("POST", `${this.basePath}/abort`, { keepQueued: options?.keepQueued });
   }
 
-  async answerInput<TOutput = unknown>(inputId: string, payload: { approved?: boolean; answer?: unknown; wait?: boolean }): Promise<RunRecord<TOutput>> {
+  async answerInput<TOutput = unknown>(inputId: string, payload: { approved?: boolean; answer?: unknown; wait?: boolean; actor?: string }): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/inputs/${encodeURIComponent(inputId)}`, payload);
   }

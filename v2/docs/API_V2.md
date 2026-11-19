@@ -57,13 +57,19 @@ Standard error envelope:
   ```json
   {
     "prompt": "Fix failing test",
+    "actor": "optional-app-user-id",
     "idempotencyKey": "optional",
     "whileRunning": "queue | steer",
     "wait": true,
     "outputSchema": { ... },
-    "maxSteps": 25
+    "maxSteps": 25,
+    "spendLimitUsd": 0.25
   }
   ```
+  The optional `spendLimitUsd` stops a run when metered usage reaches the limit. Charges from a model response or VM command that crosses the limit still count. A limit of zero stops the run before calling the model. A request that supplies a limit must use `whileRunning: "queue"`. Steering an active run keeps its existing limit.
+
+  A tenant credential can set `actor` to an application user it has authenticated. Signed tool calls include that actor in `act` and keep the configured agent subject in `sub`. Runs with a limit or an actor execute individually in batch mode. A steer from a different actor queues as its own run.
+
   Returns `RunRecord`:
   ```json
   {
