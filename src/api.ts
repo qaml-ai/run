@@ -400,13 +400,13 @@ export function api(context: ApiContext) {
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
     // Credentials and retained usage perform their own tenant-scoped ownership checks.
-    if (context.v1Compatibility && !/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path)) {
+    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path)) {
       const agent = c.req.param("id")!;
       const tenant = c.var.principal.tenant;
+      if (!await clients.owns(agent, tenant, true)) throw new HttpError(404, "Unknown agent");
       const admission = c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path);
-      const migrated = await context.v1Compatibility.route(tenant, agent, admission ? c.req.raw.signal : undefined);
+      const migrated = await context.v1Compatibility?.route(tenant, agent, admission ? c.req.raw.signal : undefined);
       if (migrated) {
-        if (!await clients.owns(agent, tenant, true)) throw new HttpError(404, "Unknown agent");
         const supported = admission
           || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:events|state|history|requests\/[^/]+)$/.test(c.req.path));
         if (!supported) throw unsupportedV1Operation();

@@ -8,6 +8,7 @@ import type { PromptInput } from "./api-schemas.ts";
 import { activityOf, validId } from "./client-sessions/state.ts";
 import type { Sql } from "./db.ts";
 import { HttpError } from "./core/http-error.ts";
+import { fetchWithoutRedirects } from "./core/no-redirect.ts";
 
 export type MigratedAgent = {
   tenant: string;
@@ -195,8 +196,8 @@ export class V1Compatibility {
     if (body) headers.set("content-type", "application/json");
     const timeout = AbortSignal.timeout(5_000);
     try {
-      const response = await this.request(url, {
-        method: body ? "POST" : "GET", headers, redirect: "error",
+      const response = await fetchWithoutRedirects(this.request, url, {
+        method: body ? "POST" : "GET", headers,
         body: body && JSON.stringify(body),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
@@ -293,7 +294,7 @@ export class V1Compatibility {
     headers.set("accept", "text/event-stream");
     const deadline = setTimeout(() => controller.abort(), 5_000);
     try {
-      const response = await this.request(url, { headers, redirect: "error", signal: controller.signal });
+      const response = await fetchWithoutRedirects(this.request, url, { headers, signal: controller.signal });
       if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
         await response.body?.cancel();
         throw unavailable();
