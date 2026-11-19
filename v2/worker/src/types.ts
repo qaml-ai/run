@@ -168,6 +168,7 @@ export interface RunRecord {
   actor?: string;
   idempotencyKey: string | null;
   startedAt: number;
+  endedAt?: number;
   status: RunStatus;
   text: string;
   output: unknown;
@@ -267,6 +268,7 @@ export interface ProviderCredentials {
   provider: string;
   apiKey: string;
   baseUrl?: string | null;
+  modelAliases?: Record<string, string>;
 }
 
 export type ModelStreamChunk =

@@ -716,13 +716,13 @@ export async function executeToolCall(
       throw new Error("Nested codemode recursion limit reached");
     }
     const code = String(args.code ?? "");
-    const nestedCtx: ToolExecutionContext = { ...ctx, codemodeDepth: depth + 1 };
-    const out = await runCodemodeScript(code, async (innerTool, innerArgs) => {
+    const out = await runCodemodeScript(code, async (innerTool, innerArgs, signal) => {
       if (innerTool === "codemode") {
         throw new Error("Cannot invoke codemode recursively from inside codemode");
       }
+      const nestedCtx = { ...ctx, codemodeDepth: depth + 1, signal };
       return executeToolCall(nestedCtx, catalog, randomId("cmcall", 6), innerTool, innerArgs);
-    });
+    }, { signal: ctx.signal });
     return out;
   }
 
