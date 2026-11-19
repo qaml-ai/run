@@ -1,3 +1,4 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { AgentDO, getAgentStub } from "./agent-do.ts";
@@ -178,14 +179,24 @@ app.put("/v2/providers/:provider", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   const provider = c.req.param("provider").toLowerCase();
-  const body = (await c.req.json()) as { apiKey?: string; baseUrl?: string };
+  const body = (await c.req.json()) as { apiKey?: string; baseUrl?: string; modelAliases?: Record<string, string> };
   if (typeof body.apiKey !== "string" || !body.apiKey.trim()) {
     throw new ApiError(400, "invalid_request", "`apiKey` is required");
+  }
+  const aliases = body.modelAliases;
+  if (aliases !== undefined && (
+    aliases === null || typeof aliases !== "object" || Array.isArray(aliases) ||
+    Object.entries(aliases).some(([model, deployment]) =>
+      !model.trim() || model !== model.trim() || typeof deployment !== "string" ||
+      !deployment.trim() || deployment !== deployment.trim())
+  )) {
+    throw new ApiError(400, "invalid_request", "`modelAliases` must map model IDs to non-empty upstream model names");
   }
   const out = await getTenantStub(c.env, auth.tenantId).setProviderSecret(
     provider,
     body.apiKey.trim(),
     body.baseUrl?.trim() || null,
+    aliases,
   );
   return c.json(out);
 });
@@ -652,30 +663,30 @@ app.put("/v2/agents/:idOrKey/repo", async (c) => {
   return c.json(await stub.ensureAgentRepository());
 });
 
-app.post("/v2/agents/:idOrKey/runs", async (c) => {
-  const creds = await parseRequestCredentials(c.env, c.req.raw);
+async function startAgentRun(request: Request, env: Env, ctx: Pick<ExecutionContext, "waitUntil">, idOrKey: string, legacyActor = false) {
+  const creds = await parseRequestCredentials(env, request);
   if (creds.kind === "admin") {
     throw new ApiError(401, "unauthorized", "Missing Bearer token");
   }
-  const body = (await c.req.json()) as StartRunInput;
-  if (body.actor !== undefined && creds.kind !== "tenant") {
+  const body = (await request.json()) as StartRunInput;
+  if (body.actor !== undefined && creds.kind !== "tenant" && !legacyActor) {
     throw new ApiError(403, "forbidden", "A tenant credential is required to set the run actor");
   }
   const preacquireRunId = body.whileRunning !== "steer" ? randomId("run", 8) : undefined;
-  const tenantStub = getTenantStub(c.env, creds.tenantId);
+  const tenantStub = getTenantStub(env, creds.tenantId);
   const prep = await tenantStub.authorizeAndPrepareRun({
     credKind: creds.kind,
     tokenHash: creds.tokenHash,
     agentIdFromToken: creds.kind === "agent" ? creds.agentId : undefined,
-    idOrKey: c.req.param("idOrKey"),
-    defaultModel: c.env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
+    idOrKey,
+    defaultModel: env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
     operation: "run",
     includeProviderCredentials: true,
     preacquireRunId,
   });
   try {
-    return c.json(
-      await getAgentStub(c.env, prep.agentId).startRun(body, {
+    return Response.json(
+      await getAgentStub(env, prep.agentId).startRun(body, {
         runId: preacquireRunId,
         preacquiredSlot: prep.slotAcquired,
         prefetchedProvider: prep.prefetchedProvider,
@@ -684,10 +695,17 @@ app.post("/v2/agents/:idOrKey/runs", async (c) => {
     );
   } catch (err) {
     if (prep.slotAcquired && preacquireRunId) {
-      c.executionCtx.waitUntil(tenantStub.releaseSlot(preacquireRunId).catch(() => {}));
+      ctx.waitUntil(tenantStub.releaseSlot(preacquireRunId).catch(() => {}));
     }
     throw err;
   }
+}
+
+app.post("/v2/agents/:idOrKey/runs", (c) => startAgentRun(c.req.raw, c.env, c.executionCtx, c.req.param("idOrKey")));
+
+app.get("/v2/agents/:idOrKey/runs", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "read");
+  return c.json(await stub.getRunState());
 });
 
 app.get("/v2/agents/:idOrKey/runs/:runId", async (c) => {
@@ -1030,6 +1048,34 @@ app.delete("/v2/webhooks/:id", async (c) => {
   }
   return c.json({ deleted: true });
 });
+
+/** Private binding used by the v1 adapter after it authenticates and loads a published migration route. */
+export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
+  async route(tenant: string, agent: string, request: Request): Promise<Response> {
+    try {
+      const path = new URL(request.url).pathname;
+      const prefix = `/v2/agents/${agent}/`;
+      const operation = path.startsWith(prefix) ? path.slice(prefix.length) : "";
+      const write = request.method === "POST" && operation === "runs";
+      const read = request.method === "GET" && /^(?:history|events|runs(?:\/[^/]+)?)$/.test(operation);
+      if (!/^tnt_[0-9a-f]{16}$/.test(tenant) || !/^agt_[0-9a-f]{16}$/.test(agent) || (!write && !read)) {
+        return errorResponse(404, "not_found", "Unsupported legacy agent route");
+      }
+      const entry = await getTenantStub(this.env, tenant).resolveAgent(agent);
+      if (entry?.id !== agent || entry.tenantId !== tenant) return errorResponse(404, "agent_not_found", "Unknown agent");
+      const token = await openSecret(entry.sealedToken, this.env.VAULT_SECRET);
+      const headers = new Headers({ authorization: `Bearer ${token}` });
+      for (const name of ["accept", "content-type"]) {
+        const value = request.headers.get(name);
+        if (value) headers.set(name, value);
+      }
+      const scoped = new Request(request, { headers });
+      return write ? await startAgentRun(scoped, this.env, this.ctx, agent, true) : await app.fetch(scoped, this.env, this.ctx);
+    } catch (error) {
+      return toApiErrorResponse(error);
+    }
+  }
+}
 
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {

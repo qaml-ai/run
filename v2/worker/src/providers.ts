@@ -67,6 +67,7 @@ const MODEL_PRICING_PER_1M: Record<string, { input: number; output: number }> = 
   "openrouter/meta/muse-ember": { input: 0.1, output: 0.5 },
   "deepseek-v4.1-flash-1017": { input: 0.08, output: 0.35 },
   "openrouter/deepseek/deepseek-v4.1-flash": { input: 0.3, output: 1.2 },
+  "azure/deepseek-v4.1-flash": { input: 0.3, output: 1.2 },
   "openrouter/openai/gpt-6-luna": { input: 0.1, output: 0.5 },
   [AZURE_SOL]: { input: 2, output: 10 },
   "gpt-4.1": { input: 2.0, output: 8.0 },
@@ -153,6 +154,8 @@ export function getProviderLookupCandidates(
   }
 
   if (model === AZURE_SOL) return { isMock: false, modelId, explicitProvider, candidates: [] };
+  // An Azure deployment uses its own endpoint and key.
+  if (explicitProvider === "azure") return { isMock: false, modelId, explicitProvider, candidates: ["azure"] };
 
   const candidates: string[] = [];
   if (explicitProvider) {
@@ -182,20 +185,20 @@ export async function resolveModelEndpoint(
   rawModel: string,
   prefetchedProvider?: { credentials: ProviderCredentials | null },
 ): Promise<ResolvedEndpoint> {
-  const { isMock, modelId, explicitProvider, candidates: lookupOrder } =
+  const { isMock, modelId: canonicalModelId, explicitProvider, candidates: lookupOrder } =
     getProviderLookupCandidates(env, rawModel);
 
   if (isMock) {
     return {
       protocol: "mock",
       providerName: "mock",
-      modelId,
+      modelId: canonicalModelId,
       apiKey: "mock",
       baseUrl: "mock://local",
     };
   }
 
-  if (explicitProvider === "azure" && modelId === "gpt-6.2-sol") {
+  if (explicitProvider === "azure" && canonicalModelId === "gpt-6.2-sol") {
     const { AZURE_OPENAI_SOL_ENDPOINT: endpoint, AZURE_OPENAI_SOL_API_KEY: apiKey } = env;
     if (!endpoint || !apiKey) {
       throw new ApiError(503, "missing_provider_key", "The platform Azure deployment for GPT-6.2 Sol is not configured");
@@ -203,7 +206,7 @@ export async function resolveModelEndpoint(
     return {
       protocol: "openai-responses",
       providerName: "azure",
-      modelId,
+      modelId: canonicalModelId,
       apiKey,
       baseUrl: new URL("/openai/v1", endpoint).toString(),
     };
@@ -221,8 +224,10 @@ export async function resolveModelEndpoint(
   }
 
   const providerName = stored?.provider ?? lookupOrder[0] ?? "openai";
+  const aliases = stored?.modelAliases;
+  const modelId = aliases && Object.hasOwn(aliases, canonicalModelId) ? aliases[canonicalModelId] : canonicalModelId;
 
-  if (providerName === "anthropic" || (!explicitProvider && modelId.startsWith("claude-"))) {
+  if (providerName === "anthropic" || (!explicitProvider && canonicalModelId.startsWith("claude-"))) {
     const apiKey = stored?.apiKey || env.ANTHROPIC_API_KEY || "";
     if (!apiKey) {
       throw new ApiError(400, "missing_provider_key", `No API key configured for provider 'anthropic'`);
@@ -239,7 +244,7 @@ export async function resolveModelEndpoint(
   if (
     providerName === "gemini" ||
     providerName === "google" ||
-    (!explicitProvider && modelId.startsWith("gemini-"))
+    (!explicitProvider && canonicalModelId.startsWith("gemini-"))
   ) {
     const apiKey = stored?.apiKey || env.GEMINI_API_KEY || "";
     if (!apiKey) {
@@ -286,13 +291,16 @@ export async function resolveModelEndpoint(
     };
   }
 
-  const apiKey = stored?.apiKey || env.OPENAI_API_KEY || "";
+  const apiKey = stored?.apiKey || (providerName === "azure" ? undefined : env.OPENAI_API_KEY);
   if (!apiKey) {
     throw new ApiError(
       400,
       "missing_provider_key",
       `No API key configured for provider '${providerName}'`,
     );
+  }
+  if (providerName === "azure" && !stored?.baseUrl) {
+    throw new ApiError(400, "missing_provider_url", "An Azure provider requires its deployment base URL");
   }
   return {
     protocol: "openai-chat",
