@@ -9,7 +9,7 @@ import { activityOf, validId } from "./client-sessions/state.ts";
 import type { Sql } from "./db.ts";
 import { HttpError } from "./core/http-error.ts";
 
-type Route = {
+export type MigratedAgent = {
   tenant: string;
   agent: string;
   destination_tenant: string;
@@ -32,6 +32,13 @@ const runResponse = z.object({
   error: z.object({ code: z.string(), message: z.string() }).nullable(),
 });
 type Run = z.infer<typeof runResponse>;
+export const v2Event = z.object({
+  seq: z.number().int().positive(),
+  runId: z.string().nullable(),
+  type: z.string(),
+  data: z.record(z.string(), z.unknown()),
+});
+export type V2Event = z.infer<typeof v2Event>;
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const waitLimitMs = 25_000;
 
@@ -114,15 +121,15 @@ export class V1Compatibility {
     return new V1Compatibility(sql, new URL("/v2/", url), new Map(Object.entries(keys)));
   }
 
-  async route(tenant: string, agent: string): Promise<Route | undefined> {
-    const { rows } = await this.sql.query<Route>(
+  async route(tenant: string, agent: string): Promise<MigratedAgent | undefined> {
+    const { rows } = await this.sql.query<MigratedAgent>(
       "select tenant, agent, destination_tenant, destination_agent, event_base from agent_v2_routes where tenant = $1 and agent = $2",
       [tenant, agent],
     );
     return rows[0];
   }
 
-  private async fingerprint(route: Route, id: string) {
+  private async fingerprint(route: MigratedAgent, id: string) {
     const { rows } = await this.sql.query<{ fingerprint: string }>(
       "select fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = $3",
       [route.tenant, route.agent, id],
@@ -130,7 +137,7 @@ export class V1Compatibility {
     return rows[0]?.fingerprint;
   }
 
-  private async reserve(route: Route, id: string, fingerprint: string) {
+  private async reserve(route: MigratedAgent, id: string, fingerprint: string) {
     const result = await this.sql.query(
       `insert into agent_v2_requests (tenant, agent, request_id, fingerprint) values ($1, $2, $3, $4)
        on conflict (tenant, agent, request_id) do nothing`,
@@ -141,12 +148,18 @@ export class V1Compatibility {
     return false;
   }
 
-  private async call(route: Route, path: string, body?: object, signal?: AbortSignal) {
+  private destination(route: MigratedAgent, path: string) {
     const key = this.credentials.get(route.destination_tenant);
     if (!key) throw new HttpError(503, "The migrated agent's runtime credential is unavailable", "V2_CREDENTIAL_UNAVAILABLE");
     const agent = encodeURIComponent(route.destination_agent);
-    const url = new URL(`agents/${agent}/${path}`, this.baseUrl);
-    const headers = new Headers({ authorization: `Bearer ${key}` });
+    return {
+      url: new URL(`agents/${agent}/${path}`, this.baseUrl),
+      headers: new Headers({ authorization: `Bearer ${key}` }),
+    };
+  }
+
+  private async call(route: MigratedAgent, path: string, body?: object, signal?: AbortSignal) {
+    const { url, headers } = this.destination(route, path);
     if (body) headers.set("content-type", "application/json");
     const timeout = AbortSignal.timeout(5_000);
     try {
@@ -161,7 +174,7 @@ export class V1Compatibility {
     }
   }
 
-  private async run(route: Route, id: string, body?: object, signal?: AbortSignal): Promise<Run | undefined> {
+  private async run(route: MigratedAgent, id: string, body?: object, signal?: AbortSignal): Promise<Run | undefined> {
     const idempotencyKey = runKey(id);
     const { response, data } = await this.call(route,
       body ? "runs" : `runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`,
@@ -179,7 +192,7 @@ export class V1Compatibility {
     return run.data;
   }
 
-  async state(route: Route, archived: Promise<RequestRecord[]>, signal?: AbortSignal) {
+  async state(route: MigratedAgent, archived: Promise<RequestRecord[]>, signal?: AbortSignal) {
     const [{ response, data }, source] = await Promise.all([this.call(route, "runs", undefined, signal), archived]);
     const state = z.object({
       cursor: z.number().int().nonnegative(),
@@ -190,11 +203,7 @@ export class V1Compatibility {
     const cursor = route.event_base + state.data.cursor;
     if (!Number.isSafeInteger(cursor)) throw unavailable();
     const keyed = state.data.runs.map(run => {
-      const key = run.idempotencyKey;
-      const id = key?.startsWith(runKeyPrefix) ? key.slice(runKeyPrefix.length) : undefined;
-      if (run.agentId !== route.destination_agent) throw unavailable();
-      if (!validId(id)) throw unsupportedV1Operation();
-      return { id, run };
+      return { id: this.v1RequestId(route, run), run };
     });
     const { rows } = await this.sql.query<{ request_id: string; fingerprint: string }>(
       "select request_id, fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = any($3::text[])",
@@ -211,7 +220,53 @@ export class V1Compatibility {
     return { cursor, requests: [...source, ...projected], ...activity, activeRun };
   }
 
-  async prompt(route: Route, id: string, body: z.infer<typeof PromptInput>, archived: ArchivedRequest, signal?: AbortSignal) {
+  private v1RequestId(route: MigratedAgent, run: Run) {
+    const key = run.idempotencyKey;
+    const id = key?.startsWith(runKeyPrefix) ? key.slice(runKeyPrefix.length) : undefined;
+    if (run.agentId !== route.destination_agent) throw unavailable();
+    if (!validId(id)) throw unsupportedV1Operation();
+    return id;
+  }
+
+  async requestByRunId(route: MigratedAgent, runId: string, signal?: AbortSignal) {
+    const { response, data } = await this.call(route, `runs/${encodeURIComponent(runId)}`, undefined, signal);
+    const run = runResponse.safeParse(data);
+    if (!response.ok || !run.success || run.data.id !== runId) throw unavailable();
+    const id = this.v1RequestId(route, run.data);
+    const fingerprint = await this.fingerprint(route, id);
+    if (!fingerprint) throw unsupportedV1Operation();
+    return projectRun(run.data, id, fingerprint);
+  }
+
+  async eventPage(route: MigratedAgent, after: number | "latest", signal: AbortSignal) {
+    const { response, data } = await this.call(route, `events?after=${after}`, undefined, signal);
+    const page = z.object({
+      events: z.array(v2Event),
+      nextAfter: z.number().int().nonnegative(),
+    }).safeParse(data);
+    if (!response.ok || !page.success) throw unavailable();
+    return page.data;
+  }
+
+  async eventStream(route: MigratedAgent, after: number, controller: AbortController) {
+    const { url, headers } = this.destination(route, `events?after=${after}&follow=1`);
+    headers.set("accept", "text/event-stream");
+    const deadline = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const response = await this.request(url, { headers, redirect: "error", signal: controller.signal });
+      if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+        await response.body?.cancel();
+        throw unavailable();
+      }
+      return response.body;
+    } catch {
+      throw unavailable();
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
+  async prompt(route: MigratedAgent, id: string, body: z.infer<typeof PromptInput>, archived: ArchivedRequest, signal?: AbortSignal) {
     if (!validId(id)) throw new HttpError(400, "Invalid request");
     if (id.startsWith(RESERVED_CHECK_PREFIX)) throw new HttpError(400, RESERVED_CHECK_ERROR);
     const { requestId: _id, text, actor, whileRunning, allowDisconnected, history, files, ...options } = body;
@@ -239,7 +294,7 @@ export class V1Compatibility {
     return projectRun(run, id, fingerprint);
   }
 
-  async requestFor(route: Route, id: string, waitSeconds: string | undefined, archived: ArchivedRequest, signal?: AbortSignal) {
+  async requestFor(route: MigratedAgent, id: string, waitSeconds: string | undefined, archived: ArchivedRequest, signal?: AbortSignal) {
     const wait = Number(waitSeconds ?? 0);
     if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
     if (!validId(id)) throw new HttpError(404, "Unknown request");

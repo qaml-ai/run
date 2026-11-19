@@ -58,6 +58,7 @@ import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
 import { unsupportedV1Operation } from "./v1-v2-compatibility.ts";
+import { compatibilityEvents } from "./v1-compatibility-events.ts";
 import { disableAgentTriggers } from "./triggers.ts";
 import { forgetAgentDreaming } from "../shared/dreaming.ts";
 import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
@@ -1617,6 +1618,10 @@ export class ClientSessions {
         }
         if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/state`) {
           return json(c, 200, await compatibility.state(migrated, this.archivedRequests(header.id), c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events`
+          && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
+          return compatibilityEvents(c, compatibility, migrated);
         }
         throw unsupportedV1Operation();
       }

@@ -80,6 +80,7 @@ import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
 import { unsupportedV1Operation, type V1Compatibility } from "./v1-v2-compatibility.ts";
+import { compatibilityEvents } from "./v1-compatibility-events.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -405,7 +406,7 @@ export function api(context: ApiContext) {
       const migrated = await context.v1Compatibility?.route(tenant, agent);
       if (migrated) {
         const supported = (c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path))
-          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:state|requests\/[^/]+)$/.test(c.req.path));
+          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:events|state|requests\/[^/]+)$/.test(c.req.path));
         if (!supported) throw unsupportedV1Operation();
         c.set("migratedAgent", migrated);
       }
@@ -775,6 +776,9 @@ export function api(context: ApiContext) {
   }), c => {
     const browser = c.var.principal.browser;
     const reader: StreamReader | undefined = browser && { show: data => readableFrame(browser, data), until: browser.exp };
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      return compatibilityEvents(c, context.v1Compatibility, c.var.migratedAgent, reader);
+    }
     // `request`: only that request's frames (its events and its response); snapshots of the running turn still come.
     const request = c.req.query("request");
     const own = (data: ClientEvent | TurnSnapshot) => data.type === "event" ? data.requestId === request : data.type === "response" ? data.id === request : true;

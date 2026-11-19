@@ -6,7 +6,7 @@ import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../client
 import { serveTools } from "../../clients/server.ts";
 import { fenceV1Agent, publishV2AgentRoute, unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, until } from "../../tests/runtime-server.ts";
-import { CamelRun } from "../sdk/src/index.ts";
+import { CamelRun, parseSSE } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
 import { stageAgent } from "./stage-agent.ts";
@@ -283,6 +283,45 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   }
   const originalState = await v1.call(`/clients/${stagedAgentId}/state`, { token: originalAgentToken });
   assert.deepEqual(originalState.json, compatibleState.json);
+  const streamId = "streamed-v2-request";
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+  try {
+    const stream = await fetch(`${v1.base}${pathV1}/events?request=${streamId}`, {
+      headers: { Authorization: `Bearer ${originalKey}`, "Last-Event-ID": String(compatibleState.json.cursor) }, signal,
+    });
+    assert.equal(stream.status, 200);
+    assert.ok(stream.body);
+    const accepted = await routePrompt("Stream this reply", streamId);
+    assert.equal(accepted.status, 202, accepted.text);
+    let text = "", terminal = false, cursor = compatibleState.json.cursor;
+    for await (const message of parseSSE(stream.body, signal)) {
+      if (message.event === "ready") continue;
+      const id = Number(message.id);
+      assert.ok(id > cursor);
+      cursor = id;
+      const event = JSON.parse(message.data);
+      if (event.type === "event" && event.event.type === "message_update") {
+        assert.equal(event.requestId, streamId);
+        text += event.event.assistantMessageEvent.delta;
+      }
+      if (event.type === "response") {
+        assert.equal(event.id, streamId);
+        assert.equal(event.outcome.result.reply, text);
+        terminal = true;
+        break;
+      }
+    }
+    assert.ok(text);
+    assert.ok(terminal);
+    const replay = await v1.call(`${pathV1}/events?poll=1&request=${streamId}`, {
+      token: originalKey, headers: { "Last-Event-ID": String(compatibleState.json.cursor) },
+    });
+    assert.equal(replay.status, 200, replay.text);
+    assert.ok(replay.json.events.some((entry: { data: { type: string; id?: string } }) => entry.data.type === "response" && entry.data.id === streamId));
+  } finally {
+    controller.abort();
+  }
   await assert.rejects(stagingAgent.importV1History({
     source: stagedAgentId, previous: secondStage.history.receipt, messages: sourceHistory.json.messages,
   }), /destination already has activity/);
