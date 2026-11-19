@@ -178,7 +178,7 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const stagedVolume = source.volume((await source.createVolume({ name: "agent-staging" })).id);
   await stagedVolume.write("notes.md", "kept on v2");
   const stagedSnapshot = await stagedVolume.snapshot({ name: "saved" });
-  const agentToStage = await v1.call("/v1/agents", { body: {
+  const agentToStage = await v1.call("/v1/agents", { headers: { "Idempotency-Key": "legacy-staged-agent" }, body: {
     mounts: [{ volumeId: stagedVolume.id, path: "/workspace", mode: "rw" }],
   } });
   assert.equal(agentToStage.status, 201, agentToStage.text);
@@ -321,6 +321,30 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     assert.ok(replay.json.events.some((entry: { data: { type: string; id?: string } }) => entry.data.type === "response" && entry.data.id === streamId));
   } finally {
     controller.abort();
+  }
+  // The existing SDK uses the v1 tenant key to recover the original agent credential
+  // and consumes the legacy event protocol with that credential.
+  const legacy = new AgentRuntime({ url: v1.base, apiKey: originalKey });
+  const credentials = await legacy.agentCredentials(stagedAgentId);
+  assert.equal(credentials.id, stagedAgentId);
+  assert.equal(credentials.token, originalAgentToken);
+  const sdkRequestId = "legacy-sdk-prompt";
+  const sdkEvents: string[] = [];
+  const legacyAgent = await legacy.connectAgent(credentials, {
+    attach: false,
+    onEvent(event, requestId) {
+      if (requestId === sdkRequestId) sdkEvents.push(event.type);
+    },
+  });
+  try {
+    const result = await legacyAgent.prompt("Run through the existing v1 SDK", { idempotencyKey: sdkRequestId, timeoutMs: 15_000 });
+    const record = await v1.call(`${pathV1}/requests/${sdkRequestId}`, { token: originalKey });
+    assert.equal(record.status, 200, record.text);
+    assert.equal(record.json.status, "completed");
+    assert.deepEqual(result, record.json.outcome.result);
+    await until(() => sdkEvents.includes("message_update"), "Legacy SDK receives streamed text");
+  } finally {
+    await legacyAgent.close();
   }
   await assert.rejects(stagingAgent.importV1History({
     source: stagedAgentId, previous: secondStage.history.receipt, messages: sourceHistory.json.messages,
