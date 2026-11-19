@@ -38,3 +38,22 @@ test("preserves routes and the request host on the legacy alias", async t => {
   }
   assert.equal(native.mock.callCount(), 0);
 });
+
+test("uses ECS only for legacy compatibility misses and keeps the original request body", async t => {
+  const path = `/v1/agents/client_${"0".repeat(40)}/prompt`;
+  const answer = new Response(null, { status: 503 });
+  const origin = t.mock.method(globalThis, "fetch", async (request: Request) => Response.json(await request.json()));
+  const route = t.mock.fn(async (request: Request) => {
+    const body = await request.json() as { migrated: boolean };
+    return body.migrated ? answer : null;
+  });
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  const prompt = (migrated: boolean) => new Request("https://run.camelai.com" + path, {
+    method: "POST", body: JSON.stringify({ migrated }),
+  });
+  assert.equal(await worker.fetch(prompt(true), env), answer);
+  assert.equal(origin.mock.callCount(), 0);
+  assert.deepEqual(await (await worker.fetch(prompt(false), env)).json(), { migrated: false });
+  assert.equal(origin.mock.callCount(), 1);
+  assert.equal(route.mock.callCount(), 2);
+});
