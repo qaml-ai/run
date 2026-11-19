@@ -17,7 +17,7 @@ export type MigratedAgent = {
   event_base: number;
 };
 type ArchivedRequest = (requestId: string) => Promise<RequestRecord | undefined>;
-type Sql = { query<Row = unknown>(text: string, values?: unknown[]): Promise<{ rows: Row[]; rowCount: number | null }> };
+export type CompatibilitySql = { query<Row = unknown>(text: string, values?: unknown[]): Promise<{ rows: Row[]; rowCount: number | null }> };
 
 const runResponse = z.object({
   id: z.string(),
@@ -102,13 +102,13 @@ function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
 
 /** Connects the existing v1 HTTP authentication and agent identity to a fenced v2 destination. */
 export class V1Compatibility {
-  private readonly sql: Sql;
+  private readonly sql: CompatibilitySql;
   private readonly baseUrl: URL;
   private readonly credentials: ReadonlyMap<string, string>;
   private readonly request: typeof fetch;
 
   constructor(
-    sql: Sql,
+    sql: CompatibilitySql,
     baseUrl: URL,
     credentials: ReadonlyMap<string, string>,
     request: typeof fetch = fetch,
@@ -119,11 +119,11 @@ export class V1Compatibility {
     this.request = request;
   }
 
-  static fromEnv(sql: Sql, env = process.env) {
+  static fromEnv(sql: CompatibilitySql, env = process.env) {
     return V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
   }
 
-  static configured(sql: Sql, configured?: string, baseUrl?: string, request: typeof fetch = fetch) {
+  static configured(sql: CompatibilitySql, configured?: string, baseUrl?: string, request: typeof fetch = fetch) {
     if (configured === undefined) return undefined;
     let keys: Record<string, string>;
     try {

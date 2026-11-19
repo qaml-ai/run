@@ -26,7 +26,8 @@ import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { legacyAgentList } from "./legacy-agent-list.ts";
-import { legacyAgentRequest, legacyCompatibility } from "./v1-compatibility.ts";
+import { V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
+import { handleLegacyAgentRequest, legacyAgentRequest } from "./v1-compatibility.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers, sweepSnapshots } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -214,6 +215,21 @@ function httpFailure(error: unknown, env: Env): Response {
   const status = errorStatus(error, 500);
   return Response.json({ error: "Backend operation failed", code: errorCode(error, status) },
     { status, headers: { 'cache-control': 'no-store', ...errorHeaders(error) } });
+}
+
+/** Runs before the pilot's directory, whose stored agent headers differ from Node's. */
+function legacyCompatibility(
+  request: Request,
+  env: Env,
+  principal: Parameters<typeof handleLegacyAgentRequest>[3],
+  browser?: BrowserClaims,
+) {
+  if (!env.AGENT_V2_COMPAT_API_KEYS || !legacyAgentRequest(request)) return;
+  const sql = database(env);
+  const service = env.CAMELRUN_V2_COMPAT;
+  const upstream: typeof fetch | undefined = service && ((input, init) => service.fetch(input, init));
+  const compatibility = V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL, upstream)!;
+  return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
 }
 
 /** The ingress only sends these proven paths here. A miss still belongs to the original runtime. */

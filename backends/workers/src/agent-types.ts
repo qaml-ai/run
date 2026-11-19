@@ -14,7 +14,6 @@ import type { AccountEnv } from "./account-services.ts";
 import type { AgentConfiguration } from "./api-contract.ts";
 import type { UsagePollerBinding } from "./camelfs/usage-poller.ts";
 import type { CamelAgent } from "./agent.ts";
-import type { LegacyCompatibilityEnv } from "./v1-compatibility.ts";
 
 export type Config = {
   id: string;
@@ -84,14 +83,16 @@ export interface Env
     MediaBindings,
     AdminEnv,
     BashEnv,
-    UsagePollerBinding,
-    LegacyCompatibilityEnv {
+    UsagePollerBinding {
   TENANTS: DurableObjectNamespace<TenantAdmission>;
   RATE_LIMITER?: RateLimit;
   CODEMODE_SANDBOX: DurableObjectNamespace<CodemodeSandboxDurableObject>;
   AGENTS: DurableObjectNamespace<CamelAgent>;
   VOICE_CALLS: DurableObjectNamespace<VoiceCall>;
   AGENT_VOICE_SESSIONS_PER_TENANT?: string;
+  AGENT_V2_COMPAT_API_KEYS?: string;
+  AGENT_V2_COMPAT_URL?: string;
+  CAMELRUN_V2_COMPAT?: Fetcher;
   AI: Ai;
   MODEL: string;
   API_TOKEN: string;

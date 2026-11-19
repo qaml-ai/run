@@ -5,18 +5,10 @@ import { HttpError } from "../../../src/core/http-error.ts";
 import { compatibilityEventsResponse } from "../../../src/v1-compatibility-events.ts";
 import { compatibilityHistory } from "../../../src/v1-compatibility-history.ts";
 import { PromptInput } from "../../../src/v1-prompt-schema.ts";
-import { unsupportedV1Operation, V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
+import { unsupportedV1Operation, type CompatibilitySql, type V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { readText } from "./account-http.ts";
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
-import { database, type PostgresEnv, type Sql } from "./postgres.ts";
 
-export interface LegacyCompatibilityEnv extends PostgresEnv {
-  AGENT_V2_COMPAT_API_KEYS?: string;
-  AGENT_V2_COMPAT_URL?: string;
-  CAMELRUN_V2_COMPAT?: Fetcher;
-}
-
-type Tenant = { tenantId: string; kind: string };
 const tenantPaths = /^\/v1\/agents\/(client_[a-f0-9]{40})\/(prompt|mounts|events|state|history|requests\/[^/]+)$/;
 const agentPaths = /^\/clients\/(client_[a-f0-9]{40})\/(requests(?:\/[^/]+)?|events|state|history)$/;
 
@@ -48,7 +40,7 @@ async function promptBody(request: Request) {
   return parsed.data;
 }
 
-async function agentTenant(request: Request, sql: Sql, agent: string) {
+async function agentTenant(request: Request, sql: CompatibilitySql, agent: string) {
   const { rows: [source] } = await sql.query<{
     tenant: string; revoked: boolean; purged: boolean; expires_at: number | null; digest: string | null;
   }>(`select tenant, revoked, purged_at is not null as purged, expires_at, header->>'digest' as digest
@@ -63,27 +55,12 @@ async function agentTenant(request: Request, sql: Sql, agent: string) {
   return source.tenant;
 }
 
-/** Runs before the pilot's directory, whose stored agent headers differ from Node's. */
-export function legacyCompatibility(
-  request: Request,
-  env: LegacyCompatibilityEnv,
-  principal: Tenant | null,
-  browser?: BrowserClaims,
-) {
-  if (!env.AGENT_V2_COMPAT_API_KEYS || !legacyAgentRequest(request)) return;
-  const sql = database(env);
-  const service = env.CAMELRUN_V2_COMPAT;
-  const upstream: typeof fetch | undefined = service && ((input, init) => service.fetch(input, init));
-  const compatibility = V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL, upstream)!;
-  return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
-}
-
 /** Legacy tenant and agent identity use Postgres even when all model work happens on v2. */
 export async function handleLegacyAgentRequest(
   request: Request,
-  sql: Sql,
+  sql: CompatibilitySql,
   compatibility: V1Compatibility,
-  principal: Tenant | null,
+  principal: { tenantId: string; kind: string } | null,
   browser?: BrowserClaims,
 ): Promise<Response | undefined> {
   const url = new URL(request.url);
