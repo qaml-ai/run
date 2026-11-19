@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { startFixture } from "./fixture.ts";
+
+test("legacy end-user list and usage preserve tenant scope and leave writes on the original route", { timeout: 180_000 }, async (t) => {
+  const apiKey = "art_fixture-tenant-key";
+  const f = await startFixture({
+    tenants: [{ id: "fixture", token: apiKey }, { id: "other", token: "art_fixture-other-tenant" }],
+    vars: { AGENT_V2_COMPAT_API_KEYS: "{}" },
+    entrypoint: fileURLToPath(new URL("./legacy-mcp-entry.ts", import.meta.url)),
+  });
+  t.after(() => f.stop());
+
+  const now = Date.now();
+  await f.db.query(`insert into end_users(tenant,id,balance,created_at,updated_at)
+    values ('fixture','user',99,$1,$1), ('other','user',25,$1,$1), ('other','foreign',20,$1,$1)`, [now]);
+  await f.db.query(`insert into end_user_ledger(tenant,end_user,kind,amount,raw,allowance,bucket,idempotency_key,balance_after,created_at)
+    values ('fixture','user','usage',-1,2,1,'builder','fixture',99,$1), ('other','user','usage',-3,5,2,'builder','other',25,$1)`, [now]);
+
+  const read = (path: string, init: RequestInit = {}) => fetch(f.url + path, { ...init, headers: { authorization: `Bearer ${apiKey}` } });
+  const list = await read("/v1/end-users");
+  assert.equal(list.status, 200);
+  assert.equal(list.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await list.json(), { endUsers: [{ id: "user", balance: 99, createdAt: now, updatedAt: now }] });
+  const usage = await read(`/v1/end-users/user/usage?from=${now}&to=${now + 1}&bucket=buil*`);
+  assert.equal(usage.status, 200);
+  assert.deepEqual(await usage.json(), { step: "hour", from: now, to: now + 1, rows: [{
+    at: Math.floor(now / 3_600_000) * 3_600_000, bucket: "builder", call: null, agent: null, calls: 1,
+    raw: 2, allowance: 1, paid: 1, writtenOff: 0,
+  }] });
+  assert.equal((await fetch(`${f.url}/v1/end-users`)).status, 401);
+  assert.equal((await read("/v1/end-users/user", { method: "PATCH" })).status, 418);
+  assert.equal((await read("/v1/end-users/user")).status, 418);
+});

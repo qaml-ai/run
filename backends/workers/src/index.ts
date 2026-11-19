@@ -26,6 +26,8 @@ import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts
 import { publicOrigins } from "./account-origins.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { legacyAgentList } from "./legacy-agent-list.ts";
+import { EndUserCredits } from "./end-user-credits.ts";
+import { endUserRoutes } from "./end-user-routes.ts";
 import { V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { handleLegacyAgentRequest, legacyAgentRequest } from "./v1-compatibility.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
@@ -274,8 +276,9 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     }
     if (!env.V2_LEGACY_RUNS && !env.AGENT_V2_COMPAT_API_KEYS) return null;
     const list = request.method === "GET" && url.pathname === "/v1/agents";
+    const endUsers = request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+\/usage)?$/.test(url.pathname);
     const target = legacyAgentRequest(request);
-    if (!list && !target) return null;
+    if (!list && !endUsers && !target) return null;
     try {
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
@@ -283,9 +286,12 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         ? new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(bearer!)
         : undefined;
       const principal = browser || target?.scoped ? null : await authenticateMoney(request, env);
-      const response = list
-        ? await legacyAgentList(request, database(env), principal)
-        : await legacyCompatibility(request, env, principal, browser);
+      let response: Response | undefined;
+      if (endUsers) {
+        if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
+        response = await endUserRoutes(request, principal.tenantId, new EndUserCredits(database(env)));
+      } else if (list) response = await legacyAgentList(request, database(env), principal);
+      else response = await legacyCompatibility(request, env, principal, browser);
       return response ? publicPageHeaders(request, corsResponse(request, response)) : null;
     } catch (error) {
       return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
