@@ -29,8 +29,9 @@ export interface SandboxExecutionOptions {
   memoryLimitBytes?: number;
   maxInterruptTicks?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   bootstrapGlobalsJs?: string;
-  onHostCall: (op: string, args: unknown) => Promise<unknown>;
+  onHostCall: (op: string, args: unknown, signal: AbortSignal) => Promise<unknown>;
 }
 
 export interface SandboxExecutionResult {
@@ -44,7 +45,12 @@ export async function executeQuickJsSandbox(
   const wasm = await loadQuickJsWasm();
   const memoryLimit = opts.memoryLimitBytes ?? 16 * 1024 * 1024; // 16 MiB
   const maxTicks = opts.maxInterruptTicks ?? 500_000;
-  const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const deadline = Date.now() + timeoutMs;
+  const timeoutError = new Error(`Sandbox timed out after ${timeoutMs} ms`);
+  const timeout = new AbortController();
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout.signal]) : timeout.signal;
+  signal.throwIfAborted();
   let ticks = 0;
 
   const logs: string[] = [];
@@ -57,14 +63,21 @@ export async function executeQuickJsSandbox(
     interruptHandler: () => {
       ticks++;
       if (ticks > maxTicks) return true;
-      if ((ticks & 255) === 0 && Date.now() > deadline) return true;
+      if ((ticks & 255) === 0 && (Date.now() >= deadline || signal.aborted)) return true;
       return false;
     },
   });
 
   const pendingHostPromises = new Set<Promise<void>>();
+  const stopped = Symbol();
+  const aborted = Promise.withResolvers<typeof stopped>();
+  const onAbort = () => aborted.resolve(stopped);
+  signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => timeout.abort(timeoutError), Math.max(0, deadline - Date.now()));
+  let evalPromiseHandle: JSValueHandle | undefined;
 
   try {
+    signal.throwIfAborted();
     const logFn = vm.newFunction("__hostLog", (...args: JSValueHandle[]) => {
       const line = args.map((a) => (a.isString ? a.toString() : JSON.stringify(vm.dump(a)))).join(" ");
       logs.push(line);
@@ -88,8 +101,9 @@ export async function executeQuickJsSandbox(
         const deferred = vm.newPromise();
         const task = (async () => {
           try {
-            const out = await opts.onHostCall(op, parsedArgs);
-            if (vmDisposed) return;
+            signal.throwIfAborted();
+            const out = await opts.onHostCall(op, parsedArgs, signal);
+            if (vmDisposed || signal.aborted) return;
             // Reset instruction tick budget across awaited host I/O calls
             ticks = 0;
             const serialized = JSON.stringify(out === undefined ? null : out);
@@ -97,13 +111,13 @@ export async function executeQuickJsSandbox(
             deferred.resolve(strHandle);
             strHandle.dispose();
           } catch (err) {
-            if (vmDisposed) return;
+            if (vmDisposed || signal.aborted) return;
             const msg = err instanceof Error ? err.message : String(err);
             const errHandle = vm.newError(msg);
             deferred.reject(errHandle);
             errHandle.dispose();
           } finally {
-            if (!vmDisposed) {
+            if (!vmDisposed && !signal.aborted) {
               try {
                 vm.executePendingJobs();
               } catch {
@@ -141,7 +155,7 @@ export async function executeQuickJsSandbox(
     preludeRes.dispose();
 
     const wrappedUserCode = `await (async () => {\n${opts.code}\n})()`;
-    const evalPromiseHandle = vm.evalCode(
+    evalPromiseHandle = vm.evalCode(
       wrappedUserCode,
       opts.filename ?? "<sandbox.js>",
       EvalFlags.ASYNC,
@@ -158,18 +172,10 @@ export async function executeQuickJsSandbox(
     while (!settledResult) {
       vm.executePendingJobs();
       if (settledResult) break;
-      if (pendingHostPromises.size > 0) {
-        await Promise.race([monitor, ...pendingHostPromises]);
-      } else {
-        // One final microtask drain if no async host ops remain
-        vm.executePendingJobs();
-        if (!settledResult) {
-          settledResult = await monitor;
-        }
-      }
+      const outcome = await Promise.race([aborted.promise, monitor, ...pendingHostPromises]);
+      if (outcome === stopped) signal.throwIfAborted();
     }
 
-    evalPromiseHandle.dispose();
     const finalOutcome = settledResult as { value: JSValueHandle } | { error: JSValueHandle };
 
     if ("error" in finalOutcome) {
@@ -198,14 +204,17 @@ export async function executeQuickJsSandbox(
     return { result: extracted, logs };
   } finally {
     vmDisposed = true;
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+    evalPromiseHandle?.dispose();
     vm.dispose();
   }
 }
 
 export async function runCodemodeScript(
   code: string,
-  toolDispatcher: (toolName: string, args: Record<string, unknown>) => Promise<unknown>,
-  timeoutMs = 30_000,
+  toolDispatcher: (toolName: string, args: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<SandboxExecutionResult> {
   const bootstrapGlobalsJs = `
     globalThis.tools = new Proxy({}, {
@@ -232,16 +241,16 @@ export async function runCodemodeScript(
   return executeQuickJsSandbox({
     code,
     filename: "codemode.js",
-    timeoutMs,
+    ...options,
     bootstrapGlobalsJs,
-    onHostCall: async (op, rawArgs) => {
+    onHostCall: async (op, rawArgs, signal) => {
       if (op.startsWith("tool:")) {
         const toolName = op.slice(5);
         const args =
           rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
             ? (rawArgs as Record<string, unknown>)
             : { value: rawArgs };
-        return toolDispatcher(toolName, args);
+        return toolDispatcher(toolName, args, signal);
       }
       throw new Error(`Unsupported codemode host operation: ${op}`);
     },
