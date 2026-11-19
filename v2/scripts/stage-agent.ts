@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import { AgentRuntime, type Mount } from "../../clients/node.ts";
+import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
 import { CamelRun, type V1HistoryImport } from "../sdk/src/index.ts";
 import { readV1History } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
@@ -21,9 +22,8 @@ interface StageOptions {
 async function sourceState(source: SourceAgent): Promise<Mount[]> {
   const base = `/v1/agents/${encodeURIComponent(source.agentId)}`;
   async function get<T>(path: string): Promise<T> {
-    const response = await fetch(new URL(base + path, source.url), {
+    const response = await fetchWithoutRedirects(fetch, new URL(base + path, source.url), {
       headers: { Authorization: `Bearer ${source.apiKey}` },
-      redirect: "error",
       signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw new Error(`v1 ${path} returned HTTP ${response.status}`);

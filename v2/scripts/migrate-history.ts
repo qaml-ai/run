@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { HistoryPage } from "../../clients/typescript.ts";
+import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
 import { CamelRun, type AgentHandle, type V1HistoryImport } from "../sdk/src/index.ts";
 
 export async function readV1History(v1Url: string, v1Key: string, sourceAgent: string) {
@@ -12,8 +13,8 @@ export async function readV1History(v1Url: string, v1Key: string, sourceAgent: s
   for (;;) {
     url.searchParams.set("after", String(messages.length));
     url.searchParams.set("limit", "100");
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${v1Key}` }, redirect: "error", signal: AbortSignal.timeout(30_000),
+    const response = await fetchWithoutRedirects(fetch, url, {
+      headers: { Authorization: `Bearer ${v1Key}` }, signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) throw new Error(`v1 history request failed with HTTP ${response.status}`);
     const page = await response.json() as HistoryPage;
