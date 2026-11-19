@@ -139,6 +139,7 @@ test("volume origin with scoped SQL access takes over and rolls back existing dr
         },
       },
       LEGACY_VOLUMES_ORIGIN_TOKEN: originToken,
+      LEGACY_VOLUMES_ROLLOUT: id,
     };
     const apiUrl = "https://run.camelai.com";
     const draft = new AgentRuntime({
