@@ -96,6 +96,6 @@ async function main() {
 
 try { await main(); }
 catch (error) {
-  console.error(JSON.stringify({ type: "v1_maintenance_failed", error: error instanceof MaintenanceElectionError ? error.message : safeError(error) }));
+  console.error(JSON.stringify({ type: "v1_maintenance_failed", error: safeError(error) }));
   process.exitCode = 1;
 }
