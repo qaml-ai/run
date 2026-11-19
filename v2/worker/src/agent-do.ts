@@ -1608,10 +1608,12 @@ export class AgentDO extends DurableObject<Env> {
 
     if (initialRun) {
       // `drainRunQueue().finally()` will invoke `scheduleNextAlarm()` once finished.
-      const [run] = await Promise.all([
-        this.enqueueOrRunInternal(initialRun.input, initialRun.hints),
-        indexSync,
-      ]);
+      if (indexSync) {
+        this.ctx.waitUntil(indexSync.catch((error) => {
+          console.error("Agent model index update failed", { agentId: merged.id, error });
+        }));
+      }
+      const run = await this.enqueueOrRunInternal(initialRun.input, initialRun.hints);
       return { config: merged, created: !existing, run };
     }
 
