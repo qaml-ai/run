@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { canonical } from "../shared/durable-json.ts";
-import type { RequestRecord } from "../shared/client-protocol.ts";
+import { V1_COMPAT_REQUEST_PREFIX, type RequestRecord } from "../shared/client-protocol.ts";
 import { RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
 import type { PromptInput } from "./api-schemas.ts";
 import { activityOf, validId } from "./client-sessions/state.ts";
@@ -59,8 +59,7 @@ const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 const waitLimitMs = 25_000;
 
 // Reserve a separate key namespace for the v1 request IDs.
-const runKeyPrefix = "v1-compat:";
-const runKey = (requestId: string) => runKeyPrefix + requestId;
+const runKey = (requestId: string) => V1_COMPAT_REQUEST_PREFIX + requestId;
 
 export const unavailable = () => new HttpError(502, "The migrated agent's runtime did not return a valid response", "V2_RUNTIME_UNAVAILABLE");
 const conflict = () => new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
@@ -255,7 +254,7 @@ export class V1Compatibility {
 
   private v1RequestId(route: MigratedAgent, run: Run) {
     const key = run.idempotencyKey;
-    const id = key?.startsWith(runKeyPrefix) ? key.slice(runKeyPrefix.length) : undefined;
+    const id = key?.startsWith(V1_COMPAT_REQUEST_PREFIX) ? key.slice(V1_COMPAT_REQUEST_PREFIX.length) : undefined;
     if (run.agentId !== route.destination_agent) throw unavailable();
     if (!validId(id)) throw unsupportedV1Operation();
     return id;

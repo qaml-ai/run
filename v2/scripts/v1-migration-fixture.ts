@@ -357,7 +357,9 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     assert.equal(record.status, 200, record.text);
     assert.equal(record.json.status, "completed");
     assert.deepEqual(result, record.json.outcome.result);
-    await until(() => sdkEvents.includes("message_update"), "Legacy SDK receives streamed text");
+    await until(() => sdkEvents.includes("message_end"), "Legacy SDK receives the finished streamed message");
+    assert.ok(sdkEvents.indexOf("message_start") >= 0 && sdkEvents.indexOf("message_update") > sdkEvents.indexOf("message_start"));
+    assert.ok(sdkEvents.indexOf("message_end") > sdkEvents.indexOf("message_update"));
     const transcript = await legacyAgent.history();
     assert.deepEqual(transcript.messages.slice(0, sourceHistory.json.messages.length), sourceHistory.json.messages);
     assert.equal(transcript.messages.at(-2)?.requestId, sdkRequestId);

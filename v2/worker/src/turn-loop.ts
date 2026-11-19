@@ -1,3 +1,4 @@
+import { V1_COMPAT_REQUEST_PREFIX } from "../../../shared/client-protocol.ts";
 import { CamelFsClient } from "./camelfs.ts";
 import { openSecret, randomId } from "./crypto.ts";
 import {
@@ -728,6 +729,7 @@ async function continueTurnLoop(
       }
     }
 
+    const legacyEvents = adapter.getRunRecord(runId).idempotencyKey?.startsWith(V1_COMPAT_REQUEST_PREFIX);
     for (let step = state.startStep; step < maxSteps; step++) {
       if (state.signal.aborted) {
         throw new ApiError(499, "cancelled", "Run aborted");
@@ -762,6 +764,9 @@ async function continueTurnLoop(
 
       let stepText = "";
       const stepToolCalls: ToolCallInvocation[] = [];
+      const timestamp = Date.now();
+      const assistant = { role: "assistant", timestamp, model: config.model };
+      if (legacyEvents) adapter.emitEvent(runId, "message_start", { step, message: { ...assistant, content: [] } });
 
       for await (const chunk of streamModelResponse({
         env: adapter.env,
@@ -810,6 +815,16 @@ async function continueTurnLoop(
       adapter.appendMessage(runId, "assistant", {
         text: stepText,
         toolCalls: stepToolCalls.length > 0 ? stepToolCalls : undefined,
+      });
+      if (legacyEvents) adapter.emitEvent(runId, "message_end", {
+        step,
+        message: {
+          ...assistant,
+          content: [
+            ...(stepText ? [{ type: "text", text: stepText }] : []),
+            ...stepToolCalls.map(({ id, name, args }) => ({ type: "toolCall", id, name, arguments: args })),
+          ],
+        },
       });
 
       // If no tool calls were requested, validate outputSchema (if any) and complete!

@@ -8,7 +8,7 @@ import { HttpError } from "./core/http-error.ts";
 import { unsupportedV1Operation, v2Event, type MigratedAgent, type V1Compatibility, type V2Event } from "./v1-v2-compatibility.ts";
 
 const terminal = new Set(["run_completed", "run_failed", "run_cancelled", "input_required"]);
-const progress = new Set(["run_started", "text_delta", "tool_call_start", "tool_call_end"]);
+const progress = new Set(["run_started", "message_start", "message_end", "text_delta", "tool_call_start", "tool_call_end"]);
 
 /** Replay and follow the v2 event buffer in the v1 cursor namespace. */
 export async function compatibilityEvents(c: Context, compatibility: V1Compatibility, route: MigratedAgent, reader?: StreamReader) {
@@ -50,6 +50,9 @@ export async function compatibilityEvents(c: Context, compatibility: V1Compatibi
     switch (event.type) {
       case "run_started":
         return { type: "event", requestId, event: { type: "agent_start" } };
+      case "message_start":
+      case "message_end":
+        return { type: "event", requestId, event: { type: event.type, message: data.message } };
       case "text_delta":
         return { type: "event", requestId, event: {
           type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: data.delta },
