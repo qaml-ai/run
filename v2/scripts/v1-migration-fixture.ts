@@ -217,8 +217,6 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.ok(receiptAfterLateEdit);
   const operation = randomUUID();
   await until(() => fenceV1Agent(v1.db, "alice", stagedAgentId, operation), "the source to become durably idle");
-  const refused = await v1.call(`/v1/agents/${stagedAgentId}/prompt`, { body: { text: "A prompt that raced the cutover" } });
-  assert.match(refused.json.error, /^AGENT_V2_CUTOVER:/);
   const secondStage = await stage(receiptAfterLateEdit);
   assert.equal(secondStage.history.count, 4);
   assert.ok(secondStage.workspace!.seq > firstStage.workspace!.seq);
@@ -232,8 +230,14 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
     signal: AbortSignal.timeout(15_000),
   });
   assert.equal(openV1Watch.status, 200);
+  const promptDuringFence = v1.call(`/v1/agents/${stagedAgentId}/prompt`, {
+    token: originalKey, body: { text: lastV1Prompt, requestId: lastV1RequestId },
+  });
   assert.equal(await publishV2AgentRoute(v1.db, { ...fenced, operation: randomUUID() }, destination), false);
   assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
+  const held = await promptDuringFence;
+  assert.equal(held.status, 202, held.text);
+  assert.deepEqual(held.json, lastV1Record);
   assert.match(await openV1Watch.text(), /event: reconnect\nretry: 0\ndata: \{"type":"reconnect","reason":"moved"/);
   assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
   assert.equal(await publishV2AgentRoute(v1.db, fenced, { ...destination, agent: history.id }), false);

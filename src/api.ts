@@ -404,9 +404,10 @@ export function api(context: ApiContext) {
       const agent = c.req.param("id")!;
       const tenant = c.var.principal.tenant;
       if (!await clients.owns(agent, tenant, true)) throw new HttpError(404, "Unknown agent");
-      const migrated = await context.v1Compatibility?.route(tenant, agent);
+      const admission = c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path);
+      const migrated = await context.v1Compatibility?.route(tenant, agent, admission ? c.req.raw.signal : undefined);
       if (migrated) {
-        const supported = (c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path))
+        const supported = admission
           || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/(?:events|state|history|requests\/[^/]+)$/.test(c.req.path));
         if (!supported) throw unsupportedV1Operation();
         c.set("migratedAgent", migrated);

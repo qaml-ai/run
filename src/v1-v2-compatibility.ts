@@ -65,6 +65,10 @@ const runKey = (requestId: string) => runKeyPrefix + requestId;
 export const unavailable = () => new HttpError(502, "The migrated agent's runtime did not return a valid response", "V2_RUNTIME_UNAVAILABLE");
 const conflict = () => new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
 export const unsupportedV1Operation = () => new HttpError(501, "This operation has no v1 compatibility mapping for the migrated agent", "V1_COMPAT_UNSUPPORTED");
+export const cutoverInProgress = () => Object.assign(
+  new HttpError(503, "AGENT_V2_CUTOVER: The agent is between runtimes. Retry with the same request ID.", "AGENT_V2_CUTOVER"),
+  { retryAfter: 1 },
+);
 
 function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
   const base = { id, method: "prompt" as const, fingerprint, startedAt: run.startedAt };
@@ -137,12 +141,25 @@ export class V1Compatibility {
     return new V1Compatibility(sql, new URL("/v2/", url), new Map(Object.entries(keys)));
   }
 
-  async route(tenant: string, agent: string): Promise<MigratedAgent | undefined> {
-    const { rows } = await this.sql.query<MigratedAgent>(
-      "select tenant, agent, destination_tenant, destination_agent, event_base from agent_v2_routes where tenant = $1 and agent = $2",
-      [tenant, agent],
-    );
-    return rows[0];
+  async route(tenant: string, agent: string, admissionSignal?: AbortSignal): Promise<MigratedAgent | undefined> {
+    const deadline = Date.now() + 5_000;
+    do {
+      const { rows: [row] } = await this.sql.query<{
+        tenant: string; agent: string; destination_tenant: string | null; destination_agent: string | null; event_base: number | null;
+      }>(`select f.tenant, f.agent, r.destination_tenant, r.destination_agent, r.event_base
+        from agent_v2_cutovers f left join agent_v2_routes r using (tenant, agent)
+        where f.tenant = $1 and f.agent = $2`, [tenant, agent]);
+      if (!row) return undefined;
+      const { destination_tenant, destination_agent, event_base } = row;
+      if (destination_tenant !== null && destination_agent !== null && event_base !== null) {
+        return { tenant, agent, destination_tenant, destination_agent, event_base };
+      }
+      if (!admissionSignal) return undefined;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw cutoverInProgress();
+      await delay(Math.min(remaining, 250), undefined, { signal: admissionSignal });
+    } while (!admissionSignal.aborted);
+    throw admissionSignal.reason;
   }
 
   private async fingerprint(route: MigratedAgent, id: string) {

@@ -57,7 +57,7 @@ import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
-import { unsupportedV1Operation } from "./v1-v2-compatibility.ts";
+import { cutoverInProgress, unsupportedV1Operation } from "./v1-v2-compatibility.ts";
 import { compatibilityEvents } from "./v1-compatibility-events.ts";
 import { compatibilityHistory } from "./v1-compatibility-history.ts";
 import { disableAgentTriggers } from "./triggers.ts";
@@ -530,7 +530,12 @@ export class ClientSessions {
     if (!busy) return Promise.resolve();
     return this.busyStep(session, async () => {
       if (session.busy) return;
-      const refused = await busy.hold(session.header.tenant, session.header.id, force);
+      let refused;
+      try { refused = await busy.hold(session.header.tenant, session.header.id, force); }
+      catch (error) {
+        if ((error as { code?: string })?.code === "CV201") throw cutoverInProgress();
+        throw error;
+      }
       if (refused) throw refused;
       session.busy = true;
     });
@@ -1613,11 +1618,12 @@ export class ClientSessions {
       if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
       const compatibility = this.options.v1Compatibility;
-      const migrated = await compatibility?.route(header.tenant, header.id);
+      const requestPath = `/clients/${header.id}/requests`;
+      const admission = c.req.method === "POST" && c.req.path === requestPath;
+      const migrated = await compatibility?.route(header.tenant, header.id, admission ? c.req.raw.signal : undefined);
       if (compatibility && migrated) {
-        const requestPath = `/clients/${header.id}/requests`;
         const archived = (requestId: string) => this.archivedRequest(header.id, requestId);
-        if (c.req.method === "POST" && c.req.path === requestPath) {
+        if (admission) {
           const request = await readJson(body(c), FRAME_BYTES);
           if (!validId(request?.id) || !REQUEST_METHODS.includes(request.method) || !request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new HttpError(400, "Invalid request");
           if (request.method !== "prompt" || Object.keys(request.params).some(key => !["text", "actor"].includes(key))) throw unsupportedV1Operation();
