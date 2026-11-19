@@ -15,6 +15,7 @@ import { network } from "./node-context.ts";
 import { capRequestImages } from "./request-images.ts";
 import { MODEL_INTERRUPTED } from "./model-errors.ts";
 import { deepseekContext, deepseekTarget } from "./deepseek-replay.ts";
+import { uniqueResponsesCallIds } from "./openrouter-replay.ts";
 import { createHash } from "node:crypto";
 import { createAssistantMessageEventStream, type TranscriptContext } from "@earendil-works/pi-ai";
 import { IDLE_COMPACTION_CALL, IDLE_COMPACTION_SKIPPED, IDLE_SUMMARY_PROMPT, idleRequestOptions, type CachedRequest, type IdleCompactionDispatch } from "./model-idle-compaction.ts";
@@ -369,7 +370,10 @@ export function explicitKeyStream(perCall?: () => Promise<Credentials> | undefin
           };
           const observe = callOptions.onProviderStreamEvent;
           requested = !replay;
-          const stream = streamSimple(target, deepseekContext(target, context), { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
+          const providerContext = target.provider === "openrouter" && target.api === "openai-responses"
+            ? { ...context, messages: uniqueResponsesCallIds(context.messages) }
+            : deepseekContext(target, context);
+          const stream = streamSimple(target, providerContext, { ...callOptions, signal: watched, onProviderStreamEvent: (event: unknown, at: Model<Api>) => { activity(event); return observe?.(event, at); } });
           // The finished message carries the provider's own cost, when it reported one, as `usage.providerCost`.
           const push = stream.push.bind(stream);
           stream.push = event => {
