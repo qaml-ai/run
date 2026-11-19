@@ -24,6 +24,7 @@ import { firstPrompt } from "./first-prompt.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
+import { OPS_METADATA_PATH } from "./account-oauth.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { legacyAgentList } from "./legacy-agent-list.ts";
 import { EndUserCredits } from "./end-user-credits.ts";
@@ -273,12 +274,21 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     const env = this.env;
     const url = new URL(request.url);
     const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
-    const mcpMetadata = request.method === "GET" && ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"].includes(url.pathname);
+    const protectedResource = ["GET", "OPTIONS"].includes(request.method) && (
+      ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", OPS_METADATA_PATH].includes(url.pathname)
+      || /^\/\.well-known\/oauth-protected-resource\/v1\/agents\/client_[a-f0-9]{40}\/mcp$/.test(url.pathname));
+    const mcpMetadata = protectedResource || (request.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server");
+    const jwks = request.method === "GET" && url.pathname === "/.well-known/jwks.json";
     const oauthTokens = env.LEGACY_OAUTH_TOKEN_ROUTES === "1" && ["POST", "OPTIONS"].includes(request.method)
       && ["/oauth/token", "/oauth/revoke"].includes(url.pathname);
-    if (mcp || mcpMetadata || oauthTokens) {
+    if (mcp || mcpMetadata || jwks || oauthTokens) {
       if (!oauthTokens && !env.MCP_LEGACY_API) return null;
       try {
+        if (jwks) {
+          const { rows } = await database(env).query("select public_jwk, retired_at is null as active from signing_keys order by created_at, kid");
+          if (!rows.some(row => row.active)) throw new CoreHttpError(503, "The OAuth issuer signing keys are unavailable");
+          return Response.json({ keys: rows.map(row => row.public_jwk) }, { headers: { "Cache-Control": "public, max-age=300" } });
+        }
         if (mcpMetadata || oauthTokens) {
           if (oauthTokens && !env.AGENT_SESSION_SECRET) throw new CoreHttpError(503, "The OAuth issuer secret is unavailable");
           const headers = new Headers(request.headers);

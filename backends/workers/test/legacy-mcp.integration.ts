@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -23,6 +23,8 @@ test("the named hosted MCP Worker preserves bearer credentials and issuer discov
   await f.db.query(`insert into oauth_tokens(sha256,kind,grant_id,expires_at) values($1,'access','fixture',$2)`, [
     createHash("sha256").update(oauth).digest("hex"), Date.now() + 60_000,
   ]);
+  const retired = { ...generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }), kid: "retired", alg: "EdDSA", use: "sig" };
+  await f.db.query(`insert into signing_keys(kid,public_jwk,private_sealed,created_at,retired_at) values('retired',$1,'{}',1,2)`, [retired]);
 
   const reachedAlias = { "x-forwarded-host": new URL(issuer).host };
   const challenge = await fetch(`${f.url}/mcp`, { headers: reachedAlias });
@@ -33,6 +35,27 @@ test("the named hosted MCP Worker preserves bearer credentials and issuer discov
   const protectedResource = await metadata.json() as { resource: string; authorization_servers: string[] };
   assert.equal(protectedResource.resource, `${issuer}/mcp`);
   assert.deepEqual(protectedResource.authorization_servers, [issuer]);
+  const discovery = await fetch(`${f.url}/.well-known/oauth-authorization-server`, { headers: reachedAlias });
+  assert.equal(discovery.status, 200);
+  const server = await discovery.json() as { issuer: string; jwks_uri: string; token_endpoint: string };
+  assert.deepEqual([server.issuer, server.jwks_uri, server.token_endpoint], [issuer, `${issuer}/.well-known/jwks.json`, `${origin}/oauth/token`]);
+  const jwks = await fetch(`${f.url}/.well-known/jwks.json`, { headers: reachedAlias });
+  assert.equal(jwks.status, 200);
+  assert.equal(jwks.headers.get("cache-control"), "public, max-age=300");
+  const { keys } = await jwks.json() as { keys: { kid: string; d?: string }[] };
+  assert.deepEqual(keys.map(({ kid }) => kid), ["retired", "fixture-camelfs"]);
+  assert.deepEqual(keys[0], retired);
+  assert.ok(keys.every(key => key.d === undefined));
+  const scoped = `/v1/agents/client_${"0".repeat(40)}/mcp`;
+  for (const endpoint of [scoped, "/v1/ops/mcp"]) {
+    const path = `${f.url}/.well-known/oauth-protected-resource${endpoint}`;
+    const resource = await fetch(path, { headers: reachedAlias });
+    assert.equal(resource.status, 200);
+    const entry = await resource.json() as { resource: string; scopes_supported: string[] };
+    assert.equal(entry.resource, issuer + endpoint);
+    assert.deepEqual(entry.scopes_supported, [endpoint === scoped ? "agents" : "ops"]);
+    assert.equal((await fetch(path, { method: "OPTIONS", headers: reachedAlias })).status, 204);
+  }
   assert.equal((await fetch(`${f.url}/oauth/token`, { method: "POST" })).status, 418);
   const framing = await fetch(`${f.url}/mcp`, {
     method: "POST", headers: { authorization: `Bearer ${apiKey}`, accept: "application/json, text/event-stream", "content-type": "application/json" },
