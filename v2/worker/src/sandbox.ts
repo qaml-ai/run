@@ -70,8 +70,10 @@ export async function executeQuickJsSandbox(
 
   const pendingHostPromises = new Set<Promise<void>>();
   const stopped = Symbol();
-  const aborted = Promise.withResolvers<typeof stopped>();
-  const onAbort = () => aborted.resolve(stopped);
+  let onAbort!: () => void;
+  const aborted = new Promise<typeof stopped>(resolve => {
+    onAbort = () => resolve(stopped);
+  });
   signal.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => timeout.abort(timeoutError), Math.max(0, deadline - Date.now()));
   let evalPromiseHandle: JSValueHandle | undefined;
@@ -172,7 +174,7 @@ export async function executeQuickJsSandbox(
     while (!settledResult) {
       vm.executePendingJobs();
       if (settledResult) break;
-      const outcome = await Promise.race([aborted.promise, monitor, ...pendingHostPromises]);
+      const outcome = await Promise.race([aborted, monitor, ...pendingHostPromises]);
       if (outcome === stopped) signal.throwIfAborted();
     }
 
