@@ -39,10 +39,9 @@ import { errorText } from "./protocol.ts";
 import { scheduleInput, type Scheduler } from "./scheduler.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, readBytes, readJson, readText, signInHint } from "./http.ts";
 import { limitRefused } from "./limit-hits.ts";
-import { AGENT_PAGE_MAX } from "./client-sessions/configuration.ts";
+import { AGENT_PAGE_MAX, agentListQuery } from "./core/agent-directory-page.ts";
 import type { Channels } from "./channels.ts";
 import { channelRoutes } from "./channels-api.ts";
-import { metadataFilters } from "../shared/agent-metadata.ts";
 import type { GitHubApps } from "./core/github-apps.ts";
 import { githubAppRoutes } from "./github-apps-api.ts";
 import { validTtl, type Definitions } from "./definitions.ts";
@@ -653,22 +652,7 @@ export function api(context: ApiContext) {
     }) },
     responses: { 200: { ...reply("The tenant's agents that match, by id", z.array(schema.AgentSummary)), headers: z.object({ "X-Next-Cursor": z.string().optional().openapi({ description: "With limit or cursor, while more agents match: the next page's cursor" }) }) } },
   }), async c => {
-    const query = c.req.query();
-    const limit = query.limit === undefined ? undefined : Number(query.limit);
-    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > AGENT_PAGE_MAX)) throw new HttpError(400, `limit must be an integer from 1 to ${AGENT_PAGE_MAX}`);
-    const oneOf = <T extends string>(name: string, values: readonly T[]) => {
-      const value = query[name];
-      if (value !== undefined && !values.includes(value as T)) throw new HttpError(400, `${name} must be one of ${values.join(", ")}`);
-      return value as T | undefined;
-    };
-    if (query.q !== undefined && query.q.length > 200) throw new HttpError(400, "q must be at most 200 characters");
-    let metadata: Record<string, string>;
-    try { metadata = metadataFilters(new URL(c.req.url).searchParams); } catch (error) { throw new HttpError(400, (error as Error).message); }
-    const page = await clients.page(c.var.principal.tenant, { metadata,
-      // A cursor without a limit pages at the largest size.
-      limit: limit ?? (query.cursor !== undefined ? AGENT_PAGE_MAX : undefined), cursor: query.cursor, workspaceId: query.workspaceId || undefined, q: query.q,
-      status: oneOf("status", ["running", "failed", "expiring"] as const), subAgents: oneOf("subAgents", ["only", "exclude"] as const),
-    });
+    const page = await clients.page(c.var.principal.tenant, agentListQuery(new URL(c.req.url).searchParams));
     if (page.next) c.header("X-Next-Cursor", page.next);
     return json(c, 200, page.agents);
   });
