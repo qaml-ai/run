@@ -1,5 +1,5 @@
 import { randomId } from "./crypto.ts";
-import { calculateCostUsd, streamModelResponse } from "./providers.ts";
+import { DEFAULT_MODEL_ID, calculateCostUsd, streamModelResponse } from "./providers.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, estimateTokens, type Env } from "./types.ts";
 
@@ -101,7 +101,7 @@ export async function runDecisionClassifier(
     throw new ApiError(400, "invalid_request", "`choices` must contain at least one valid string");
   }
 
-  const model = (req.model || env.DEFAULT_MODEL || "openrouter/meta/muse-ember").trim();
+  const model = (req.model || env.DEFAULT_MODEL || DEFAULT_MODEL_ID).trim();
   let scores: Record<string, number>;
   let inputTokens = estimateTokens(req.input) + estimateTokens(req.instructions ?? "");
   let outputTokens = 16;
