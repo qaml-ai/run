@@ -3,12 +3,15 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { startFixture } from "./fixture.ts";
 
 // Product assertions ported from tests/email-signup.test.ts and tests/api.test.ts.
 // The loopback sink receives the same SES envelope as tests/email-signup.test.ts.
 const PASSWORD = "a long and unusual passphrase";
 const PUBLIC = "https://agents.example.test";
+const ISSUER = "https://legacy-agents.example.test";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 test("Workers accounts preserve email/password, session and OAuth policy", { timeout: 180_000 }, async t => {
@@ -26,7 +29,8 @@ test("Workers accounts preserve email/password, session and OAuth policy", { tim
   await once(server, "listening");
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const fake = `http://127.0.0.1:${(server.address() as {port: number}).port}/mail`;
-  const f = await startFixture({ vars: { AGENT_PUBLIC_URL: PUBLIC, AGENT_OPEN_SIGNUP: "true", AGENT_ACCOUNT_EMAIL_FROM: "accounts@example.test", MAIL_TEST_URL: fake } });
+  const f = await startFixture({ vars: { AGENT_PUBLIC_URL: PUBLIC, AGENT_PUBLIC_ALIASES: ISSUER, AGENT_ISSUER: ISSUER,
+    AGENT_OPEN_SIGNUP: "true", AGENT_ACCOUNT_EMAIL_FROM: "accounts@example.test", MAIL_TEST_URL: fake } });
   t.after(() => f.stop());
   const call = async (path: string, method = "GET", body?: unknown, cookie?: string, extra: Record<string, string> = {}) => {
     const response = await fetch(f.url + path, { method, redirect: "manual", headers: { "Content-Type": "application/json", "X-Agent-Runtime-Console": "1", "Sec-Fetch-Site": "same-origin", ...(cookie ? { Cookie: cookie } : {}), ...extra }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -121,6 +125,20 @@ test("Workers accounts preserve email/password, session and OAuth policy", { tim
   await t.test("OAuth uses PKCE, rotates refresh tokens and revokes replay outside the grace window", async () => {
     const login = await call("/console/auth/password", "POST", { email: "ada@example.test", password: "new and unusual reset passphrase" });
     assert.ok(login.cookie);
+    const alias = { "X-Forwarded-Host": new URL(ISSUER).host };
+    const metadata = await call("/.well-known/oauth-protected-resource/mcp", "GET", undefined, undefined, alias);
+    assert.equal(metadata.json.resource, ISSUER + "/mcp");
+    assert.deepEqual(metadata.json.authorization_servers, [ISSUER]);
+    const server = await call("/.well-known/oauth-authorization-server");
+    assert.equal(server.json.issuer, ISSUER);
+    assert.equal(server.json.token_endpoint, PUBLIC + "/oauth/token");
+    const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+    const cookieOnly = await call("/mcp", "POST", list, login.cookie, alias);
+    assert.equal(cookieOnly.status, 401);
+    assert.equal(cookieOnly.headers.get("www-authenticate"), `Bearer resource_metadata="${ISSUER}/.well-known/oauth-protected-resource/mcp", scope="agents"`);
+    const invalid = await call("/mcp", "POST", list, login.cookie, { Authorization: "Bearer art_invalid", "Idempotency-Key": "mcp-list" });
+    assert.equal(invalid.status, 401);
+    assert.equal(invalid.json.error, "invalid_token");
     const client = (await call("/oauth/register", "POST", { client_name: "Fixture", redirect_uris: ["https://app.example.test/callback"], token_endpoint_auth_method: "none" })).json;
     assert.ok(client.client_id);
     const verifier = "v".repeat(43), challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -135,7 +153,22 @@ test("Workers accounts preserve email/password, session and OAuth policy", { tim
     const tokens = await (await form("/oauth/token", { grant_type: "authorization_code", client_id: client.client_id, redirect_uri: "https://app.example.test/callback", code, code_verifier: verifier, resource: PUBLIC + "/mcp" })).json() as any;
     assert.ok(tokens.access_token && tokens.refresh_token);
     const authorization = { Authorization: `Bearer ${tokens.access_token}` };
-    assert.equal((await call("/v1/me", "GET", undefined, undefined, authorization)).status, 200, "OAuth may read its account");
+    const who = await call("/v1/me", "GET", undefined, undefined, authorization);
+    assert.equal(who.status, 200, "OAuth may read its account");
+    const apiKey = await call("/v1/tokens", "POST", { name: "MCP fixture" }, login.cookie);
+    assert.equal(apiKey.status, 201);
+    for (const [token, via] of [[apiKey.json.token, "token"], [tokens.access_token, "oauth"]]) {
+      const mcp = new Client({ name: "fixture", version: "1" });
+      try {
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(f.url + "/mcp"), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+        assert.ok((await mcp.listTools()).tools.some(tool => tool.name === "run_agent"));
+        const result = await mcp.callTool({ name: "whoami", arguments: {} });
+        const content = result.content as { type: string; text: string }[];
+        assert.equal(content[0].type, "text");
+        assert.equal(result.isError, undefined);
+        assert.deepEqual(JSON.parse(content[0].text), { ...who.json, via, url: PUBLIC });
+      } finally { await mcp.close(); }
+    }
     assert.equal((await call("/v1/tokens", "POST", {}, undefined, authorization)).status, 403, "OAuth cannot create a lasting credential");
     const rotate = () => form("/oauth/token", { grant_type: "refresh_token", client_id: client.client_id, refresh_token: tokens.refresh_token, resource: PUBLIC + "/mcp" });
     const rotated = await (await rotate()).json() as any;
@@ -146,5 +179,6 @@ test("Workers accounts preserve email/password, session and OAuth policy", { tim
     await f.db.query("update oauth_tokens set used_at=$2 where sha256=$1", [sha(tokens.refresh_token), Date.now() - 11_000]);
     assert.equal((await rotate()).status, 400, "used refresh outside grace revokes grant");
     assert.equal((await f.db.query("select count(*)::int n from oauth_grants where client_id=$1", [client.client_id])).rows[0].n, 0);
+    assert.equal((await call("/mcp", "POST", list, undefined, { Authorization: `Bearer ${rotated.access_token}` })).status, 401);
   });
 });

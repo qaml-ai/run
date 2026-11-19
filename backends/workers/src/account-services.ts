@@ -145,9 +145,9 @@ export async function publicAccountRoutes(request: Request, service: AccountServ
   }
 }
 
-export async function accountPrincipal(request: Request, service: AccountServices) {
+export async function accountPrincipal(request: Request, service: AccountServices, options: { bearerOnly?: boolean } = {}) {
   const oauth = await service.oauth.authenticate(request.headers.get("Authorization") ?? undefined);
-  if (oauth) return oauth;
+  if (oauth || options.bearerOnly) return oauth;
   const principal = await service.auth.principal(request);
   if (principal && !["GET", "HEAD", "OPTIONS"].includes(request.method) && !service.auth.allowsMutation(request)) throw new HttpError(403, "Forbidden");
   return principal;

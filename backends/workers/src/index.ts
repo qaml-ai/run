@@ -1,3 +1,4 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { handleCamelfsNotify, type NotifyEnv } from "./camelfs/notify.ts";
 import { handleCamelfsSmoke } from "./camelfs/smoke.ts";
 import { tierConfigured } from "./camelfs/tier.ts";
@@ -258,7 +259,7 @@ const worker = {
     const recovery = resumeWebhookDeliveries(env);
     if (recovery) ctx.waitUntil(recovery.catch(error => failure(env, "webhook_recovery_failed", error)));
     try {
-      if (request.method === 'POST' && request.headers.has('idempotency-key') && !skipMoneyIdempotency(new URL(request.url).pathname)) {
+      if (request.method === 'POST' && hostPath !== "/mcp" && request.headers.has('idempotency-key') && !skipMoneyIdempotency(hostPath)) {
         const auth = await authenticateMoney(request, env) ?? await authenticate(request, env);
         if (auth) {
           const response = (await withMoneyIdempotency(request, env, auth.tenantId, next => worker.fetchRequest(next, env, ctx)))!;
@@ -317,9 +318,10 @@ const worker = {
         return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=UTF-8" } });
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
+      const hostedMcp = path === "/mcp";
       const browserTokens = new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN);
       let browser: BrowserClaims | undefined;
-      if (BrowserTokens.carries(bearer)) {
+      if (!hostedMcp && BrowserTokens.carries(bearer)) {
         browser = browserTokens.verify(bearer!);
         if (path.startsWith("/clients/") || path.startsWith("/registry/"))
           throw new ApiError(401, "An agent token is required", "UNAUTHORIZED");
@@ -327,14 +329,14 @@ const worker = {
         if (request.method !== "GET" || !BROWSER_READS.test(path) || !browser.scopes.includes(scope as never) || (request.headers.has("upgrade") && (scope !== "events" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")))
           throw new ApiError(403, "This browser token does not grant this read", "FORBIDDEN");
       }
-      let auth = browser ? null : await authenticateMoney(request, env)
+      let auth = browser ? null : await authenticateMoney(request, env, { bearerOnly: hostedMcp })
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
       const migrated = env.AGENT_V2_COMPAT_API_KEYS && (
         await legacyAgentList(request, database(env), auth) ?? await legacyCompatibility(request, env, auth, browser)
       );
       if (migrated) return migrated;
-      if (path === "/mcp") {
-        if (!auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
+      if (hostedMcp) {
+        if (!bearer || !auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
         return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
           const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
@@ -825,4 +827,3 @@ const worker = {
   },
 };
 export default worker satisfies ExportedHandler<Env, DeliveryMessage>;
-import { WorkerEntrypoint } from "cloudflare:workers";
