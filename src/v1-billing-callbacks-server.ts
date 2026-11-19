@@ -7,6 +7,7 @@ import { BillingAlerts } from "./billing-alerts.ts";
 import { billingCallbacks } from "./billing-callbacks.ts";
 import { BillingMailer, billingMailConfig } from "./billing-mailer.ts";
 import { databaseFromEnvironment } from "./db.ts";
+import { emailAt, Journey, journeyConfig } from "./journey.ts";
 import { safeError } from "./metrics.ts";
 import { pricingFromEnvironment } from "./pricing.ts";
 import { runtimeSecrets } from "./secrets.ts";
@@ -25,12 +26,18 @@ async function main() {
     AWS_REGION: env.AWS_REGION, AWS_DEFAULT_REGION: env.AWS_DEFAULT_REGION,
     AGENT_SECRETS_KEY: env.AGENT_SECRETS_KEY, AGENT_SECRETS_KEY_ARN: env.AGENT_SECRETS_KEY_ARN,
     STRIPE_SECRET_KEY: env.STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET: env.STRIPE_WEBHOOK_SECRET, AGENT_STRIPE_SECRET_ARN: env.AGENT_STRIPE_SECRET_ARN,
+    AGENT_JOURNEY_SECRET: env.AGENT_JOURNEY_SECRET, AGENT_JOURNEY_SECRET_ARN: env.AGENT_JOURNEY_SECRET_ARN,
   });
   if (!secrets.stripe || !secrets.secretsKey) throw new Error("Set the existing v1 Stripe credentials and encryption key");
   const stripe = new Stripe({ ...secrets.stripe, apiUrl: env.AGENT_STRIPE_API_URL });
+  const journey = journeyConfig(env, secrets.journeySecret);
   const db = await databaseFromEnvironment(env);
   try {
     const accounts = new Accounts({ db, tenants, secretsKey: secrets.secretsKey, stripe, pricing: pricingFromEnvironment(env), publicUrl: mail.origin });
+    if (journey) accounts.billing.journey = new Journey({
+      db, publicUrl: mail.origin, ...journey,
+      internal: (tenant, email) => tenants.has(tenant) || emailAt(journey.internalEmailDomains, email),
+    });
     const mailer = new BillingMailer({ ...mail, db, alerts: new BillingAlerts(db, accounts) });
     const app = billingCallbacks(accounts.billing, mailer);
     const server = createAdaptorServer({ fetch: app.fetch }) as Server;

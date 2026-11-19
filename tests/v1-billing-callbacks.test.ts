@@ -25,6 +25,8 @@ test("the standalone listener preserves raw Stripe signatures and settles a regi
     AGENT_PUBLIC_URL: "https://run.example.test", AGENT_BILLING_EMAIL_FROM: "billing@example.test",
     AGENT_BILLING_EMAIL_SNS_TOPICS: topic, AGENT_BILLING_EMAIL_CONFIGURATION_SET: "fixture",
     STRIPE_SECRET_KEY: "sk_live_fixture_not_a_real_key", STRIPE_WEBHOOK_SECRET: signingSecret, AGENT_STRIPE_API_URL: "http://127.0.0.1:9",
+    AGENT_JOURNEY_URL: "http://127.0.0.1:9", AGENT_JOURNEY_COLLECT_UNKNOWN: "true",
+    AGENT_JOURNEY_SECRET: `whsec_${Buffer.alloc(24, 1).toString("base64")}`,
   };
   const worker = spawn(process.execPath, ["--experimental-strip-types", "--disable-warning=ExperimentalWarning", "src/v1-billing-callbacks-server.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
   const done = once(worker, "exit");
@@ -55,6 +57,7 @@ test("the standalone listener preserves raw Stripe signatures and settles a regi
     }
     assert.deepEqual((await db.query("select amount from credit_ledger where kind='purchase'")).rows, [{ amount: 10_000_000 }]);
     assert.equal((await db.query("select payment_intent from billing_checkouts where id=$1", [order])).rows[0].payment_intent, "pi_fixture");
+    assert.deepEqual((await db.query("select body->'properties'->>'transaction_ref' as payment from journey_outbox")).rows, [{ payment: "pi_fixture" }]);
   } finally {
     worker.kill("SIGTERM");
     assert.deepEqual(await done, [0, null], logs);
