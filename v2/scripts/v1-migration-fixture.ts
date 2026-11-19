@@ -294,10 +294,16 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const scopedSettled = await v1.call(`${scopedPath}/${scopedId}?wait=10`, { token: originalAgentToken });
   assert.equal(scopedSettled.status, 200, scopedSettled.text);
   assert.equal(scopedSettled.json.status, "completed");
-  const edge = V1Compatibility.configured(v1.db, JSON.stringify({ [tenantId]: apiKey }), `${workerUrl}/v2`)!;
-  // Exercise the Worker's adapter against the Node schema and the real local v2 Worker without a v1 API request.
-  const edgeRead = (path: string, token: string, principal: { tenantId: string; kind: string } | null) =>
-    handleLegacyAgentRequest(new Request(`https://run.camelai.com${path}`, { headers: { Authorization: `Bearer ${token}` } }), v1.db, edge, principal);
+  const throughBinding = (tenant: string, agent: string, path: string, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    headers.set("x-fixture-tenant", tenant);
+    headers.set("x-fixture-agent", agent);
+    return fetch(`${workerUrl}/v2/agents/${agent}/${path}`, { ...init, headers });
+  };
+  const edge = new V1Compatibility(v1.db, (route, path, init) => throughBinding(route.destination_tenant, route.destination_agent, path, init));
+  // Exercise the adapter against the Node schema and v2's private service binding without a v1 API request.
+  const edgeRead = (path: string, token: string, principal: { tenantId: string; kind: string } | null, init?: RequestInit) =>
+    handleLegacyAgentRequest(new Request(`https://run.camelai.com${path}`, { ...init, headers: { Authorization: `Bearer ${token}` } }), v1.db, edge, principal);
   const edgeReceipt = await edgeRead(`${scopedPath}/${lastV1RequestId}`, originalAgentToken, null);
   assert.equal(edgeReceipt?.status, 200);
   assert.deepEqual(await edgeReceipt?.json(), lastV1Record);
@@ -307,7 +313,21 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   const edgeMounts = await edgeRead(`${pathV1}/mounts`, originalKey, { tenantId: "alice", kind: "api" });
   assert.equal(edgeMounts?.status, 200);
   assert.ok((await edgeMounts?.json() as { path: string }[]).some(mount => mount.path === "/workspace"));
-  assert.equal((await stagingAgent.history()).length, 8);
+  const runInput = { prompt: "Use the legacy actor", actor: "legacy-actor", wait: false };
+  const publicActor = await fetch(`${workerUrl}/v2/agents/${stagingAgent.id}/runs`, {
+    method: "POST", headers: { Authorization: `Bearer ${stagingAgent.agentToken}`, "content-type": "application/json" }, body: JSON.stringify(runInput),
+  });
+  assert.equal(publicActor.status, 403, await publicActor.text());
+  assert.equal((await throughBinding(`tnt_${"0".repeat(16)}`, stagingAgent.id, "runs")).status, 404);
+  assert.equal((await throughBinding(tenantId, stagingAgent.id, "inputs")).status, 404);
+  const edgeId = "edge-without-tenant-key";
+  const edgePrompt = await edgeRead(`${scopedPath}`, originalAgentToken, null, {
+    method: "POST", body: JSON.stringify({ id: edgeId, method: "prompt", params: { text: runInput.prompt, actor: runInput.actor } }),
+  });
+  assert.equal(edgePrompt?.status, 202);
+  const edgeSettled = await edgeRead(`${scopedPath}/${edgeId}?wait=10`, originalAgentToken, null);
+  assert.equal((await edgeSettled?.json() as { status: string }).status, "completed");
+  assert.equal((await stagingAgent.history()).length, 10);
   const compatibleState = await v1.call(`${pathV1}/state`, { token: originalKey });
   assert.equal(compatibleState.status, 200, compatibleState.text);
   assert.equal(compatibleState.json.busy, false);

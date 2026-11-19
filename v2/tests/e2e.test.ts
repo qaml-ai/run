@@ -250,12 +250,24 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const toolKey = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
     const baseConfig = JSON.parse(readFileSync(join(ROOT, "worker/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
     const testConfigPath = join(tempDir, "wrangler.test.jsonc");
+    const runtimeMain = join(ROOT, "worker/src/index.ts");
+    const testMain = join(tempDir, "migration-entry.mjs");
+    if (migrationFixture) writeFileSync(testMain, `
+      import worker from ${JSON.stringify(runtimeMain)};
+      export * from ${JSON.stringify(runtimeMain)};
+      export default { ...worker, fetch(request, env, ctx) {
+        const tenant = request.headers.get('x-fixture-tenant');
+        return tenant
+          ? ctx.exports.LegacyAgentRuns.route(tenant, request.headers.get('x-fixture-agent'), request)
+          : worker.fetch(request, env, ctx);
+      } };
+    `);
     writeFileSync(
       testConfigPath,
       JSON.stringify(
         {
           ...baseConfig,
-          main: join(ROOT, "worker/src/index.ts"),
+          main: migrationFixture ? testMain : runtimeMain,
           vars: {
             ADMIN_SECRET,
             VAULT_SECRET,

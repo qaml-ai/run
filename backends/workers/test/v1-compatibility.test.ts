@@ -45,10 +45,10 @@ function fixture({ published = true, hasArchive = true } = {}) {
       return { rows: rows as R[], rowCount: rows.length };
     },
   };
-  const compatibility = new V1Compatibility(sql, new URL("https://v2.invalid/v2/"), new Map([["v2", "example-only"]]), async (input, init) => {
+  const compatibility = V1Compatibility.configured(sql, '{"v2":"cr_live_v2.example-only"}', "https://v2.invalid/v2/", async (input, init) => {
     const path = new URL(String(input)).pathname;
     forwarded.push(path);
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer example-only");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer cr_live_v2.example-only");
     if (path.endsWith("/events")) return Response.json({ events: [], nextAfter: 0 });
     const { prompt, idempotencyKey } = JSON.parse(String(init?.body));
     assert.equal(prompt, "next");
@@ -56,7 +56,7 @@ function fixture({ published = true, hasArchive = true } = {}) {
       id: "run_next", agentId: destination, idempotencyKey, startedAt: 3, status: "queued", text: "",
       output: null, toolCalls: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, error: null,
     });
-  });
+  })!;
   const request = (tail: string, init?: RequestInit, caller = principal) =>
     handleLegacyAgentRequest(new Request(`https://run.camelai.com/v1/agents/${agent}/${tail}`, init), sql, compatibility, caller);
   const scoped = (tail: string, init?: RequestInit) =>

@@ -92,7 +92,8 @@ export interface Env
   AGENT_VOICE_SESSIONS_PER_TENANT?: string;
   AGENT_V2_COMPAT_API_KEYS?: string;
   AGENT_V2_COMPAT_URL?: string;
-  CAMELRUN_V2_COMPAT?: Fetcher;
+  V2_LEGACY_RUNS?: { route(tenant: string, agent: string, request: Request): Promise<Response> };
+  MCP_LEGACY_API?: Fetcher;
   AI: Ai;
   MODEL: string;
   API_TOKEN: string;

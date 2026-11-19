@@ -224,20 +224,56 @@ function legacyCompatibility(
   principal: Parameters<typeof handleLegacyAgentRequest>[3],
   browser?: BrowserClaims,
 ) {
-  if (!env.AGENT_V2_COMPAT_API_KEYS || !legacyAgentRequest(request)) return;
+  if (!legacyAgentRequest(request)) return;
   const sql = database(env);
-  const service = env.CAMELRUN_V2_COMPAT;
-  const upstream: typeof fetch | undefined = service && ((input, init) => service.fetch(input, init));
-  const compatibility = V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL, upstream)!;
+  const service = env.V2_LEGACY_RUNS;
+  const compatibility = service
+    ? new V1Compatibility(sql, (route, path, init) => service.route(route.destination_tenant, route.destination_agent,
+      new Request(`https://legacy-v2.internal/v2/agents/${encodeURIComponent(route.destination_agent)}/${path}`, init)))
+    : V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
+  if (!compatibility) return;
   return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
+}
+
+function hostedMcpResponse(request: Request, env: Env, auth: Awaited<ReturnType<typeof authenticateMoney>>, fetchRest: typeof fetch) {
+  const url = new URL(request.url);
+  const headers = new Headers(request.headers);
+  if (!headers.has("host")) headers.set("host", url.host);
+  if (!headers.has("authorization") || !auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(headers), "");
+  return serveHostedMcp(request, { publicOrigin: env.AGENT_PUBLIC_URL || url.origin, fetch: fetchRest });
 }
 
 /** The ingress only sends these proven paths here. A miss still belongs to the original runtime. */
 export class LegacyV1 extends WorkerEntrypoint<Env> {
   async route(request: Request): Promise<Response | null> {
     const env = this.env;
-    if (!env.AGENT_V2_COMPAT_API_KEYS) return null;
-    const list = request.method === "GET" && new URL(request.url).pathname === "/v1/agents";
+    const url = new URL(request.url);
+    const mcp = url.pathname === "/mcp";
+    const mcpMetadata = ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server"].includes(url.pathname);
+    if (mcp || mcpMetadata) {
+      if (!env.MCP_LEGACY_API) return null;
+      try {
+        if (mcpMetadata) {
+          const headers = new Headers(request.headers);
+          if (!headers.has("host")) headers.set("host", url.host);
+          return await publicMoneyRoutes(new Request(request, { headers }), env, this.ctx) ?? null;
+        }
+        if (request.method === "OPTIONS") return agentMcpPreflight();
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        const origin = new URL(env.AGENT_PUBLIC_URL || url.origin).origin;
+        return await hostedMcpResponse(request, env, auth, async (input, init) => {
+          const call = new Request(input, init);
+          const target = new URL(call.url);
+          if (target.origin !== origin || target.pathname === "/mcp") return new Response(null, { status: 403 });
+          const response = await this.route(call.clone());
+          return response ?? await env.MCP_LEGACY_API!.fetch(call, { redirect: "manual" });
+        });
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
+    if (!env.V2_LEGACY_RUNS && !env.AGENT_V2_COMPAT_API_KEYS) return null;
+    const list = request.method === "GET" && url.pathname === "/v1/agents";
     const target = legacyAgentRequest(request);
     if (!list && !target) return null;
     try {
@@ -348,18 +384,17 @@ const worker = {
       }
       let auth = browser ? null : await authenticateMoney(request, env, { bearerOnly: hostedMcp })
         ?? (((env.TEST_MODE === "1" && !bearer?.startsWith("Bearer art_")) || await authorized(request, env.API_TOKEN)) ? await authenticate(request, env) : null);
-      const migrated = env.AGENT_V2_COMPAT_API_KEYS && (
+      const migrated = (env.V2_LEGACY_RUNS || env.AGENT_V2_COMPAT_API_KEYS) && (
         await legacyAgentList(request, database(env), auth) ?? await legacyCompatibility(request, env, auth, browser)
       );
       if (migrated) return migrated;
       if (hostedMcp) {
-        if (!bearer || !auth) return agentMcpSignIn(request, publicOrigins(env, url.origin).of(request.headers), "");
         const publicOrigin = env.AGENT_PUBLIC_URL || url.origin;
-        return serveHostedMcp(request, { publicOrigin, fetch: (async (input, init) => {
+        return hostedMcpResponse(request, env, auth, async (input, init) => {
           const local = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
           if (local.origin === new URL(publicOrigin).origin) local.host = url.host, local.protocol = url.protocol;
           return worker.fetch(new Request(local, input instanceof Request ? input : init), env, ctx);
-        }) as typeof fetch });
+        });
       }
       const service = await handleServiceRequest(request, env, auth);
       if (service) return service;

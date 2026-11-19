@@ -18,6 +18,7 @@ export type MigratedAgent = {
 };
 type ArchivedRequest = (requestId: string) => Promise<RequestRecord | undefined>;
 export type CompatibilitySql = { query<Row = unknown>(text: string, values?: unknown[]): Promise<{ rows: Row[]; rowCount: number | null }> };
+type RuntimeRequest = (route: MigratedAgent, path: string, init: RequestInit) => Promise<Response>;
 
 const runResponse = z.object({
   id: z.string(),
@@ -103,19 +104,13 @@ function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
 /** Connects the existing v1 HTTP authentication and agent identity to a fenced v2 destination. */
 export class V1Compatibility {
   private readonly sql: CompatibilitySql;
-  private readonly baseUrl: URL;
-  private readonly credentials: ReadonlyMap<string, string>;
-  private readonly request: typeof fetch;
+  private readonly request: RuntimeRequest;
 
   constructor(
     sql: CompatibilitySql,
-    baseUrl: URL,
-    credentials: ReadonlyMap<string, string>,
-    request: typeof fetch = fetch,
+    request: RuntimeRequest,
   ) {
     this.sql = sql;
-    this.baseUrl = baseUrl;
-    this.credentials = credentials;
     this.request = request;
   }
 
@@ -141,7 +136,16 @@ export class V1Compatibility {
     if (!url || (!local && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || !/^\/v2\/?$/.test(url.pathname)) {
       throw new Error("AGENT_V2_COMPAT_URL must be an HTTPS or loopback /v2 API URL");
     }
-    return new V1Compatibility(sql, new URL("/v2/", url), new Map(Object.entries(keys)), request);
+    const root = new URL("/v2/", url);
+    const credentials = new Map(Object.entries(keys));
+    return new V1Compatibility(sql, (route, path, init) => {
+      const key = credentials.get(route.destination_tenant);
+      if (!key) throw new HttpError(503, "The migrated agent's runtime credential is unavailable", "V2_CREDENTIAL_UNAVAILABLE");
+      const endpoint = new URL(`agents/${encodeURIComponent(route.destination_agent)}/${path}`, root);
+      const headers = new Headers(init.headers);
+      headers.set("authorization", `Bearer ${key}`);
+      return fetchWithoutRedirects(request, endpoint, { ...init, headers });
+    });
   }
 
   async route(tenant: string, agent: string, admissionSignal?: AbortSignal): Promise<MigratedAgent | undefined> {
@@ -184,28 +188,17 @@ export class V1Compatibility {
     return false;
   }
 
-  private destination(route: MigratedAgent, path: string) {
-    const key = this.credentials.get(route.destination_tenant);
-    if (!key) throw new HttpError(503, "The migrated agent's runtime credential is unavailable", "V2_CREDENTIAL_UNAVAILABLE");
-    const agent = encodeURIComponent(route.destination_agent);
-    return {
-      url: new URL(`agents/${agent}/${path}`, this.baseUrl),
-      headers: new Headers({ authorization: `Bearer ${key}` }),
-    };
-  }
-
   private async call(route: MigratedAgent, path: string, body?: object, signal?: AbortSignal) {
-    const { url, headers } = this.destination(route, path);
-    if (body) headers.set("content-type", "application/json");
     const timeout = AbortSignal.timeout(5_000);
     try {
-      const response = await fetchWithoutRedirects(this.request, url, {
-        method: body ? "POST" : "GET", headers,
+      const response = await this.request(route, path, {
+        method: body ? "POST" : "GET", headers: body ? { "content-type": "application/json" } : undefined,
         body: body && JSON.stringify(body),
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
       return { response, data: await response.json() as unknown };
-    } catch {
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
       throw unavailable();
     }
   }
@@ -293,17 +286,18 @@ export class V1Compatibility {
   }
 
   async eventStream(route: MigratedAgent, after: number, controller: AbortController) {
-    const { url, headers } = this.destination(route, `events?after=${after}&follow=1`);
-    headers.set("accept", "text/event-stream");
     const deadline = setTimeout(() => controller.abort(), 5_000);
     try {
-      const response = await fetchWithoutRedirects(this.request, url, { headers, signal: controller.signal });
+      const response = await this.request(route, `events?after=${after}&follow=1`, {
+        headers: { accept: "text/event-stream" }, signal: controller.signal,
+      });
       if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("text/event-stream")) {
         await response.body?.cancel();
         throw unavailable();
       }
       return response.body;
-    } catch {
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
       throw unavailable();
     } finally {
       clearTimeout(deadline);
