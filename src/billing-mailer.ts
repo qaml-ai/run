@@ -47,7 +47,7 @@ export class BillingMailer {
   private async deliver() {
     const { alerts } = this.options;
     const rows = await alerts.claim(Date.now(), 5);
-    await Promise.all(rows.map(async row => {
+    const results = await Promise.allSettled(rows.map(async row => {
       try {
         if (!["confirmation", "low", "depleted", "problems", "receipts"].includes(row.kind)) throw new Error("Unsupported billing email type");
         const mail = billingEmail({ kind: row.kind as BillingEmailInput["kind"], tenant: row.tenant, email: row.email,
@@ -64,6 +64,8 @@ export class BillingMailer {
         await alerts.retry(row.id, row.lease);
       }
     }));
+    const failed = results.find(result => result.status === "rejected");
+    if (failed) throw failed.reason;
   }
   private async send(mail: BillingEmail & { to: string; delivery: string }, signal: AbortSignal) {
     const { from, displayName = "camelRun Billing", region, configurationSet } = this.options;
