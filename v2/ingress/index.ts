@@ -1,9 +1,13 @@
+import { DECISION_LIMITS } from "../../src/core/limits.ts";
+
 interface Env {
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
   LEGACY_DECISIONS?: { route(request: Request): Promise<Response | null> };
   LEGACY_DECISIONS_CANARY_AUTH_SHA256?: string;
+  LEGACY_DECISIONS_BOTS_AUTH_SHA256?: string;
+  LEGACY_DECISIONS_BOTS?: string;
 }
 
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}\/[^/]+(?:\/[^/]+)?$/;
@@ -25,6 +29,43 @@ async function selected(request: Request, fingerprint?: string): Promise<boolean
   return hex === fingerprint;
 }
 
+function decisionsFingerprint(value?: string): value is string {
+  return !!value && /^[a-f0-9]{64}$/.test(value);
+}
+
+/** Camel Bots supplies context.bot itself after accepting the bot's decision arguments. */
+async function selectedDecision(request: Request, env: Env): Promise<boolean> {
+  if (decisionsFingerprint(env.LEGACY_DECISIONS_CANARY_AUTH_SHA256) &&
+      await selected(request, env.LEGACY_DECISIONS_CANARY_AUTH_SHA256)) return true;
+  const cohort = env.LEGACY_DECISIONS_BOTS?.split(",") ?? [];
+  if (!cohort.length || cohort.some(id => !/^[a-f0-9]{16}$/.test(id)) ||
+      !decisionsFingerprint(env.LEGACY_DECISIONS_BOTS_AUTH_SHA256) ||
+      !await selected(request, env.LEGACY_DECISIONS_BOTS_AUTH_SHA256)) return false;
+
+  const limit = DECISION_LIMITS.requestBytes;
+  if (Number(request.headers.get("content-length")) > limit) return false;
+  const reader = request.clone().body?.getReader();
+  if (!reader) return false;
+  const decoder = new TextDecoder();
+  let bytes = 0, text = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) return false;
+      text += decoder.decode(value, { stream: true });
+    }
+    const body = JSON.parse(text + decoder.decode());
+    return typeof body?.context?.bot === "string" && cohort.includes(body.context.bot);
+  } catch {
+    return false;
+  } finally {
+    // The untouched original remains available whichever origin owns the request.
+    void reader.cancel().catch(() => {});
+  }
+}
+
 export function fetchLegacyApi(request: Request): Promise<Response> {
   const { protocol, hostname, pathname, port } = new URL(request.url);
   if (protocol !== "https:" || port || (hostname !== "run.camelai.com" && hostname !== "agents.camelai.dev") ||
@@ -43,7 +84,7 @@ export default {
 
     if (env.LEGACY_DECISIONS && (hostname === "run.camelai.com" || hostname === "agents.camelai.dev") &&
         pathname === "/v1/decisions" && request.method === "POST" && !request.headers.has("upgrade") &&
-        await selected(request, env.LEGACY_DECISIONS_CANARY_AUTH_SHA256)) {
+        await selectedDecision(request, env)) {
       const response = await env.LEGACY_DECISIONS.route(request);
       return response ?? Response.json({ error: "Decisions are unavailable", code: "DECISIONS_UNAVAILABLE" },
         { status: 503, headers: { "Cache-Control": "no-store" } });
