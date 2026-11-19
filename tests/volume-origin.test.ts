@@ -70,7 +70,7 @@ test("volume origin with scoped SQL access takes over and rolls back existing dr
     const nodeAccounts = new Accounts({ db: nodeDb, tenants, flushReceipts: !volumeOnly });
     const storageUsage = new StorageUsage(nodeDb);
     const storage = memoryStorage(postgresTail(nodeDb), storageUsage.meter, objects);
-    const ownership = new Ownership(nodeDb, { node, volumeOnly });
+    const ownership = new Ownership(nodeDb, { node, volumeOnly, alive: volumeOnly ? async () => false : undefined });
     const volumes = clusterVolumes({
       ownership, db: nodeDb, storage, sessionSecret,
       quota: async tenant => {
@@ -97,6 +97,10 @@ test("volume origin with scoped SQL access takes over and rolls back existing dr
   try {
     await assert.rejects(scopedDb.query("update agents set revoked = true"), /permission denied/);
     assert.equal((await origin.call("/healthz")).status, 200);
+    const latePeer = "http://127.0.0.1:1";
+    await db.query("insert into runtime_nodes (node, session, expires_at) values ($1, $2, now() + interval '30 seconds')", [latePeer, randomUUID()]);
+    assert.deepEqual(await origin.ownership.reap(), [], "the volume node leaves agent peer heartbeats alone");
+    assert.equal((await db.query("delete from runtime_nodes where node = $1", [latePeer])).rowCount, 1);
     assert.equal(await legacy.ownership.peer(), undefined, "do not route new agent work to the volume origin");
     assert.equal(await origin.ownership.peer(), legacy.node);
     await assert.rejects(origin.ownership.acquire(`client_${"a".repeat(40)}`), /can only own volumes/);

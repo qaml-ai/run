@@ -122,9 +122,10 @@ export class Ownership {
     this.cacheMs = options.cacheMs ?? 5_000;
     this.heartbeatMs = Math.max(10, Math.min(Math.floor(this.ttlMs / 6), 3_000));
     this.freshMs = FRESH_RENEWALS * this.heartbeatMs;
-    this.alive = options.alive;
-    this.memoryHigh = options.memoryHigh ?? (() => false);
     this.volumeOnly = options.volumeOnly ?? false;
+    // A volume-only node participates in ownership without ending agent-node heartbeats.
+    this.alive = this.volumeOnly ? undefined : options.alive;
+    this.memoryHigh = options.memoryHigh ?? (() => false);
   }
 
   async start() {
