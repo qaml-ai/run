@@ -7,6 +7,7 @@ import { listen, OPERATOR, runtime } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
+import { stageAgent } from "./stage-agent.ts";
 
 export async function rehearseSignedTools(t: TestContext, workerUrl: string, adminKey: string) {
   const { tenantId, apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey, name: "Signed tools", initialCreditsUsd: 10 });
@@ -163,6 +164,51 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.equal(newTurn.status, "completed");
   assert.equal((await history.history()).length, 8);
   await assert.rejects(copy(finalCopy.receipt), /already has activity/);
+
+  const stagedVolume = source.volume((await source.createVolume({ name: "agent-staging" })).id);
+  await stagedVolume.write("notes.md", "kept on v2");
+  const stagedSnapshot = await stagedVolume.snapshot({ name: "saved" });
+  const agentToStage = await v1.call("/v1/agents", { body: {
+    mounts: [{ volumeId: stagedVolume.id, path: "/workspace", mode: "rw" }],
+  } });
+  assert.equal(agentToStage.status, 201, agentToStage.text);
+  const stagedAgentId = agentToStage.json.id as string;
+  await v1.prompt(stagedAgentId, "An existing agent turn");
+  const stagingRepo = await target.repos.create({ name: "agent-staging" });
+  const stagingAgent = await target.agents.upsert("staged-agent", { model: "mock/default", repoId: stagingRepo.repoId });
+  const from = { url: v1.base, apiKey: OPERATOR, agentId: stagedAgentId };
+  const stage = (previous?: string) => stageAgent(from, target, stagingAgent.id, { initialCommit: stagingRepo.commit, previous });
+  const firstStage = await stage();
+  assert.equal(firstStage.history.count, 2);
+  assert.ok(firstStage.workspace?.snapshotCommits[stagedSnapshot.id]);
+  assert.equal((await target.repos.read(stagingRepo.repoId, { path: "notes.md" })).content, "kept on v2");
+  assert.deepEqual(await stage(), firstStage);
+  await v1.prompt(stagedAgentId, "A turn before cutover");
+  await stagedVolume.write("notes.md", "updated before cutover");
+  let receiptAfterLateEdit: string | undefined;
+  const lateEditTarget = new CamelRun({
+    baseUrl: workerUrl,
+    apiKey,
+    fetch: async (url, init) => {
+      const response = await fetch(url, { ...init, body: typeof init?.body === "string" ? init.body : undefined });
+      if (init?.method === "PUT" && url.endsWith("/history/import") && response.ok) {
+        ({ receipt: receiptAfterLateEdit } = await response.clone().json() as { receipt: string });
+        await stagedVolume.write("notes.md", "late edit during staging");
+      }
+      return response;
+    },
+  });
+  t.after(() => lateEditTarget.close());
+  await assert.rejects(stageAgent(from, lateEditTarget, stagingAgent.id, {
+    initialCommit: stagingRepo.commit, previous: firstStage.history.receipt,
+  }), /v1 agent changed during staging.*written with receipt [0-9a-f]+/);
+  assert.ok(receiptAfterLateEdit);
+  const secondStage = await stage(receiptAfterLateEdit);
+  assert.equal(secondStage.history.count, 4);
+  assert.ok(secondStage.workspace!.seq > firstStage.workspace!.seq);
+  assert.equal((await target.repos.read(stagingRepo.repoId, { path: "notes.md" })).content, "late edit during staging");
+  assert.equal((await stagingAgent.run("Continue from the copied history")).status, "completed");
+  await assert.rejects(stage(secondStage.history.receipt), /destination already has activity/);
 
   const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default" });
   await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [{

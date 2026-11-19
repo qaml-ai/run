@@ -4,14 +4,7 @@ import { parseArgs } from "node:util";
 import type { HistoryPage } from "../../clients/typescript.ts";
 import { CamelRun, type AgentHandle, type V1HistoryImport } from "../sdk/src/index.ts";
 
-export async function migrateHistory(
-  v1Url: string,
-  v1Key: string,
-  sourceAgent: string,
-  target: AgentHandle,
-  previous?: string,
-  attachments?: V1HistoryImport["attachments"],
-) {
+export async function readV1History(v1Url: string, v1Key: string, sourceAgent: string) {
   const url = new URL(`/v1/agents/${encodeURIComponent(sourceAgent)}/history`, v1Url);
   const source = url.href;
   const messages: unknown[] = [];
@@ -19,7 +12,9 @@ export async function migrateHistory(
   for (;;) {
     url.searchParams.set("after", String(messages.length));
     url.searchParams.set("limit", "100");
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${v1Key}` } });
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${v1Key}` }, redirect: "error", signal: AbortSignal.timeout(30_000),
+    });
     if (!response.ok) throw new Error(`v1 history request failed with HTTP ${response.status}`);
     const page = await response.json() as HistoryPage;
     total ??= page.total;
@@ -33,7 +28,18 @@ export async function migrateHistory(
       throw new Error("The v1 history cursor did not advance as expected");
     }
   }
-  return target.importV1History({ source, messages, previous, attachments });
+  return { source, messages };
+}
+
+export async function migrateHistory(
+  v1Url: string,
+  v1Key: string,
+  sourceAgent: string,
+  target: AgentHandle,
+  previous?: string,
+  attachments?: V1HistoryImport["attachments"],
+) {
+  return target.importV1History({ ...await readV1History(v1Url, v1Key, sourceAgent), previous, attachments });
 }
 
 function env(name: string): string {
