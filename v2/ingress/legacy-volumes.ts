@@ -8,6 +8,7 @@ export interface LegacyVolumeOrigin {
   LEGACY_VOLUMES?: { fetch(request: Request, init?: RequestInit): Promise<Response> };
   LEGACY_VOLUMES_ORIGIN_TOKEN?: string;
   LEGACY_VOLUMES_ROLLOUT?: string;
+  LEGACY_VOLUMES_READ_ROLLOUT?: string;
 }
 
 function volumeInPath(path: string) {
@@ -27,12 +28,12 @@ function volumeInPath(path: string) {
 
 export function legacyVolumes(request: Request, env: LegacyVolumeOrigin): Promise<Response> | undefined {
   const asked = new URL(request.url);
-  const rollout = env.LEGACY_VOLUMES_ROLLOUT;
-  if (!env.LEGACY_VOLUMES || !rollout || !VOLUME_ROUTE.test(asked.pathname)) return undefined;
-  if (rollout !== "all") {
-    const volume = volumeInPath(asked.pathname);
-    if (!volume || !rollout.split(",").some(id => id.trim() === volume)) return undefined;
-  }
+  if (!env.LEGACY_VOLUMES || !VOLUME_ROUTE.test(asked.pathname)) return undefined;
+  const volume = volumeInPath(asked.pathname);
+  const selected = (rollout?: string) => rollout === "all" ||
+    !!volume && !!rollout?.split(",").some(id => id.trim() === volume);
+  if (!selected(env.LEGACY_VOLUMES_ROLLOUT) &&
+      !(request.method === "GET" && selected(env.LEGACY_VOLUMES_READ_ROLLOUT))) return undefined;
   if (!env.LEGACY_VOLUMES_ORIGIN_TOKEN) {
     return Promise.resolve(volumeError(503, "VOLUME_ORIGIN_MISCONFIGURED", "Volume origin is misconfigured"));
   }
