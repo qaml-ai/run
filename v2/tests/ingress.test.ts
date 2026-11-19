@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import worker, { fetchLegacyApi } from "../ingress/index.ts";
 
@@ -71,5 +72,19 @@ test("offers hosted MCP on both hosts and limits its origin binding to the legac
     assert.equal((await fetchLegacyApi(new Request(url))).status, 404);
   }
   assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 2);
+});
+
+test("can select one test credential before sending all legacy requests to the Worker", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
+  const route = t.mock.fn(async () => new Response(null, { status: 204 }));
+  const authorization = "Bearer synthetic-cutover-credential";
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route },
+    LEGACY_V1_CANARY_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex") };
+  const path = "https://run.camelai.com/mcp";
+  assert.equal((await worker.fetch(new Request(path), env)).status, 202);
+  assert.equal((await worker.fetch(new Request(path, { headers: { authorization: "Bearer different" } }), env)).status, 202);
+  assert.equal((await worker.fetch(new Request(path, { headers: { authorization } }), env)).status, 204);
+  assert.equal(route.mock.callCount(), 1);
   assert.equal(origin.mock.callCount(), 2);
 });

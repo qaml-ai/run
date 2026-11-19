@@ -1,9 +1,19 @@
 interface Env {
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
+  LEGACY_V1_CANARY_AUTH_SHA256?: string;
 }
 
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}\/[^/]+(?:\/[^/]+)?$/;
+
+async function selected(request: Request, fingerprint?: string): Promise<boolean> {
+  if (!fingerprint) return true;
+  const authorization = request.headers.get("authorization");
+  if (!authorization) return false;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(authorization));
+  const hex = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  return hex === fingerprint;
+}
 
 export function fetchLegacyApi(request: Request): Promise<Response> {
   const { protocol, hostname, pathname, port } = new URL(request.url);
@@ -22,7 +32,8 @@ export default {
     }
 
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
-        (pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname))) {
+        (pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname)) &&
+        await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
       if (compatible) return compatible;
     }
