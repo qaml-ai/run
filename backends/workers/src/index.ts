@@ -272,6 +272,8 @@ function hostedMcpResponse(request: Request, env: Env, auth: Awaited<ReturnType<
 /** The ingress only sends these proven paths here. A miss still belongs to the original runtime. */
 export class LegacyV1 extends WorkerEntrypoint<Env> {
   async route(request: Request): Promise<Response | null> {
+    const preflight = corsPreflight(request);
+    if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
     const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
