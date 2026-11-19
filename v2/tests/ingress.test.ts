@@ -102,12 +102,12 @@ test("keeps legacy end-user writes on the origin while serving reads on the Work
   assert.equal(origin.mock.callCount(), 2);
 });
 
-test("serves token exchange, revocation and discovery on the existing hostnames", async t => {
+test("serves registration, token exchange, revocation and discovery on the existing hostnames", async t => {
   const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
   const route = t.mock.fn(async () => new Response(null, { status: 204 }));
   const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
   for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
-    for (const pathname of ["/oauth/token", "/oauth/revoke"]) {
+    for (const pathname of ["/oauth/register", "/oauth/token", "/oauth/revoke"]) {
       for (const method of ["POST", "OPTIONS"]) {
         assert.equal((await worker.fetch(new Request(`https://${host}${pathname}`, { method }), env)).status, 204);
       }
@@ -117,6 +117,6 @@ test("serves token exchange, revocation and discovery on the existing hostnames"
     }
     assert.equal((await worker.fetch(new Request(`https://${host}/oauth/authorize`), env)).status, 202);
   }
-  assert.equal(route.mock.callCount(), 14);
+  assert.equal(route.mock.callCount(), 18);
   assert.equal(origin.mock.callCount(), 2);
 });

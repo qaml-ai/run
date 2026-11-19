@@ -9,7 +9,7 @@ const legacyEndUserRead = /^\/v1\/end-users(?:\/[^/]+\/usage)?$/;
 const legacyProtectedResource = /^\/\.well-known\/oauth-protected-resource(?:\/mcp|\/v1\/(?:ops|agents\/client_[a-f0-9]{40})\/mcp)?$/;
 
 function legacyOAuthRoute(pathname: string, method: string) {
-  if (pathname === "/oauth/token" || pathname === "/oauth/revoke") return method === "POST" || method === "OPTIONS";
+  if (pathname === "/oauth/token" || pathname === "/oauth/revoke" || pathname === "/oauth/register") return method === "POST" || method === "OPTIONS";
   if (legacyProtectedResource.test(pathname)) return method === "GET" || method === "OPTIONS";
   return method === "GET" && (pathname === "/.well-known/jwks.json" || pathname === "/.well-known/oauth-authorization-server");
 }
