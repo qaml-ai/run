@@ -76,7 +76,7 @@ function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
   if (run.status === "running") return { ...base, began, state: "running" };
   const error = run.error?.message;
   const inputRequired = run.status === "input_required";
-  const budgetReached = run.error?.code === "spend_limit";
+  const budgetReached = run.error?.code === "spend_limit_exceeded";
   const status = inputRequired ? "input_required" : budgetReached ? "paused" : run.status === "completed" ? "completed" : "failed";
   const stopped = inputRequired ? "input_required" : budgetReached ? "spend_limit" : undefined;
   return {
@@ -91,9 +91,9 @@ function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
     outcome: { result: {
       reply: run.text,
       output: run.output,
-      usage: run.usage,
+      usage: { input: run.usage.inputTokens, output: run.usage.outputTokens, costUsd: run.usage.costUsd },
       toolCalls: run.toolCalls.map(({ id: toolCallId, name: tool, ok }) => ({ toolCallId, tool, ok })),
-      ...(run.error ? { error: run.error.message, code: run.error.code } : {}),
+      ...(run.error ? { error: run.error.message, code: budgetReached ? "spend_limit" : run.error.code } : {}),
       ...(stopped ? { stopped } : {}),
     } },
   };
