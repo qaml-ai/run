@@ -25,6 +25,29 @@ V1 snapshot names, labels, and retention settings stay in v1. Camel Bots uses
 its own saved and released version records to resolve the snapshot IDs in the
 output.
 
+## Stage an existing agent
+
+Configure a private v2 agent with the desired model and tools. If the v1
+agent has a workspace mount, attach an empty v2 repository on its default
+branch and keep the initial commit. Use the same environment as the volume
+importer.
+
+```sh
+node --experimental-strip-types v2/scripts/stage-agent.ts \
+  <v1-agent-id> <v2-agent-id> --initial-commit <v2-initial-commit>
+```
+
+The command verifies that no v1 turn or approval is in progress, copies the
+workspace and history, reads the copies back, and checks the source again.
+It returns the history receipt, workspace sequence and snapshot commit map.
+For an agent without a workspace, omit `--initial-commit`. To catch up a
+staged copy, pass the last `--previous` history receipt. Use
+`--attachments manifest.json` for history that references files.
+
+The app still needs to hold admission while it runs the final catch-up and
+changes the route. A staging receipt describes a verified copy at a point
+in time.
+
 ## Switch one cohort
 
 - Keep the v1 client and v2 client connected at the same time. Route by bot and
