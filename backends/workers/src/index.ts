@@ -67,6 +67,7 @@ import { handleRepoRequest, repoTransportFailure } from "./repos/routes.ts";
 import { handleSignedRepoRequest } from "./repos/links.ts";
 import type { RepoEnv } from "./repos/registry.ts";
 import { handleFileRequest, retiredVolumes } from "./files.ts";
+import { handleLegacyVolumeRead, legacyVolumeReadRoute } from "./legacy-volume-reads.ts";
 import { handleSignedFileRequest } from "./images.ts";
 import { channelRoutes, channelWebhook } from "./channel-routes.ts";
 import { githubAppRoutes } from "./github-app-routes.ts";
@@ -221,7 +222,7 @@ const worker = {
       catch (error) { return httpFailure(error, env); }
     }
     if (hostPath === "/v1/internal/camelfs/smoke" && !tierConfigured(env as RepoEnv)) return new Response(null, { status: 404 });
-    const retired = retiredVolumes(hostPath);
+    const retired = env.V1_VOLUME_S3_BUCKET && legacyVolumeReadRoute(request) ? undefined : retiredVolumes(hostPath);
     if (retired) return publicPageHeaders(request, corsResponse(request, retired));
     if(request.method==='POST'&&hookPath(new URL(request.url).pathname)) {
       try {
@@ -441,6 +442,7 @@ const worker = {
         if (voice) return voice;
         const media = await handleMediaRequest(request, env, auth);
         if (media) return media;
+        if (env.V1_VOLUME_S3_BUCKET && legacyVolumeReadRoute(request)) return await handleLegacyVolumeRead(request, env, auth.tenantId);
         const files = await handleFileRequest(request, env, auth);
         if (files) return files;
         const repos = await handleRepoRequest(request, env as RepoEnv, auth);

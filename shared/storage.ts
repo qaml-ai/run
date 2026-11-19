@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileAppendLog, type AppendLog, type CommitEffect } from "./append-log.ts";
-import type { Claim } from "../src/ownership.ts";
+import type { Claim } from "./actor-claim.ts";
 
 /**
  * The data plane: bulk state that is appended or written once. Coordination and
@@ -416,26 +416,29 @@ export function segmentLog<T>(store: SegmentStore, key: string, tail: LogTail, c
 
   const read = async (): Promise<T[]> => {
     // The tail first: a compaction between the two reads then shows up in Storage, never in neither.
-    let rows: TailRow[], listing: Listing, records: T[];
     for (let attempt = 1; ; attempt++) {
-      rows = await tail.rows(key);
-      listing = await store.list();
-      // A compaction elsewhere may fold and delete what was listed: read again.
-      try { records = await stored(listing); break; }
-      catch (error) { if (attempt >= 3) throw error; }
+      const rows = await tail.rows(key);
+      const listing = await store.list();
+      // A concurrent compaction can remove either a listed segment or a tail row's blob.
+      try {
+        let records = await stored(listing);
+        const through = covered(listing);
+        let bodyBytes = 0;
+        for (const row of rows) {
+          bodyBytes += row.body?.length ?? 0;
+          if (row.seq <= through) continue;
+          const parsed = JSON.parse(await body(row));
+          if (row.snapshot) records = parsed;
+          else records.push(parsed);
+        }
+        tailRecords = rows.length;
+        tailBytes = bodyBytes;
+        if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
+        return records;
+      } catch (error) {
+        if (attempt >= 3) throw error;
+      }
     }
-    const through = covered(listing);
-    tailRecords = rows.length;
-    tailBytes = 0;
-    for (const row of rows) {
-      tailBytes += row.body?.length ?? 0;
-      if (row.seq <= through) continue;
-      const parsed = JSON.parse(await body(row));
-      if (row.snapshot) records = parsed;
-      else records.push(parsed);
-    }
-    if (!retrying) next = Math.max(through, rows.at(-1)?.seq ?? -1) + 1;
-    return records;
   };
 
   return {

@@ -12,7 +12,7 @@ interface Env extends LegacyVolumeOrigin {
 }
 
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}\/[^/]+(?:\/[^/]+)?$/;
-const legacyEndUserRead = /^\/v1\/end-users(?:\/[^/]+\/usage)?$/;
+const legacyEndUserRead = /^\/v1\/end-users(?:\/[^/]+(?:\/usage)?)?$/;
 const legacyProtectedResource = /^\/\.well-known\/oauth-protected-resource(?:\/mcp|\/v1\/(?:ops|agents\/client_[a-f0-9]{40})\/mcp)?$/;
 
 function legacyOAuthRoute(pathname: string, method: string) {

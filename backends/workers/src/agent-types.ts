@@ -1,4 +1,5 @@
 import type { VoiceCall } from "./voice-call.ts";
+import type { LegacyVolumeReadEnv } from "./legacy-volume-reads.ts";
 import type { BashEnv } from "./camelfs/bash.ts";
 import type { Placement } from "../../../shared/owner.ts";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
@@ -77,6 +78,7 @@ export interface Env
   extends ComputerBindings,
     ControlEnv,
     FileBindings,
+    LegacyVolumeReadEnv,
     KeyEnv,
     AccountEnv,
     ComputerEnv,
