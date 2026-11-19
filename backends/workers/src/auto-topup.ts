@@ -178,13 +178,15 @@ export class AutoTopup {
     const attempts = (await this.db.query(`with picked as (select id from billing_auto_attempts where livemode=$1 and ${active} and state <> 'reconcile'
       and due<=$2 and lease_until<=$2 order by due,id limit 5 for update skip locked)
       update billing_auto_attempts a set lease=gen_random_uuid(),lease_until=$2+60000 from picked where a.id=picked.id returning a.*`, [this.stripe.live, this.now()])).rows;
-    await Promise.all(attempts.map(async a => {
+    const results = await Promise.allSettled(attempts.map(async a => {
       try { await this.process(a); }
       catch (error) {
         console.error(JSON.stringify({ type: "auto_topup_step_failed", attempt: a.id, step: a.step, code: error instanceof StripeError ? error.code : undefined }));
         await this.db.query("update billing_auto_attempts set due=$3,lease_until=0,lease=null where id=$1 and lease=$2", [a.id, a.lease, this.now()+30_000]);
       }
     }));
+    const failed = results.find(result => result.status === "rejected");
+    if (failed) throw failed.reason;
     await this.billing.payments!.refreshInvoices();
   }
   /** Advance immediately while ready, persisting and renewing the lease before each external step. */
