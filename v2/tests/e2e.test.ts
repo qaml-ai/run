@@ -1116,6 +1116,34 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await camel.close();
   });
 
+  it("routes provider model aliases without changing the agent model or billing", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "provider-aliases", initialCreditsUsd: 1,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    const model = "azure/deepseek-v4.1-flash";
+    const baseUrl = `${auxUrl}/v1`;
+    await camel.providers.set("azure", {
+      apiKey: "initial-key",
+      baseUrl,
+      modelAliases: { "deepseek-v4.1-flash": "deployment-flash" },
+    });
+    await camel.providers.set("azure", { apiKey: "rotated-key", baseUrl });
+
+    const agent = await camel.agents.upsert("aliased-agent", { model });
+    const run = await agent.run("Use the configured Azure deployment.");
+    assert.equal(run.status, "completed");
+    assert.match(run.text, /SSE upstream \(deployment-flash\) saw/);
+    assert.equal(agent.model, model);
+    assert.equal(run.usage.costUsd, 0.0000174);
+
+    await camel.providers.set("azure", { apiKey: "rotated-key", baseUrl, modelAliases: {} });
+    const unaliased = await agent.run("Use the upstream model name directly.");
+    assert.equal(unaliased.status, "completed");
+    assert.match(unaliased.text, /SSE upstream \(deepseek-v4\.1-flash\) saw/);
+    await camel.close();
+  });
+
   it("8. AES-GCM sealed upstream OpenAI SSE provider, definitions inheritance, schedules CRUD, and batch coalescing", async () => {
     const { apiKey } = await CamelRun.createTenant({
       baseUrl: workerUrl,

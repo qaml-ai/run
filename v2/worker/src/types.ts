@@ -265,6 +265,7 @@ export interface ProviderCredentials {
   provider: string;
   apiKey: string;
   baseUrl?: string | null;
+  modelAliases?: Record<string, string>;
 }
 
 export type ModelStreamChunk =

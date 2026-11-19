@@ -85,6 +85,13 @@ export interface ChannelInternalRecord extends ChannelView {
   sealedSecret: string | null;
 }
 
+type SealedProviderRow = {
+  provider: string;
+  sealed_api_key: string;
+  base_url: string | null;
+  model_aliases_json: string | null;
+};
+
 export function getTenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
   if (!tenantId) {
     throw new ApiError(400, "missing_tenant", "Missing tenant identifier");
@@ -202,6 +209,10 @@ export class TenantDO extends DurableObject<Env> {
         updated_at INTEGER NOT NULL
       );
     `);
+    const providerColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(provider_keys)").toArray();
+    if (!providerColumns.some(({ name }) => name === "model_aliases_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE provider_keys ADD COLUMN model_aliases_json TEXT");
+    }
     this.schemaReady = true;
   }
 
@@ -479,40 +490,41 @@ export class TenantDO extends DurableObject<Env> {
     provider: string,
     apiKey: string,
     baseUrl?: string | null,
-  ): Promise<{ provider: string; baseUrl: string | null; updated: true }> {
+    modelAliases?: Record<string, string>,
+  ): Promise<{ provider: string; baseUrl: string | null; modelAliases?: Record<string, string>; updated: true }> {
     this.requireProfile();
     const norm = provider.toLowerCase();
     const sealed = await sealSecret(apiKey, this.env.VAULT_SECRET);
     const now = Date.now();
     this.ctx.storage.sql.exec(
-      `INSERT INTO provider_keys (provider, sealed_api_key, base_url, updated_at)
-       VALUES (?1, ?2, ?3, ?4)
+      `INSERT INTO provider_keys (provider, sealed_api_key, base_url, updated_at, model_aliases_json)
+       VALUES (?1, ?2, ?3, ?4, ?5)
        ON CONFLICT(provider) DO UPDATE SET
          sealed_api_key = excluded.sealed_api_key,
          base_url = excluded.base_url,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         model_aliases_json = coalesce(excluded.model_aliases_json, provider_keys.model_aliases_json)`,
       norm,
       sealed,
       baseUrl ?? null,
       now,
+      modelAliases === undefined ? null : JSON.stringify(modelAliases),
     );
-    return { provider: norm, baseUrl: baseUrl ?? null, updated: true };
+    return { provider: norm, baseUrl: baseUrl ?? null, ...(modelAliases && { modelAliases }), updated: true };
   }
 
   async getProviderSecret(provider: string): Promise<ProviderCredentials | null> {
     if (!this.readProfileOrNull()) return null;
-    const row = this.ctx.storage.sql
-      .exec<{ provider: string; sealed_api_key: string; base_url: string | null }>(
-        `SELECT provider, sealed_api_key, base_url FROM provider_keys WHERE provider = ?1 LIMIT 1`,
-        provider.toLowerCase(),
-      )
-      .toArray()[0];
-    if (!row) return null;
-    const apiKey = await openSecret(row.sealed_api_key, this.env.VAULT_SECRET);
+    const row = this.findSealedProviderRow([provider]);
+    return row && await this.openProviderCredentials(row);
+  }
+
+  private async openProviderCredentials(row: SealedProviderRow): Promise<ProviderCredentials> {
     return {
       provider: row.provider,
-      apiKey,
+      apiKey: await openSecret(row.sealed_api_key, this.env.VAULT_SECRET),
       baseUrl: row.base_url,
+      ...(row.model_aliases_json && { modelAliases: JSON.parse(row.model_aliases_json) as Record<string, string> }),
     };
   }
 
@@ -827,13 +839,11 @@ export class TenantDO extends DurableObject<Env> {
 
   // ---- 5. Agents Directory (`agents_index`) ----
 
-  private findSealedProviderRow(
-    candidates: string[],
-  ): { provider: string; sealed_api_key: string; base_url: string | null } | null {
+  private findSealedProviderRow(candidates: string[]): SealedProviderRow | null {
     for (const candidate of candidates) {
       const row = this.ctx.storage.sql
-        .exec<{ provider: string; sealed_api_key: string; base_url: string | null }>(
-          `SELECT provider, sealed_api_key, base_url FROM provider_keys WHERE provider = ?1 LIMIT 1`,
+        .exec<SealedProviderRow>(
+          `SELECT provider, sealed_api_key, base_url, model_aliases_json FROM provider_keys WHERE provider = ?1 LIMIT 1`,
           candidate.toLowerCase(),
         )
         .toArray()[0];
@@ -1008,11 +1018,7 @@ export class TenantDO extends DurableObject<Env> {
       );
 
       let slotAcquired = false;
-      let sealedProviderRow: {
-        provider: string;
-        sealed_api_key: string;
-        base_url: string | null;
-      } | null = null;
+      let sealedProviderRow: SealedProviderRow | null = null;
 
       if (params.preacquireRunId) {
         this.acquireSlotSync(profile, params.preacquireRunId, agentId);
@@ -1040,21 +1046,8 @@ export class TenantDO extends DurableObject<Env> {
 
     let prefetchedProvider: { credentials: ProviderCredentials | null } | undefined;
     if (params.preacquireRunId) {
-      if (txResult.sealedProviderRow) {
-        const apiKey = await openSecret(
-          txResult.sealedProviderRow.sealed_api_key,
-          this.env.VAULT_SECRET,
-        );
-        prefetchedProvider = {
-          credentials: {
-            provider: txResult.sealedProviderRow.provider,
-            apiKey,
-            baseUrl: txResult.sealedProviderRow.base_url,
-          },
-        };
-      } else {
-        prefetchedProvider = { credentials: null };
-      }
+      const row = txResult.sealedProviderRow;
+      prefetchedProvider = { credentials: row && await this.openProviderCredentials(row) };
     }
 
     return {
@@ -1162,15 +1155,7 @@ export class TenantDO extends DurableObject<Env> {
     if (wantProvider) {
       const lookup = getProviderLookupCandidates(this.env, model);
       const sealedRow = lookup.isMock ? null : this.findSealedProviderRow(lookup.candidates);
-      let credentials: ProviderCredentials | null = null;
-      if (sealedRow) {
-        credentials = {
-          provider: sealedRow.provider,
-          apiKey: await openSecret(sealedRow.sealed_api_key, this.env.VAULT_SECRET),
-          baseUrl: sealedRow.base_url,
-        };
-      }
-      prefetchedProvider = { credentials };
+      prefetchedProvider = { credentials: sealedRow && await this.openProviderCredentials(sealedRow) };
     }
 
     return {

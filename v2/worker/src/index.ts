@@ -178,14 +178,24 @@ app.put("/v2/providers/:provider", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   const provider = c.req.param("provider").toLowerCase();
-  const body = (await c.req.json()) as { apiKey?: string; baseUrl?: string };
+  const body = (await c.req.json()) as { apiKey?: string; baseUrl?: string; modelAliases?: Record<string, string> };
   if (typeof body.apiKey !== "string" || !body.apiKey.trim()) {
     throw new ApiError(400, "invalid_request", "`apiKey` is required");
+  }
+  const aliases = body.modelAliases;
+  if (aliases !== undefined && (
+    aliases === null || typeof aliases !== "object" || Array.isArray(aliases) ||
+    Object.entries(aliases).some(([model, deployment]) =>
+      !model.trim() || model !== model.trim() || typeof deployment !== "string" ||
+      !deployment.trim() || deployment !== deployment.trim())
+  )) {
+    throw new ApiError(400, "invalid_request", "`modelAliases` must map model IDs to non-empty upstream model names");
   }
   const out = await getTenantStub(c.env, auth.tenantId).setProviderSecret(
     provider,
     body.apiKey.trim(),
     body.baseUrl?.trim() || null,
+    aliases,
   );
   return c.json(out);
 });
