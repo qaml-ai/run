@@ -120,3 +120,31 @@ test("serves registration, token exchange, revocation and discovery on the exist
   assert.equal(route.mock.callCount(), 18);
   assert.equal(origin.mock.callCount(), 2);
 });
+
+test("selects legacy decisions independently and sends each selected POST once", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
+  const authorization = "Bearer fixture-decision-key";
+  const route = t.mock.fn(async (request: Request) => {
+    assert.equal(request.headers.get("authorization"), authorization);
+    assert.deepEqual(await request.json(), { state: "same body" });
+    return null;
+  });
+  const v1 = t.mock.fn(async () => { throw new Error("Unrelated compatibility binding"); });
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route: v1 }, LEGACY_DECISIONS: { route },
+    LEGACY_DECISIONS_CANARY_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex") };
+  const post = (host: string, auth: string) => new Request(`https://${host}/v1/decisions`, {
+    method: "POST", body: '{"state":"same body"}', headers: { authorization: auth },
+  });
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    const response = await worker.fetch(post(host, authorization), env);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, "DECISIONS_UNAVAILABLE");
+  }
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 0);
+  assert.equal((await worker.fetch(post("run.camelai.com", "Bearer other"), env)).status, 202);
+  assert.equal((await worker.fetch(post("example.com", authorization), env)).status, 202);
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 2);
+  assert.equal(v1.mock.callCount(), 0);
+});

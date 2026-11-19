@@ -2,6 +2,8 @@ interface Env {
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
+  LEGACY_DECISIONS?: { route(request: Request): Promise<Response | null> };
+  LEGACY_DECISIONS_CANARY_AUTH_SHA256?: string;
 }
 
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}\/[^/]+(?:\/[^/]+)?$/;
@@ -37,6 +39,14 @@ export default {
     const { hostname, pathname } = new URL(request.url);
     if (hostname === "run.camelai.com" && (pathname === "/v2" || pathname.startsWith("/v2/"))) {
       return env.V2.fetch(request);
+    }
+
+    if (env.LEGACY_DECISIONS && (hostname === "run.camelai.com" || hostname === "agents.camelai.dev") &&
+        pathname === "/v1/decisions" && request.method === "POST" && !request.headers.has("upgrade") &&
+        await selected(request, env.LEGACY_DECISIONS_CANARY_AUTH_SHA256)) {
+      const response = await env.LEGACY_DECISIONS.route(request);
+      return response ?? Response.json({ error: "Decisions are unavailable", code: "DECISIONS_UNAVAILABLE" },
+        { status: 503, headers: { "Cache-Control": "no-store" } });
     }
 
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
