@@ -49,7 +49,7 @@ test("code finds the context of the node it runs for wherever it runs, and the r
     await Promise.resolve().then(() => seen.push(random()));
     emitter.on("event", () => seen.push(random()));
   });
-  // A listener runs in the context of whoever emits, not of whoever listened: a simulator emits for a node inside it.
+  // A listener runs in the context of the caller that emits the event.
   emitter.emit("event");
   assert.deepEqual(seen, [node.random, node.random, node.random, REAL_RANDOM]);
   assert.equal(random(), REAL_RANDOM);
@@ -71,7 +71,7 @@ test("a node's lease runs on its own clock: it expires and fences when that cloc
   ownership.onFence(reason => fences.push(reason));
   const acquired = await runFor(node, () => ownership.acquire("agent_a"));
   assert.ok("claim" in acquired);
-  // Called from outside, the node's code would read the process's clock: a test, like a simulator, calls in for the node.
+  // Enter the node's context so the check uses its clock.
   const holds = () => runFor(node, () => ownership.holds(acquired.claim));
   assert.ok(holds() && runFor(node, () => ownership.fresh()), "a claim holds right after the node registered");
   // Its watchdog, heartbeat and staleness timers are on the node's clock, not the process's.

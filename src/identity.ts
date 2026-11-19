@@ -38,20 +38,14 @@ const KEYS_TTL_MS = 10 * 60_000;
 const aad = (kid: string) => `runtime-signing:${kid}`;
 /** An Ed25519 key's PKCS#8 encoding before its 32-byte seed. */
 const ED25519_PKCS8 = Buffer.from("302e020100300506032b657004220420", "hex");
-/**
- * A new Ed25519 signing key, from a seed of node:crypto's randomBytes (a simulator's seeded stream, so its runs replay;
- * WebCrypto's key generation draws from its own), as JWKs.
- */
+/** Generate an Ed25519 signing key from 32 random bytes and export the key pair as JWKs. */
 function ed25519Key() {
   const privateKey = createPrivateKey({ key: Buffer.concat([ED25519_PKCS8, randomBytes(32)]), format: "der", type: "pkcs8" });
   return { publicJwk: createPublicKey(privateKey).export({ format: "jwk" }) as JWK, privateJwk: privateKey.export({ format: "jwk" }) as JWK };
 }
 type Keys = { signing?: { kid: string; key: KeyObject }; published: JWK[] };
 const base64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-/**
- * A JWT signed with an Ed25519 key, at once: node:crypto signs synchronously, where WebCrypto (jose's SignJWT) finishes
- * on a thread of its own, at a moment a simulator cannot replay.
- */
+/** Sign a JWT synchronously with an Ed25519 key. */
 function signJwt(header: Record<string, unknown>, payload: Record<string, unknown>, key: KeyObject) {
   const signed = `${base64url(header)}.${base64url(payload)}`;
   return `${signed}.${sign(null, Buffer.from(signed), key).toString("base64url")}`;

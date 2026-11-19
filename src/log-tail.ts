@@ -2,8 +2,6 @@ import { databaseUnavailable, transaction, type Db, type Sql } from "./db.ts";
 import type { LogTail, TailRow } from "../shared/storage.ts";
 import { LostClaim, underClaim, type Claim } from "./ownership.ts";
 import { clock } from "./node-context.ts";
-import { buggify } from "./buggify.ts";
-import { reachable, sometimes } from "./assert.ts";
 
 /**
  * Logs' hot tails in `log_records`. An append is one multi-row insert, fenced in
@@ -49,13 +47,9 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
       });
       for (let delay = 100; ; delay = Math.min(delay * 2, 2_000)) {
         try {
-          const written = await append();
-          // Written, and the answer lost on the way back: the append is repeated, and finds its rows there.
-          if (written && buggify("tail.append.lost_ack")) throw Object.assign(new Error("Connection terminated (BUGGIFY: the append's answer was lost)"), { code: "ECONNRESET" });
-          return written;
+          return await append();
         } catch (error) {
           if (!databaseUnavailable(error) || Date.now() + delay > deadline) throw error;
-          reachable("a tail append was repeated while the database was unavailable");
           await clock().sleep(delay);
         }
       }
@@ -74,7 +68,6 @@ export function postgresTail(db: Db, options: { retryMs?: number; unfenced?: boo
       let locked = false;
       try {
         locked = !!(await lock.query("select pg_try_advisory_lock(hashtext($1)) as locked", [`log:${key}`])).rows[0]?.locked;
-        sometimes(!locked, "a compaction found another of its log under way, and left the rows to it");
         if (!locked) return true;
         if (!await holds(lock, false)) return false;
         const { rows } = await lock.query("select seq, snapshot, body, blob from log_records where log_key = $1 order by seq", [key]);

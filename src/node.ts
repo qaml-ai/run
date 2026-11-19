@@ -133,8 +133,6 @@ import { browserVoice, type BrowserTransport } from "./voice-browser.ts";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Duplex } from "node:stream";
 import { hostClient, startTurnModels, type TurnModels, type TurnModelsHost } from "./voice/turns/inference.ts";
-import { buggify } from "./buggify.ts";
-import { sometimes } from "./assert.ts";
 import { chargesPlatform } from "./core/key-source.ts";
 
 /** Idle keep-alive sockets stay open this long: past the ALB's idle timeout (infra/terraform alb_idle_timeout, 360 s). */
@@ -178,10 +176,7 @@ export type NodeDeps = {
   random?: Random;
   /** Where inline agents run code: this process's v8-exec runner unless given (codemode-pi-launcher.ts); `close` lets its processes go. */
   codeSandbox?: CodeSandboxes & { close?(): void };
-  /**
-   * The data plane every node shares, given the node's log tail and storage meter: AGENT_STORAGE's unless given (a
-   * simulation's in-memory store).
-   */
+  /** Override the AGENT_STORAGE data plane with a store using this node's log tail and storage meter. */
   storage?: (tail: LogTail, meter: StorageMeter) => Storage | Promise<Storage>;
   /** Test hooks for client-held calls. */
   voiceCallOverrides?: Partial<Pick<VoiceCallsOptions, "admit" | "credit" | "enqueue" | "now" | "pendingMs" | "lateMs" | "record" | "retiring" | "submitStreaming">>;
@@ -261,7 +256,7 @@ export type RuntimeNode = {
   close(): Promise<void>;
   /** Read the tenants again (SIGHUP): a bad file or secret is rejected whole, and the tenants loaded before stay. */
   reloadTenants(): Promise<void>;
-  /** Run `work` as this node: in its context, if it was given one (a simulation calling in), else as it is. */
+  /** Run `work` in this node’s context when it has one. */
   run<T>(work: () => T): T;
 };
 type Env = { Bindings: HttpBindings; Variables: { tenant: string } };
@@ -717,7 +712,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     const [timestamp, signature] = (c.req.header("x-agent-runtime-internal") ?? "").split(".");
     const expected = Buffer.from(internalSignature(timestamp ?? "", c.req.path, body));
     const given = Buffer.from(signature ?? "");
-    sometimes(!!timestamp && Math.abs(Date.now() - Number(timestamp)) > 5_000, "a node-to-node request came from a node whose clock is seconds off");
     if (!timestamp || Math.abs(Date.now() - Number(timestamp)) > 60_000 || expected.length !== given.length || !timingSafeEqual(expected, given)) return undefined;
     return body;
   }
@@ -1801,7 +1795,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // waiting on human input, say) move at once. Alone, the node lets its turns finish instead: nobody could go on with them now.
     await step("hand-off", async () => { if (await ownership.peer()) clients.handOffTurns(signal === "memory" ? "memory" : "drain"); });
     // A second signal may come at any moment, and the node stops waiting for its turns.
-    if (buggify("drain.stop_waiting")) drainDeadline = 0;
     for (let tick = 0; clients.inFlight() && Date.now() < drainDeadline; tick++) {
       if (tick % 10 === 0) void clients.releaseIdle().catch(error => console.error(JSON.stringify({ type: "drain_release_failed", error: safeError(error) })));
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -1810,7 +1803,6 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // sends SIGTERM. Outside ECS the fallback releases this wait.
     if (signal === "memory") await finishMemoryDrain.promise;
     const unfinished = clients.inFlight();
-    sometimes(unfinished > 0, "a drain released turns still running");
     await step("agents", () => clients.close());
     // Usage is in memory until flushed: write what the turns recorded now, before the slower close steps eat into the
     // time left before SIGKILL (stopTimeout). What later steps record goes in the flush after them.

@@ -56,7 +56,7 @@ test("the report names each gate's shards and lists the failing tests", () => {
 });
 
 test("the gates cover CI's required jobs, and each Workers gate is a validate-sprite.sh mode that exists", () => {
-  assert.deepEqual(Object.keys(GATES).sort(), ["checks", "docs", "full", "python", "sim", "workers-integration", "workers-unit"]);
+  assert.deepEqual(Object.keys(GATES).sort(), ["checks", "docs", "full", "python", "workers-integration", "workers-unit"]);
   const validate = readFileSync(new URL("../backends/workers/scripts/validate-sprite.sh", import.meta.url), "utf8");
   for (const gate of Object.values(GATES) as { args: string[] }[]) {
     const at = gate.args.indexOf("backends/workers/scripts/validate-sprite.sh");
