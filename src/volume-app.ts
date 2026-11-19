@@ -4,10 +4,9 @@ import type { Principal, Accounts } from "./accounts.ts";
 import { json } from "./api-helpers.ts";
 import type { ConsoleAuth } from "./console-auth.ts";
 import { errorCode, errorFields, errorHeaders, errorStatus, HttpError, signInHint } from "./http.ts";
-import { expireIdempotencyKeys, idempotency } from "./idempotency.ts";
+import { idempotency } from "./idempotency.ts";
 import type { FileLinks } from "./files.ts";
 import { internalRequests } from "./internal-requests.ts";
-import { safeError } from "./metrics.ts";
 import type { Ownership } from "./ownership.ts";
 import { errorText } from "./protocol.ts";
 import { volumeLinkRoutes, volumeRoutes } from "./volume-api.ts";
@@ -90,9 +89,4 @@ export function clusterVolumes(options: VolumeOptions & { ownership: Ownership; 
       }
     },
   });
-}
-
-export function sweepVolumeReceipts(db: VolumeOptions["db"]) {
-  return setInterval(() => void expireIdempotencyKeys(db).catch(error =>
-    console.error(JSON.stringify({ type: "idempotency_expiry_failed", error: safeError(error) }))), 60 * 60_000).unref();
 }

@@ -10,7 +10,7 @@ import { pricingFromEnvironment } from "./pricing.ts";
 import { secretReader } from "./secrets.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
-import { clusterVolumes, sweepVolumeReceipts, volumeApp } from "./volume-app.ts";
+import { clusterVolumes, volumeApp } from "./volume-app.ts";
 import { openStorage, storageFromEnvironment } from "../shared/storage-config.ts";
 
 const env = process.env;
@@ -56,7 +56,6 @@ const volumes = clusterVolumes({
 });
 const app = volumeApp({ accounts, consoleAuth, volumes, links, sessionSecret, originToken });
 await ownership.start();
-const receipts = sweepVolumeReceipts(db);
 const server = serve({ hostname: host, port, fetch: app.fetch }, () => console.log(JSON.stringify({ type: "volume_listening", port })));
 async function closeVolumes() {
   for (const close of [
@@ -76,7 +75,6 @@ let stopping = false;
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => {
   if (stopping) return;
   stopping = true;
-  clearInterval(receipts);
   server.close(error => {
     if (error) {
       console.error(error);
