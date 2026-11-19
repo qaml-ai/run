@@ -33,7 +33,10 @@ export function volumeApp(options: {
   const route = (config: { method: string; path: string }, handler: (c: Context<Env>) => Response | Promise<Response>, path = config.path.replaceAll(/{(\w+)}/g, ":$1")) =>
     app.on(config.method.toUpperCase(), path, handler);
 
-  app.get("/healthz", c => c.json({ ok: true }));
+  app.get("/healthz", c => {
+    const ok = volumes.options.ownership?.fresh() === true;
+    return c.json({ ok }, ok ? 200 : 503);
+  });
   internal.mountVolumeOperations(app, volumes);
   app.use("/v1/*", async (c, next) => {
     if (!timingSafeEqual(token, sha256(c.req.header(VOLUME_ORIGIN_HEADER) ?? ""))) {

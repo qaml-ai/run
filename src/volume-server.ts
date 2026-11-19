@@ -6,6 +6,7 @@ import { FileLinks } from "./files.ts";
 import { postgresTail } from "./log-tail.ts";
 import { Ownership, probeNode } from "./ownership.ts";
 import { Passwords } from "./passwords.ts";
+import { pricingFromEnvironment } from "./pricing.ts";
 import { secretReader } from "./secrets.ts";
 import { StorageUsage } from "./storage-usage.ts";
 import { tenantsFromEnvironment } from "./tenants.ts";
@@ -34,10 +35,12 @@ const pool = await databaseFromEnvironment();
 const db = applyDatabase(pool);
 // This service uses the legacy runtime schema and does not change it.
 await db.query("select 1 from volumes limit 0");
+const ttlMs = Number(env.AGENT_LEASE_TTL_MS ?? 90_000);
+if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new Error("AGENT_LEASE_TTL_MS must be a positive integer");
 const storageUsage = new StorageUsage(db);
-const storage = await openStorage(descriptor, postgresTail(db), storageUsage.meter);
-const ownership = new Ownership(db, { node, volumeOnly: true, alive: probeNode });
-const accounts = new Accounts({ tenants, db, publicUrl });
+const storage = await openStorage(descriptor, postgresTail(db, { retryMs: ttlMs }), storageUsage.meter);
+const ownership = new Ownership(db, { node, ttlMs, volumeOnly: true, alive: probeNode });
+const accounts = new Accounts({ tenants, db, pricing: pricingFromEnvironment(env), publicUrl });
 const consoleAuth = new ConsoleAuth({ accounts, publicUrl, passwords: new Passwords(db) });
 const links = new FileLinks(sessionSecret, publicUrl);
 const volumes = clusterVolumes({

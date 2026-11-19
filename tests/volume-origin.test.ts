@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { getRequestListener } from "@hono/node-server";
 import { AgentRuntime } from "../clients/node.ts";
 import { memoryStorage } from "../shared/storage.ts";
+import { Accounts } from "../src/accounts.ts";
 import { FileLinks } from "../src/files.ts";
 import { internalRequests } from "../src/internal-requests.ts";
 import { postgresTail } from "../src/log-tail.ts";
+import { Tenants } from "../src/tenants.ts";
 import { Ownership } from "../src/ownership.ts";
 import { clusterVolumes, VOLUME_ORIGIN_HEADER, volumeApp } from "../src/volume-app.ts";
 import ingress, { fetchLegacyApi } from "../v2/ingress/index.ts";
@@ -20,12 +23,15 @@ test("volume origin takes over and rolls back existing drafts without changing f
   const { db } = await testDatabase();
   const storage = memoryStorage(postgresTail(db));
   const links = new FileLinks(sessionSecret, "https://run.camelai.test");
-  const auth = (tenant = "bots") => new Headers({ authorization: `Bearer ${tenant}`, [VOLUME_ORIGIN_HEADER]: originToken });
-  const accounts = {
-    db,
-    authenticate: async (authorization?: string) => ["Bearer bots", "Bearer outsider"].includes(authorization ?? "")
-      ? { tenant: authorization!.slice(7), via: "operator" as const } : undefined,
-  };
+  const tokenSha256 = (token: string) => createHash("sha256").update(token).digest("hex");
+  const tenants = new Tenants({ read: async () => JSON.stringify({ tenants: {
+    bots: { tokenSha256: tokenSha256("bots-operator") },
+    outsider: { tokenSha256: tokenSha256("outsider-operator") },
+  } }) });
+  await tenants.reload();
+  const accounts = new Accounts({ db, tenants });
+  const { token } = await accounts.createToken("bots", "existing drafts API key");
+  const auth = (apiKey = token) => new Headers({ authorization: `Bearer ${apiKey}`, [VOLUME_ORIGIN_HEADER]: originToken });
   const consoleAuth = { principal: async () => undefined, allowsMutation: () => false };
 
   async function start(volumeOnly: boolean) {
@@ -53,6 +59,7 @@ test("volume origin takes over and rolls back existing drafts without changing f
   const legacy = await start(false);
   const origin = await start(true);
   try {
+    assert.equal((await origin.call("/healthz")).status, 200);
     assert.equal(await legacy.ownership.peer(), undefined, "do not route new agent work to the volume origin");
     assert.equal(await origin.ownership.peer(), legacy.node);
     await assert.rejects(origin.ownership.acquire(`client_${"a".repeat(40)}`), /can only own volumes/);
@@ -65,8 +72,8 @@ test("volume origin takes over and rolls back existing drafts without changing f
     assert.equal(first.status, 201, await first.clone().text());
     const fileVersion = (await first.json()).version;
     assert.equal(await origin.ownership.owner(id), legacy.node);
-    assert.equal((await fetch(origin.node + file, { headers: { authorization: "Bearer bots" } })).status, 401);
-    assert.equal((await fetch(origin.node + file, { headers: auth("outsider") })).status, 404);
+    assert.equal((await fetch(origin.node + file, { headers: { authorization: `Bearer ${token}` } })).status, 401);
+    assert.equal((await fetch(origin.node + file, { headers: auth("outsider-operator") })).status, 404);
     assert.equal((await fetch(`${origin.node}/internal/volumes/${id}/ops`, { method: "POST", body: '{"tenant":"bots","op":"delete","args":{}}' })).status, 401);
 
     const pending = await Promise.all([
@@ -88,7 +95,7 @@ test("volume origin takes over and rolls back existing drafts without changing f
     };
     const apiUrl = "https://run.camelai.com";
     const draft = new AgentRuntime({
-      url: apiUrl, apiKey: "bots",
+      url: apiUrl, apiKey: token,
       fetch: (input, init) => ingress.fetch(new Request(input, init), ingressEnv),
     });
     try {
@@ -97,7 +104,7 @@ test("volume origin takes over and rolls back existing drafts without changing f
       const edit = await origin.call(file, { method: "PUT", body: "after takeover", headers: { "if-match": String(got.version) } });
       assert.equal(edit.status, 201, await edit.clone().text());
       assert.equal(await origin.ownership.owner(id), origin.node);
-      assert.equal(await (await fetchLegacyApi(new Request(apiUrl + file, { headers: { authorization: "Bearer bots" } }), ingressEnv)).text(), "after takeover");
+      assert.equal(await (await fetchLegacyApi(new Request(apiUrl + file, { headers: { authorization: `Bearer ${token}` } }), ingressEnv)).text(), "after takeover");
       const link = await draft.volume(id).link("src/package.json");
       const download = await ingress.fetch(new Request(apiUrl + new URL(link.url).pathname), ingressEnv);
       assert.equal(download.status, 200);
