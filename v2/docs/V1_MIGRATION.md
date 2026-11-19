@@ -63,6 +63,39 @@ schedules, channel bindings, triggers, or open voice calls. Keep the fence
 after the application publishes the v2 route. If the cutover is abandoned
 before publication, run `unfence` with the same arguments.
 
+## Keep the existing v1 client
+
+The compatibility route preserves the v1 tenant key, agent token, agent ID, and
+request IDs. It covers plain text prompts, request receipts, agent state,
+watch streams, event polling, and transcript reads. V2 runs use the destination
+tenant's credits. File uploads, attached tools, voice, and the other v1 API
+families still require the v1 service.
+
+Deploy the v2 Worker, migrations 143 and 144, and a v1 service revision with
+`AGENT_V2_COMPAT_API_KEYS` on every ingress instance. The value is a JSON map
+from destination tenants to their v2 API keys. Keep those keys in the service's
+secret store. `AGENT_V2_COMPAT_URL` selects the v2 API and defaults to
+`https://run.camelai.com/v2`.
+
+For a verified client and an idle or finishing v1 agent, provision its private
+v2 destination and use the same connection variables as the importer.
+
+```sh
+node --experimental-strip-types v2/scripts/move-agent.ts \
+  <v1-tenant> <v1-agent-id> <operation-uuid> <v2-agent-id>
+```
+
+On `deferred`, rerun the same operation after the v1 work settles. For a
+workspace migration, hold volume edits across all writers before moving the
+agent and pass `--initial-commit`. Pass `--previous` after staging its history.
+The command fences v1 admission, verifies the final copy, and publishes the
+destination. A copy failure releases the fence. If publication is interrupted,
+retry with the same operation ID to read the authoritative route.
+
+Keep the v1 ingress and its archived request store reachable during the
+transition. Confirm older clients can complete their production workflows
+through an ingress independent of the ECS service before retiring ECS.
+
 ## Switch one cohort
 
 - Keep the v1 client and v2 client connected at the same time. Route by bot and
