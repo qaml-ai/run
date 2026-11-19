@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
+import pg from "pg";
 import { Type } from "typebox";
 import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../clients/node.ts";
 import { serveTools } from "../../clients/server.ts";
 import { fenceV1Agent, publishV2AgentRoute, unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
 import { V1Compatibility } from "../../src/v1-v2-compatibility.ts";
 import { handleLegacyAgentRequest } from "../../backends/workers/src/v1-compatibility.ts";
+import { TEST_DATABASE_URL } from "../../tests/database.ts";
 import { listen, OPERATOR, OTHER_OPERATOR, runtime, until } from "../../tests/runtime-server.ts";
 import { CamelRun, parseSSE } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
 import { moveAgent } from "./move-agent.ts";
-import { stageAgent } from "./stage-agent.ts";
+import { stageAgent, verifyCamelBotsDraft } from "./stage-agent.ts";
 
 export async function rehearseSignedTools(t: TestContext, workerUrl: string, adminKey: string) {
   const { tenantId, apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey, name: "Signed tools", initialCreditsUsd: 10 });
@@ -177,6 +179,69 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.equal(newTurn.status, "completed");
   assert.equal((await history.history()).length, 8);
   await assert.rejects(copy(finalCopy.receipt), /already has activity/);
+
+  await t.test("stages the private workspace while a collaborator keeps editing the shared draft", async t => {
+    const privateWorkspace = source.volume((await source.createVolume({ name: "builder-workspace" })).id);
+    await privateWorkspace.write("notes.md", "kept on v2");
+    const workspaceSnapshot = await privateWorkspace.snapshot({ name: "saved workspace" });
+    const draft = source.volume((await source.createVolume({ name: "shared-bot-draft" })).id);
+    await draft.write("draft-only.ts", "shared draft content");
+    const draftSnapshot = await draft.snapshot({ name: "saved draft", pinned: true });
+    const builder = await v1.call("/v1/agents", { body: { mounts: [
+      { volumeId: draft.id, path: "/bot", mode: "rw" },
+      { volumeId: privateWorkspace.id, path: "/workspace", mode: "rw" },
+    ] } });
+    assert.equal(builder.status, 201, builder.text);
+    const builderId = builder.json.id as string;
+    await v1.prompt(builderId, "An existing builder turn");
+    const repo = await target.repos.create({ name: "shared-draft-builder" });
+    const destination = await target.agents.upsert("shared-draft-builder", { model: "mock/default", repoId: repo.repoId });
+    const from = { url: v1.base, apiKey: OPERATOR, agentId: builderId };
+
+    const openDraft = { owner: "fixture-owner", bot: "fixture-bot" };
+    const app = new pg.Pool({ connectionString: TEST_DATABASE_URL, max: 1, idleTimeoutMillis: 0 });
+    t.after(() => app.end());
+    await app.query(`
+      create temporary table app_bots (bot text primary key, owner text, draft_volume text);
+      create temporary table builder_agents (owner text primary key, agent text, open_bot text, runtime text);
+      create temporary table bot_collaborators (bot text, person text)
+    `);
+    await app.query("insert into pg_temp.app_bots values ($1, 'other-owner', $2)", [openDraft.bot, draft.id]);
+    await app.query("insert into pg_temp.builder_agents values ($1, $2, $3, 'hold')", [openDraft.owner, builderId, openDraft.bot]);
+    const sharedDraft = { volumeId: draft.id, verify: (agentId: string, volumeId: string) => verifyCamelBotsDraft(app, agentId, volumeId) };
+    const stage = () => stageAgent(from, target, destination.id, { initialCommit: repo.commit, sharedDraft });
+    await assert.rejects(stageAgent(from, target, destination.id), /single writable v1 volume/);
+    await assert.rejects(stageAgent(from, target, destination.id, {
+      sharedDraft: { ...sharedDraft, volumeId: privateWorkspace.id },
+    }), /exact Camel Bots draft volume/);
+    await assert.rejects(stage(), /no longer grants this builder access/);
+    await app.query("insert into pg_temp.bot_collaborators values ($1, $2)", [openDraft.bot, openDraft.owner]);
+    const staged = await stage();
+    assert.equal(staged.history.count, 2);
+    assert.ok(staged.workspace?.snapshotCommits[workspaceSnapshot.id]);
+    assert.equal(staged.workspace?.snapshotCommits[draftSnapshot.id], undefined);
+    assert.deepEqual(staged.sharedDraft, { ...openDraft, volumeId: draft.id });
+    assert.equal((await target.repos.read(repo.repoId, { path: "notes.md" })).content, "kept on v2");
+    await assert.rejects(target.repos.read(repo.repoId, { path: "draft-only.ts" }), /not found/i);
+    assert.equal(Buffer.from((await draft.read("draft-only.ts", { snapshot: draftSnapshot.id })).data).toString(), "shared draft content");
+    await assert.rejects(stageAgent(from, target, destination.id, {
+      initialCommit: repo.commit, sharedDraft, attachments: [
+        { messageIndex: 0, files: [{ path: "/bot/draft-only.ts", commit: repo.commit, contentType: "text/plain" }] },
+      ],
+    }), /must be copied and referenced explicitly/);
+    assert.deepEqual(await stage(), staged);
+    await draft.write("draft-only.ts", "collaborator kept editing");
+    let ownershipChecks = 0;
+    await assert.rejects(stageAgent(from, target, destination.id, {
+      initialCommit: repo.commit, sharedDraft: { ...sharedDraft, verify: async (agentId, volumeId) => {
+        if (++ownershipChecks === 2) await app.query(
+          "delete from pg_temp.bot_collaborators where bot = $1 and person = $2", [openDraft.bot, openDraft.owner],
+        );
+        return verifyCamelBotsDraft(app, agentId, volumeId);
+      } },
+    }), /agent changed during staging.*written with receipt [0-9a-f]+/);
+    assert.equal(Buffer.from((await draft.read("draft-only.ts")).data).toString(), "collaborator kept editing");
+  });
 
   const stagedVolume = source.volume((await source.createVolume({ name: "agent-staging" })).id);
   await stagedVolume.write("notes.md", "kept on v2");
