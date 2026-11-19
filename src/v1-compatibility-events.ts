@@ -118,6 +118,8 @@ export async function compatibilityEvents(c: Context, compatibility: V1Compatibi
           const projected = await frame(event, controller.signal);
           if (projected) await write(projected, route.event_base + event.seq);
         }
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
       } finally {
         clearInterval(heartbeat);
         signal.removeEventListener("abort", abort);

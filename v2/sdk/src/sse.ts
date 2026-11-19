@@ -49,7 +49,7 @@ export async function* parseSSE(stream: ByteStreamLike, signal?: AbortSignal): A
   let eventId: string | undefined;
   let dataLines: string[] = [];
 
-  const onAbort = () => { void reader.cancel?.(); };
+  const onAbort = () => { void reader.cancel?.().catch(() => {}); };
   signal?.addEventListener("abort", onAbort, { once: true });
 
   const flush = (): SSEMessage | null => {
