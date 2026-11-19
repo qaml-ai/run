@@ -57,6 +57,7 @@ import * as childSessions from "./client-sessions/children.ts";
 import * as humanInput from "./client-sessions/inputs.ts";
 import { dollars } from "./client-sessions/spend.ts";
 import { historyNoneIgnored } from "./history-none.ts";
+import { unsupportedV1Operation } from "./v1-v2-compatibility.ts";
 import { disableAgentTriggers } from "./triggers.ts";
 import { forgetAgentDreaming } from "../shared/dreaming.ts";
 import { type SessionHeader, type RunSettings, runIdOf, type ForkedFrom, type JournalRecord, type RunUsage, type ClientEnv, type BufferedEvent, type Session, type Carried, type ClientSessionOptions, type UsageRecord, RUN_METHODS, MODEL_RUNS, validSessionId, hash, validId, expired, activityOf, visible, runningRun, failureClass } from "./client-sessions/state.ts";
@@ -1439,6 +1440,11 @@ export class ClientSessions {
     return [...requests.values()].map(visible);
   }
 
+  /** A fenced agent's last durable v1 receipt. Only read after tenant ownership and the v2 route have been checked. */
+  async archivedRequest(id: string, requestId: string) {
+    return (await this.storedRequests(id)).find(record => record.id === requestId);
+  }
+
   /** S4 guest routes must check membership; admission rechecks it after preparation. S5 tags guest streams. */
   async removeMember(id: string, tenant: string, member: string) {
     if (!await this.owns(id, tenant)) return;
@@ -1588,6 +1594,25 @@ export class ClientSessions {
       if (header?.purged) throw new HttpError(410, "Session expired or revoked");
       if (!header || c.req.header("origin") || (operator !== undefined && header.tenant !== operator) || (operator === undefined && (!authorization.startsWith("Bearer ") || !timingSafeEqual(Buffer.from(hash(authorization.slice(7)), "hex"), Buffer.from(header.digest, "hex"))))) throw new HttpError(401, "Unauthorized");
       if (header.revoked || expired(header.expiresAt)) throw new HttpError(410, "Session expired or revoked");
+      const compatibility = this.options.v1Compatibility;
+      const migrated = await compatibility?.route(header.tenant, header.id);
+      if (compatibility && migrated) {
+        const requestPath = `/clients/${header.id}/requests`;
+        const archived = (requestId: string) => this.archivedRequest(header.id, requestId);
+        if (c.req.method === "POST" && c.req.path === requestPath) {
+          const request = await readJson(body(c), FRAME_BYTES);
+          if (!validId(request?.id) || !REQUEST_METHODS.includes(request.method) || !request.params || typeof request.params !== "object" || Array.isArray(request.params)) throw new HttpError(400, "Invalid request");
+          if (request.method !== "prompt" || Object.keys(request.params).some(key => !["text", "actor"].includes(key))) throw unsupportedV1Operation();
+          const { text, actor } = request.params;
+          if (typeof text !== "string" || !text.trim() || (actor !== undefined && typeof actor !== "string")) throw new HttpError(400, "Invalid prompt");
+          return json(c, 202, await compatibility.prompt(migrated, request.id, { text, actor }, archived, c.req.raw.signal));
+        }
+        if (operator === undefined && c.req.method === "GET" && c.req.path.startsWith(requestPath + "/")) {
+          const requestId = decodeURIComponent(c.req.path.slice(requestPath.length + 1));
+          return json(c, 200, await compatibility.requestFor(migrated, requestId, c.req.query("wait"), archived, c.req.raw.signal));
+        }
+        throw unsupportedV1Operation();
+      }
       // A watcher or a poll does not load the agent (see `watchAgent`).
       if (operator === undefined && c.req.method === "GET" && c.req.path === `/clients/${header.id}/events` && (c.req.query("watch") === "1" || c.req.query("poll") === "1")) {
         return events.watchAgent(this.eventContext, c, header, c.req.query("poll") === "1" ? "poll" : "watch");

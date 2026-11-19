@@ -277,6 +277,7 @@ export type Session = {
 /** What a run handed off at a step boundary had gathered for its outcome, which its next owner takes over (`takeOver`). */
 export type Carried = { usage?: RunUsage; childSpend?: number; imageSpend?: number; decisionSpend?: number; spendLimit?: number; runLimits?: RunLimits; toolCalls?: RunToolCall[]; toolErrors?: ToolError[]; files?: WrittenFile[]; presented?: (FileRef & { caption?: string })[] };
 export interface ClientSessionOptions {
+  v1Compatibility?: import("../v1-v2-compatibility.ts").V1Compatibility;
   sharedAgents?: import("../shared-agents.ts").SharedAgentDirectory;
   secret: string; toolTimeoutMs?: number; ttlMs?: number; eventBytes?: number;
   /** Event ids reserved at a time (default EVENT_BLOCK); tests set fewer, to reserve often. */

@@ -4,8 +4,8 @@ import type { TestContext } from "node:test";
 import { Type } from "typebox";
 import { AgentRuntime, nodeListener, tool, type ToolContext } from "../../clients/node.ts";
 import { serveTools } from "../../clients/server.ts";
-import { fenceV1Agent } from "../../src/agent-v2-cutover.ts";
-import { listen, OPERATOR, runtime, until } from "../../tests/runtime-server.ts";
+import { fenceV1Agent, publishV2AgentRoute, unfenceV1Agent } from "../../src/agent-v2-cutover.ts";
+import { listen, OPERATOR, OTHER_OPERATOR, runtime, until } from "../../tests/runtime-server.ts";
 import { CamelRun } from "../sdk/src/index.ts";
 import { migrateHistory } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
@@ -117,14 +117,22 @@ export async function rehearseSignedTools(t: TestContext, workerUrl: string, adm
 }
 
 export async function rehearseMigration(t: TestContext, workerUrl: string, adminKey: string) {
-  const v1 = await runtime(t, () => ({ content: "fixture" }), { AGENT_IDLE_MS: "1000", AGENT_IDLE_COMPACTION: "0" });
-  const source = new AgentRuntime({ url: v1.base, apiKey: OPERATOR });
-  const { apiKey } = await CamelRun.createTenant({
+  const { tenantId, apiKey } = await CamelRun.createTenant({
     baseUrl: workerUrl,
     adminKey,
     name: "Camel Bots migration rehearsal",
     initialCreditsUsd: 10,
   });
+  const v1 = await runtime(t, () => ({ content: "fixture" }), {
+    AGENT_IDLE_MS: "1000",
+    AGENT_IDLE_COMPACTION: "0",
+    AGENT_V2_COMPAT_URL: `${workerUrl}/v2`,
+    AGENT_V2_COMPAT_API_KEYS: JSON.stringify({ [tenantId]: apiKey }),
+  });
+  const source = new AgentRuntime({ url: v1.base, apiKey: OPERATOR });
+  const token = await v1.call("/v1/tokens", { body: { name: "Existing v1 client" } });
+  assert.equal(token.status, 201);
+  const originalKey = token.json.token as string;
   const target = new CamelRun({ baseUrl: workerUrl, apiKey });
   t.after(() => target.close());
 
@@ -185,7 +193,9 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.ok(firstStage.workspace?.snapshotCommits[stagedSnapshot.id]);
   assert.equal((await target.repos.read(stagingRepo.repoId, { path: "notes.md" })).content, "kept on v2");
   assert.deepEqual(await stage(), firstStage);
-  await v1.prompt(stagedAgentId, "A turn before cutover");
+  const lastV1Prompt = "A turn before cutover";
+  const lastV1RequestId = "last-v1-request";
+  const lastV1Record = await v1.prompt(stagedAgentId, lastV1Prompt, originalKey, { requestId: lastV1RequestId });
   await stagedVolume.write("notes.md", "updated before cutover");
   let receiptAfterLateEdit: string | undefined;
   const lateEditTarget = new CamelRun({
@@ -213,8 +223,59 @@ export async function rehearseMigration(t: TestContext, workerUrl: string, admin
   assert.equal(secondStage.history.count, 4);
   assert.ok(secondStage.workspace!.seq > firstStage.workspace!.seq);
   assert.equal((await target.repos.read(stagingRepo.repoId, { path: "notes.md" })).content, "late edit during staging");
-  assert.equal((await stagingAgent.run("Continue from the copied history")).status, "completed");
-  await assert.rejects(stage(secondStage.history.receipt), /destination already has activity/);
+  const sourceHistory = await v1.call(`/v1/agents/${stagedAgentId}/history`);
+  assert.equal(sourceHistory.status, 200, sourceHistory.text);
+  const fenced = { tenant: "alice", agent: stagedAgentId, operation };
+  const destination = { tenant: tenantId, agent: stagingAgent.id };
+  assert.equal(await publishV2AgentRoute(v1.db, { ...fenced, operation: randomUUID() }, destination), false);
+  assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
+  assert.equal(await publishV2AgentRoute(v1.db, fenced, destination), true);
+  assert.equal(await publishV2AgentRoute(v1.db, fenced, { ...destination, agent: history.id }), false);
+  assert.equal(await unfenceV1Agent(v1.db, "alice", stagedAgentId, operation), false);
+
+  const pathV1 = `/v1/agents/${stagedAgentId}`;
+  const routePrompt = (text: string, requestId: string, token = originalKey) =>
+    v1.call(`${pathV1}/prompt`, { body: { text, requestId }, token });
+  const previous = await routePrompt(lastV1Prompt, lastV1RequestId);
+  assert.equal(previous.status, 202);
+  assert.deepEqual(previous.json, lastV1Record);
+  assert.equal((await routePrompt("Changed arguments", lastV1RequestId)).status, 409);
+  assert.equal((await routePrompt("Cross-tenant attempt", "other-tenant", OTHER_OPERATOR)).status, 404);
+  assert.equal((await routePrompt("Rejected credential", "bad-key", "invalid")).status, 401);
+  const unsupported = await v1.call(`${pathV1}/prompt`, {
+    token: originalKey, body: { text: "Skip this turn", endUser: "another-payer", requestId: "unmapped-option" },
+  });
+  assert.equal(unsupported.status, 501);
+  assert.equal(unsupported.json.code, "V1_COMPAT_UNSUPPORTED");
+
+  const requestId = "first-v2-request";
+  const firstV2Prompt = "Continue from the copied history";
+  const [a, b] = await Promise.all([routePrompt(firstV2Prompt, requestId), routePrompt(firstV2Prompt, requestId)]);
+  assert.equal(a.status, 202, a.text);
+  assert.equal(b.status, 202, b.text);
+  const received = await v1.call(`${pathV1}/requests/${requestId}?wait=10`, { token: originalKey });
+  assert.equal(received.status, 200, received.text);
+  assert.equal(received.json.id, requestId);
+  assert.equal(received.json.status, "completed");
+  assert.ok(received.json.outcome.result.reply);
+  assert.equal((await routePrompt("Changed arguments", requestId)).status, 409);
+  assert.deepEqual((await routePrompt(firstV2Prompt, requestId)).json, received.json);
+  assert.equal((await stagingAgent.history()).length, 6);
+
+  const originalAgentToken = agentToStage.json.token as string;
+  const scopedPath = `/clients/${stagedAgentId}/requests`;
+  const scopedId = "existing-agent-token";
+  const scoped = await v1.call(scopedPath, {
+    token: originalAgentToken, body: { id: scopedId, method: "prompt", params: { text: "Continue with the original agent token" } },
+  });
+  assert.equal(scoped.status, 202, scoped.text);
+  const scopedSettled = await v1.call(`${scopedPath}/${scopedId}?wait=10`, { token: originalAgentToken });
+  assert.equal(scopedSettled.status, 200, scopedSettled.text);
+  assert.equal(scopedSettled.json.status, "completed");
+  assert.equal((await stagingAgent.history()).length, 8);
+  await assert.rejects(stagingAgent.importV1History({
+    source: stagedAgentId, previous: secondStage.history.receipt, messages: sourceHistory.json.messages,
+  }), /destination already has activity/);
 
   const attachmentHistory = await target.agents.upsert("attachment-check", { model: "mock/default" });
   await assert.rejects(attachmentHistory.importV1History({ source: sourceAgent, messages: [{

@@ -1,0 +1,221 @@
+import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { z } from "zod";
+import { canonical } from "../shared/durable-json.ts";
+import type { RequestRecord } from "../shared/client-protocol.ts";
+import { RESERVED_CHECK_ERROR, RESERVED_CHECK_PREFIX } from "../shared/monitors.ts";
+import type { PromptInput } from "./api-schemas.ts";
+import { validId } from "./client-sessions/state.ts";
+import type { Sql } from "./db.ts";
+import { HttpError } from "./core/http-error.ts";
+
+type Route = {
+  tenant: string;
+  agent: string;
+  destination_tenant: string;
+  destination_agent: string;
+};
+type ArchivedRequest = (requestId: string) => Promise<RequestRecord | undefined>;
+
+const runResponse = z.object({
+  agentId: z.string(),
+  idempotencyKey: z.string(),
+  startedAt: z.number(),
+  status: z.enum(["queued", "running", "input_required", "completed", "failed", "cancelled"]),
+  text: z.string(),
+  output: z.unknown(),
+  toolCalls: z.array(z.object({ id: z.string(), name: z.string(), ok: z.boolean() })),
+  usage: z.object({ inputTokens: z.number(), outputTokens: z.number(), costUsd: z.number() }),
+  error: z.object({ code: z.string(), message: z.string() }).nullable(),
+});
+type Run = z.infer<typeof runResponse>;
+const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const waitLimitMs = 25_000;
+
+// Reserve a separate key namespace for the v1 request IDs.
+const runKey = (requestId: string) => `v1-compat:${sha(requestId)}`;
+
+const unavailable = () => new HttpError(502, "The migrated agent's runtime did not return a valid response", "V2_RUNTIME_UNAVAILABLE");
+const conflict = () => new HttpError(409, "Request ID reused with different arguments", "IDEMPOTENCY_CONFLICT");
+export const unsupportedV1Operation = () => new HttpError(501, "This operation has no v1 compatibility mapping for the migrated agent", "V1_COMPAT_UNSUPPORTED");
+
+function projectRun(run: Run, id: string, fingerprint: string): RequestRecord {
+  const base = { id, method: "prompt" as const, fingerprint, startedAt: run.startedAt };
+  if (run.status === "queued") return { ...base, state: "running" };
+  const began = run.startedAt;
+  if (run.status === "running") return { ...base, began, state: "running" };
+  const error = run.error?.message;
+  const inputRequired = run.status === "input_required";
+  const budgetReached = run.error?.code === "spend_limit";
+  const status = inputRequired ? "input_required" : budgetReached ? "paused" : run.status === "completed" ? "completed" : "failed";
+  const stopped = inputRequired ? "input_required" : budgetReached ? "spend_limit" : undefined;
+  return {
+    ...base,
+    began,
+    state: "completed",
+    status,
+    ...(error ? { error } : {}),
+    ...(stopped ? { stopped } : {}),
+    ...(budgetReached ? { stoppedReason: "budget_reached" as const } : {}),
+    outcome: { result: {
+      reply: run.text,
+      output: run.output,
+      usage: run.usage,
+      toolCalls: run.toolCalls.map(({ id: toolCallId, name: tool, ok }) => ({ toolCallId, tool, ok })),
+      ...(run.error ? { error: run.error.message, code: run.error.code } : {}),
+      ...(stopped ? { stopped } : {}),
+    } },
+  };
+}
+
+/** Connects the existing v1 HTTP authentication and agent identity to a fenced v2 destination. */
+export class V1Compatibility {
+  private readonly sql: Sql;
+  private readonly baseUrl: URL;
+  private readonly credentials: ReadonlyMap<string, string>;
+  private readonly request: typeof fetch;
+
+  constructor(
+    sql: Sql,
+    baseUrl: URL,
+    credentials: ReadonlyMap<string, string>,
+    request: typeof fetch = fetch,
+  ) {
+    this.sql = sql;
+    this.baseUrl = baseUrl;
+    this.credentials = credentials;
+    this.request = request;
+  }
+
+  static fromEnv(sql: Sql, env = process.env) {
+    const configured = env.AGENT_V2_COMPAT_API_KEYS;
+    if (configured === undefined) return undefined;
+    let keys: Record<string, string>;
+    try {
+      keys = z.record(z.string().min(1), z.string().min(1)).parse(JSON.parse(configured));
+    } catch {
+      throw new Error("AGENT_V2_COMPAT_API_KEYS must be a JSON object mapping destination tenants to keys");
+    }
+    for (const [tenant, key] of Object.entries(keys)) {
+      if (key.split(".")[0] !== `cr_live_${tenant}`) {
+        throw new Error("AGENT_V2_COMPAT_API_KEYS must contain a v2 API key for each destination tenant");
+      }
+    }
+    const url = URL.parse(env.AGENT_V2_COMPAT_URL ?? "https://run.camelai.com/v2");
+    const local = url?.protocol === "http:" && url.hostname === "127.0.0.1";
+    if (!url || (!local && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || !/^\/v2\/?$/.test(url.pathname)) {
+      throw new Error("AGENT_V2_COMPAT_URL must be an HTTPS or loopback /v2 API URL");
+    }
+    return new V1Compatibility(sql, new URL("/v2/", url), new Map(Object.entries(keys)));
+  }
+
+  async route(tenant: string, agent: string): Promise<Route | undefined> {
+    const { rows } = await this.sql.query<Route>(
+      "select tenant, agent, destination_tenant, destination_agent from agent_v2_routes where tenant = $1 and agent = $2",
+      [tenant, agent],
+    );
+    return rows[0];
+  }
+
+  private async fingerprint(route: Route, id: string) {
+    const { rows } = await this.sql.query<{ fingerprint: string }>(
+      "select fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = $3",
+      [route.tenant, route.agent, id],
+    );
+    return rows[0]?.fingerprint;
+  }
+
+  private async reserve(route: Route, id: string, fingerprint: string) {
+    const result = await this.sql.query(
+      `insert into agent_v2_requests (tenant, agent, request_id, fingerprint) values ($1, $2, $3, $4)
+       on conflict (tenant, agent, request_id) do nothing`,
+      [route.tenant, route.agent, id, fingerprint],
+    );
+    if (result.rowCount === 1) return true;
+    if (await this.fingerprint(route, id) !== fingerprint) throw conflict();
+    return false;
+  }
+
+  private async run(route: Route, id: string, body?: object, signal?: AbortSignal): Promise<Run | undefined> {
+    const key = this.credentials.get(route.destination_tenant);
+    if (!key) throw new HttpError(503, "The migrated agent's runtime credential is unavailable", "V2_CREDENTIAL_UNAVAILABLE");
+    const agent = encodeURIComponent(route.destination_agent);
+    const idempotencyKey = runKey(id);
+    const url = new URL(body ? `agents/${agent}/runs` : `agents/${agent}/runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`, this.baseUrl);
+    const headers = new Headers({ authorization: `Bearer ${key}` });
+    if (body) headers.set("content-type", "application/json");
+    const timeout = AbortSignal.timeout(5_000);
+    let response: Response;
+    let data: unknown;
+    try {
+      response = await this.request(url, {
+        method: body ? "POST" : "GET", headers, redirect: "error",
+        body: body && JSON.stringify({ ...body, idempotencyKey, wait: false }),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
+      data = await response.json();
+    } catch {
+      throw unavailable();
+    }
+    if (!response.ok) {
+      const failure = z.object({ error: z.object({ code: z.string() }) }).safeParse(data);
+      const code = failure.data?.error.code;
+      if (!body && response.status === 404 && code === "run_not_found") return undefined;
+      if (body && response.status === 402) throw new HttpError(402, "The v2 runtime refused the run for insufficient credit", "V2_CREDIT_REQUIRED");
+      if (body && response.status === 429) throw new HttpError(429, "The v2 runtime is at its run limit", "V2_RUN_LIMIT");
+      throw unavailable();
+    }
+    const run = runResponse.safeParse(data);
+    if (!run.success || run.data.agentId !== route.destination_agent || run.data.idempotencyKey !== idempotencyKey) throw unavailable();
+    return run.data;
+  }
+
+  async prompt(route: Route, id: string, body: z.infer<typeof PromptInput>, archived: ArchivedRequest, signal?: AbortSignal) {
+    if (!validId(id)) throw new HttpError(400, "Invalid request");
+    if (id.startsWith(RESERVED_CHECK_PREFIX)) throw new HttpError(400, RESERVED_CHECK_ERROR);
+    const { requestId: _id, text, actor, whileRunning, allowDisconnected, history, files, ...options } = body;
+    const params = { ...(text !== undefined ? { text } : {}), ...(actor !== undefined ? { actor } : {}),
+      ...(history !== undefined ? { history } : {}), ...(files !== undefined ? { files } : {}),
+      ...options, ...(whileRunning === "steer" ? { whileRunning } : {}) };
+    const fingerprint = sha(canonical({ method: "prompt", params }));
+    const existing = await this.fingerprint(route, id);
+    if (existing !== undefined && existing !== fingerprint) throw conflict();
+    if (existing === undefined) {
+      const source = await archived(id);
+      if (source) {
+        if (source.fingerprint !== fingerprint) throw conflict();
+        return source;
+      }
+    }
+    if (!text || files?.length || allowDisconnected !== undefined || whileRunning === "steer"
+      || Object.keys(options).length || (actor !== undefined && (!actor.trim() || actor.length > 200))) {
+      throw new HttpError(501, "This prompt uses options that have no v1 compatibility mapping", "V1_COMPAT_UNSUPPORTED");
+    }
+    const firstAttempt = existing === undefined && await this.reserve(route, id, fingerprint);
+    const found = firstAttempt ? undefined : await this.run(route, id, undefined, signal);
+    const run = found ?? await this.run(route, id, { prompt: text, actor }, signal);
+    if (!run) throw unavailable();
+    return projectRun(run, id, fingerprint);
+  }
+
+  async requestFor(route: Route, id: string, waitSeconds: string | undefined, archived: ArchivedRequest, signal?: AbortSignal) {
+    const wait = Number(waitSeconds ?? 0);
+    if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
+    if (!validId(id)) throw new HttpError(404, "Unknown request");
+    const fingerprint = await this.fingerprint(route, id);
+    if (!fingerprint) {
+      const record = await archived(id);
+      if (record) return record;
+      throw new HttpError(404, "Unknown request");
+    }
+    const deadline = Date.now() + Math.min(wait * 1000, waitLimitMs);
+    for (;;) {
+      const run = await this.run(route, id, undefined, signal);
+      if (!run) throw new HttpError(404, "Unknown request");
+      const record = projectRun(run, id, fingerprint);
+      const remaining = deadline - Date.now();
+      if (record.state === "completed" || remaining <= 0) return record;
+      await delay(Math.min(remaining, 500), undefined, { signal });
+    }
+  }
+}

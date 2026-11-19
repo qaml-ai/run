@@ -79,6 +79,7 @@ import { exportAccount } from "./account-export.ts";
 import { Readable } from "node:stream";
 import { clientAddress, rateLimitHeaders, type RateLimits, type RateLimitState } from "./rate-limits.ts";
 import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./legacy-coverage.ts";
+import { unsupportedV1Operation, type V1Compatibility } from "./v1-v2-compatibility.ts";
 
 /**
  * Tenant self-service REST API. Every console action goes through these routes,
@@ -86,6 +87,7 @@ import { legacyCoverage, LegacyCoverageCursorError, legacyLogLister } from "./le
  * below are the OpenAPI document served at /v1/openapi.json.
  */
 export interface ApiContext {
+  v1Compatibility?: V1Compatibility;
   dreaming?: Dreaming;
   applyDb?: Db;
   computers?: Computers;
@@ -165,7 +167,7 @@ export interface ApiContext {
 }
 /** Who is calling: the tenant (an operator or API token, or the console), or a browser token's holder, reading one agent. */
 type Caller = (Principal & { login?: string; browser?: undefined }) | { tenant: string; via: "browser"; browser: BrowserClaims; tokenId?: undefined; login?: undefined };
-type Env = { Variables: { principal: Caller } };
+type Env = { Variables: { principal: Caller; migratedAgent?: Awaited<ReturnType<V1Compatibility["route"]>> } };
 /**
  * What an OAuth access token (an MCP client the tenant connected, src/oauth.ts) may call: its agents (but not their
  * tokens), definitions, pending inputs, and reads of the account (models, providers, usage, balance). Nothing that makes
@@ -396,7 +398,18 @@ export function api(context: ApiContext) {
   });
   app.use("/v1/agents/:id/*", async (c, next) => {
     // Credentials and retained usage perform their own tenant-scoped ownership checks.
-    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path) && !await clients.owns(c.req.param("id")!, c.var.principal.tenant, true)) throw new HttpError(404, "Unknown agent");
+    if (!/^\/v1\/agents\/[^/]+\/(?:credentials|usage)$/.test(c.req.path)) {
+      const agent = c.req.param("id")!;
+      const tenant = c.var.principal.tenant;
+      if (!await clients.owns(agent, tenant, true)) throw new HttpError(404, "Unknown agent");
+      const migrated = await context.v1Compatibility?.route(tenant, agent);
+      if (migrated) {
+        const supported = (c.req.method === "POST" && /^\/v1\/agents\/[^/]+\/prompt$/.test(c.req.path))
+          || (c.req.method === "GET" && /^\/v1\/agents\/[^/]+\/requests\/[^/]+$/.test(c.req.path));
+        if (!supported) throw unsupportedV1Operation();
+        c.set("migratedAgent", migrated);
+      }
+    }
     await next();
   });
   // Idempotency-Key on every POST: an agent's is its own key (create or upsert), and a prompt's its request's id.
@@ -848,7 +861,14 @@ export function api(context: ApiContext) {
     // Room for inline files (FILE_LIMITS.inlineBytes, as base64); larger ones are uploaded first.
     const body = parse(schema.PromptInput, await readJson(c.req.raw.body, 6 * 1024 * 1024, {}));
     if (body.endUser !== undefined && !["operator", "token"].includes(c.var.principal.via)) throw new HttpError(403, "Only a tenant key can choose a run payer");
-    const record = await clients.submit(c.req.param("id")!, c.var.principal.tenant, promptRequest(body, c.req.header("idempotency-key")),
+    const id = c.req.param("id")!;
+    const tenant = c.var.principal.tenant;
+    const request = promptRequest(body, c.req.header("idempotency-key"));
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      return json(c, 202, await context.v1Compatibility.prompt(c.var.migratedAgent, request.id, body,
+        requestId => clients.archivedRequest(id, requestId), c.req.raw.signal));
+    }
+    const record = await clients.submit(id, tenant, request,
       rate => { for (const [name, value] of Object.entries(rateLimitHeaders(rate))) c.header(name, value); }, personal(c.var.principal) ? "owner" : undefined);
     return json(c, 202, record);
   });
@@ -883,7 +903,15 @@ export function api(context: ApiContext) {
     method: "get", path: "/v1/agents/{id}/requests/{requestId}",
     request: { params: agentId.extend({ requestId: z.string() }), query: z.object({ wait: z.string().optional().openapi({ description: "Seconds (at most 25) to wait for a running request to settle: it answers as soon as it does, else when the wait ends, still running. Default 0" }) }) },
     responses: { 200: reply("The request and, once settled, its outcome", schema.RequestRecord) },
-  }), c => clients.requestFor(c, c.req.param("id")!, c.var.principal.tenant, c.req.param("requestId")!));
+  }), async c => {
+    const id = c.req.param("id")!;
+    const requestId = c.req.param("requestId")!;
+    if (c.var.migratedAgent && context.v1Compatibility) {
+      return json(c, 200, await context.v1Compatibility.requestFor(c.var.migratedAgent, requestId, c.req.query("wait"),
+        requestId => clients.archivedRequest(id, requestId), c.req.raw.signal));
+    }
+    return clients.requestFor(c, id, c.var.principal.tenant, requestId);
+  });
 
   route(createRoute({
     method: "get", path: "/v1/agents/{id}/children", request: { params: agentId }, security: readers,
