@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { startFixture } from "./fixture.ts";
 
-test("legacy end-user list and usage preserve tenant scope and leave writes on the original route", { timeout: 180_000 }, async (t) => {
+test("legacy end-user reads preserve tenant scope and leave writes on the original route", { timeout: 180_000 }, async (t) => {
   const apiKey = "art_fixture-tenant-key";
   const f = await startFixture({
     tenants: [{ id: "fixture", token: apiKey }, { id: "other", token: "art_fixture-other-tenant" }],
@@ -29,7 +29,17 @@ test("legacy end-user list and usage preserve tenant scope and leave writes on t
     at: Math.floor(now / 3_600_000) * 3_600_000, bucket: "builder", call: null, agent: null, calls: 1,
     raw: 2, allowance: 1, paid: 1, writtenOff: 0,
   }] });
+  const detail = await read("/v1/end-users/user?buckets=builder");
+  assert.equal(detail.status, 200);
+  assert.equal(detail.headers.get("cache-control"), "no-store");
+  const user = await detail.json();
+  assert.equal(user.id, "user");
+  assert.equal(user.balance, 99);
+  assert.deepEqual(user.today.buckets.map(({ bucket }: { bucket: string }) => bucket), ["builder"]);
+  const foreign = await read("/v1/end-users/foreign");
+  assert.equal(foreign.status, 200);
+  assert.equal((await foreign.json()).balance, 0);
+  assert.equal((await fetch(`${f.url}/v1/end-users/user`)).status, 401);
   assert.equal((await fetch(`${f.url}/v1/end-users`)).status, 401);
   assert.equal((await read("/v1/end-users/user", { method: "PATCH" })).status, 418);
-  assert.equal((await read("/v1/end-users/user")).status, 418);
 });
