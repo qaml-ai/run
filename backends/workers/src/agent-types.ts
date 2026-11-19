@@ -95,6 +95,8 @@ export interface Env
   V2_LEGACY_RUNS?: { route(tenant: string, agent: string, request: Request): Promise<Response> };
   MCP_LEGACY_API?: Fetcher;
   LEGACY_OAUTH_TOKEN_ROUTES?: string;
+  LEGACY_OAUTH_REGISTRATION?: string;
+  LEGACY_OAUTH_BROWSER?: string;
   AI: Ai;
   MODEL: string;
   API_TOKEN: string;

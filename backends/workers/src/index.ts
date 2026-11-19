@@ -281,19 +281,26 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     const jwks = request.method === "GET" && url.pathname === "/.well-known/jwks.json";
     const oauthTokens = env.LEGACY_OAUTH_TOKEN_ROUTES === "1" && ["POST", "OPTIONS"].includes(request.method)
       && ["/oauth/token", "/oauth/revoke"].includes(url.pathname);
-    if (mcp || mcpMetadata || jwks || oauthTokens) {
-      if (!oauthTokens && !env.MCP_LEGACY_API) return null;
+    const oauthRegistration = env.LEGACY_OAUTH_REGISTRATION === "1"
+      && url.pathname === "/oauth/register" && ["POST", "OPTIONS"].includes(request.method);
+    const oauthBrowser = env.LEGACY_OAUTH_BROWSER === "1" && (
+      (["GET", "HEAD"].includes(request.method) && /^\/(?:oauth\/authorize|console\/auth\/(?:methods|github|callback|google(?:\/callback)?))$/.test(url.pathname))
+      || (request.method === "POST" && /^\/(?:oauth\/(?:authorize|password|signup)|console\/auth\/(?:password|signup|link|verify|reset(?:\/request)?|logout))$/.test(url.pathname)));
+    const oauth = oauthTokens || oauthRegistration || oauthBrowser;
+    if (mcp || mcpMetadata || jwks || oauth) {
+      if (!oauth && !env.MCP_LEGACY_API) return null;
       try {
         if (jwks) {
           const { rows } = await database(env).query("select public_jwk, retired_at is null as active from signing_keys order by created_at, kid");
           if (!rows.some(row => row.active)) throw new CoreHttpError(503, "The OAuth issuer signing keys are unavailable");
           return Response.json({ keys: rows.map(row => row.public_jwk) }, { headers: { "Cache-Control": "public, max-age=300" } });
         }
-        if (mcpMetadata || oauthTokens) {
-          if (oauthTokens && !env.AGENT_SESSION_SECRET) throw new CoreHttpError(503, "The OAuth issuer secret is unavailable");
+        if (mcpMetadata || oauth) {
+          if (oauth && !env.AGENT_SESSION_SECRET) throw new CoreHttpError(503, "The OAuth issuer secret is unavailable");
           const headers = new Headers(request.headers);
           if (!headers.has("host")) headers.set("host", url.host);
-          return await publicMoneyRoutes(new Request(request, { headers }), env, this.ctx) ?? null;
+          const response = await publicMoneyRoutes(new Request(request, { headers }), env, this.ctx);
+          return response ? publicPageHeaders(request, response) : null;
         }
         if (request.method === "OPTIONS") return agentMcpPreflight();
         const auth = await authenticateMoney(request, env, { bearerOnly: true });
