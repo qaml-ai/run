@@ -26,6 +26,7 @@ interface StageOptions {
   initialCommit?: string;
   previous?: string;
   attachments?: V1HistoryImport["attachments"];
+  validateHistory?: (messages: unknown[]) => void;
   sharedDraft?: SharedDraft;
 }
 
@@ -60,7 +61,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
     const draft = mounts.find(candidate => candidate.path === "/bot");
     if (mounts.length !== 2 || !mount || !validVolumeId(sharedDraft.volumeId) ||
         !draft || draft.volumeId !== sharedDraft.volumeId || draft.volumeId === mount.volumeId ||
-        draft.mode !== "rw" || draft.subpath || draft.notify || draft.instructions !== undefined) {
+        (draft.mode !== "rw" && draft.mode !== "ro") || draft.subpath || draft.notify || draft.instructions !== undefined) {
       throw new Error("Expected /workspace and the exact Camel Bots draft volume at /bot");
     }
     draftOwner = await sharedDraft.verify(source.agentId, draft.volumeId);
@@ -75,6 +76,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
   const target = await v2.agents.get(destination);
   if (target.summary.activeRunId || target.summary.lastRun) throw new Error("The v2 destination already has activity");
   const history = await readV1History(source.url, source.apiKey, source.agentId);
+  options.validateHistory?.(history.messages);
   const input = { ...history, previous: options.previous, attachments: options.attachments };
 
   async function copyWorkspace() {
@@ -142,7 +144,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
 }
 
 /** Check the builder's current open draft in the application, including collaborator access. */
-export async function verifyCamelBotsDraft(db: pg.Pool, agentId: string, volumeId: string): Promise<SharedDraftOwner | null> {
+export async function verifyCamelBotsDraft(db: pg.Pool | pg.PoolClient, agentId: string, volumeId: string): Promise<SharedDraftOwner | null> {
   const { rows } = await db.query<SharedDraftOwner>(`
     select a.owner, b.bot
     from builder_agents a join app_bots b on b.bot = a.open_bot
