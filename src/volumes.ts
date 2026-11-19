@@ -13,6 +13,12 @@ import { safeError } from "./metrics.ts";
 import { runVolumeTool, volumeToolDefinitions, type ToolContext } from "./volume-tools.ts";
 import { declaredType, guessContentType, sniffContentType, validContentType } from "./files.ts";
 import { clock } from "./node-context.ts";
+import {
+  CHUNK_BYTES, READ_ALL_LIMITS, SNAPSHOT_COLUMNS, TEMPORARY_SNAPSHOT, Tree, VOLUME_LIMITS, VolumeFiles,
+  chunkKey, globRegex, labelsInput, listVolumeFiles, listVolumeSnapshots, normalizePath, parentOf, relativeTo, snapshotFiles, snapshotFilesKey,
+  snapshotTree, statVolumeFile, treeKey, validVolumeId, within, type FileEntry, type SnapshotSummary, type TreeRecord,
+} from "./volume-reads.ts";
+export { CHUNK_BYTES, LABEL_LIMITS, READ_ALL_LIMITS, TEMPORARY_SNAPSHOT, VOLUME_LIMITS, globRegex, labelsInput, normalizePath, validVolumeId, type FileEntry } from "./volume-reads.ts";
 
 /**
  * Volumes: shared file trees agents mount, without POSIX. A volume is an actor
@@ -28,39 +34,18 @@ import { clock } from "./node-context.ts";
  * the owner to commit the path (conditional on a version). Readers ask the owner
  * for the path's chunk list and fetch the chunks themselves.
  */
-export const CHUNK_BYTES = 1024 * 1024;
-/** What one read of many files (GET /v1/volumes/:id/files?content=true) returns at most. */
-export const READ_ALL_LIMITS = Object.freeze({ files: 1000, bytes: 16 * 1024 * 1024 });
 /** What one atomic commit (POST /v1/volumes/:id/commit) names at most, and the most content it carries inline. */
 export const COMMIT_LIMITS = Object.freeze({ files: 1000, inlineBytes: 16 * 1024 * 1024, copyBytes: 1024 * 1024 * 1024 });
 /** The most one archive (GET /v1/volumes/:id/archive) holds. */
 export const ARCHIVE_LIMITS = Object.freeze({ files: 10_000, bytes: 1024 * 1024 * 1024 });
-/** `data` as text when it is valid UTF-8, else undefined. */
-const utf8 = (data: Buffer) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return undefined; } };
-export const VOLUME_LIMITS = Object.freeze({ fileBytes: 256 * 1024 * 1024, files: 100_000, mounts: 16, snapshots: 100, pinnedSnapshots: 10_000, changes: 1000, listing: 1000 });
-/** A snapshot's labels: at most 16, keys of 1–64 characters, values of at most 256. */
-export const LABEL_LIMITS = Object.freeze({ count: 16, key: 64, value: 256 });
-/**
- * Snapshots the runtime makes of a directory for one tool call (file-arguments.ts) are named with this prefix. They are
- * not listed, do not count toward VOLUME_LIMITS.snapshots, and are deleted after their call; any left after a crash
- * go once they are TEMPORARY_SNAPSHOT_MS old, when the next is made.
- */
-export const TEMPORARY_SNAPSHOT = "file-arg:";
 const TEMPORARY_SNAPSHOT_MS = 15 * 60_000;
 const FOLD_AFTER_RECORDS = 1024;
 const NOTIFY_DELAY_MS = 1000;
 
 export interface Mount { volumeId: string; path: string; mode: "ro" | "rw"; subpath?: string; notify?: boolean; instructions?: string }
-/** `contentType` is absent on files written before content types were recorded. */
-export interface FileEntry { version: number; size: number; chunks: string[]; updatedAt: number; by?: string; contentType?: string }
 export interface Change { seq: number; path: string; kind: "write" | "delete"; version?: number; size?: number; by?: string; at: number }
 interface VolumeHeader { version: 1; id: string; tenant: string; name: string; createdAt: number; deleted?: number; origin?: { volume: string; snapshot?: string; seq: number } }
-interface SnapshotSummary { id: string; volume: string; name: string; seq: number; createdAt: number; files: number; bytes: number; pinned: boolean; labels: Record<string, string> }
 interface Watcher { agent: string; tenant: string; mounts: { path: string; subpath: string }[] }
-type TreeRecord =
-  | { t: "base"; seq: number }
-  | { t: "put"; seq: number; path: string; entry: FileEntry }
-  | { t: "del"; seq: number; path: string; at: number; by?: string };
 type Volume = {
   header: VolumeHeader; claim?: Claim; tree: Tree; seq: number; log: AppendLog<TreeRecord>;
   /** Writes are ordered through this chain. */
@@ -91,16 +76,12 @@ export function storageFull(quota: { limit: number; used: number }) {
   return new HttpError(507, `This account stores ${gb(quota.used)} of its ${gb(quota.limit)} storage limit, so it cannot store more; delete files or volumes to make room`, "STORAGE_LIMIT", { limit: quota.limit, used: quota.used });
 }
 
-export const validVolumeId = (value: unknown): value is string => typeof value === "string" && /^vol_[a-f0-9]{24}$/.test(value);
 const newId = (prefix: string, bytes: number) => `${prefix}_${randomBytes(bytes).toString("hex")}`;
 const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
-const treeKey = (id: string) => `volumes/${id}/tree`;
-const snapshotFilesKey = (id: string, snapshot: string) => `volumes/${id}/snapshots/${snapshot}`;
 const header = (row: any): VolumeHeader => ({
   version: 1, id: row.id, tenant: row.tenant, name: row.name, createdAt: row.created_at,
   ...(row.deleted_at !== null ? { deleted: row.deleted_at } : {}), ...(row.origin ? { origin: row.origin } : {}),
 });
-const SNAPSHOT_COLUMNS = "id, volume, name, seq, created_at as \"createdAt\", files, bytes, pinned, labels";
 
 /**
  * The files of a snapshot made from contents (POST /v1/volumes/:id/snapshots `files`): each path's text, or `{data}` in
@@ -183,106 +164,12 @@ export async function commitContents(volumes: VolumeService, tenant: string, id:
   }
 }
 
-/** Labels as given (a string map within LABEL_LIMITS), or a 400. */
-export function labelsInput(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "labels is an object of strings");
-  const entries = Object.entries(value);
-  if (entries.length > LABEL_LIMITS.count) throw new HttpError(400, `At most ${LABEL_LIMITS.count} labels`);
-  for (const [key, label] of entries) {
-    if (!key || key.length > LABEL_LIMITS.key) throw new HttpError(400, `A label's key is 1–${LABEL_LIMITS.key} characters`);
-    if (typeof label !== "string" || label.length > LABEL_LIMITS.value) throw new HttpError(400, `Label ${key} must be a string of at most ${LABEL_LIMITS.value} characters`);
-  }
-  return Object.fromEntries(entries) as Record<string, string>;
-}
-const chunkKey = (tenant: string, hash: string) => `chunks/${tenant}/${hash.slice(0, 2)}/${hash}`;
-
-/** A path inside a volume: absolute, `/`-separated, no `.`/`..` or empty segments. */
-export function normalizePath(input: unknown, label = "path"): string {
-  if (typeof input !== "string" || input.length > 1024 || /[\x00-\x1f\x7f\\]/.test(input)) throw new HttpError(400, `Invalid ${label}`);
-  const parts = input.split("/").filter(Boolean);
-  if (parts.some(part => part === "." || part === ".." || Buffer.byteLength(part) > 255)) throw new HttpError(400, `Invalid ${label}: ${input}`);
-  return `/${parts.join("/")}`;
-}
-const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/")) || "/";
-const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-const within = (path: string, directory: string) => directory === "/" || path === directory || path.startsWith(`${directory}/`);
-const relativeTo = (path: string, directory: string) => (directory === "/" ? path : path.slice(directory.length)).replace(/^\//, "");
-
-/** A glob over `/`-separated relative paths: `*`, `?`, `**`, and `{a,b}` alternatives. */
-export function globRegex(pattern: string): RegExp {
-  if (typeof pattern !== "string" || !pattern || pattern.length > 512) throw new HttpError(400, "Invalid glob pattern");
-  const source = (text: string): string => {
-    let out = "";
-    for (let index = 0; index < text.length; index++) {
-      const char = text[index];
-      if (char === "*" && text[index + 1] === "*") {
-        index++;
-        if (text[index + 1] === "/") { index++; out += "(?:.*/)?"; } else out += ".*";
-      } else if (char === "*") out += "[^/]*";
-      else if (char === "?") out += "[^/]";
-      else if (char === "{" && text.indexOf("}", index) > index) {
-        const end = text.indexOf("}", index);
-        out += `(?:${text.slice(index + 1, end).split(",").map(source).join("|")})`;
-        index = end;
-      } else out += char.replace(/[.+^$()|[\]\\{}]/g, "\\$&");
-    }
-    return out;
-  };
-  return new RegExp(`^${source(pattern.replace(/^\/+/, ""))}$`);
-}
-
 /** A version precondition failed: the file changed since the caller read it. */
 export class VersionConflict extends HttpError {
   current: number;
   constructor(path: string, expected: number, current: number) {
     super(412, expected === 0 ? `${path} already exists (version ${current})` : current === 0 ? `${path} no longer exists (expected version ${expected})` : `${path} is at version ${current}, not ${expected}`);
     this.current = current;
-  }
-}
-
-/** The file tree in memory: path -> entry, plus each directory's children for listings. */
-class Tree {
-  readonly files = new Map<string, FileEntry>();
-  readonly children = new Map<string, Set<string>>([["/", new Set()]]);
-  bytes = 0;
-  put(path: string, entry: FileEntry) {
-    const previous = this.files.get(path);
-    this.files.set(path, entry);
-    this.bytes += entry.size - (previous?.size ?? 0);
-    if (previous) return;
-    for (let child = path, directory = parentOf(path); ; child = directory, directory = parentOf(directory)) {
-      const names = this.children.get(directory);
-      if (names) { names.add(nameOf(child)); break; }
-      this.children.set(directory, new Set([nameOf(child)]));
-    }
-  }
-  delete(path: string) {
-    const previous = this.files.get(path);
-    if (!previous) return;
-    this.files.delete(path);
-    this.bytes -= previous.size;
-    for (let child = path, directory = parentOf(path); ; child = directory, directory = parentOf(directory)) {
-      const names = this.children.get(directory)!;
-      names.delete(nameOf(child));
-      if (names.size || directory === "/") break;
-      this.children.delete(directory);
-    }
-  }
-  /** Files at or below `directory`, depth first in name order. */
-  *walk(directory: string): Generator<[string, FileEntry]> {
-    for (const name of [...this.children.get(directory) ?? []].sort()) {
-      const path = directory === "/" ? `/${name}` : `${directory}/${name}`;
-      const entry = this.files.get(path);
-      if (entry) yield [path, entry];
-      else yield* this.walk(path);
-    }
-  }
-  /** Why `path` cannot be a file: it is a directory, or it is below a file. */
-  conflict(path: string) {
-    if (this.children.has(path)) return `${path} is a directory`;
-    for (let directory = parentOf(path); directory !== "/"; directory = parentOf(directory)) {
-      if (this.files.has(directory)) return `${directory} is a file`;
-    }
   }
 }
 
@@ -295,7 +182,7 @@ const isWorkspace = (mount: unknown, value = true) => !!mount && typeof mount ==
 /** A mount given at /workspace itself, which takes the workspace's place. */
 const atWorkspace = (mount: unknown) => { try { return !!mount && typeof mount === "object" && normalizePath((mount as { path?: unknown }).path) === "/workspace"; } catch { return false; } };
 
-export class VolumeService {
+export class VolumeService extends VolumeFiles {
   readonly db: Db;
   readonly storage: Storage;
   readonly options: VolumeOptions;
@@ -305,6 +192,7 @@ export class VolumeService {
   private closed = false;
 
   constructor(options: VolumeOptions) {
+    super(options.storage);
     this.options = options;
     this.db = options.db;
     this.storage = options.storage;
@@ -497,15 +385,15 @@ export class VolumeService {
       if (op === "info") return this.summary(volume.header, volume.tree, volume.seq);
       if (op === "stat" || op === "list" || op === "readAll" || op === "archive") {
         // As the volume is now, or as a snapshot of it was: one tree, so a listing and its reads agree.
-        const at = args.snapshot === undefined ? { tree: volume.tree, seq: volume.seq } : await this.snapshotTree(id, args.snapshot);
-        if (op === "stat") return this.stat(at.tree, normalizePath(args.path));
-        if (op === "list") return this.listFiles(at.tree, args);
+        const at = args.snapshot === undefined ? { tree: volume.tree, seq: volume.seq } : await snapshotTree(this.db, this.storage, id, args.snapshot);
+        if (op === "stat") return statVolumeFile(at.tree, normalizePath(args.path));
+        if (op === "list") return listVolumeFiles(at.tree, args);
         if (op === "archive") return this.archiveEntries(at, args);
         return await this.readAll(volume.header.tenant, at, args);
       }
       if (op === "ls") return this.ls(volume, normalizePath(args.path));
       if (op === "changes") return this.changes(volume, Number(args.since ?? 0), args.prefix === undefined ? undefined : normalizePath(args.prefix));
-      if (op === "snapshots") return this.snapshots(id, args.labels === undefined ? undefined : labelsInput(args.labels));
+      if (op === "snapshots") return listVolumeSnapshots(this.db, id, args.labels === undefined ? undefined : labelsInput(args.labels));
       // Mutations run one at a time, in order.
       const run = volume.queue.then(() => this.mutate(volume, op, args));
       volume.queue = run.catch(() => {});
@@ -514,13 +402,6 @@ export class VolumeService {
       volume.active--;
       volume.lastActive = Date.now();
     }
-  }
-
-  private stat(tree: Tree, path: string) {
-    const entry = tree.files.get(path);
-    if (entry) return { type: "file", path, ...entry };
-    if (tree.children.has(path)) return { type: "directory", path };
-    throw new HttpError(404, `${path} does not exist`);
   }
 
   private ls(volume: Volume, path: string) {
@@ -534,61 +415,9 @@ export class VolumeService {
     return { path, entries, ...(names.size > entries.length ? { truncated: true } : {}) };
   }
 
-  /** Files under `path` (optionally matching a glob relative to it), paged by `after`. */
-  private listFiles(tree: Tree, args: Record<string, any>) {
-    const path = normalizePath(args.path ?? "/");
-    const limit = Math.min(VOLUME_LIMITS.listing, Math.max(1, Number(args.limit ?? VOLUME_LIMITS.listing) || VOLUME_LIMITS.listing));
-    const pattern = args.glob === undefined ? undefined : globRegex(args.glob);
-    const files: ({ path: string } & FileEntry)[] = [];
-    const single = tree.files.get(path);
-    const source: Iterable<[string, FileEntry]> = single ? [[path, single]] : tree.walk(path);
-    let passed = args.after === undefined;
-    for (const [file, entry] of source) {
-      if (!passed) { passed = file === args.after; continue; }
-      if (pattern && !pattern.test(single ? nameOf(file) : relativeTo(file, path))) continue;
-      if (files.length === limit) return { files, next: files.at(-1)!.path };
-      files.push({ path: file, ...entry, contentType: entry.contentType ?? guessContentType(file) });
-    }
-    return { files };
-  }
-
   private changes(volume: Volume, since: number, prefix?: string) {
     const oldest = volume.changes[0]?.seq ?? volume.seq + 1;
     return { seq: volume.seq, changes: volume.changes.filter(change => change.seq > since && (!prefix || within(change.path, prefix))), ...(since < oldest - 1 && since < volume.seq ? { gap: true } : {}) };
-  }
-
-  /** A snapshot's files and the seq it was taken at; 404 for one this volume does not have. */
-  private async snapshotFiles(id: string, snapshot: unknown): Promise<{ files: [string, FileEntry][]; seq: number }> {
-    const summary: SnapshotSummary | undefined = typeof snapshot === "string" && /^snap_[a-f0-9]{16}$/.test(snapshot)
-      ? (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where id = $1 and volume = $2`, [snapshot, id])).rows[0] : undefined;
-    const stored = summary && await this.storage.readBlob(snapshotFilesKey(id, summary.id));
-    if (!summary || !stored) throw new HttpError(404, "Unknown snapshot");
-    return { files: Object.entries(JSON.parse(Buffer.from(stored).toString("utf8")) as Record<string, FileEntry>), seq: summary.seq };
-  }
-  /** A snapshot as a tree, to list and read it as the volume is listed and read. */
-  private async snapshotTree(id: string, snapshot: unknown) {
-    const { files, seq } = await this.snapshotFiles(id, snapshot);
-    const tree = new Tree();
-    for (const [path, entry] of files) tree.put(path, entry);
-    return { tree, seq, snapshot: snapshot as string };
-  }
-
-  /**
-   * Every file under `path` (and `glob`) with its contents, at one seq (or a snapshot's): text as `text`, other bytes
-   * as base64 `data`, each with its sha256. Within READ_ALL_LIMITS, else a 413 that says to narrow it. Chunks never
-   * change, so files listed at one seq read as they were then, whatever is written meanwhile.
-   */
-  private async readAll(tenant: string, at: { tree: Tree; seq: number; snapshot?: string }, args: Record<string, any>) {
-    const listing = this.listFiles(at.tree, { path: args.path, glob: args.glob, limit: READ_ALL_LIMITS.files });
-    if (listing.next) throw new HttpError(413, `More than ${READ_ALL_LIMITS.files} files match; narrow prefix or glob`);
-    const bytes = listing.files.reduce((total, file) => total + file.size, 0);
-    if (bytes > READ_ALL_LIMITS.bytes) throw new HttpError(413, `The files that match are ${bytes} bytes, past the ${READ_ALL_LIMITS.bytes} one read returns; narrow prefix or glob, or read large files one at a time`);
-    const files = await Promise.all(listing.files.map(async ({ chunks: _chunks, ...file }) => {
-      const data = await this.readRange(tenant, { size: file.size, chunks: _chunks }, 0, file.size);
-      const text = data.subarray(0, 8000).includes(0) ? undefined : utf8(data);
-      return { ...file, sha256: createHash("sha256").update(data).digest("hex"), ...(text !== undefined ? { text } : { data: data.toString("base64") }) };
-    }));
-    return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), files };
   }
 
   /** What an archive of `path` (and `glob`) holds, at one seq or a snapshot's: each file with the chunks to stream. */
@@ -606,12 +435,6 @@ export class VolumeService {
     return { seq: at.seq, ...(at.snapshot ? { snapshot: at.snapshot } : {}), root: path, files };
   }
 
-  /** The volume's snapshots, oldest first; with `labels`, only those that have every one of them. */
-  private async snapshots(id: string, labels?: Record<string, string>): Promise<SnapshotSummary[]> {
-    return (await this.db.query(`select ${SNAPSHOT_COLUMNS} from volume_snapshots where volume = $1 and name not like '${TEMPORARY_SNAPSHOT}%'${labels ? " and labels @> $2::jsonb" : ""} order by created_at, id`,
-      labels ? [id, JSON.stringify(labels)] : [id])).rows;
-  }
-
   private check(volume: Volume, path: string, ifMatch: unknown) {
     if (ifMatch === undefined || ifMatch === null) return;
     if (!Number.isSafeInteger(ifMatch) || (ifMatch as number) < 0) throw new HttpError(400, "version must be a non-negative integer (0: the file must not exist)");
@@ -624,7 +447,7 @@ export class VolumeService {
     if (op === "copy" || op === "rename") {
       const from = normalizePath(args.path), to = normalizePath(args.to);
       if (from === "/" || to === "/" || from === to || to.startsWith(`${from}/`) || from.startsWith(`${to}/`)) throw new HttpError(400, "Invalid copy or rename paths");
-      const source = this.stat(volume.tree, from);
+      const source = statVolumeFile(volume.tree, from);
       const files = [...volume.tree.files].filter(([path]) => path === from || path.startsWith(`${from}/`));
       if (files.length > 1000) throw new HttpError(413, "Copy or move is limited to 1000 files");
       const destinations = files.map(([path, entry]) => ({ path: to + path.slice(from.length), entry }));
@@ -735,7 +558,7 @@ export class VolumeService {
     if (op === "restore") {
       // The volume becomes as the snapshot was, in place: one write that removes what the snapshot lacks and writes
       // what differs, each a change agents mounting it see (a fork would be another volume).
-      const { files } = await this.snapshotFiles(id, args.snapshot);
+      const { files } = await snapshotFiles(this.db, this.storage, id, args.snapshot);
       const wanted = new Map(files);
       await this.touch(volume.header.tenant, files.flatMap(([, entry]) => entry.chunks));
       const at = Date.now(), by = typeof args.by === "string" ? { by: args.by } : {};
@@ -832,7 +655,7 @@ export class VolumeService {
     if (op === "fork") {
       let files: [string, FileEntry][] = [...volume.tree.files];
       let seq = volume.seq;
-      if (args.snapshot !== undefined) ({ files, seq } = await this.snapshotFiles(id, args.snapshot));
+      if (args.snapshot !== undefined) ({ files, seq } = await snapshotFiles(this.db, this.storage, id, args.snapshot));
       const name = args.name === undefined ? `${volume.header.name} (fork)` : args.name;
       if (typeof name !== "string" || !name.trim() || name.length > 120) throw new HttpError(400, "name must be 1–120 characters");
       // `into`: the id the fork takes (an agent fork's workspace, never a caller's), which a retry finds made already.
@@ -1001,35 +824,6 @@ export class VolumeService {
     await this.storage.removeLog(treeKey(id));
     await this.storage.removeBlobs(`volumes/${id}/snapshots/`);
     await this.db.query("update volumes set purged_at = $2 where id = $1 and deleted_at is not null", [id, Date.now()]);
-  }
-
-  /** A file's content type: as recorded, else sniffed from its first bytes (files from before types were recorded). */
-  async contentType(tenant: string, path: string, entry: Pick<FileEntry, "size" | "chunks" | "contentType">) {
-    return entry.contentType ?? sniffContentType(await this.readRange(tenant, entry, 0, 512), path);
-  }
-
-  private async chunk(tenant: string, hash: string) {
-    const data = await this.storage.readBlob(chunkKey(tenant, hash));
-    if (!data || sha256(data) !== hash) throw new Error(`File content is missing or corrupt (chunk ${hash.slice(0, 12)})`);
-    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  }
-
-  /** Bytes [offset, offset + length) of a file, fetching only the chunks that overlap them. */
-  async readRange(tenant: string, entry: Pick<FileEntry, "size" | "chunks">, offset: number, length: number): Promise<Buffer> {
-    const end = Math.min(entry.size, offset + length);
-    if (offset >= end) return Buffer.alloc(0);
-    const first = Math.floor(offset / CHUNK_BYTES);
-    const last = Math.floor((end - 1) / CHUNK_BYTES);
-    const parts = await Promise.all(entry.chunks.slice(first, last + 1).map(hash => this.chunk(tenant, hash)));
-    return Buffer.concat(parts).subarray(offset - first * CHUNK_BYTES, end - first * CHUNK_BYTES);
-  }
-
-  /** Stream bytes [start, end) one chunk at a time. */
-  async *stream(tenant: string, entry: Pick<FileEntry, "size" | "chunks">, start = 0, end = entry.size) {
-    for (let index = Math.floor(start / CHUNK_BYTES); index * CHUNK_BYTES < end; index++) {
-      const data = await this.chunk(tenant, entry.chunks[index]);
-      yield data.subarray(Math.max(0, start - index * CHUNK_BYTES), Math.min(data.length, end - index * CHUNK_BYTES));
-    }
   }
 
   /**
