@@ -814,6 +814,44 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await camel.close();
   });
 
+  it("settles queued runs before deleting an agent during its batch window", { timeout: 15_000 }, async (t) => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl,
+      adminKey: ADMIN_SECRET,
+      name: "delete-batching-agent",
+      initialCreditsUsd: 1,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    const agent = await camel.agents.upsert("delete-batcher", {
+      model: "mock/default",
+      queue: { mode: "batch", windowMs: 5_000 },
+    });
+    const idempotencyKey = "delete-queued-run";
+    const run = agent.run("This run should be cancelled", {
+      idempotencyKey,
+      signal: AbortSignal.timeout(10_000),
+    });
+    const deletion = (async () => {
+      const deadline = Date.now() + 4_000;
+      while (Date.now() < deadline) {
+        try {
+          const record = await agent.getRunByKey(idempotencyKey);
+          assert.equal(record.status, "queued");
+          return await agent.delete();
+        } catch (err) {
+          if (!(err instanceof CamelRunError) || err.code !== "run_not_found") throw err;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+      assert.fail("Run did not enter the queue before deletion");
+    })();
+    const [cancelled, deleted] = await Promise.all([run, deletion]);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(deleted.deleted, true);
+    assert.equal((await camel.agents.list()).length, 0);
+  });
+
   it("5. SSE streaming, idempotency, batch queue coalescing, compaction, resetContext, and instant agent+repo fork", async () => {
     const { apiKey } = await CamelRun.createTenant({
       baseUrl: workerUrl,
