@@ -7,6 +7,8 @@ grant update (created_at) on tenants to :"callback_role";
 grant select on card_checks, billing_checkout_cutover, billing_checkouts to :"callback_role";
 grant insert on card_checks to :"callback_role";
 grant update (session, payment_intent, invoice, paid_at, invoice_url) on billing_checkouts to :"callback_role";
+grant select, insert on billing_stripe_customers to :"callback_role";
+grant update (customer) on billing_stripe_customers to :"callback_role";
 
 grant select, insert on credit_accounts, credit_ledger to :"callback_role";
 grant update (balance, purchased, stripe_customer) on credit_accounts to :"callback_role";
