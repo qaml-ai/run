@@ -108,4 +108,5 @@ Standard error envelope:
 - `POST /v2/voice/sessions`: `{ agentIdOrKey, provider: "openai | elevenlabs", voice?: string }` -> `{ sessionId, provider, clientSecret, wsUrl }` (backed by `VoiceDO`, plus `POST /v2/voice/sessions/:id/tool` bridge to `AgentDO`).
 - `POST /v2/channels` / `POST /v2/channels/:id/inbound`: Slack & Email/HTTP inbound routing into keyed channel agents, queuing outbound replies.
 - `POST /v2/transcriptions`, `POST /v2/speech`, `POST /v2/images`, `GET /v2/images/:id` (backed by R2).
+- `POST /v2/images/render`: `{ svg: string, files?: Record<string, string | { data: string }>, format?: "png" }` returns `{ contentType, width, height, data }`, with PNG bytes in base64. See the [SVG rendering guide](../../docs/guides/images.md#rendering-svg-cards-in-v2).
 - `POST /v2/webhooks` / `GET /v2/webhooks` / `DELETE /v2/webhooks/:id` (HMAC-SHA256 `X-CamelRun-Signature` via Cloudflare Queue).
