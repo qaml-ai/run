@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import pg from "pg";
 import { Accounts } from "../src/accounts.ts";
 import { fenceV1Agent, unfenceV1Agent } from "../src/agent-v2-cutover.ts";
@@ -95,6 +96,26 @@ test("v2 cutover and run admission are mutually exclusive across nodes", async t
       assert.equal(await unfenceV1Agent(db, "acme", agent, randomUUID()), false);
       assert.equal(await unfenceV1Agent(db, "acme", agent, operation), true);
     }
+  }
+});
+
+test("cutover of an idle agent does not wait for its tenant's quota transaction", async () => {
+  const { db } = await testDatabase();
+  await db.query("insert into agents (id, tenant, header, revision, name, type, model) values ('idle', 'acme', '{}', 1, 'test', 'test', 'm')");
+  const quota = await db.connect();
+  const abort = new AbortController();
+  try {
+    await quota.query("begin");
+    await quota.query("select pg_advisory_xact_lock(hashtextextended('busy-agents:acme', 0))");
+    const result = await Promise.race([
+      fenceV1Agent(db, "acme", "idle", randomUUID()),
+      sleep(2000, false, { signal: abort.signal }),
+    ]);
+    assert.equal(result, true);
+  } finally {
+    abort.abort();
+    await quota.query("rollback");
+    quota.release();
   }
 });
 
