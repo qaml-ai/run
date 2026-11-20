@@ -604,13 +604,20 @@ export class TenantDO extends DurableObject<Env> {
     refId: string;
     note?: string;
   }): Promise<{ balanceUsd: number }> {
-    this.requireProfile();
+    const profile = this.requireProfile();
     const refId = input.refId.trim();
+    const keepCreditReserve = profile.id === this.env.BUILDER_CUTOVER_CREDIT_TENANT_ID;
+    if (keepCreditReserve && refId.startsWith("builder-cutover-reserve:")) {
+      throw new ApiError(400, "invalid_credit_ref", "The builder credit reserve reference is reserved");
+    }
     this.ctx.storage.transactionSync(() => {
       const existing = this.ctx.storage.sql
         .exec<{ id: string }>(`SELECT id FROM credit_ledger WHERE ref_id = ?1 LIMIT 1`, refId)
         .toArray();
       if (existing.length === 0) {
+        if (keepCreditReserve && input.amountUsd < 0 && profile.balanceUsd + input.amountUsd <= 0) {
+          throw new ApiError(409, "builder_credit_reserve", "The builder tenant must retain a positive balance");
+        }
         this.ctx.storage.sql.exec(
           `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
            VALUES (?1, ?2, ?3, 'topup', ?4, ?5)`,
@@ -638,7 +645,8 @@ export class TenantDO extends DurableObject<Env> {
     costUsd: number;
     note?: string;
   }): Promise<{ settled: true }> {
-    if (!this.readProfileOrNull()) return { settled: true };
+    const profile = this.readProfileOrNull();
+    if (!profile) return { settled: true };
     const now = Date.now();
     const day = new Date(now).toISOString().slice(0, 10);
 
@@ -647,12 +655,15 @@ export class TenantDO extends DurableObject<Env> {
         .exec<{ id: string }>(`SELECT id FROM credit_ledger WHERE ref_id = ?1 LIMIT 1`, input.refId)
         .toArray();
       if (existing.length === 0) {
+        // MONEY: Record both the full usage charge and any internal reserve grant atomically.
+        const charge = Math.abs(input.costUsd);
+        const remaining = profile.balanceUsd - charge;
         this.ctx.storage.sql.exec(
           `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
            VALUES (?1, ?2, ?3, 'usage', ?4, ?5)`,
           randomId("led", 8),
           input.refId,
-          -Math.abs(input.costUsd),
+          -charge,
           input.note ?? null,
           now,
         );
@@ -672,10 +683,19 @@ export class TenantDO extends DurableObject<Env> {
           input.vmMs,
           input.costUsd,
         );
-        this.ctx.storage.sql.exec(
-          `UPDATE tenant_profile SET balance_usd = balance_usd - ?1 WHERE id = 1`,
-          Math.abs(input.costUsd),
-        );
+        if (profile.id === this.env.BUILDER_CUTOVER_CREDIT_TENANT_ID && remaining < 15) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
+             VALUES (?1, ?2, ?3, 'grant', 'Temporary Camel Bots cutover credit reserve', ?4)`,
+            randomId("led", 8),
+            `builder-cutover-reserve:${input.refId}`,
+            25 - remaining,
+            now,
+          );
+          this.ctx.storage.sql.exec(`UPDATE tenant_profile SET balance_usd = 25 WHERE id = 1`);
+        } else {
+          this.ctx.storage.sql.exec(`UPDATE tenant_profile SET balance_usd = balance_usd - ?1 WHERE id = 1`, charge);
+        }
       }
     });
     return { settled: true };

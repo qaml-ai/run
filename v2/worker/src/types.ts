@@ -13,6 +13,7 @@ export interface Env {
   AGENT_DO: DurableObjectNamespace<AgentDO>;
   ADMIN_SECRET: string;
   VAULT_SECRET: string;
+  BUILDER_CUTOVER_CREDIT_TENANT_ID?: string;
   CAMELFS_URL: string;
   CAMELFS_SIGNING_KEY?: string;
   CAMELFS_DEV_TOKEN?: string;
