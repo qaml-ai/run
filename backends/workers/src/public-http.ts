@@ -23,13 +23,9 @@ export function authenticationHint(request: Request, origin: string): string {
   return `${reason} Create an API token at ${origin}/console/tokens and send it as Authorization: Bearer <token> (the SDKs read CAMELAI_API_KEY; the CLI also takes \`npx @camelai/camelrun login\`). Coding agents: read ${origin}/SKILL.md`;
 }
 
-/** Public documents are exact asset lookups; they never fall through to authentication. */
-export async function publicRoutes(request: Request, env: PublicEnv): Promise<Response | undefined> {
-  const url = new URL(request.url), path = url.pathname;
-  // Account routes own console redirects, consent, and journey collection.
-  if (/^\/console(?:\/|$)/.test(path) || path === "/api/journey/events") return;
+export function publicDocument(request: Request, env: PublicEnv): Promise<Response | undefined> {
   const assets = env.PUBLIC_ASSETS;
-  const document = await publicDocs(request, {
+  return publicDocs(request, {
     AGENT_PUBLIC_URL: env.AGENT_PUBLIC_URL,
     DOCS: assets ? { fetch: (input, init) => {
       const assetRequest = new Request(input, init);
@@ -38,12 +34,21 @@ export async function publicRoutes(request: Request, env: PublicEnv): Promise<Re
       return assets.fetch(new Request(assetUrl, assetRequest));
     } } : undefined,
   });
+}
+
+/** Public documents are exact asset lookups; they never fall through to authentication. */
+export async function publicRoutes(request: Request, env: PublicEnv): Promise<Response | undefined> {
+  const url = new URL(request.url), path = url.pathname;
+  // Account routes own console redirects, consent, and journey collection.
+  if (/^\/console(?:\/|$)/.test(path) || path === "/api/journey/events") return;
+  const document = await publicDocument(request, env);
   if (document) return document;
   const origin = env.AGENT_PUBLIC_URL || url.origin;
   const read = request.method === "GET" || request.method === "HEAD";
   const content = (body: string, type: string, headers: Record<string, string> = {}) => new Response(request.method === "HEAD" ? null : body, { headers: { "Content-Type": type, ...headers } });
   if (read && path === "/v1/openapi.json") return content(JSON.stringify(workersOpenApi(openapi)), "application/json; charset=utf-8");
   if (path === "/r" || path.startsWith("/r/")) {
+    const assets = env.PUBLIC_ASSETS;
     const eligible = /^\/r\/[^/]+\.json$/.test(path);
     const asset = read && eligible && env.PUBLIC_ASSETS ? await env.PUBLIC_ASSETS.fetch(new Request(url, { method: "GET" })) : undefined;
     if (!asset?.ok) return Response.json({ type: "error", error: `Unknown document. The docs' index: ${origin}/llms.txt`, code: "NOT_FOUND" }, { status: 404, headers: { "Access-Control-Allow-Origin": "*" } });
