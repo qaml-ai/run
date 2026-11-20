@@ -344,7 +344,7 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     }
     if (!env.V2_LEGACY_RUNS && !env.AGENT_V2_COMPAT_API_KEYS) return null;
     const list = request.method === "GET" && url.pathname === "/v1/agents";
-    const endUsers = request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+(?:\/usage)?)?$/.test(url.pathname);
+    const endUsers = request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+(?:\/(?:usage|days|ledger))?)?$/.test(url.pathname);
     const target = legacyAgentRequest(request);
     if (!list && !endUsers && !target) return null;
     try {

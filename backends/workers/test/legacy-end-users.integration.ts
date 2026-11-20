@@ -21,10 +21,13 @@ test("legacy end-user reads preserve tenant scope and leave writes on the origin
   t.after(() => f.stop());
 
   const now = Date.now();
+  const day = new Date(now).toISOString().slice(0, 10);
   await f.db.query(`insert into end_users(tenant,id,balance,created_at,updated_at)
     values ('fixture','user',99,$1,$1), ('other','user',25,$1,$1), ('other','foreign',20,$1,$1)`, [now]);
   await f.db.query(`insert into end_user_ledger(tenant,end_user,kind,amount,raw,allowance,bucket,idempotency_key,balance_after,created_at)
     values ('fixture','user','usage',-1,2,1,'builder','fixture',99,$1), ('other','user','usage',-3,5,2,'builder','other',25,$1)`, [now]);
+  await f.db.query(`insert into end_user_days(tenant,end_user,day,bucket,allowance_spent,paid_spent)
+    values ('fixture','user',$1,'builder',1,1), ('other','user',$1,'builder',2,3)`, [day]);
 
   const read = (path: string, init: RequestInit = {}) => fetch(f.url + path, { ...init, headers: { authorization: `Bearer ${apiKey}` } });
   const list = await read("/v1/end-users");
@@ -37,6 +40,21 @@ test("legacy end-user reads preserve tenant scope and leave writes on the origin
     at: Math.floor(now / 3_600_000) * 3_600_000, bucket: "builder", call: null, agent: null, calls: 1,
     raw: 2, allowance: 1, paid: 1, writtenOff: 0,
   }] });
+  const days = await read(`/v1/end-users/user/days?from=${day}&bucket=builder`);
+  assert.equal(days.status, 200);
+  assert.equal(days.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await days.json(), { days: [{ day, freeRaw: 1, paidCharged: 1, writtenOff: 0,
+    granted: 0, refunded: 0, adjusted: 0, spent: 0, expired: 0, entries: 0,
+    buckets: [{ bucket: "builder", freeRaw: 1, paidCharged: 1, writtenOff: 0 }],
+  }] });
+  const ledger = await read(`/v1/end-users/user/ledger?kind=usage&bucket=builder&from=${now}&to=${now + 1}`);
+  assert.equal(ledger.status, 200);
+  assert.equal(ledger.headers.get("cache-control"), "no-store");
+  const { entries } = await ledger.json();
+  assert.deepEqual(entries.map(({ id: _id, ...entry }: Record<string, unknown>) => entry), [{
+    kind: "usage", amount: -1, raw: 2, allowance: 1, writtenOff: 0, bucket: "builder", key: "fixture",
+    reference: null, description: null, metadata: {}, balanceAfter: 99, createdAt: now,
+  }]);
   const detail = await read("/v1/end-users/user?buckets=builder");
   assert.equal(detail.status, 200);
   assert.equal(detail.headers.get("cache-control"), "no-store");
@@ -49,7 +67,10 @@ test("legacy end-user reads preserve tenant scope and leave writes on the origin
   assert.equal((await foreign.json()).balance, 0);
   assert.equal((await fetch(`${f.url}/v1/end-users/user`)).status, 401);
   assert.equal((await fetch(`${f.url}/v1/end-users`)).status, 401);
+  assert.equal((await fetch(`${f.url}/v1/end-users/user/ledger`)).status, 401);
+  assert.equal((await read("/v1/end-users/user/days?limit=zero")).status, 400);
   assert.equal((await read("/v1/end-users/user", { method: "PATCH" })).status, 418);
+  assert.equal((await read("/v1/end-users/user/entries", { method: "POST" })).status, 418);
 
   await f.db.query(`insert into end_users (tenant, id, balance, created_at, updated_at) values ('fixture', 'expiry', 5, $1, $1)`, [now]);
   await f.db.query(`insert into end_user_lots (tenant, end_user, key, amount, remaining, expires_at, created_at)
