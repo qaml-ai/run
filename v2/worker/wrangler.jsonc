@@ -12,6 +12,7 @@
     "CAMELFS_DEV_TOKEN": "dev-camelfs-token",
     "DEFAULT_MODEL": "openrouter/meta/muse-ember"
   },
+  "images": { "binding": "IMAGES" },
   "r2_buckets": [
     {
       "binding": "MEDIA_BUCKET",

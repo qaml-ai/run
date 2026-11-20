@@ -1,3 +1,4 @@
+import { toolImageContent } from "./tool-images.ts";
 import { z } from "zod";
 import { signToolIdentity, type ToolCallIdentity } from "./tool-identity.ts";
 import { ApiError, type AgentConfig, type Env, type LlmToolSchema, type McpServerSpec } from "./types.ts";
@@ -211,6 +212,7 @@ export async function invokeMcpTool(
     if (result.isError) {
       throw new Error(texts.join("\n") || "MCP tool returned error");
     }
+    if (toolImageContent(result)) return result;
     if (texts.length === 1) {
       try {
         return JSON.parse(texts[0]!);

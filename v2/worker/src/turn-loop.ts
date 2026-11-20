@@ -8,6 +8,7 @@ import {
   streamModelResponse,
   type ConversationMessage,
 } from "./providers.ts";
+import { storeToolImages } from "./tool-images.ts";
 import { verifyRunFiles } from "./run-files.ts";
 import { readLegacyInlineContent } from "./legacy-inline-images.ts";
 import { getTenantStub, platformCreditReserve } from "./tenant-do.ts";
@@ -127,6 +128,7 @@ export function buildConversationMessages(
       role: m.role,
       text,
       files,
+      toolImages: m.content.toolImages,
       legacyInlineContent: readLegacyInlineContent(m.content),
       toolCalls,
       toolCallId: m.content.toolCallId,
@@ -594,19 +596,21 @@ async function runSingleToolAndRecord(opts: {
 
   try {
     const out = await executeToolCall(toolCtx, catalog, tc.id, tc.name, tc.args);
-    const serialized = typeof out === "string" ? out : JSON.stringify(out ?? null);
+    const { result, images } = await storeToolImages(toolCtx.env, toolCtx.config.tenantId, out);
+    const serialized = typeof result === "string" ? result : JSON.stringify(result ?? null);
     opts.toolCallsSummary.push({ id: tc.id, name: tc.name, ok: true });
     adapter.appendMessage(runId, "tool", {
       toolCallId: tc.id,
       toolName: tc.name,
       isError: false,
       text: serialized,
+      ...(images && { toolImages: images }),
     });
     adapter.emitEvent(runId, "tool_call_end", {
       callId: tc.id,
       name: tc.name,
       ok: true,
-      result: out,
+      result,
     });
     return false;
   } catch (err) {

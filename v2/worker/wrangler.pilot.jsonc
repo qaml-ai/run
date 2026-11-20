@@ -11,6 +11,7 @@
     "CAMELFS_URL": "https://camelfs-v2-pilot.camelai.dev",
     "DEFAULT_MODEL": "openrouter/meta/muse-ember"
   },
+  "images": { "binding": "IMAGES" },
   "r2_buckets": [
     {
       "binding": "MEDIA_BUCKET",

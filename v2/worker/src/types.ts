@@ -1,5 +1,6 @@
 import type { DurableObject } from "cloudflare:workers";
 import type { TenantDO } from "./tenant-do.ts";
+import type { ToolImageRef } from "./tool-images.ts";
 import type { AgentDO } from "./agent-do.ts";
 
 export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined> & {
@@ -8,6 +9,7 @@ export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined>
 
 export interface Env {
   MEDIA_BUCKET?: R2Bucket;
+  IMAGES?: ImagesBinding;
   EVENTS_QUEUE?: Queue<QueueMessagePayload>;
   TENANT_DO: DurableObjectNamespace<TenantDO>;
   AGENT_DO: DurableObjectNamespace<AgentDO>;
@@ -222,6 +224,7 @@ export interface ToolCallInvocation {
 }
 
 export interface StoredMessageContent {
+  toolImages?: ToolImageRef[];
   /** Validated raster blocks remain in meta.v1, without duplicating their bytes. */
   legacyInlineImages?: true;
   text?: string;

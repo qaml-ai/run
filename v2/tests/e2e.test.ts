@@ -72,6 +72,11 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let workerUrl: string;
   let failNextExec = false;
   let vmBootRequests = 0;
+  const toolImage = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVQImWP4z8Dwn4EBAAj+Af/KOtJRAAAAAElFTkSuQmCC";
+  const imageResult = { content: [
+    { type: "text", text: "The tool returned a screenshot." },
+    { type: "image", mimeType: "image/png", data: toolImage },
+  ] };
   type ProviderMessage = { role: string; content: unknown; tool_call_id?: string };
   let lastProviderMessages: ProviderMessage[] | undefined;
   let lastProviderOptions: Record<string, unknown> | undefined;
@@ -164,11 +169,18 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
             JSON.stringify({
               jsonrpc: "2.0",
               id: rpc.id,
-              result: { content: [{ type: "text", text: `72F and sunny in ${args.city ?? "unknown"}` }] },
+              result: args.city === "image-fixture" ? imageResult
+                : { content: [{ type: "text", text: `72F and sunny in ${args.city ?? "unknown"}` }] },
             }),
           );
           return;
         }
+      }
+
+      if (req.url === "/tool-image" && req.method === "POST") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(imageResult));
+        return;
       }
 
       if (req.url === "/webhook" && req.method === "POST") {
@@ -202,11 +214,15 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         }
         const plain = last === "native-text-fixture" ? '{"ok":1}' : last === "native-text-invalid-json" ? "No object" : undefined;
         const toolResult = input.some((item) => item.type === "function_call_output");
+        const call = last === "mcp-image-fixture"
+          ? { name: "meteo__weather_forecast", arguments: '{"city":"image-fixture"}' }
+          : last === "repo-image-fixture" ? { name: "view_image", arguments: '{"path":"fixture.png"}' }
+          : { name: "lookup", arguments: "{}" };
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         const events = [
           ...(plain !== undefined ? [{ type: "response.output_text.delta", delta: plain }] : toolResult || rawBody.includes("app-runtime-credit-fixture")
             ? [{ type: "response.output_text.delta", delta: "read the result" }]
-            : [{ type: "response.output_item.done", item: { type: "function_call", name: "lookup", call_id: "call_azure_test", arguments: "{}" } }]),
+            : [{ type: "response.output_item.done", item: { type: "function_call", ...call, call_id: "call_azure_test" } }]),
           { type: "response.completed", response: { usage: { input_tokens: 160_000, output_tokens: 7 } } },
         ];
         res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
@@ -391,6 +407,49 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.ok((azureRequests[1].body.input as Array<{ type?: string; call_id?: string }>).some(
       (item) => item.type === "function_call_output" && item.call_id === "call_azure_test",
     ));
+  });
+
+  it("sends images from MCP, SDK, webhook and repo tools in Azure Responses tool output", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "vision tools", initialCreditsUsd: 20,
+    });
+    const client = new CamelRun({ baseUrl: workerUrl, apiKey });
+    try {
+      const repo = await client.repos.create({ name: "tool-image-repo" });
+      await client.repos.write(repo.repoId, { puts: [{ path: "fixture.png", base64: toolImage }] });
+      const lookup = { name: "lookup", description: "Return a screenshot", parameters: { type: "object", properties: {} } };
+      const fixtures = [
+        { name: "mcp", input: "mcp-image-fixture", options: { mcpServers: [{ name: "meteo", url: `${auxUrl}/mcp` }] } },
+        { name: "webhook", input: "webhook-image-fixture", options: { tools: [{ ...lookup, url: `${auxUrl}/tool-image` }] } },
+        { name: "sdk", input: "sdk-image-fixture", options: { tools: [{ ...lookup, execute: () => imageResult }] } },
+        { name: "repo", input: "repo-image-fixture", options: { repoId: repo.repoId } },
+      ];
+      for (const fixture of fixtures) {
+        const before = azureRequests.length;
+        const agent = await client.agents.upsert(`tool-image-${fixture.name}`, {
+          model: "camelrun/default", ...fixture.options,
+          ...(fixture.name === "repo" && { builtins: ["files" as const] }),
+        });
+        const stream = agent.stream(fixture.input);
+        const events = [];
+        for await (const event of stream) events.push(event);
+        const result = await stream.result;
+        assert.equal(result.status, "completed", JSON.stringify(result.error));
+        assert.equal(azureRequests.length, before + 2);
+        const input = azureRequests.at(-1)!.body.input as Array<{ type: string; call_id: string; output?: unknown }>;
+        const output = input.find(item => item.type === "function_call_output");
+        const expectedText = fixture.name === "repo" ? /Repository image fixture.png.*\n\[image 2×1\]/ : /The tool returned a screenshot\.\n\[image 2×1\]/;
+        assert.equal(output?.call_id, "call_azure_test");
+        assert.ok(Array.isArray(output?.output));
+        assert.match(output.output[0].text, expectedText);
+        assert.deepEqual(output.output[1], { type: "input_image", image_url: `data:image/png;base64,${toolImage}`, detail: "auto" });
+        const history = await agent.history();
+        assert.ok(history.some(row => row.role === "tool" && JSON.stringify(row.content).includes("toolImages")));
+        assert.ok(!JSON.stringify({ history, events }).includes(toolImage), "inline image bytes leaked to stored history or events");
+      }
+    } finally {
+      await client.close();
+    }
   });
 
   it("runs Camel Bots native text at zero balance, preserves Azure Sol options, and waits for settlement", async () => {
