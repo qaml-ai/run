@@ -118,6 +118,11 @@ export function parseV1History(body: unknown) {
     let imageCount = 0, imageBytes = 0;
     for (const message of imported) {
       if (!message.content.legacyInlineImages) continue;
+      // A SQLite-backed Durable Object row is limited to 8 MB. The storage
+      // transaction remains authoritative for the small record-header overhead.
+      if (new TextEncoder().encode(JSON.stringify(message.content)).byteLength >= 8_000_000) {
+        throw new ApiError(422, "unsupported_history", "Inline history exceeds the Durable Object row size");
+      }
       const original = message.content.meta!.v1 as { content: Array<{ type: string; data?: string }> };
       for (const block of original.content) if (block.type === "image") {
         imageCount++;

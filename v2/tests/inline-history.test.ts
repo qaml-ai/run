@@ -94,6 +94,11 @@ test("inline history retains original raster bytes and ordered provider content 
   await assert.rejects(overBudget.importV1History({ source: "fixture", messages: [{ role: "user", timestamp: 1,
     content: Array.from({ length: 41 }, () => images[0]!) }] }), (error: any) => error.status === 422);
   assert.equal((await overBudget.history()).length, 0);
+  const largeRow = await camel.agents.upsert("large-row", { model: "mock/default", builtins: [] });
+  const padded = { ...images[0]!, data: Buffer.concat([Buffer.from(images[0]!.data, "base64"), Buffer.alloc(2 * 1024 * 1024)]).toString("base64") };
+  await assert.rejects(largeRow.importV1History({ source: "fixture", messages: [{ role: "user", timestamp: 1,
+    content: [padded, padded, padded] }] }), (error: any) => error.status === 422);
+  assert.equal((await largeRow.history()).length, 0);
   await assert.rejects(agent.importV1History({ source: "fixture-v1", messages: messages.slice(0, 2), previous: imported.receipt }),
     (error: any) => error.status === 422);
   assert.deepEqual((await agent.history()).map(row => (row.content as any).meta.v1), messages);
