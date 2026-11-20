@@ -51,7 +51,8 @@ export function rowMessages(entry: EntryRecord, skip: number, count: number): Ag
  */
 export class AgentHistory {
   readonly db: Db;
-  constructor(db: Db, private readonly readOnly = false) { this.db = db; }
+  private readonly readOnly: boolean;
+  constructor(db: Db, readOnly = false) { this.db = db; this.readOnly = readOnly; }
 
   /**
    * The agent's history length. An agent whose ordinals are not placed yet is placed first (`fillOrdinals`); one with no
