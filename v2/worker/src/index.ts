@@ -762,11 +762,19 @@ app.get("/v2/agents/:idOrKey/history", async (c) => {
   return c.json(await stub.getHistory({ after, limit, before }));
 });
 
+app.get("/v2/agents/:idOrKey/history/import", async (c) => {
+  const { auth, agentId, stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  c.header("Cache-Control", "no-store");
+  return c.json(await stub.getV1HistoryImportProof({ tenantId: auth.tenantId, agentId }));
+});
+
 app.put("/v2/agents/:idOrKey/history/import", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
   const input = parseV1History(await c.req.json().catch(() => null));
   const receipt = await sha256Hex(JSON.stringify([input.source, input.messages]));
-  return c.json(await stub.importV1History(input, receipt));
+  return c.json(await (input.messages.some(message => message.content.legacyInlineImages)
+    ? stub.importV1HistoryWithInlineImages(input, receipt)
+    : stub.importV1History(input, receipt)));
 });
 
 app.post("/v2/agents/:idOrKey/compact", async (c) => {

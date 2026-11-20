@@ -1997,6 +1997,60 @@ export class AgentDO extends DurableObject<Env> {
     return { messages, compaction, nextAfter, ...(newest ? { nextBefore: hasOlder ? rows[0]!.seq : null } : {}) };
   }
 
+  /** Metadata assertion for an operator's already imported, still private destination.
+   * This is an observation, not a reservation against later writes.
+   */
+  getV1HistoryImportProof(scope: { tenantId: string; agentId: string }) {
+    // Do not call ensureSql: cold-start queue recovery can mutate and resume work.
+    // A destination with no existing imported schema cannot furnish this proof.
+    const tables = this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runtime_kv')",
+    ).toArray();
+    if (tables.length !== 2) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
+    return this.ctx.storage.transactionSync(() => {
+      const config = this.ctx.storage.sql.exec<Pick<AgentConfig, "id" | "tenantId" | "model" | "repoId" | "lineage" | "branch">>(
+        `SELECT json_extract(config_json, '$.id') AS id, json_extract(config_json, '$.tenantId') AS tenantId,
+          json_extract(config_json, '$.model') AS model, json_extract(config_json, '$.repoId') AS repoId,
+          json_extract(config_json, '$.lineage') AS lineage, json_extract(config_json, '$.branch') AS branch
+          FROM config WHERE id = 1`,
+      ).toArray()[0];
+      if (!config) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
+      if (config.tenantId !== scope.tenantId || config.id !== scope.agentId) {
+        throw new ApiError(404, "not_found", "Agent not found");
+      }
+      const current = this.ctx.storage.sql.exec<{ v: string }>(
+        "SELECT v FROM runtime_kv WHERE k = 'v1_history_import'",
+      ).toArray()[0];
+      if (!current) throw new ApiError(409, "history_import_conflict", "The destination has no v1 import receipt");
+      let imported: { source?: unknown; receipt?: unknown } | null;
+      try { imported = JSON.parse(current.v); }
+      catch { throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable"); }
+      if (!imported || typeof imported.source !== "string" || !imported.source ||
+          typeof imported.receipt !== "string" || !/^[0-9a-f]{64}$/.test(imported.receipt)) {
+        throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable");
+      }
+      const state = this.ctx.storage.sql.exec<{ count: number; used: number }>(`
+        SELECT (SELECT COUNT(*) FROM messages INDEXED BY idx_messages_run) AS count,
+          EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+          OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM inputs)
+          OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used
+      `).one();
+      if (state.used || this.activeRunId) {
+        throw new ApiError(409, "history_import_conflict", "The destination already has activity");
+      }
+      return {
+        tenantId: config.tenantId, agentId: config.id,
+        source: imported.source, receipt: imported.receipt, messageCount: Number(state.count),
+        model: config.model, repoId: config.repoId, lineage: config.lineage, branch: config.branch,
+      };
+    });
+  }
+
+  /** A separate capability prevents installing inline history into an older deferred reader. */
+  async importV1HistoryWithInlineImages(input: ReturnType<typeof parseV1History>, receipt: string) {
+    return this.importV1History(input, receipt);
+  }
+
   async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
     this.ensureSql();
     const config = this.requireConfig();

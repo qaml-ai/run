@@ -1,6 +1,8 @@
 import { CamelFsClient } from "./camelfs.ts";
 import { randomId } from "./crypto.ts";
 import { loadConversationImages, type ModelImage } from "./run-files.ts";
+import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
+import { FILE_LIMITS } from "../../../src/limits.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
@@ -20,6 +22,7 @@ export interface ConversationMessage {
   text?: string;
   files?: StoredRunFile[];
   images?: ModelImage[];
+  legacyInlineContent?: LegacyInlineBlock[];
   toolCalls?: ToolCallInvocation[];
   toolCallId?: string;
   toolName?: string;
@@ -321,11 +324,17 @@ export async function* streamModelResponse(
     req.prefetchedProvider,
   );
 
-  if (endpoint.protocol !== "mock" && req.messages.some((message) => message.files?.length)) {
-    const images = await loadConversationImages(new CamelFsClient(req.env, req.tenantId), req.messages);
+  if (endpoint.protocol !== "mock" && req.messages.some((message) => message.files?.length || message.legacyInlineContent)) {
+    const images = await loadConversationImages(new CamelFsClient(req.env, req.tenantId), req.messages,
+      endpoint.protocol === "anthropic" && req.messages.some(message => message.legacyInlineContent)
+        ? FILE_LIMITS.requestAnthropicImages : FILE_LIMITS.requestImages);
     req = {
       ...req,
-      messages: req.messages.map((message, index) => ({ ...message, images: images.get(index) })),
+      messages: req.messages.map((message, index) => ({ ...message, images: images.get(index),
+        ...(message.legacyInlineContent ? { legacyInlineContent: message.legacyInlineContent.map((block, blockIndex) =>
+          block.type === "image" && !images.get(index)?.some(image => image.inlineBlockIndex === blockIndex)
+            ? { type: "text" as const, text: "[image omitted from earlier in the conversation]" } : block) } : {}),
+      })),
     };
   }
 
@@ -438,6 +447,18 @@ function imageDataUrl(image: ModelImage): string {
   return `data:${image.contentType};base64,${image.base64}`;
 }
 
+/** Preserve original text/image ordering for validated imported user messages. */
+export function modelContentParts(
+  message: ConversationMessage,
+  text: (value: string) => Record<string, unknown>,
+  image: (value: ModelImage) => Record<string, unknown>,
+): Array<Record<string, unknown>> | undefined {
+  if (message.legacyInlineContent) return message.legacyInlineContent.map(block => block.type === "text"
+    ? text(block.text) : image({ contentType: block.mimeType, base64: block.data }));
+  if (message.images?.length) return [text(message.text ?? ""), ...message.images.map(image)];
+  return undefined;
+}
+
 async function* streamOpenAiChat(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -469,10 +490,8 @@ async function* streamOpenAiChat(
     } else {
       apiMessages.push({
         role: m.role,
-        content: m.images?.length ? [
-          { type: "text", text: m.text ?? "" },
-          ...m.images.map((image) => ({ type: "image_url", image_url: { url: imageDataUrl(image) } })),
-        ] : m.text ?? "",
+        content: modelContentParts(m, text => ({ type: "text", text }),
+          image => ({ type: "image_url", image_url: { url: imageDataUrl(image) } })) ?? m.text ?? "",
       });
     }
   }
@@ -673,10 +692,8 @@ async function* streamOpenAiResponses(
     } else {
       inputItems.push({
         role: m.role,
-        content: m.images?.length ? [
-          { type: "input_text", text: m.text ?? "" },
-          ...m.images.map((image) => ({ type: "input_image", image_url: imageDataUrl(image), detail: "auto" })),
-        ] : m.text ?? "",
+        content: modelContentParts(m, text => ({ type: "input_text", text }),
+          image => ({ type: "input_image", image_url: imageDataUrl(image), detail: "auto" })) ?? m.text ?? "",
       });
     }
   }
@@ -861,13 +878,9 @@ async function* streamAnthropicMessages(
     } else {
       messages.push({
         role: "user",
-        content: m.images?.length ? [
-          { type: "text", text: m.text ?? "" },
-          ...m.images.map((image) => ({
-            type: "image",
-            source: { type: "base64", media_type: image.contentType, data: image.base64 },
-          })),
-        ] : m.text ?? "",
+        content: modelContentParts(m, text => ({ type: "text", text }), image => ({
+          type: "image", source: { type: "base64", media_type: image.contentType, data: image.base64 },
+        })) ?? m.text ?? "",
       });
     }
   }
@@ -1047,10 +1060,8 @@ async function* streamGeminiContent(
     } else {
       contents.push({
         role: "user",
-        parts: [
-          { text: m.text ?? "" },
-          ...(m.images ?? []).map((image) => ({ inlineData: { mimeType: image.contentType, data: image.base64 } })),
-        ],
+        parts: modelContentParts(m, text => ({ text }),
+          image => ({ inlineData: { mimeType: image.contentType, data: image.base64 } })) ?? [{ text: m.text ?? "" }],
       });
     }
   }

@@ -222,6 +222,8 @@ export interface ToolCallInvocation {
 }
 
 export interface StoredMessageContent {
+  /** Validated raster blocks remain in meta.v1, without duplicating their bytes. */
+  legacyInlineImages?: true;
   text?: string;
   files?: StoredRunFile[];
   toolCalls?: ToolCallInvocation[];
