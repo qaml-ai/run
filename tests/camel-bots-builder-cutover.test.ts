@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { testDatabase } from "./database.ts";
 import { fenceV1Agent, publishV2AgentRoute } from "../src/agent-v2-cutover.ts";
@@ -35,6 +36,7 @@ test("builder cutover holds app admission, defers accepted v1 work, and recovers
       primary key (tenant, agent), foreign key (tenant, agent) references agent_v2_cutovers (tenant, agent));
     create table agent_v2_receipt_archives (tenant text, agent text, receipts jsonb, primary key (tenant, agent));
   `);
+  await runtime.query(readFileSync(new URL("../migrations/147_agent_v2_admission_lock.sql", import.meta.url), "utf8"));
   const owner = "123456789012345678";
   const row = { owner, source: "client_builder", destination: "agt_0123456789abcdef", operation: randomUUID(), previous: "1".repeat(64) };
   const config = {

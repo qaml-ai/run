@@ -1,15 +1,21 @@
-import { transaction, type Db } from "./db.ts";
+import { transaction, type Db, type Sql } from "./db.ts";
 import type { RequestRecord } from "../shared/client-protocol.ts";
 import type { ClosedV1InputWitness } from "./agent-v2-input-witness.ts";
 
 export const AGENT_V2_PUBLISHED = "agent_v2_published";
 
+async function tryAdmissionLock(sql: Sql, tenant: string, agent: string) {
+  const { rows: [row] } = await sql.query<{ acquired: boolean }>(
+    "select try_v1_agent_admission_lock($1, $2) as acquired", [tenant, agent],
+  );
+  return row?.acquired === true;
+}
+
 /** Fence new v1 runs only after accepted work is durably idle. The caller holds application edits
  * and other ingress during the final copy and route publication. */
 export function fenceV1Agent(db: Db, tenant: string, agent: string, operation: string, closedInputs?: ClosedV1InputWitness) {
   return transaction(db, async sql => {
-    // Keep this lock key compatible with BusyAgents.hold on already deployed v1 nodes.
-    await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`busy-agents:${tenant}`]);
+    if (!await tryAdmissionLock(sql, tenant, agent)) return false;
     if (closedInputs && !await closedInputs.matchesLockedSource(sql, tenant, agent)) return false;
     // pending_runs stays set until unload has persisted the final cursor. A cleared busy slot
     // alone is too early, and an expired node lease alone says nothing about durable work.
@@ -61,7 +67,7 @@ export function publishV2AgentRoute(
   return transaction(db, async sql => {
     if (closedInputs) {
       if (!closedInputs.includesRequiredReceipts(archive)) return false;
-      await sql.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`busy-agents:${source.tenant}`]);
+      if (!await tryAdmissionLock(sql, source.tenant, source.agent)) return false;
       if (!await closedInputs.matchesLockedSource(sql, source.tenant, source.agent)) return false;
     }
     const key = [source.tenant, source.agent, source.operation];
