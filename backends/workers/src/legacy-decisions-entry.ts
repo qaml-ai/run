@@ -52,6 +52,12 @@ function deciderFor(env: Env, creditMultiplier: number) {
 const json = (body: unknown, status = 200, headers = {}) =>
   Response.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
 
+async function discardUnreadBody(request: Request) {
+  const body = request.body;
+  // An early response otherwise leaves a transferred RPC request stream open.
+  if (body && !body.locked) await body.cancel().catch(() => {});
+}
+
 /** Standalone v1 decisions keep the original accounts, OpenRouter keys and wallet ledgers. */
 export class LegacyDecisions extends WorkerEntrypoint<Env> {
   protected readonly requiredTokenTenant?: string;
@@ -61,6 +67,7 @@ export class LegacyDecisions extends WorkerEntrypoint<Env> {
     try {
       return await this.#decide(request);
     } catch (error) {
+      await discardUnreadBody(request);
       const limited = admissionError(error);
       if (limited) return limited;
       const status = errorStatus(error, 500);
@@ -144,6 +151,7 @@ export class LegacyCamelBotsDecisions extends LegacyDecisions {
       const digest = createHash("sha256").update(auth).digest();
       if (timingSafeEqual(digest, Buffer.from(expected, "hex"))) return super.route(request);
     }
+    await discardUnreadBody(request);
     return json({ error: "Decisions are unavailable", code: "UNAUTHORIZED" }, 401);
   }
 }

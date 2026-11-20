@@ -153,10 +153,16 @@ test("v1 decisions keep request, Jev result, credit refusals and settlement cont
 
   const sendApp = (body: unknown, authorization: string | null = camelBotsAuth, host = "run.camelai.com") =>
     send(body, authorization, { "x-test-camel-bots": host });
+  const deniedOpenUpload = async (authorization: string) => {
+    const response = await send(item, authorization, { "x-test-camel-bots": "run.camelai.com", "x-test-open-upload": "1" });
+    await expectError(response, 401, "UNAUTHORIZED");
+    assert.equal(response.headers.get("x-test-upload-cancelled"), "true");
+  };
   const priorCalls = calls.length;
   await expectError(await sendApp(item, auth), 401, "UNAUTHORIZED");
   await expectError(await sendApp(item, null), 401, "UNAUTHORIZED");
   await expectError(await sendApp(item, `Bearer ${oauth}`), 401, "UNAUTHORIZED");
+  await deniedOpenUpload(auth);
   assert.equal((await sendApp(item, camelBotsAuth, "unrelated.example")).status, 418);
   await expectError(await sendApp("{"), 400, "INVALID_REQUEST");
   assert.equal(calls.length, priorCalls);
@@ -193,6 +199,7 @@ test("v1 decisions keep request, Jev result, credit refusals and settlement cont
   const appKeyHash = createHash("sha256").update(camelBotsAuth.slice(7)).digest("hex");
   await f.db.query("update api_tokens set tenant='fixture' where sha256=$1", [appKeyHash]);
   await expectError(await sendApp(item), 401, "UNAUTHORIZED");
+  await deniedOpenUpload(camelBotsAuth);
   assert.equal(calls.length, priorCalls + 3);
 
   const restricted = await f.db.connect();
