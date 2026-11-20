@@ -115,7 +115,7 @@ export function buildConversationMessages(
       text: `Previous conversation summary (up to message #${compaction.upToSeq}):\n${compaction.summary}`,
     });
   }
-  for (const m of stored) {
+  const append = (m: StoredMessage, toolCalls = m.content.toolCalls) => {
     const files = m.content.files;
     const text = files?.length
       ? [m.content.text, ...files.map((file) =>
@@ -126,11 +126,35 @@ export function buildConversationMessages(
       role: m.role,
       text,
       files,
-      toolCalls: m.content.toolCalls,
+      toolCalls,
       toolCallId: m.content.toolCallId,
       toolName: m.content.toolName,
       isError: m.content.isError,
     });
+  };
+  for (let i = 0; i < stored.length; i++) {
+    const message = stored[i]!;
+    if (message.role === "tool") continue;
+    const calls = message.role === "assistant" ? message.content.toolCalls : undefined;
+    if (!calls?.length) {
+      append(message);
+      continue;
+    }
+
+    // A stopped turn can leave some calls without recorded results. Keep the
+    // stored history intact and send only completed pairs to the provider.
+    const pending = new Set(calls.map((call) => call.id));
+    const results: StoredMessage[] = [];
+    while (stored[i + 1]?.role === "tool") {
+      const result = stored[++i]!;
+      const id = result.content.toolCallId;
+      if (result.runId !== message.runId || !id || !pending.delete(id)) continue;
+      results.push(result);
+    }
+    if (results.length || message.content.text || message.content.files?.length) {
+      append(message, calls.filter((call) => !pending.has(call.id)));
+    }
+    for (const result of results) append(result);
   }
   return out;
 }
