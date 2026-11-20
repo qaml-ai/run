@@ -36,7 +36,7 @@ export type DbClient = Sql & {
 // bigint columns hold millisecond times and counts, all well inside 2^53.
 pg.types.setTypeParser(pg.types.builtins.INT8, Number);
 
-const MIGRATIONS = fileURLToPath(new URL("../migrations", import.meta.url));
+const defaultMigrationsDir = () => fileURLToPath(new URL("../migrations", import.meta.url));
 
 /** The database login in an RDS-managed secret; RDS rotates the password, so it is re-read, never pinned. */
 export type Credentials = { username: string; password: string };
@@ -254,7 +254,7 @@ function logErrors(pool: pg.Pool) {
  * Files run in one transaction, up to a file that opens with CONCURRENT_MIGRATION: that one builds indexes on a
  * table too large or busy to lock for the build, outside any transaction (`concurrently`), and the rest follow it.
  */
-export async function migrate(db: Db, directory = MIGRATIONS, options: { lockTimeoutMs?: number; attempts?: number; retryMs?: number } = {}): Promise<string[]> {
+export async function migrate(db: Db, directory = defaultMigrationsDir(), options: { lockTimeoutMs?: number; attempts?: number; retryMs?: number } = {}): Promise<string[]> {
   const attempts = options.attempts ?? 10;
   for (let attempt = 1; ; attempt++) {
     try { return await migrateOnce(db, directory, options.lockTimeoutMs ?? 2_000); }

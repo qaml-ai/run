@@ -209,7 +209,7 @@ test("dispatches only bearer definition reads on both legacy hosts", async t => 
   assert.equal(route.mock.callCount(), 6);
 });
 
-test("keeps legacy end-user writes on the origin while serving reads on the Worker", async t => {
+test("serves legacy end-user reads, updates, settings, lots and entries on the Worker", async t => {
   const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 201 }));
   const route = t.mock.fn(async () => new Response(null, { status: 204 }));
   const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
@@ -218,9 +218,14 @@ test("keeps legacy end-user writes on the origin while serving reads on the Work
     assert.equal((await worker.fetch(new Request(url), env)).status, 204);
     assert.equal((await worker.fetch(new Request(url, { method: "POST" }), env)).status, 201);
   }
-  assert.equal((await worker.fetch(new Request("https://agents.camelai.dev/v1/end-users/example/entries", { method: "POST" }), env)).status, 201);
-  assert.equal(route.mock.callCount(), 5);
-  assert.equal(origin.mock.callCount(), 6);
+  assert.equal((await worker.fetch(new Request("https://run.camelai.com/v1/end-users/example", { method: "PATCH" }), env)).status, 204);
+  assert.equal((await worker.fetch(new Request("https://agents.camelai.dev/v1/end-users/example/entries", { method: "POST" }), env)).status, 204);
+  assert.equal((await worker.fetch(new Request("https://run.camelai.com/v1/end-users/example/lots", { method: "POST" }), env)).status, 204);
+  for (const method of ["GET", "PUT", "PATCH"]) {
+    assert.equal((await worker.fetch(new Request("https://run.camelai.com/v1/end-user-settings", { method }), env)).status, 204);
+  }
+  assert.equal(route.mock.callCount(), 11);
+  assert.equal(origin.mock.callCount(), 5);
 });
 
 test("serves registration, token exchange, revocation and discovery on the existing hostnames", async t => {

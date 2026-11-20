@@ -163,6 +163,8 @@ export interface V1HistoryImport {
   /** Append after this many imported messages, using the previous chunk receipt. */
   appendAfter?: number;
   attachments?: Array<{ messageIndex: number; files: RunFile[] }>;
+  /** Preserve raw meta.v1 while tolerating historical v1 anomalies (unpinned files, interrupted tool calls, oversized inline images). */
+  repair?: boolean;
 }
 
 export interface RunOptions {

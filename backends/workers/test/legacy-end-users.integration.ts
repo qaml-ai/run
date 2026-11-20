@@ -69,8 +69,20 @@ test("legacy end-user reads preserve tenant scope and leave writes on the origin
   assert.equal((await fetch(`${f.url}/v1/end-users`)).status, 401);
   assert.equal((await fetch(`${f.url}/v1/end-users/user/ledger`)).status, 401);
   assert.equal((await read("/v1/end-users/user/days?limit=zero")).status, 400);
-  assert.equal((await read("/v1/end-users/user", { method: "PATCH" })).status, 418);
-  assert.equal((await read("/v1/end-users/user/entries", { method: "POST" })).status, 418);
+  const settings = await read("/v1/end-user-settings");
+  assert.equal(settings.status, 200);
+  const patched = await read("/v1/end-users/user", {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ lowBalance: 10 }),
+  });
+  assert.equal(patched.status, 200);
+  const posted = await read("/v1/end-users/user/entries", {
+    method: "POST",
+    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ kind: "grant", amount: 50, key: "compat-grant-1" }),
+  });
+  assert.equal(posted.status, 201);
 
   await f.db.query(`insert into end_users (tenant, id, balance, created_at, updated_at) values ('fixture', 'expiry', 5, $1, $1)`, [now]);
   await f.db.query(`insert into end_user_lots (tenant, end_user, key, amount, remaining, expires_at, created_at)

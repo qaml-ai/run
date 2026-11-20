@@ -23,6 +23,15 @@ interface Env extends LegacyOriginEnv {
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}(?:\/[^/]+(?:\/[^/]+)?)?$/;
 const legacyCredentialsRoute = /^\/v1\/agents\/(?:[A-Za-z0-9_-]|%[a-fA-F0-9]{2}){1,80}\/credentials$/;
 const legacyEndUserRead = /^\/v1\/end-users(?:\/[^/]+(?:\/(?:usage|days|ledger))?)?$/;
+const legacyEndUserPatch = /^\/v1\/end-users\/[^/]+$/;
+const legacyEndUserPost = /^\/v1\/end-users\/[^/]+\/(?:lots|entries)$/;
+function legacyEndUserRoute(pathname: string, method: string) {
+  if (pathname === "/v1/end-user-settings") return method === "GET" || method === "PUT" || method === "PATCH";
+  if (method === "GET") return legacyEndUserRead.test(pathname);
+  if (method === "PATCH") return legacyEndUserPatch.test(pathname);
+  if (method === "POST") return legacyEndUserPost.test(pathname);
+  return false;
+}
 const legacyProtectedResource = /^\/\.well-known\/oauth-protected-resource(?:\/mcp|\/v1\/(?:ops|agents\/client_[a-f0-9]{40})\/mcp)?$/;
 
 function legacyOAuthRoute(pathname: string, method: string) {
@@ -128,7 +137,7 @@ export default {
     const definitionRead = legacyApiHost(hostname) && legacyDefinitionRead(request);
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
         (legacyIdentity || legacyAccountRead || legacyCredentials || definitionRead || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
-         (request.method === "GET" && legacyEndUserRead.test(pathname)) || legacyOAuthRoute(pathname, request.method)) &&
+         legacyEndUserRoute(pathname, request.method) || legacyOAuthRoute(pathname, request.method)) &&
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
       if (compatible) return compatible;

@@ -331,7 +331,8 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         request.headers.has("authorization")) {
       try {
         const auth = await authenticateMoney(request, env, { bearerOnly: true });
-        const identity = await legacyAccountIdentity(request, env, auth?.principal);
+        if (!auth) throw new CoreHttpError(401, "Invalid or missing credentials");
+        const identity = await legacyAccountIdentity(request, env, auth.principal);
         return identity ? publicPageHeaders(request, corsResponse(request, identity)) : null;
       } catch (error) {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
@@ -466,7 +467,10 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     }
     if (!env.V2_LEGACY_RUNS && !env.AGENT_V2_COMPAT_API_KEYS) return null;
     const list = request.method === "GET" && url.pathname === "/v1/agents";
-    const endUsers = request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+(?:\/(?:usage|days|ledger))?)?$/.test(url.pathname);
+    const endUsers = (url.pathname === "/v1/end-user-settings" && ["GET", "PUT", "PATCH"].includes(request.method)) ||
+      (request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+(?:\/(?:usage|days|ledger))?)?$/.test(url.pathname)) ||
+      (request.method === "PATCH" && /^\/v1\/end-users\/[^/]+$/.test(url.pathname)) ||
+      (request.method === "POST" && /^\/v1\/end-users\/[^/]+\/(?:lots|entries)$/.test(url.pathname));
     const target = legacyAgentRequest(request);
     if (!list && !endUsers && !target) return null;
     try {
