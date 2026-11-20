@@ -88,6 +88,7 @@ import { receiveChannelEmail } from "./channel-email.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks, consumeAccountDeletionMessage } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { legacyBrowserTokenAgent } from "../../../shared/legacy-browser-tokens.ts";
+import { legacyGatewayTextAccess, legacyGatewayTextPrincipal, readLegacyGatewayText } from "./legacy-gateway-text.ts";
 import { legacyBrowserTokens } from "./legacy-browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
@@ -296,6 +297,23 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
+    if (env.V2_LEGACY_GATEWAY_TEXT && env.LEGACY_GATEWAY_TEXT_ACCESS) {
+      try {
+        const access = legacyGatewayTextAccess(request, env.LEGACY_GATEWAY_TEXT_ACCESS);
+        if (access) {
+          const auth = await authenticateMoney(request, env, { bearerOnly: true });
+          if (!legacyGatewayTextPrincipal(auth, access)) return null;
+          const input = await readLegacyGatewayText(request, access.tenant);
+          if (!input) return null;
+          await apiRequest(request, env);
+          const result = await env.V2_LEGACY_GATEWAY_TEXT.start(input);
+          if (result.disposition === "legacy") return null;
+          return publicPageHeaders(request, corsResponse(request, result.response));
+        }
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
     if (legacyBrowserTokenAgent(request)) {
       try {
         const response = await legacyBrowserTokens(request, env, legacyCompatibilityService(env));
