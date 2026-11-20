@@ -547,6 +547,11 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(unauthorized.status, 403);
     await unfunded.providers.set("openrouter", { apiKey: "fake-provider-key", baseUrl: auxUrl + "/v1" });
     const builder = await unfunded.agents.upsert("pilot-builder", { model: "openrouter/meta/muse-ember" });
+    const clearAgentCap = await fetch(`${workerUrl}/v2/agents/${builder.id}/spend-limit`, {
+      method: "PATCH", headers: { Authorization: `Bearer ${other.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ spendLimitUsd: 0, expectedSpendLimitUsd: 10 }),
+    });
+    assert.equal(clearAgentCap.status, 200);
     const beforeDispatch = lastProviderMessages;
     await assert.rejects(builder.run("Unfunded"), (error: unknown) =>
       error instanceof CamelRunError && error.code === "insufficient_credits");
@@ -578,6 +583,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       queue: { mode: "batch", windowMs: 100 },
       toolIdentity: { subject: "owner", context },
     });
+    const clearAgentCap = await fetch(`${workerUrl}/v2/agents/${agent.id}/spend-limit`, {
+      method: "PATCH", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ spendLimitUsd: 0, expectedSpendLimitUsd: 10 }),
+    });
+    assert.equal(clearAgentCap.status, 200);
+    assert.deepEqual(await clearAgentCap.json(), { spendLimitUsd: 0, changed: true });
     const beforeZero = lastProviderMessages;
     const zero = await agent.run("no budget", { spendLimitUsd: 0, throwOnError: false });
     assert.ok(zero.error && typeof zero.error === "object");

@@ -1769,6 +1769,37 @@ export class AgentDO extends DurableObject<Env> {
     return { model, changed: true };
   }
 
+  updateSpendLimitIfIdle(scope: { tenantId: string; agentId: string }, spendLimitUsd: number, expectedSpendLimitUsd: number) {
+    if (![spendLimitUsd, expectedSpendLimitUsd].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)) {
+      throw new ApiError(400, "invalid_spend_limit", "Spend limits must be finite non-negative numbers");
+    }
+    // MONEY: do not run cold queue recovery merely to compare one configuration field.
+    const tables = this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runs')",
+    ).toArray();
+    if (tables.length !== 2) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
+    const cfg = this.requireConfig();
+    if (!scope?.tenantId || !scope.agentId || cfg.tenantId !== scope.tenantId || cfg.id !== scope.agentId) {
+      throw new ApiError(404, "agent_not_found", "Agent not found");
+    }
+    if (!Number.isFinite(cfg.spendLimitUsd) || cfg.spendLimitUsd < 0) {
+      throw new ApiError(503, "agent_config_invalid", "Agent spend limit is unavailable");
+    }
+    if (cfg.spendLimitUsd === spendLimitUsd) return { spendLimitUsd, changed: false };
+    if (cfg.spendLimitUsd !== expectedSpendLimitUsd) {
+      throw new ApiError(409, "spend_limit_changed", "The agent spend limit changed");
+    }
+    const pending = this.ctx.storage.sql.exec(
+      "SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1",
+    ).toArray().length > 0;
+    if (this.destroying || this.activeRunId || this.queueDrain || this.inputResumeWork || pending) {
+      throw new ApiError(409, "agent_busy", "The agent has work in progress");
+    }
+    // No await between the compare, idle check and this single configuration write.
+    this.writeConfig({ ...cfg, spendLimitUsd });
+    return { spendLimitUsd, changed: true };
+  }
+
   async seedFork(payload: {
     config: AgentConfig;
     messages: Array<{
