@@ -6,5 +6,6 @@ export const SVG_RENDER_LIMITS = {
   imageBase64Bytes: 14 * 1024 * 1024,
   imagePixels: 4 * 1024 * 1024,
   imageCount: 16,
+  textMeasurements: 400,
   bodyBytes: 16 * 1024 * 1024,
 };

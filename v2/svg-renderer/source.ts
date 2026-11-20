@@ -2,17 +2,22 @@ import { Buffer } from "node:buffer";
 import { SaxesParser } from "saxes";
 import { imageHeader, imageIntact } from "../../src/image-header.ts";
 import { SVG_RENDER_LIMITS as LIMITS } from "./limits.ts";
+import { normalizeMissingGlyphs } from "./fonts/coverage.ts";
+import { escapeXml as escape, renderTextbox, type MeasureText } from "./textbox.ts";
 
 const families = new Map([["Sans", "Noto Sans"], ["Serif", "Noto Serif"], ["Mono", "Noto Sans Mono"]]);
 const svgNamespace = "http://www.w3.org/2000/svg";
-const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-  .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+const familyList = (css: string) => css.replace(/(^|,)(\s*)(["']?)(Sans|Serif|Mono)\3(?=\s*(?:,|!important\b|$))/g,
+  (_match, start: string, space: string, quote: string, name: string) =>
+    start + space + quote + families.get(name) + quote);
+const fontCss = (css: string) => css.replace(/(^|[;{])(\s*font-family\s*:\s*)([^;}]+)/gi,
+  (_match, start: string, property: string, value: string) => start + property + familyList(value));
 
 function dimension(value: string | undefined): number {
   return value && /^(?:\d+(?:\.\d+)?|\.\d+)(?:px)?$/.test(value) ? Number.parseFloat(value) : 0;
 }
 
-export function prepareSvg(svg: unknown, files: unknown) {
+export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) {
   if (typeof svg !== "string" || !svg.trim() || Buffer.byteLength(svg) > LIMITS.svgBytes) {
     throw new Error("Supply a non-empty SVG up to 1 MiB");
   }
@@ -41,6 +46,8 @@ export function prepareSvg(svg: unknown, files: unknown) {
 
   let width = 0, height = 0, decodedPixels = 0, elements = 0;
   const parts: string[] = [];
+  const stack: string[] = [];
+  let textbox: { attributes: Record<string, string>; text: string } | undefined;
   const parser = new SaxesParser({ xmlns: false });
   const reject = () => { throw new Error("SVG contains a document declaration or external resource"); };
   parser.on("doctype", reject);
@@ -48,6 +55,8 @@ export function prepareSvg(svg: unknown, files: unknown) {
   parser.on("opentag", ({ name, attributes }) => {
     if (++elements > 10_000) throw new Error("SVG has too many elements");
     const element = name.replace(/^.*:/, "").toLowerCase();
+    if (textbox) throw new Error("Textbox content must be plain text");
+    stack.push(element);
     if (["script", "foreignobject", "feimage"].includes(element)) reject();
 
     if (elements === 1) {
@@ -64,7 +73,8 @@ export function prepareSvg(svg: unknown, files: unknown) {
     }
     for (const key of Object.keys(attributes)) {
       if (/^on/i.test(key)) reject();
-      if (key === "font-family") attributes[key] = families.get(attributes[key]!) ?? attributes[key]!;
+      if (key === "font-family") attributes[key] = familyList(attributes[key]!);
+      if (key === "style") attributes[key] = fontCss(attributes[key]!);
       if (!/(^|:)href$/.test(key)) continue;
       const value = attributes[key]!;
       if (element === "image") {
@@ -78,10 +88,27 @@ export function prepareSvg(svg: unknown, files: unknown) {
     if (element === "image" && !Object.keys(attributes).some(key => /(^|:)href$/.test(key))) {
       throw new Error("SVG image references must name an image in files");
     }
+    if (name === "textbox") {
+      textbox = { attributes, text: "" };
+      return;
+    }
     parts.push(`<${name}${Object.entries(attributes).map(([key, value]) => ` ${key}="${escape(value)}"`).join("")}>`);
   });
-  parser.on("closetag", ({ name }) => parts.push(`</${name}>`));
-  const text = (value: string) => parts.push(escape(value));
+  parser.on("closetag", ({ name }) => {
+    stack.pop();
+    if (textbox) {
+      if (!measure) throw new Error("Textbox layout requires the SVG renderer");
+      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text), measure));
+      textbox = undefined;
+      return;
+    }
+    parts.push(`</${name}>`);
+  });
+  const text = (value: string) => {
+    if (textbox) textbox.text += value;
+    else if (stack.at(-1) === "style") parts.push(escape(fontCss(value)));
+    else parts.push(escape(stack.some(element => element === "text") ? normalizeMissingGlyphs(value) : value));
+  };
   parser.on("text", text);
   parser.on("cdata", text);
   parser.write(svg).close();
