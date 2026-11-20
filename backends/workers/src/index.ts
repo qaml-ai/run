@@ -337,6 +337,17 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
       }
     }
+    if (request.method === "GET" && url.pathname === "/v1/models") {
+      try {
+        await apiRequest(request, env);
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        if (!auth) throw new CoreHttpError(401, "Invalid or missing credentials");
+        const response = await providerRoutes(request, env, auth);
+        return response ? publicPageHeaders(request, corsResponse(request, response)) : null;
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
     const credentials = /^\/v1\/agents\/([^/]+)\/credentials$/.exec(url.pathname);
     const authorization = request.headers.get("authorization") ?? undefined;
     if (request.method === "GET" && credentials && authorization) {

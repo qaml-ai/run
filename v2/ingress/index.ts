@@ -121,11 +121,12 @@ export default {
     }
     const legacyIdentity = legacyApiHost(hostname) && pathname === "/v1/me" && request.method === "GET" &&
       request.headers.has("authorization");
+    const legacyModels = legacyApiHost(hostname) && pathname === "/v1/models" && request.method === "GET";
     const legacyCredentials = legacyApiHost(hostname) && request.method === "GET" &&
       request.headers.has("authorization") && legacyCredentialsRoute.test(pathname);
     const definitionRead = legacyApiHost(hostname) && legacyDefinitionRead(request);
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
-        (legacyIdentity || legacyCredentials || definitionRead || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
+        (legacyIdentity || legacyModels || legacyCredentials || definitionRead || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
          (request.method === "GET" && legacyEndUserRead.test(pathname)) || legacyOAuthRoute(pathname, request.method)) &&
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
