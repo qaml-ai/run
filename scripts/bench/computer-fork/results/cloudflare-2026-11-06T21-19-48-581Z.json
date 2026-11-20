@@ -1,0 +1,137 @@
+{
+  "provider": "cloudflare",
+  "prefix": "cfork-h9ug5",
+  "startedAt": "2026-11-06T21:19:48.581Z",
+  "rounds": [],
+  "errors": [],
+  "source": {
+    "createMs": 565,
+    "firstCommandMs": 809,
+    "prepare": {
+      "clone_ms": "4748",
+      "root_ci_ms": "19452",
+      "workers_ci_ms": "15609",
+      "size_kb": "1705844",
+      "files": "88028"
+    },
+    "build": {
+      "root_tsc_ms": "7578",
+      "workers_tsc_ms": "11298",
+      "test_ms": "14825",
+      "build_ms": "33701",
+      "exits": "0,0,0"
+    }
+  },
+  "snapshot": {
+    "ms": 30346,
+    "handle": {
+      "id": "1ee6ea7f-c8bb-480d-8129-a926f048f001",
+      "size": 1358659256,
+      "name": "cfork-h9ug5-base"
+    }
+  },
+  "sourceAfter": {
+    "fork_id": "none",
+    "branch": "main",
+    "node_modules": "yes",
+    "boot": "728f2b87"
+  },
+  "sourceUnaffected": true,
+  "probeFork": {
+    "mounts": "--- df -T /workspace\nFilesystem     Type  1K-blocks    Used Available Use% Mounted on\n/dev/vdb       btrfs  19531252 1630332  17472740   9% /\n--- findmnt\nTARGET SOURCE            FSTYPE OPTIONS\n/      /dev/vdb[/rootfs] btrfs  rw,relatime,compress=zstd:3,space_cache=v2,subvolid=262,subvol=/rootfs\n--- /proc/mounts (non-pseudo)\ntmpfs /dev tmpfs rw,nosuid,size=65536k,nr_inodes=26449,mode=755 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,nr_inodes=26449 0 0\n/dev/vdb / btrfs rw,relatime,compress=zstd:3,space_cache=v2,subvolid=262,subvol=/rootfs 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,nr_inodes=26449 0 0\ntmpfs /run tmpfs rw,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\noverlay /etc/hostname overlay ro,relatime,lowerdir=/etc,upperdir=/container/etc,workdir=/container/work,uuid=on 0 0\noverlay /etc/hosts overlay ro,relatime,lowerdir=/etc,upperdir=/container/etc,workdir=/container/work,uuid=on 0 0\noverlay /etc/resolv.conf overlay rw,relatime,lowerdir=/etc,upperdir=/container/etc,workdir=/container/work,uuid=on 0 0\ntmpfs /proc/acpi tmpfs ro,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\ntmpfs /sys/firmware tmpfs ro,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\ntmpfs /proc/scsi tmpfs ro,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\n--- lsblk\nNAME  SIZE TYPE FSTYPE MOUNTPOINT\nvda   7.9M disk        \nvdb  18.6G disk        /\n--- kernel\n6.18.56-cloudflare-microvm-2026.10.9\n4\n               total        used        free      shared  buff/cache   available\nMem:           12238         365       11962           0          21       11872\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1655976747",
+      "tree_read_ms": "21477",
+      "tree_read_mbps": "73",
+      "tree_stat_files": "77532",
+      "tree_stat_ms": "197",
+      "seq_write_mbps": "53.9",
+      "seq_read_cached_mbps": "4035",
+      "rand_read_4k_cached_iops": "328350",
+      "rand_write_4k_sync32_iops": "7131",
+      "small_create_5k_ms": "371",
+      "small_read_5k_ms": "65",
+      "small_rm_5k_ms": "185",
+      "fio_seqread_direct": "1",
+      "fio_seqread_mbps": "3079.1",
+      "fio_seqread_iops": "3079",
+      "fio_seqwrite_direct": "1",
+      "fio_seqwrite_mbps": "217.7",
+      "fio_seqwrite_iops": "217",
+      "fio_randread_direct": "1",
+      "fio_randread_mbps": "142.8",
+      "fio_randread_iops": "36568",
+      "fio_randwrite_direct": "1",
+      "fio_randwrite_mbps": "26.2",
+      "fio_randwrite_iops": "6704"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1655976747 tree_read_ms=21477 tree_read_mbps=73\ntree_stat_files=77532 tree_stat_ms=197\nseq_write_mbps=53.9 seq_read_cached_mbps=4035 rand_read_4k_cached_iops=328350 rand_write_4k_sync32_iops=7131 small_create_5k_ms=371 small_read_5k_ms=65 small_rm_5k_ms=185\nfio_seqread_direct=1 fio_seqread_mbps=3079.1 fio_seqread_iops=3079\nfio_seqwrite_direct=1 fio_seqwrite_mbps=217.7 fio_seqwrite_iops=217\nfio_randread_direct=1 fio_randread_mbps=142.8 fio_randread_iops=36568\nfio_randwrite_direct=1 fio_randwrite_mbps=26.2 fio_randwrite_iops=6704\n",
+    "realwork": {
+      "git_status_ms": "69",
+      "git_log_ms": "32",
+      "npm_ci_warm_ms": "17551",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "19355",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "14900",
+      "typecheck_exit": "0",
+      "test_ms": "14579",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=69 git_log_ms=32\nnpm_ci_warm_ms=17551 npm_ci_warm_exit=0\nnpm_ci_cold_ms=19355 npm_ci_cold_exit=0\ntypecheck_ms=14900 typecheck_exit=0\ntest_ms=14579 test_exit=0\n"
+  },
+  "freshPrepare": {
+    "clone_ms": "4175",
+    "root_ci_ms": "18272",
+    "workers_ci_ms": "14517",
+    "size_kb": "1705952",
+    "files": "88028"
+  },
+  "probeFresh": {
+    "mounts": "--- df -T /workspace\nFilesystem     Type  1K-blocks    Used Available Use% Mounted on\n/dev/vdb       btrfs  19531252 1535944  17562424   9% /\n--- findmnt\nTARGET SOURCE            FSTYPE OPTIONS\n/      /dev/vdb[/rootfs] btrfs  rw,relatime,compress=zstd:3,space_cache=v2,subvolid=262,subvol=/rootfs\n--- /proc/mounts (non-pseudo)\ntmpfs /dev tmpfs rw,nosuid,size=65536k,nr_inodes=26449,mode=755 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,nr_inodes=26449 0 0\n/dev/vdb / btrfs rw,relatime,compress=zstd:3,space_cache=v2,subvolid=262,subvol=/rootfs 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=65536k,nr_inodes=26449 0 0\ntmpfs /run tmpfs rw,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\noverlay /etc/hostname overlay ro,relatime,lowerdir=/etc,upperdir=/container/etc,workdir=/container/work,uuid=on 0 0\noverlay /etc/hosts overlay ro,relatime,lowerdir=/etc,upperdir=/container/etc,workdir=/container/work,uuid=on 0 0\noverlay /etc/resolv.conf overlay rw,relatime,lowerdir=/etc,upperdir=/container/etc,workdir=/container/work,uuid=on 0 0\ntmpfs /proc/acpi tmpfs ro,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\ntmpfs /sys/firmware tmpfs ro,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\ntmpfs /proc/scsi tmpfs ro,relatime,size=105796k,nr_inodes=26449,mode=755 0 0\n--- lsblk\nNAME  SIZE TYPE FSTYPE MOUNTPOINT\nvda   7.9M disk        \nvdb  18.6G disk        /\n--- kernel\n6.18.56-cloudflare-microvm-2026.10.9\n4\n               total        used        free      shared  buff/cache   available\nMem:           12238         748        9141           0        2500       11489\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1656089884",
+      "tree_read_ms": "17387",
+      "tree_read_mbps": "90",
+      "tree_stat_files": "77532",
+      "tree_stat_ms": "189",
+      "seq_write_mbps": "75.4",
+      "seq_read_cached_mbps": "4756.2",
+      "rand_read_4k_cached_iops": "349282",
+      "rand_write_4k_sync32_iops": "5811",
+      "small_create_5k_ms": "520",
+      "small_read_5k_ms": "62",
+      "small_rm_5k_ms": "179",
+      "fio_seqread_direct": "1",
+      "fio_seqread_mbps": "3162.8",
+      "fio_seqread_iops": "3162",
+      "fio_seqwrite_direct": "1",
+      "fio_seqwrite_mbps": "160.5",
+      "fio_seqwrite_iops": "160",
+      "fio_randread_direct": "1",
+      "fio_randread_mbps": "104.0",
+      "fio_randread_iops": "26633",
+      "fio_randwrite_direct": "1",
+      "fio_randwrite_mbps": "22.2",
+      "fio_randwrite_iops": "5686"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1656089884 tree_read_ms=17387 tree_read_mbps=90\ntree_stat_files=77532 tree_stat_ms=189\nseq_write_mbps=75.4 seq_read_cached_mbps=4756.2 rand_read_4k_cached_iops=349282 rand_write_4k_sync32_iops=5811 small_create_5k_ms=520 small_read_5k_ms=62 small_rm_5k_ms=179\nfio_seqread_direct=1 fio_seqread_mbps=3162.8 fio_seqread_iops=3162\nfio_seqwrite_direct=1 fio_seqwrite_mbps=160.5 fio_seqwrite_iops=160\nfio_randread_direct=1 fio_randread_mbps=104.0 fio_randread_iops=26633\nfio_randwrite_direct=1 fio_randwrite_mbps=22.2 fio_randwrite_iops=5686\n",
+    "realwork": {
+      "git_status_ms": "909",
+      "git_log_ms": "35",
+      "npm_ci_warm_ms": "16515",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "18925",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "13289",
+      "typecheck_exit": "0",
+      "test_ms": "13540",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=909 git_log_ms=35\nnpm_ci_warm_ms=16515 npm_ci_warm_exit=0\nnpm_ci_cold_ms=18925 npm_ci_cold_exit=0\ntypecheck_ms=13289 typecheck_exit=0\ntest_ms=13540 test_exit=0\n"
+  },
+  "leftovers": [],
+  "finishedAt": "2026-11-06T21:26:58.382Z"
+}

@@ -1,0 +1,55 @@
+{
+  "provider": "worktrees",
+  "prefix": "cfork-lwtct4",
+  "startedAt": "2026-11-06T21:57:11.136Z",
+  "rounds": [
+    {
+      "n": 10,
+      "setup": {
+        "loglevel": "error",
+        "worktree_add_ms": "2020",
+        "parallel_install_ms": "591941",
+        "disk_kb": "11958352"
+      },
+      "observed": {
+        "at": "22:26Z, 28 min after the round began",
+        "installsOomKilled": 4,
+        "buildsRunning": 6,
+        "tscRssMb": [
+          1256,
+          1295,
+          1235,
+          1117,
+          1168,
+          1478
+        ],
+        "rootTscElapsedS": 1064,
+        "rootTscAloneS": 4.9,
+        "memAvailableMb": 64,
+        "swapUsedMb": 284,
+        "load1": 32.18,
+        "nproc": 4,
+        "outcome": "stopped by hand; builds killed"
+      }
+    }
+  ],
+  "errors": [],
+  "source": {
+    "prepare": {
+      "clone_ms": "6069",
+      "root_ci_ms": "13499",
+      "workers_ci_ms": "43590",
+      "size_kb": "1743396",
+      "files": "88128"
+    },
+    "build": {
+      "root_tsc_ms": "4228",
+      "workers_tsc_ms": "7027",
+      "test_ms": "7936",
+      "build_ms": "19191",
+      "exits": "0,0,0"
+    }
+  },
+  "leftovers": [],
+  "deletedByHand": "bx_2paj47uf (404 after delete)"
+}

@@ -1,0 +1,23 @@
+{
+  "startedAt": "2026-11-06T21:32:06.430Z",
+  "tag": "cfx-hpnry",
+  "checks": [
+    "image"
+  ],
+  "image": {
+    "phase": "after",
+    "snapshotRev": "1",
+    "deployedRev": "2",
+    "restoreOldSnapshot": {
+      "ok": true,
+      "ms": 424,
+      "rev": "1",
+      "marker": "from-rev-1"
+    }
+  },
+  "destroyed": [
+    "cfx-hpnry-imgnew",
+    "cfx-hpnry-imgold"
+  ],
+  "finishedAt": "2026-11-06T21:32:11.796Z"
+}

@@ -1,0 +1,135 @@
+{
+  "provider": "exe",
+  "prefix": "cfork-h9ug5",
+  "startedAt": "2026-11-06T21:19:48.581Z",
+  "rounds": [],
+  "errors": [],
+  "source": {
+    "createMs": 2129,
+    "firstCommandMs": 3255,
+    "prepare": {
+      "node_installed": "yes",
+      "clone_ms": "4565",
+      "root_ci_ms": "17334",
+      "workers_ci_ms": "18350",
+      "size_kb": "1760716",
+      "files": "88196"
+    },
+    "build": {
+      "root_tsc_ms": "9428",
+      "workers_tsc_ms": "10350",
+      "test_ms": "14153",
+      "build_ms": "33931",
+      "exits": "0,0,0"
+    }
+  },
+  "snapshot": {
+    "ms": 0,
+    "handle": "cfork-h9ug5-src"
+  },
+  "sourceAfter": {
+    "fork_id": "none",
+    "branch": "main",
+    "node_modules": "yes",
+    "boot": "b1d256c5"
+  },
+  "sourceUnaffected": true,
+  "probeFork": {
+    "mounts": "--- df -T /home/exedev/ws\nFilesystem     Type 1K-blocks    Used Available Use% Mounted on\n/dev/vda       ext4  25692476 7570608  16794764  32% /\n--- findmnt\nTARGET SOURCE   FSTYPE OPTIONS\n/      /dev/vda ext4   rw,relatime,stripe=8192\n--- /proc/mounts (non-pseudo)\n/dev/vda / ext4 rw,relatime,stripe=8192 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,relatime 0 0\nselinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev,size=1624324k,nr_inodes=819200,mode=755 0 0\ntmpfs /run/lock tmpfs rw,nosuid,nodev,noexec,relatime,size=5120k 0 0\ntmpfs /run/user/1000 tmpfs rw,nosuid,nodev,relatime,size=812160k,nr_inodes=203040,mode=700,uid=1000,gid=1000 0 0\n--- lsblk\nNAME  SIZE TYPE FSTYPE MOUNTPOINT\nnbd0    0B disk        \nnbd1    0B disk        \nnbd2    0B disk        \nnbd3    0B disk        \nnbd4    0B disk        \nnbd5    0B disk        \nnbd6    0B disk        \nnbd7    0B disk        \nvda    25G disk        /\nnbd8    0B disk        \nnbd9    0B disk        \nnbd10   0B disk        \nnbd11   0B disk        \nnbd12   0B disk        \nnbd13   0B disk        \nnbd14   0B disk        \nnbd15   0B disk        \n--- kernel\n6.12.115\n2\n               total        used        free      shared  buff/cache   available\nMem:            7931         176        7748           0          89        7755\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1678283359",
+      "tree_read_ms": "9982",
+      "tree_read_mbps": "160",
+      "tree_stat_files": "77672",
+      "tree_stat_ms": "93",
+      "seq_write_mbps": "359.9",
+      "seq_read_cached_mbps": "4506.8",
+      "rand_read_4k_cached_iops": "481009",
+      "rand_write_4k_sync32_iops": "11079",
+      "small_create_5k_ms": "102",
+      "small_read_5k_ms": "52",
+      "small_rm_5k_ms": "64",
+      "fio_seqread_direct": "1",
+      "fio_seqread_mbps": "18587.3",
+      "fio_seqread_iops": "18587",
+      "fio_seqwrite_direct": "1",
+      "fio_seqwrite_mbps": "3077.8",
+      "fio_seqwrite_iops": "3077",
+      "fio_randread_direct": "1",
+      "fio_randread_mbps": "775.6",
+      "fio_randread_iops": "198548",
+      "fio_randwrite_direct": "1",
+      "fio_randwrite_mbps": "469.8",
+      "fio_randwrite_iops": "120280"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1678283359 tree_read_ms=9982 tree_read_mbps=160\ntree_stat_files=77672 tree_stat_ms=93\nseq_write_mbps=359.9 seq_read_cached_mbps=4506.8 rand_read_4k_cached_iops=481009 rand_write_4k_sync32_iops=11079 small_create_5k_ms=102 small_read_5k_ms=52 small_rm_5k_ms=64\nfio_seqread_direct=1 fio_seqread_mbps=18587.3 fio_seqread_iops=18587\nfio_seqwrite_direct=1 fio_seqwrite_mbps=3077.8 fio_seqwrite_iops=3077\nfio_randread_direct=1 fio_randread_mbps=775.6 fio_randread_iops=198548\nfio_randwrite_direct=1 fio_randwrite_mbps=469.8 fio_randwrite_iops=120280\n",
+    "realwork": {
+      "git_status_ms": "22",
+      "git_log_ms": "30",
+      "npm_ci_warm_ms": "15816",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "18276",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "17970",
+      "typecheck_exit": "0",
+      "test_ms": "14088",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=22 git_log_ms=30\nnpm_ci_warm_ms=15816 npm_ci_warm_exit=0\nnpm_ci_cold_ms=18276 npm_ci_cold_exit=0\ntypecheck_ms=17970 typecheck_exit=0\ntest_ms=14088 test_exit=0\n"
+  },
+  "freshPrepare": {
+    "node_installed": "yes",
+    "clone_ms": "4903",
+    "root_ci_ms": "17317",
+    "workers_ci_ms": "14127",
+    "size_kb": "1760836",
+    "files": "88196"
+  },
+  "probeFresh": {
+    "mounts": "--- df -T /home/exedev/ws\nFilesystem     Type 1K-blocks    Used Available Use% Mounted on\n/dev/vda       ext4  25692476 7552992  16812380  31% /\n--- findmnt\nTARGET SOURCE   FSTYPE OPTIONS\n/      /dev/vda ext4   rw,relatime,stripe=8192\n--- /proc/mounts (non-pseudo)\n/dev/vda / ext4 rw,relatime,stripe=8192 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,relatime 0 0\nselinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev,size=1624324k,nr_inodes=819200,mode=755 0 0\ntmpfs /run/lock tmpfs rw,nosuid,nodev,noexec,relatime,size=5120k 0 0\ntmpfs /run/user/1000 tmpfs rw,nosuid,nodev,relatime,size=812160k,nr_inodes=203040,mode=700,uid=1000,gid=1000 0 0\n--- lsblk\nNAME  SIZE TYPE FSTYPE MOUNTPOINT\nnbd0    0B disk        \nnbd1    0B disk        \nnbd2    0B disk        \nnbd3    0B disk        \nnbd4    0B disk        \nnbd5    0B disk        \nnbd6    0B disk        \nnbd7    0B disk        \nvda    25G disk        /\nnbd8    0B disk        \nnbd9    0B disk        \nnbd10   0B disk        \nnbd11   0B disk        \nnbd12   0B disk        \nnbd13   0B disk        \nnbd14   0B disk        \nnbd15   0B disk        \n--- kernel\n6.12.115\n2\n               total        used        free      shared  buff/cache   available\nMem:            7931         326        4924           0        2780        7604\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1678408100",
+      "tree_read_ms": "11521",
+      "tree_read_mbps": "138",
+      "tree_stat_files": "77672",
+      "tree_stat_ms": "94",
+      "seq_write_mbps": "342.1",
+      "seq_read_cached_mbps": "5936",
+      "rand_read_4k_cached_iops": "465052",
+      "rand_write_4k_sync32_iops": "10235",
+      "small_create_5k_ms": "100",
+      "small_read_5k_ms": "48",
+      "small_rm_5k_ms": "55",
+      "fio_seqread_direct": "1",
+      "fio_seqread_mbps": "15686.8",
+      "fio_seqread_iops": "15686",
+      "fio_seqwrite_direct": "1",
+      "fio_seqwrite_mbps": "1882.0",
+      "fio_seqwrite_iops": "1881",
+      "fio_randread_direct": "1",
+      "fio_randread_mbps": "611.4",
+      "fio_randread_iops": "156511",
+      "fio_randwrite_direct": "1",
+      "fio_randwrite_mbps": "253.5",
+      "fio_randwrite_iops": "64907"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1678408100 tree_read_ms=11521 tree_read_mbps=138\ntree_stat_files=77672 tree_stat_ms=94\nseq_write_mbps=342.1 seq_read_cached_mbps=5936 rand_read_4k_cached_iops=465052 rand_write_4k_sync32_iops=10235 small_create_5k_ms=100 small_read_5k_ms=48 small_rm_5k_ms=55\nfio_seqread_direct=1 fio_seqread_mbps=15686.8 fio_seqread_iops=15686\nfio_seqwrite_direct=1 fio_seqwrite_mbps=1882.0 fio_seqwrite_iops=1881\nfio_randread_direct=1 fio_randread_mbps=611.4 fio_randread_iops=156511\nfio_randwrite_direct=1 fio_randwrite_mbps=253.5 fio_randwrite_iops=64907\n",
+    "realwork": {
+      "git_status_ms": "393",
+      "git_log_ms": "32",
+      "npm_ci_warm_ms": "14506",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "18937",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "18805",
+      "typecheck_exit": "0",
+      "test_ms": "14397",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=393 git_log_ms=32\nnpm_ci_warm_ms=14506 npm_ci_warm_exit=0\nnpm_ci_cold_ms=18937 npm_ci_cold_exit=0\ntypecheck_ms=18805 typecheck_exit=0\ntest_ms=14397 test_exit=0\n"
+  },
+  "leftovers": [],
+  "finishedAt": "2026-11-06T21:26:54.732Z"
+}

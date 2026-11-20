@@ -1,0 +1,453 @@
+{
+  "provider": "exe",
+  "prefix": "cfork-guimq",
+  "startedAt": "2026-11-06T21:07:53.426Z",
+  "rounds": [
+    {
+      "n": 1,
+      "ok": 1,
+      "callMs": {
+        "n": 1,
+        "p50": 1681,
+        "p95": 1681,
+        "max": 1681
+      },
+      "firstCommandMs": {
+        "n": 1,
+        "p50": 3456,
+        "p95": 3456,
+        "max": 3456
+      },
+      "allFirstCommandMs": 3457,
+      "allBuiltMs": 40327,
+      "buildMs": {
+        "n": 1,
+        "p50": 35980,
+        "p95": 35980,
+        "max": 35980
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "10435",
+          "workers_tsc_ms": "10870",
+          "test_ms": "14675",
+          "build_ms": "35980",
+          "exits": "0,0,0"
+        }
+      ],
+      "checks": [
+        {
+          "i": 0,
+          "fork_id": "0",
+          "branch": "fork-0",
+          "node_modules": "yes",
+          "boot": "b90326e1"
+        }
+      ],
+      "independent": true
+    },
+    {
+      "n": 5,
+      "ok": 5,
+      "callMs": {
+        "n": 5,
+        "p50": 2265,
+        "p95": 3132,
+        "max": 3132
+      },
+      "firstCommandMs": {
+        "n": 5,
+        "p50": 3950,
+        "p95": 4790,
+        "max": 4790
+      },
+      "allFirstCommandMs": 4803,
+      "allBuiltMs": 45479,
+      "buildMs": {
+        "n": 5,
+        "p50": 37637,
+        "p95": 39801,
+        "max": 39801
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "9178",
+          "workers_tsc_ms": "11392",
+          "test_ms": "15053",
+          "build_ms": "35623",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "11017",
+          "workers_tsc_ms": "12900",
+          "test_ms": "15884",
+          "build_ms": "39801",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "10788",
+          "workers_tsc_ms": "12651",
+          "test_ms": "15185",
+          "build_ms": "38624",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "9985",
+          "workers_tsc_ms": "11977",
+          "test_ms": "15675",
+          "build_ms": "37637",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "9559",
+          "workers_tsc_ms": "11082",
+          "test_ms": "15354",
+          "build_ms": "35995",
+          "exits": "0,0,0"
+        }
+      ],
+      "checks": [
+        {
+          "i": 0,
+          "fork_id": "0",
+          "branch": "fork-0",
+          "node_modules": "yes",
+          "boot": "3294caa2"
+        },
+        {
+          "i": 1,
+          "fork_id": "1",
+          "branch": "fork-1",
+          "node_modules": "yes",
+          "boot": "25c6cbd9"
+        },
+        {
+          "i": 2,
+          "fork_id": "2",
+          "branch": "fork-2",
+          "node_modules": "yes",
+          "boot": "26637672"
+        },
+        {
+          "i": 3,
+          "fork_id": "3",
+          "branch": "fork-3",
+          "node_modules": "yes",
+          "boot": "36eaae5d"
+        },
+        {
+          "i": 4,
+          "fork_id": "4",
+          "branch": "fork-4",
+          "node_modules": "yes",
+          "boot": "6e7fcd2e"
+        }
+      ],
+      "independent": true
+    },
+    {
+      "n": 10,
+      "ok": 10,
+      "callMs": {
+        "n": 10,
+        "p50": 3353,
+        "p95": 5390,
+        "max": 5390
+      },
+      "firstCommandMs": {
+        "n": 10,
+        "p50": 5090,
+        "p95": 7059,
+        "max": 7059
+      },
+      "allFirstCommandMs": 7068,
+      "allBuiltMs": 49110,
+      "buildMs": {
+        "n": 10,
+        "p50": 38439,
+        "p95": 40930,
+        "max": 40930
+      },
+      "builds": [
+        {
+          "exit": 0,
+          "root_tsc_ms": "10588",
+          "workers_tsc_ms": "12098",
+          "test_ms": "15927",
+          "build_ms": "38613",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "10161",
+          "workers_tsc_ms": "11958",
+          "test_ms": "15601",
+          "build_ms": "37720",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "11377",
+          "workers_tsc_ms": "13314",
+          "test_ms": "15264",
+          "build_ms": "39955",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "10274",
+          "workers_tsc_ms": "12005",
+          "test_ms": "15666",
+          "build_ms": "37945",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "12117",
+          "workers_tsc_ms": "12639",
+          "test_ms": "16174",
+          "build_ms": "40930",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "11110",
+          "workers_tsc_ms": "11719",
+          "test_ms": "15785",
+          "build_ms": "38614",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "10442",
+          "workers_tsc_ms": "11851",
+          "test_ms": "15901",
+          "build_ms": "38194",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "10827",
+          "workers_tsc_ms": "12017",
+          "test_ms": "16067",
+          "build_ms": "38911",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "9546",
+          "workers_tsc_ms": "12231",
+          "test_ms": "16113",
+          "build_ms": "37890",
+          "exits": "0,0,0"
+        },
+        {
+          "exit": 0,
+          "root_tsc_ms": "10067",
+          "workers_tsc_ms": "12325",
+          "test_ms": "16047",
+          "build_ms": "38439",
+          "exits": "0,0,0"
+        }
+      ],
+      "checks": [
+        {
+          "i": 0,
+          "fork_id": "0",
+          "branch": "fork-0",
+          "node_modules": "yes",
+          "boot": "e00dfb8f"
+        },
+        {
+          "i": 1,
+          "fork_id": "1",
+          "branch": "fork-1",
+          "node_modules": "yes",
+          "boot": "b9f53e1f"
+        },
+        {
+          "i": 2,
+          "fork_id": "2",
+          "branch": "fork-2",
+          "node_modules": "yes",
+          "boot": "6513f5a0"
+        },
+        {
+          "i": 3,
+          "fork_id": "3",
+          "branch": "fork-3",
+          "node_modules": "yes",
+          "boot": "b7f5fba2"
+        },
+        {
+          "i": 4,
+          "fork_id": "4",
+          "branch": "fork-4",
+          "node_modules": "yes",
+          "boot": "787d4e6b"
+        },
+        {
+          "i": 5,
+          "fork_id": "5",
+          "branch": "fork-5",
+          "node_modules": "yes",
+          "boot": "46913ea0"
+        },
+        {
+          "i": 6,
+          "fork_id": "6",
+          "branch": "fork-6",
+          "node_modules": "yes",
+          "boot": "e1f10dc6"
+        },
+        {
+          "i": 7,
+          "fork_id": "7",
+          "branch": "fork-7",
+          "node_modules": "yes",
+          "boot": "95486053"
+        },
+        {
+          "i": 8,
+          "fork_id": "8",
+          "branch": "fork-8",
+          "node_modules": "yes",
+          "boot": "18f35533"
+        },
+        {
+          "i": 9,
+          "fork_id": "9",
+          "branch": "fork-9",
+          "node_modules": "yes",
+          "boot": "50c7a018"
+        }
+      ],
+      "independent": true
+    }
+  ],
+  "errors": [],
+  "source": {
+    "createMs": 2181,
+    "firstCommandMs": 3558,
+    "prepare": {
+      "node_installed": "yes",
+      "clone_ms": "4873",
+      "root_ci_ms": "18948",
+      "workers_ci_ms": "24738",
+      "size_kb": "1760720",
+      "files": "88196"
+    },
+    "build": {
+      "root_tsc_ms": "10596",
+      "workers_tsc_ms": "11326",
+      "test_ms": "14262",
+      "build_ms": "36184",
+      "exits": "0,0,0"
+    }
+  },
+  "snapshot": {
+    "ms": 0,
+    "handle": "cfork-guimq-src"
+  },
+  "persistence": {
+    "stopMs": 1468,
+    "wakeMs": 3028,
+    "note": "exe restart (reboot; disk kept). pause/resume (RAM to disk) not used",
+    "before": {
+      "fork_id": "0",
+      "branch": "fork-0",
+      "node_modules": "yes",
+      "boot": "b90326e1"
+    },
+    "after": {
+      "fork_id": "0",
+      "branch": "fork-0",
+      "node_modules": "yes",
+      "boot": "7f4af4aa"
+    },
+    "kept": true
+  },
+  "sourceAfter": {
+    "fork_id": "none",
+    "branch": "main",
+    "node_modules": "yes",
+    "boot": "8322af46"
+  },
+  "sourceUnaffected": true,
+  "probeFork": {
+    "mounts": "--- df -T /home/exedev/ws\nFilesystem     Type 1K-blocks    Used Available Use% Mounted on\n/dev/vda       ext4  25692476 7570612  16794760  32% /\n--- findmnt\nTARGET SOURCE   FSTYPE OPTIONS\n/      /dev/vda ext4   rw,relatime,stripe=8192\n--- /proc/mounts (non-pseudo)\n/dev/vda / ext4 rw,relatime,stripe=8192 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,relatime 0 0\nselinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev,size=1624324k,nr_inodes=819200,mode=755 0 0\ntmpfs /run/lock tmpfs rw,nosuid,nodev,noexec,relatime,size=5120k 0 0\ntmpfs /run/user/1000 tmpfs rw,nosuid,nodev,relatime,size=812160k,nr_inodes=203040,mode=700,uid=1000,gid=1000 0 0\n--- lsblk\nNAME  SIZE TYPE FSTYPE MOUNTPOINT\nnbd0    0B disk        \nnbd1    0B disk        \nnbd2    0B disk        \nnbd3    0B disk        \nnbd4    0B disk        \nnbd5    0B disk        \nnbd6    0B disk        \nnbd7    0B disk        \nvda    25G disk        /\nnbd8    0B disk        \nnbd9    0B disk        \nnbd10   0B disk        \nnbd11   0B disk        \nnbd12   0B disk        \nnbd13   0B disk        \nnbd14   0B disk        \nnbd15   0B disk        \n--- kernel\n6.12.115\n2\n               total        used        free      shared  buff/cache   available\nMem:            7931         175        7748           0          89        7755\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1678287019",
+      "tree_read_ms": "11377",
+      "tree_read_mbps": "140",
+      "tree_stat_files": "77672",
+      "tree_stat_ms": "135",
+      "seq_write_mbps": "361",
+      "seq_read_mbps": "4503.6",
+      "k_iops": "574215",
+      "_iops": "12200",
+      "k_ms": "54"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1678287019 tree_read_ms=11377 tree_read_mbps=140\ntree_stat_files=77672 tree_stat_ms=135\nseq_write_mbps=361 seq_read_mbps=4503.6 rand_read_4k_iops=574215 rand_write_4k_sync32_iops=12200 small_create_5k_ms=96 small_read_5k_ms=44 small_rm_5k_ms=54\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\n",
+    "realwork": {
+      "git_status_ms": "22",
+      "git_log_ms": "29",
+      "npm_ci_warm_ms": "13863",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "17849",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "17426",
+      "typecheck_exit": "0",
+      "test_ms": "13881",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=22 git_log_ms=29\nnpm_ci_warm_ms=13863 npm_ci_warm_exit=0\nnpm_ci_cold_ms=17849 npm_ci_cold_exit=0\ntypecheck_ms=17426 typecheck_exit=0\ntest_ms=13881 test_exit=0\n"
+  },
+  "freshPrepare": {
+    "node_installed": "yes",
+    "clone_ms": "4658",
+    "root_ci_ms": "17680",
+    "workers_ci_ms": "14187",
+    "size_kb": "1760712",
+    "files": "88196"
+  },
+  "probeFresh": {
+    "mounts": "--- df -T /home/exedev/ws\nFilesystem     Type 1K-blocks    Used Available Use% Mounted on\n/dev/vda       ext4  25692476 7552868  16812504  31% /\n--- findmnt\nTARGET SOURCE   FSTYPE OPTIONS\n/      /dev/vda ext4   rw,relatime,stripe=8192\n--- /proc/mounts (non-pseudo)\n/dev/vda / ext4 rw,relatime,stripe=8192 0 0\nshm /dev/shm tmpfs rw,nosuid,nodev,relatime 0 0\nselinuxfs /sys/fs/selinux selinuxfs rw,nosuid,noexec,relatime 0 0\ntmpfs /run tmpfs rw,nosuid,nodev,size=1624324k,nr_inodes=819200,mode=755 0 0\ntmpfs /run/lock tmpfs rw,nosuid,nodev,noexec,relatime,size=5120k 0 0\ntmpfs /run/user/1000 tmpfs rw,nosuid,nodev,relatime,size=812160k,nr_inodes=203040,mode=700,uid=1000,gid=1000 0 0\n--- lsblk\nNAME  SIZE TYPE FSTYPE MOUNTPOINT\nnbd0    0B disk        \nnbd1    0B disk        \nnbd2    0B disk        \nnbd3    0B disk        \nnbd4    0B disk        \nnbd5    0B disk        \nnbd6    0B disk        \nnbd7    0B disk        \nvda    25G disk        /\nnbd8    0B disk        \nnbd9    0B disk        \nnbd10   0B disk        \nnbd11   0B disk        \nnbd12   0B disk        \nnbd13   0B disk        \nnbd14   0B disk        \nnbd15   0B disk        \n--- kernel\n6.12.115\n2\n               total        used        free      shared  buff/cache   available\nMem:            7931         227        5022           0        2779        7703\n",
+    "io": {
+      "dropped_caches": "yes",
+      "tree_read_bytes": "1678278612",
+      "tree_read_ms": "10822",
+      "tree_read_mbps": "147",
+      "tree_stat_files": "77672",
+      "tree_stat_ms": "95",
+      "seq_write_mbps": "352.6",
+      "seq_read_mbps": "5910.4",
+      "k_iops": "468816",
+      "_iops": "12065",
+      "k_ms": "55"
+    },
+    "ioRaw": "dropped_caches=yes\ntree_read_bytes=1678278612 tree_read_ms=10822 tree_read_mbps=147\ntree_stat_files=77672 tree_stat_ms=95\nseq_write_mbps=352.6 seq_read_mbps=5910.4 rand_read_4k_iops=468816 rand_write_4k_sync32_iops=12065 small_create_5k_ms=97 small_read_5k_ms=45 small_rm_5k_ms=55\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\nawk: cmd. line:1: { if ($0==\"\") next; rbw=$7; riops=$8; wbw=$48; wiops=$49; printf \"fio_%s_direct=%s fio_%s_mbps=%.1f fio_%s_iops=%d\nawk: cmd. line:1:                                                                  ^ unterminated string\n",
+    "realwork": {
+      "git_status_ms": "390",
+      "git_log_ms": "33",
+      "npm_ci_warm_ms": "15381",
+      "npm_ci_warm_exit": "0",
+      "npm_ci_cold_ms": "18576",
+      "npm_ci_cold_exit": "0",
+      "typecheck_ms": "19471",
+      "typecheck_exit": "0",
+      "test_ms": "16713",
+      "test_exit": "0"
+    },
+    "realworkRaw": "git_status_ms=390 git_log_ms=33\nnpm_ci_warm_ms=15381 npm_ci_warm_exit=0\nnpm_ci_cold_ms=18576 npm_ci_cold_exit=0\ntypecheck_ms=19471 typecheck_exit=0\ntest_ms=16713 test_exit=0\n"
+  },
+  "leftovers": [],
+  "finishedAt": "2026-11-06T21:17:54.327Z"
+}
