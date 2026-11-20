@@ -1,5 +1,5 @@
 import { RUN_METHODS } from "../v1-client-state.ts";
-export { RUN_METHODS, REQUEST_METHODS, activityOf, expired, hash, validId } from "../v1-client-state.ts";
+export { RUN_METHODS, REQUEST_METHODS, activityOf, expired, hash, validId, validSessionId } from "../v1-client-state.ts";
 import type { AttemptAck, ModelAttemptHook } from "../model-attempt.ts";
 import type { Computers } from "../computers/service.ts";
 import type { EndUserCredits } from "../end-user-credits.ts";
@@ -34,8 +34,6 @@ import type { WrittenFile } from "../volume-tools.ts";
 import type { Inputs, RetryPlan } from "../inputs.ts";
 /** Where a tool comes from. */
 export type ToolSource = "attached" | "served" | "mcp" | "openapi" | "builtin" | "files" | "channel" | "runtime";
-
-export const validSessionId = (value: string) => /^client_[a-f0-9]{40}$/.test(value);
 
 export type SessionConfig = Omit<AgentConfig, "id" | "directory" | "tools" | "apiKey" | "idleTimeoutMs" | "idleCompactionEnabled">;
 /** Rarely-changing session identity and configuration (a row in `agents`); rewritten only when it changes. */

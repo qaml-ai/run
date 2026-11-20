@@ -59,6 +59,31 @@ test("uses ECS only for legacy compatibility misses and keeps the original reque
   assert.equal(route.mock.callCount(), 2);
 });
 
+test("serves the original bearer identity on both hosts and leaves console traffic and unexpected errors alone", async t => {
+  const authorization = "Bearer original-key";
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 401 }));
+  const unavailable = new Error("database unavailable");
+  const route = t.mock.fn(async (request: Request) => {
+    if (request.headers.get("authorization") !== authorization) return null;
+    if (new URL(request.url).search) throw unavailable;
+    return Response.json({ tenant: "legacy" });
+  });
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    const url = `https://${host}/v1/me`;
+    const bearer = { headers: { authorization } };
+    assert.deepEqual(await (await worker.fetch(new Request(url, bearer), env)).json(), { tenant: "legacy" });
+    assert.equal(route.mock.calls.at(-1)?.arguments[0].url, url);
+    assert.equal((await worker.fetch(new Request(url, { headers: { cookie: "console=session" } }), env)).status, 401);
+    assert.equal((await worker.fetch(new Request(url, { headers: { authorization: "Bearer refused" } }), env)).status, 401);
+    assert.equal((await worker.fetch(new Request(url, { method: "HEAD", ...bearer }), env)).status, 401);
+    await assert.rejects(worker.fetch(new Request(url + "?unavailable", bearer), env), error => error === unavailable);
+  }
+  assert.equal((await worker.fetch(new Request("https://example.com/v1/me", { headers: { authorization } }), env)).status, 401);
+  assert.equal(route.mock.callCount(), 6);
+  assert.equal(origin.mock.callCount(), 7);
+});
+
 test("offers hosted MCP on both hosts and limits its origin binding to the legacy API", async t => {
   const answer = new Response(null, { status: 202 });
   const origin = t.mock.method(globalThis, "fetch", async () => answer);
@@ -87,6 +112,59 @@ test("can select one test credential before sending all legacy requests to the W
   assert.equal((await worker.fetch(new Request(path, { headers: { authorization } }), env)).status, 204);
   assert.equal(route.mock.callCount(), 1);
   assert.equal(origin.mock.callCount(), 2);
+});
+
+test("offers bearer credential reads by provisioning key on both legacy hosts", async t => {
+  const fallback = new Response(null, { status: 418 });
+  const refused = new Response(null, { status: 403 });
+  const origin = t.mock.method(globalThis, "fetch", async () => fallback);
+  const route = t.mock.fn(async (_request: Request) => refused);
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  const options = { headers: { authorization: "Bearer fixture" } };
+  const path = (ref: string) => `/v1/agents/${ref}/credentials`;
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const ref of ["original-key", "%6Friginal-key"]) {
+      const request = new Request(`https://${host}${path(ref)}`, options);
+      assert.equal(await worker.fetch(request, env), refused);
+      assert.equal(route.mock.calls.at(-1)?.arguments[0].url, request.url);
+    }
+  }
+  for (const request of [
+    new Request(`https://example.com${path("original-key")}`, options),
+    new Request(`https://run.camelai.com${path("original-key")}`),
+    new Request(`https://run.camelai.com${path("original-key")}`, { ...options, method: "POST" }),
+    new Request(`https://run.camelai.com${path("original-key")}`, { headers: { ...options.headers, upgrade: "websocket" } }),
+    new Request(`https://run.camelai.com${path("a".repeat(81))}`, options),
+    new Request(`https://run.camelai.com${path("%xx")}`, options),
+  ]) {
+    assert.equal(await worker.fetch(request, env), fallback);
+    assert.deepEqual(origin.mock.calls.at(-1)?.arguments, [request, { redirect: "manual" }]);
+  }
+  assert.equal(route.mock.callCount(), 4);
+});
+
+test("dispatches only bearer definition reads on both legacy hosts", async t => {
+  const fallback = new Response(null, { status: 418 });
+  const origin = t.mock.method(globalThis, "fetch", async () => fallback);
+  const handled = new Response(null, { status: 204 });
+  const route = t.mock.fn(async (_request: Request) => handled);
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  const headers = { authorization: "Bearer existing-token" };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const path of ["/v1/definitions?unused=true", "/v1/definitions/def_123", "/v1/definitions/def_123/agents"]) {
+      const request = new Request(`https://${host}${path}`, { headers });
+      assert.equal(await worker.fetch(request, env), handled);
+      assert.equal(route.mock.calls.at(-1)?.arguments[0].url, request.url);
+    }
+  }
+  const base = "https://run.camelai.com/v1/definitions";
+  for (const request of [new Request(base), new Request(base, { method: "POST", headers }),
+    new Request(base + "/def_123", { method: "PATCH", headers }), new Request(base + "/%xx", { headers }),
+    new Request("https://example.com/v1/definitions", { headers })]) {
+    assert.equal(await worker.fetch(request, env), fallback);
+    assert.deepEqual(origin.mock.calls.at(-1)?.arguments, [request, { redirect: "manual" }]);
+  }
+  assert.equal(route.mock.callCount(), 6);
 });
 
 test("keeps legacy end-user writes on the origin while serving reads on the Worker", async t => {
@@ -150,30 +228,44 @@ test("selects legacy decisions independently and sends each selected POST once",
   assert.equal(v1.mock.callCount(), 0);
 });
 
-test("selects only exact authenticated Camel Bots and keeps all other POST bodies intact", async t => {
-  const bot = "1234567890abcdef";
+test("routes only the original Camel Bots credential, including calls with no bot context", async t => {
   const authorization = "Bearer fixture-shared-camel-bots";
+  const synthetic = "Bearer fixture-unbilled";
   const origin = t.mock.method(globalThis, "fetch", async (request: Request) => new Response(await request.text(), { status: 202 }));
   const route = t.mock.fn(async (request: Request) => new Response(await request.text()));
-  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_DECISIONS: { route },
-    LEGACY_DECISIONS_BOTS_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex"), LEGACY_DECISIONS_BOTS: bot };
-  const post = (body: string, auth = authorization) => new Request("https://run.camelai.com/v1/decisions", {
+  const syntheticRoute = t.mock.fn(async (request: Request) => new Response(await request.text(), { status: 201 }));
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_BOT_DECISIONS: { route },
+    LEGACY_DECISIONS_BOTS_AUTH_SHA256: digest(authorization), LEGACY_DECISIONS: { route: syntheticRoute },
+    LEGACY_DECISIONS_CANARY_AUTH_SHA256: digest(synthetic) };
+  const post = (body: string, auth = authorization, host = "run.camelai.com") => new Request(`https://${host}/v1/decisions`, {
     method: "POST", body, headers: { authorization: auth },
   });
-  const eligible = JSON.stringify({ state: "original body", context: { bot } });
-  const selected = await worker.fetch(post(eligible), env);
-  assert.equal(selected.status, 200);
-  assert.equal(await selected.text(), eligible);
-  const other = JSON.stringify({ state: "original body", context: { bot: "0011223344556677" } });
-  for (const [body, auth] of [[eligible, "Bearer wrong"], [other, authorization], ["{", authorization], [" ".repeat(2*1024*1024+1), authorization]]) {
-    const result = await worker.fetch(post(body, auth), env);
-    assert.equal(result.status, 202);
-    assert.equal(await result.text(), body);
+  const bodies = [
+    '{"state":"original body","context":{"bot":"b0011223344556677"},"subject":"owner","bucket":"decide:b0011223344556677"}',
+    '{"items":[{"state":"batch without bot"}],"actor":"ops:prompt-categories"}',
+    "{",
+    " ".repeat(2*1024*1024+1),
+  ];
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const body of bodies) {
+      const result = await worker.fetch(post(body, authorization, host), env);
+      assert.equal(result.status, 200);
+      assert.equal(await result.text(), body);
+    }
+    const existing = await worker.fetch(post(bodies[0]!, synthetic, host), env);
+    assert.equal(existing.status, 201);
+    assert.equal(await existing.text(), bodies[0]);
+    const unselected = await worker.fetch(post(bodies[0]!, "Bearer wrong", host), env);
+    assert.equal(unselected.status, 202);
+    assert.equal(await unselected.text(), bodies[0]);
   }
-  assert.equal((await worker.fetch(post(eligible), { ...env, LEGACY_DECISIONS_BOTS: "bad" })).status, 202);
-  assert.equal((await worker.fetch(post(eligible), { V2: env.V2, LEGACY_DECISIONS: { route } })).status, 202);
-  assert.equal(route.mock.callCount(), 1);
-  assert.equal(origin.mock.callCount(), 6);
+  assert.equal((await worker.fetch(post(bodies[0]!), { ...env, LEGACY_DECISIONS_BOTS_AUTH_SHA256: "bad" })).status, 202);
+  assert.equal((await worker.fetch(post(bodies[0]!), { ...env, LEGACY_BOT_DECISIONS: undefined })).status, 202);
+  assert.equal((await worker.fetch(post(bodies[0]!, authorization, "example.invalid"), env)).status, 202);
+  assert.equal(route.mock.callCount(), 8);
+  assert.equal(syntheticRoute.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 5);
 });
 
 test("routes volume and signed file traffic to the configured origin through both entrypoints", async t => {

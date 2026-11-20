@@ -32,6 +32,7 @@ import { takesFiles, type FileArguments, type FileUrls, type FileValue } from ".
 import type { Mount, VolumeService } from "./volumes.ts";
 import type { ToolContext } from "./volume-tools.ts";
 import type { HumanInputSettings } from "./inputs.ts";
+export { mcpServerView, openApiView } from "./v1-definition-reads.ts";
 
 /**
  * Server-side tool sources: tools the runtime calls itself, configured in a
@@ -301,9 +302,6 @@ function approvalFor(policy: ApprovalPolicy | undefined, tool: string, destructi
 const gated = (tool: ToolDefinition, mode: Exclude<ApprovalMode, "destructive">): ToolDefinition =>
   mode === "never" ? tool : { ...tool, ...(mode === "judged" ? { judged: true } : { needsApproval: true }) };
 
-/** What callers see of an OpenAPI source: its tools' names, never its credentials. */
-export const openApiView = ({ sealed: _sealed, operations: list, ...source }: OpenApiSpec) => ({ ...source, tools: list.map(operation => operation.name) });
-
 /**
  * Sealed credentials for a server at `url`. Sent without `headers` and `auth`, it keeps
  * those of its namesake in `previous`, but only at the same origin: credentials belong to it.
@@ -384,9 +382,6 @@ const tenantAudience = (audience: string, tenant: string) => audience.startsWith
 const ownAudience = (audience: string, url: URL | string, tenant: string) => sameOrigin(audience, url) || tenantAudience(audience, tenant);
 /** The audience to mint a source's tokens for: its own, if still one it may have (checked again: definitions saved before the rule), else its URL. */
 const audienceOf = (audience: string | undefined, url: string, tenant: string) => audience && ownAudience(audience, url, tenant) ? audience : url;
-
-/** What callers see of a server: never its credentials. */
-export const mcpServerView = ({ sealed: _sealed, ...server }: McpServerSpec) => server;
 
 /** A model-facing tool name for an MCP tool: `<server>__<tool>`, in the characters tool names allow. */
 const mcpToolName = (server: string, tool: string) => `${server}__${tool.replace(/[^A-Za-z0-9_]/g, "_")}`.slice(0, 80);

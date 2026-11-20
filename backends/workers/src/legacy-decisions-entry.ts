@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { accountServices } from "./account-services.ts";
 import { readText } from "./account-http.ts";
@@ -14,7 +15,7 @@ import { keyServices } from "./security-services.ts";
 import { DECISION_LIMITS } from "../../../src/limits.ts";
 import { chargesPlatform } from "../../../src/core/key-source.ts";
 
-type Env = AdmissionEnv & { AGENT_DECISION_NODE_CONCURRENCY?: string; AGENT_DECISIONS_URL?: string; TEST_MODEL?: string };
+type Env = AdmissionEnv & { AGENT_DECISION_NODE_CONCURRENCY?: string; AGENT_DECISIONS_URL?: string; TEST_MODEL?: string; LEGACY_DECISIONS_BOTS_AUTH_SHA256?: string };
 const deciders = new WeakMap<Env, Decider>();
 function deciderFor(env: Env, creditMultiplier: number) {
   let decider = deciders.get(env);
@@ -51,13 +52,22 @@ function deciderFor(env: Env, creditMultiplier: number) {
 const json = (body: unknown, status = 200, headers = {}) =>
   Response.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
 
+async function discardUnreadBody(request: Request) {
+  const body = request.body;
+  // An early response otherwise leaves a transferred RPC request stream open.
+  if (body && !body.locked) await body.cancel().catch(() => {});
+}
+
 /** Standalone v1 decisions keep the original accounts, OpenRouter keys and wallet ledgers. */
 export class LegacyDecisions extends WorkerEntrypoint<Env> {
+  protected readonly requiredTokenTenant?: string;
+
   async route(request: Request): Promise<Response | null> {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/v1/decisions") return null;
     try {
       return await this.#decide(request);
     } catch (error) {
+      await discardUnreadBody(request);
       const limited = admissionError(error);
       if (limited) return limited;
       const status = errorStatus(error, 500);
@@ -79,7 +89,8 @@ export class LegacyDecisions extends WorkerEntrypoint<Env> {
     const origin = env.AGENT_PUBLIC_URL ?? env.PUBLIC_URL ?? new URL(request.url).origin;
     const { auth, oauth, limits } = accountServices(env, accounts, origin);
     const principal = authorization ? await accounts.authenticate(authorization) ?? await oauth.authenticate(authorization) : await auth.principal(request);
-    if (!principal) throw new HttpError(401, authenticationHint(request, origin));
+    if (!principal || (this.requiredTokenTenant && (principal.via !== "token" || principal.tenant !== this.requiredTokenTenant)))
+      throw new HttpError(401, authenticationHint(request, origin));
     if (principal.via === "oauth")
       throw new HttpError(403, "An OAuth access token works with agents only: it cannot get agent tokens or make API tokens, links, webhooks, channels or provider keys. Use an API token or the console");
     if (principal.via === "console" && !auth.allowsMutation(request)) throw new HttpError(403, "Console requests must be same-origin");
@@ -123,6 +134,25 @@ export class LegacyDecisions extends WorkerEntrypoint<Env> {
       });
     }
     return json(decisionsAnswer(decided, input.batch));
+  }
+}
+
+/** Accept the Camel Bots app token on either legacy hostname, with billing decided by the original request. */
+export class LegacyCamelBotsDecisions extends LegacyDecisions {
+  protected override readonly requiredTokenTenant = "camel-bots";
+
+  override async route(request: Request): Promise<Response | null> {
+    const { protocol, hostname, pathname, port } = new URL(request.url);
+    if (protocol !== "https:" || port || (hostname !== "run.camelai.com" && hostname !== "agents.camelai.dev") ||
+        pathname !== "/v1/decisions" || request.method !== "POST" || request.headers.has("upgrade")) return null;
+    const expected = this.env.LEGACY_DECISIONS_BOTS_AUTH_SHA256;
+    const auth = request.headers.get("authorization");
+    if (expected && /^[a-f0-9]{64}$/.test(expected) && auth) {
+      const digest = createHash("sha256").update(auth).digest();
+      if (timingSafeEqual(digest, Buffer.from(expected, "hex"))) return super.route(request);
+    }
+    await discardUnreadBody(request);
+    return json({ error: "Decisions are unavailable", code: "UNAUTHORIZED" }, 401);
   }
 }
 
