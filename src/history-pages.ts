@@ -51,7 +51,7 @@ export function rowMessages(entry: EntryRecord, skip: number, count: number): Ag
  */
 export class AgentHistory {
   readonly db: Db;
-  constructor(db: Db) { this.db = db; }
+  constructor(db: Db, private readonly readOnly = false) { this.db = db; }
 
   /**
    * The agent's history length. An agent whose ordinals are not placed yet is placed first (`fillOrdinals`); one with no
@@ -62,6 +62,7 @@ export class AgentHistory {
     const row = await read();
     if (!row) return 0;
     if (row.history_next !== null) return row.history_next;
+    if (this.readOnly) throw new HttpError(503, "The agent's history index is being prepared", "V1_HISTORY_INDEX_UNAVAILABLE");
     const filled = await fillOrdinals(this.db, agent, { dryRun: false, maxEntries: LAZY_FILL_ENTRIES });
     // A journal with no base marker holds history only a legacy format had: refused, as a load refuses it.
     if (filled.code === "no_base") throw legacyFormatRefused(agent, undefined, "not_on_pi");

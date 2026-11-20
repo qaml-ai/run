@@ -3,7 +3,7 @@ import { FRAME_BYTES, type RequestRecord } from "../../../shared/client-protocol
 import { expired, hash, REQUEST_METHODS, resumeId, validId, type ArchivedV1Input } from "../../../src/v1-client-state.ts";
 import { HttpError } from "../../../src/core/http-error.ts";
 import { canonical } from "../../../shared/durable-json.ts";
-import { answerInput, mayAnswer, settledAlready, type Input, type Responder } from "./decision-inputs.ts";
+import { answerInput, mayAnswer, settledAlready, Inputs, type Input, type Responder } from "./decision-inputs.ts";
 import { answerList } from "./input-policy.ts";
 import { actorInput } from "./security-policy.ts";
 import { senderInput } from "./sender.ts";
@@ -13,6 +13,8 @@ import { PromptInput } from "../../../src/v1-prompt-schema.ts";
 import { unsupportedV1Operation, type CompatibilitySql, type V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { readText } from "./account-http.ts";
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
+import { AgentHistory, historyPageInput } from "../../../src/history-pages.ts";
+import type { Db } from "./postgres.ts";
 import { listAgentPage, agentListQuery } from "../../../src/agent-directory-page.ts";
 
 const tenantPaths = /^\/v1\/agents\/(client_[a-f0-9]{40})\/(prompt|mounts|events|state|history|inputs(?:\/[^/]+)?|requests\/[^/]+)$/;
@@ -68,7 +70,7 @@ async function agentTenant(request: Request, sql: CompatibilitySql, agent: strin
 /** Legacy tenant and agent identity use Postgres even when all model work happens on v2. */
 export async function handleLegacyAgentRequest(
   request: Request,
-  sql: CompatibilitySql,
+  sql: Db,
   compatibility: V1Compatibility,
   principal: { tenantId: string; kind: string } | null,
   browser?: BrowserClaims,
@@ -99,14 +101,38 @@ export async function handleLegacyAgentRequest(
 
   const signal = request.signal;
   const route = await compatibility.route(tenant, agent, request.method === "POST" ? signal : undefined);
-  if (!route) return;
+  if (!route) {
+    if (request.method !== "GET") return;
+    if (operation === "inputs") {
+      const state = url.searchParams.get("state");
+      if (!scoped && state !== null && !inputStates.has(state)) throw new HttpError(400, "Invalid input state");
+      const inputs = await new Inputs({ db: sql }).list(tenant, { agent, state: state ?? undefined });
+      return json(browser ? readableMessage(browser, inputs) : inputs);
+    }
+    if (operation === "history") {
+      const history = new AgentHistory(sql, true);
+      const query = {
+        before: url.searchParams.get("before") ?? undefined,
+        after: url.searchParams.get("after") ?? undefined,
+        limit: url.searchParams.get("limit") ?? undefined,
+        maxBytes: url.searchParams.get("maxBytes") ?? undefined,
+      };
+      const bounds = historyPageInput(query);
+      const value = Object.values(query).every(value => value === undefined)
+        ? { messages: await history.messages(agent, 0, undefined, 16 * 1024 * 1024) }
+        : bounds.after !== undefined ? await history.pageAfter(agent, { ...bounds, after: bounds.after }) : await history.page(agent, bounds);
+      return json(browser ? readableMessage(browser, value) : value);
+    }
+    if (operation !== "detail") return;
+  }
   if (operation === "detail") {
     if (url.searchParams.get("refresh") === "true") throw unsupportedV1Operation();
     const [{ agents }, current] = await Promise.all([
       listAgentPage(sql, tenant, agentListQuery(new URLSearchParams({ id: agent }))),
-      compatibility.detail(route, signal),
+      route && compatibility.detail(route, signal),
     ]);
     if (!agents[0]) throw unknownAgent();
+    if (!current) return json(agents[0]);
     const tools = (current.tools ?? []).map(({ name, description, parameters }) =>
       ({ name, description: description ?? "", ...(parameters ? { parameters } : {}) }));
     const mcpServers = (current.mcpServers ?? []).map(({ name }) => ({ name }));
@@ -119,6 +145,7 @@ export async function handleLegacyAgentRequest(
     return json({ ...agents[0], model: current.model, running: current.status === "running", systemPrompt: current.instructions ?? "",
       builtins: current.builtins ?? [], tools, mcpServers, toolSources });
   }
+  if (!route) return;
   async function archived(id: string): Promise<RequestRecord | undefined> {
     const { rows: [row] } = await sql.query<{ receipt: RequestRecord | null }>(
       `select (select value from jsonb_array_elements(receipts) where value->>'id' = $3) as receipt
