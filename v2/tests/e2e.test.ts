@@ -1172,6 +1172,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       const largeMessages = Array.from({ length: 3 }, (_, sequence) => ({
         role: "user", timestamp, content: String(sequence).repeat(chunkBytes),
       }));
+      await assert.rejects(largeAgent.importV1History({
+        source, appendAfter: 0, messages: largeMessages.slice(0, 2),
+      }), { status: 413 });
+      assert.deepEqual(await largeAgent.history(), []);
       const uploaded = await importHistoryInChunks(largeAgent, { source, messages: [...largeMessages, call, result] });
       assert.equal(uploaded.count, 5);
       const largeHistory = await largeAgent.history();

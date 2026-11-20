@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { AgentDO, getAgentStub } from "./agent-do.ts";
 import {
@@ -772,13 +773,24 @@ app.put("/v2/agents/:idOrKey/history/import", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
   const input = parseV1History(await c.req.json().catch(() => null));
   if (input.appendAfter !== undefined) {
-    const receipt = await sha256Hex(JSON.stringify(["v1-history-chunk", input.source, input.previous, input.appendAfter, input.messages]));
-    return c.json(await stub.appendV1HistoryChunk(input, receipt));
+    throw new ApiError(400, "invalid_history", "Use the chunk import endpoint");
   }
   const receipt = await sha256Hex(JSON.stringify([input.source, input.messages]));
   return c.json(await (input.messages.some(message => message.content.legacyInlineImages)
     ? stub.importV1HistoryWithInlineImages(input, receipt)
     : stub.importV1History(input, receipt)));
+});
+
+// Older Worker versions must reject the route instead of interpreting a chunk as a full replacement.
+app.put("/v2/agents/:idOrKey/history/import/chunk", bodyLimit({
+  maxSize: 1024 * 1024,
+  onError: () => { throw new ApiError(413, "history_chunk_too_large", "The history chunk exceeds 1 MiB"); },
+}), async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const input = parseV1History(await c.req.json().catch(() => null));
+  if (input.appendAfter === undefined) throw new ApiError(400, "invalid_history", "The chunk requires an append offset");
+  const receipt = await sha256Hex(JSON.stringify(["v1-history-chunk", input.source, input.previous, input.appendAfter, input.messages]));
+  return c.json(await stub.appendV1HistoryChunk(input, receipt));
 });
 
 app.post("/v2/agents/:idOrKey/compact", async (c) => {

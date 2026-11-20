@@ -235,7 +235,8 @@ export class AgentHandle {
   }
 
   importV1History(input: V1HistoryImport): Promise<{ receipt: string; count: number }> {
-    return this.transport.requestJson("PUT", `${this.basePath}/history/import`, input);
+    const endpoint = input.appendAfter === undefined ? "import" : "import/chunk";
+    return this.transport.requestJson("PUT", `${this.basePath}/history/${endpoint}`, input);
   }
 
   async events(options?: { after?: number; runId?: string }): Promise<AgentEvent[]> {
