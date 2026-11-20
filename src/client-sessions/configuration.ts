@@ -6,7 +6,7 @@ import { withOpenRouterDetails } from "../openrouter-model.ts";
 import { currentModel, modelReference } from "../virtual-models.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { AgentConfig, Credentials, ToolDefinition } from "../protocol.ts";
 import type { AgentSupervisor } from "../supervisor.ts";
 import { configurationRefusal, configurationUpdate } from "../session-config.ts";
@@ -17,6 +17,8 @@ import { applicationMetadata, agentMetadata, type AgentMetadata } from "../../sh
 import { HttpError } from "../http.ts";
 import { listAgentPage, type AgentListQuery } from "../agent-directory-page.ts";
 export type { AgentListQuery } from "../agent-directory-page.ts";
+import { agentId, agentToken, v1AgentCredentials } from "../v1-agent-credentials.ts";
+export { agentId } from "../v1-agent-credentials.ts";
 import { VolumeService } from "../volumes.ts";
 import type { Db } from "../db.ts";
 import { NotOwner, type Claim } from "../ownership.ts";
@@ -32,7 +34,7 @@ import * as events from "./events.ts";
 import * as spend from "./spend.ts";
 import * as delegation from "./delegation.ts";
 import * as sessionTools from "./tools.ts";
-import { type SessionHeader, type RunSettings, type ForkedFrom, type JournalRecord, type Session, type ClientSessionOptions, type DefinitionConfig, validSessionId, validId, hash, expired, activityOf, visible, runningRun } from "./state.ts";
+import { type SessionHeader, type RunSettings, type ForkedFrom, type JournalRecord, type Session, type ClientSessionOptions, type DefinitionConfig, validId, hash, expired, activityOf, visible, runningRun } from "./state.ts";
 
 export type ConfigurationContext = {
   options: ClientSessionOptions;
@@ -133,11 +135,6 @@ export const inlineServers = (ctx: ConfigurationContext, tenant: string) => (inp
   if (!ctx.options.sources) throw new HttpError(400, "This runtime has no tool sources: mcpServers cannot be served");
   return ctx.options.sources.inline(input, tenant);
 };
-
-/** The id of the agent `create` makes for a tenant's idempotency key. */
-export function agentId(tenant: string, key: string) {
-  return `client_${hash(`${tenant}:${key}`).slice(0, 40)}`;
-}
 
 /**
  * Provision an agent, idempotently per `key`. An agent made from a definition records it
@@ -268,14 +265,6 @@ export async function create(ctx: ConfigurationContext, definitions: ToolDefinit
 }
 
 /**
- * An agent's token: derived from its tenant and key (with the key's generation) until it is rotated, then from its
- * id and how many times it was, so rotating makes a new one even for an agent made without a key.
- */
-function agentToken(ctx: ConfigurationContext, tenant: string, scoped: string, id: string, rotation = 0) {
-  return createHmac("sha256", ctx.options.secret).update(rotation ? `client-rotated:${tenant}:${id}:${rotation}` : `client-v2:${tenant}:${scoped}`).digest("hex");
-}
-
-/**
  * A new token for a tenant's agent: the old one stops working at once, here and on every node (they check the header
  * this writes), and connections made with it (the application's, event streams) are closed. Applications reconnect
  * with the new one, which `credentials` gives from now on.
@@ -284,7 +273,7 @@ export async function rotateToken(ctx: ConfigurationContext, id: string, tenant:
   const session = (await ctx.owns(id, tenant)) ? await ctx.load(id) : undefined;
   if (!session || session.header.tenant !== tenant) throw new HttpError(404, "Unknown agent");
   const rotation = (session.header.tokenRotation ?? 0) + 1;
-  const token = agentToken(ctx, tenant, "", id, rotation);
+  const token = agentToken(ctx.options.secret, tenant, "", id, rotation);
   session.header.tokenRotation = rotation;
   session.header.digest = hash(token);
   await ctx.writeHeader(session);
@@ -307,7 +296,7 @@ export async function keyed(ctx: ConfigurationContext, tenant: string, key: stri
     // A deleted or expired agent (a tombstone once purged) is never loaded again; one another node serves only needs its header.
     const existing = ctx.sessions.has(id) ? undefined : await ctx.readHeader(id);
     const header = ctx.sessions.get(id)?.header ?? existing?.value;
-    if (!header || !(header.revoked || expired(header.expiresAt))) return { id, token: agentToken(ctx, tenant, scoped, id, header?.tokenRotation), existing };
+    if (!header || !(header.revoked || expired(header.expiresAt))) return { id, token: agentToken(ctx.options.secret, tenant, scoped, id, header?.tokenRotation), existing };
   }
 }
 
@@ -323,41 +312,8 @@ export function list(ctx: ConfigurationContext, tenant: string, query: AgentList
   });
 }
 
-/**
- * An existing agent's credentials, by its id or the key it was made with, without touching its configuration (an
- * upsert would set it to what the caller passes). The token is the one `create` gave: derived from the key and its
- * generation, so only an agent made with a key has one to give again; or, once rotated (`rotateToken`), the latest.
- */
-export async function credentials(ctx: ConfigurationContext, tenant: string, ref: string): Promise<{ id: string; token: string; expiresAt: number | null; configHash?: string }> {
-  // By id alone: a purged agent's tombstone keeps only its id, and still holds its key's generation.
-  const live = async (id: string) => (await ctx.db.query("select tenant, header->>'key' as key, (header->>'tokenRotation')::int as rotation, header->>'provisionHash' as config_hash, expires_at, revoked, header->'run' is not null as run from agents where id = $1", [id])).rows[0] as { tenant: string | null; key: string | null; rotation: number | null; config_hash: string | null; expires_at: number | null; revoked: boolean; run: boolean } | undefined;
-  // A stateless run's session is no agent: it has no credentials to give.
-  const alive = (row: { tenant: string | null; expires_at: number | null; revoked: boolean; run: boolean }) => row.tenant === tenant && !row.revoked && !row.run && !expired(row.expires_at === null ? null : Number(row.expires_at));
-  const found = (id: string, scoped: string, row: { rotation: number | null; config_hash: string | null; expires_at: number | null }) => {
-    const configHash = ctx.sessions.get(id)?.header.provisionHash ?? row.config_hash;
-    return { id, token: agentToken(ctx, tenant, scoped, id, row.rotation ?? 0), expiresAt: row.expires_at === null ? null : Number(row.expires_at), ...(configHash ? { configHash } : {}) };
-  };
-  if (validSessionId(ref)) {
-    const row = await live(ref);
-    if (row && alive(row)) {
-      if (row.rotation) return found(ref, "", row);
-      if (!row.key) throw new HttpError(409, "AGENT_KEYLESS: this agent was made without a key, so its token is only what its create answered");
-      // Its generation: the key's agents before it were deleted or expired.
-      for (let generation = 0; generation < 10_000; generation++) {
-        const scoped = `${row.key}${generation ? `#${generation}` : ""}`;
-        if (agentId(tenant, scoped) === ref) return found(ref, scoped, row);
-      }
-    }
-  }
-  if (validId(ref)) {
-    for (let generation = 0; ; generation++) {
-      const scoped = `${ref}${generation ? `#${generation}` : ""}`, id = agentId(tenant, scoped);
-      const row = await live(id);
-      if (!row) break;
-      if (alive(row)) return found(id, scoped, row);
-    }
-  }
-  throw new HttpError(404, "No agent has this id or key");
+export function credentials(ctx: ConfigurationContext, tenant: string, ref: string) {
+  return v1AgentCredentials(ctx.db, ctx.options.secret, tenant, ref, { localProvisionHash: id => ctx.sessions.get(id)?.header.provisionHash });
 }
 
 export async function inspect(ctx: ConfigurationContext, id: string, tenant: string) {

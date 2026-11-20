@@ -15,6 +15,7 @@ import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
 import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
+import { v1AgentCredentials } from "../../../src/v1-agent-credentials.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -293,6 +294,25 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         const auth = await authenticateMoney(request, env, { bearerOnly: true });
         const identity = await legacyAccountIdentity(request, env, auth?.principal);
         return identity ? publicPageHeaders(request, corsResponse(request, identity)) : null;
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
+    const credentials = /^\/v1\/agents\/(client_[a-f0-9]{40})\/credentials$/.exec(url.pathname);
+    const authorization = request.headers.get("authorization") ?? undefined;
+    if (request.method === "GET" && credentials && authorization) {
+      try {
+        await apiRequest(request, env);
+        if (BrowserTokens.carries(authorization)) {
+          new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(authorization);
+          throw new CoreHttpError(403, "A browser token only reads an agent's events, state, history and inputs");
+        }
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        if (!auth) return null;
+        const secret = env.AGENT_SESSION_SECRET;
+        if (!secret) throw new CoreHttpError(503, "Agent credentials are unavailable");
+        const value = await v1AgentCredentials(database(env), secret, auth.tenantId, credentials[1], { verifyDigest: true });
+        return publicPageHeaders(request, corsResponse(request, json(value)));
       } catch (error) {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
       }
