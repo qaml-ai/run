@@ -276,6 +276,7 @@ export class AgentDO extends DurableObject<Env> {
 
   private readConfigOrNull(): AgentConfig | null {
     if (this.cachedConfig) return this.cachedConfig;
+    this.ensureSql();
     const rows = this.ctx.storage.sql
       .exec<{ config_json: string }>(`SELECT config_json FROM config WHERE id = 1`)
       .toArray();
@@ -1174,7 +1175,7 @@ export class AgentDO extends DurableObject<Env> {
   private async drainRunQueue(): Promise<void> {
     if (this.destroying || !this.sqlReady || this.queueDrain || this.activeRunId) return;
     const drain = (async () => {
-      while (!this.destroying) {
+      while (!this.destroying && this.sqlReady) {
         // Do not start a new queued run while another run is paused awaiting human input
         const pausedRow = this.ctx.storage.sql
           .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`)

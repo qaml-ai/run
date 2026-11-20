@@ -34,7 +34,7 @@ export async function bridgeEvents(stub: RpcStub<AgentDO>, { after, runId, follo
     void (error ? writer.abort(error) : writer.close()).catch(() => {});
     try { socket.close(1000, "Stream closed"); } catch {}
   };
-  const abort = () => finish(signal.reason);
+  const abort = () => finish();
   const encode = (event: AgentEventRecord) => encoder.encode(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
 
   function writeLive(event: AgentEventRecord, bytes: Uint8Array) {
@@ -71,8 +71,10 @@ export async function bridgeEvents(stub: RpcStub<AgentDO>, { after, runId, follo
       finish(error);
     }
   });
-  socket.addEventListener("close", ({ code }) => finish(new Error(`Agent event WebSocket closed (${code})`)));
-  socket.addEventListener("error", () => finish(new Error("Agent event WebSocket failed")));
+  // Close the SSE stream cleanly when the DO WebSocket disconnects (hibernation, deploy, eviction, or idle close)
+  // so SSE clients reconnect from Last-Event-ID without recording an unhandled Worker exception.
+  socket.addEventListener("close", () => finish());
+  socket.addEventListener("error", () => finish());
   void writer.closed.catch(finish);
   socket.accept();
 
