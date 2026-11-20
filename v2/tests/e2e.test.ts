@@ -12,6 +12,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { unstable_startWorker } from "wrangler";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool, parseSSE, type SSEMessage } from "../sdk/src/index.ts";
+import { importHistoryInChunks } from "../scripts/migrate-history.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
@@ -1161,26 +1162,21 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       assert.equal(tail.count, 3);
       assert.deepEqual(await agent.importV1History(next), tail);
       await assert.rejects(agent.importV1History(initial), { status: 409 });
+      await assert.rejects(agent.importV1History({ source, previous: tail.receipt, messages: [first] }), { status: 409 });
       const history = await agent.history();
       assert.deepEqual(history.map(row => row.seq), [1, 2, 3]);
       assert.deepEqual(history.map(row => (row.content as { meta: { v1: unknown } }).meta.v1), [first, call, result]);
 
       const largeAgent = await camel.agents.upsert("chunked-large-history", {});
-      let receipt: string | undefined;
       const chunkBytes = 850 * 1024;
-      for (let sequence = 0; sequence < 3; sequence++) {
-        const content = String(sequence).repeat(chunkBytes);
-        const chunk = await largeAgent.importV1History({
-          source, ...(receipt === undefined ? {} : { previous: receipt }), appendAfter: sequence,
-          messages: [{ role: "user", timestamp, content }],
-        });
-        assert.equal(chunk.count, sequence + 1);
-        receipt = chunk.receipt;
-      }
+      const largeMessages = Array.from({ length: 3 }, (_, sequence) => ({
+        role: "user", timestamp, content: String(sequence).repeat(chunkBytes),
+      }));
+      const uploaded = await importHistoryInChunks(largeAgent, { source, messages: [...largeMessages, call, result] });
+      assert.equal(uploaded.count, 5);
       const largeHistory = await largeAgent.history();
-      const largeContents = largeHistory.map(row => (row.content as { meta: { v1: { content: string } } }).meta.v1.content);
-      assert.deepEqual(largeContents.map(content => Buffer.byteLength(content)), [chunkBytes, chunkBytes, chunkBytes]);
-      assert.deepEqual(largeContents.map(content => content[0]), ["0", "1", "2"]);
+      assert.deepEqual(largeHistory.map(row => (row.content as { meta: { v1: unknown } }).meta.v1),
+        [...largeMessages, call, result]);
     } finally {
       await camel.close();
     }

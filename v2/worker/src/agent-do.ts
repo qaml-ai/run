@@ -2100,6 +2100,9 @@ export class AgentDO extends DurableObject<Env> {
       if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
         throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
       }
+      if (imported?.chunked && input.appendAfter === undefined) {
+        throw new ApiError(409, "history_import_conflict", "A chunked history cannot be replaced in one request");
+      }
       if (input.appendAfter !== undefined) {
         if (offset > 0 && imported?.chunked !== true) {
           throw new ApiError(409, "history_import_conflict", "Start chunked history at the beginning");
