@@ -204,30 +204,44 @@ test("selects legacy decisions independently and sends each selected POST once",
   assert.equal(v1.mock.callCount(), 0);
 });
 
-test("selects only exact authenticated Camel Bots and keeps all other POST bodies intact", async t => {
-  const bot = "1234567890abcdef";
+test("routes only the original Camel Bots credential, including calls with no bot context", async t => {
   const authorization = "Bearer fixture-shared-camel-bots";
+  const synthetic = "Bearer fixture-unbilled";
   const origin = t.mock.method(globalThis, "fetch", async (request: Request) => new Response(await request.text(), { status: 202 }));
   const route = t.mock.fn(async (request: Request) => new Response(await request.text()));
-  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_DECISIONS: { route },
-    LEGACY_DECISIONS_BOTS_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex"), LEGACY_DECISIONS_BOTS: bot };
-  const post = (body: string, auth = authorization) => new Request("https://run.camelai.com/v1/decisions", {
+  const syntheticRoute = t.mock.fn(async (request: Request) => new Response(await request.text(), { status: 201 }));
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_BOT_DECISIONS: { route },
+    LEGACY_DECISIONS_BOTS_AUTH_SHA256: digest(authorization), LEGACY_DECISIONS: { route: syntheticRoute },
+    LEGACY_DECISIONS_CANARY_AUTH_SHA256: digest(synthetic) };
+  const post = (body: string, auth = authorization, host = "run.camelai.com") => new Request(`https://${host}/v1/decisions`, {
     method: "POST", body, headers: { authorization: auth },
   });
-  const eligible = JSON.stringify({ state: "original body", context: { bot } });
-  const selected = await worker.fetch(post(eligible), env);
-  assert.equal(selected.status, 200);
-  assert.equal(await selected.text(), eligible);
-  const other = JSON.stringify({ state: "original body", context: { bot: "0011223344556677" } });
-  for (const [body, auth] of [[eligible, "Bearer wrong"], [other, authorization], ["{", authorization], [" ".repeat(2*1024*1024+1), authorization]]) {
-    const result = await worker.fetch(post(body, auth), env);
-    assert.equal(result.status, 202);
-    assert.equal(await result.text(), body);
+  const bodies = [
+    '{"state":"original body","context":{"bot":"b0011223344556677"},"subject":"owner","bucket":"decide:b0011223344556677"}',
+    '{"items":[{"state":"batch without bot"}],"actor":"ops:prompt-categories"}',
+    "{",
+    " ".repeat(2*1024*1024+1),
+  ];
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const body of bodies) {
+      const result = await worker.fetch(post(body, authorization, host), env);
+      assert.equal(result.status, 200);
+      assert.equal(await result.text(), body);
+    }
+    const existing = await worker.fetch(post(bodies[0]!, synthetic, host), env);
+    assert.equal(existing.status, 201);
+    assert.equal(await existing.text(), bodies[0]);
+    const unselected = await worker.fetch(post(bodies[0]!, "Bearer wrong", host), env);
+    assert.equal(unselected.status, 202);
+    assert.equal(await unselected.text(), bodies[0]);
   }
-  assert.equal((await worker.fetch(post(eligible), { ...env, LEGACY_DECISIONS_BOTS: "bad" })).status, 202);
-  assert.equal((await worker.fetch(post(eligible), { V2: env.V2, LEGACY_DECISIONS: { route } })).status, 202);
-  assert.equal(route.mock.callCount(), 1);
-  assert.equal(origin.mock.callCount(), 6);
+  assert.equal((await worker.fetch(post(bodies[0]!), { ...env, LEGACY_DECISIONS_BOTS_AUTH_SHA256: "bad" })).status, 202);
+  assert.equal((await worker.fetch(post(bodies[0]!), { ...env, LEGACY_BOT_DECISIONS: undefined })).status, 202);
+  assert.equal((await worker.fetch(post(bodies[0]!, authorization, "example.invalid"), env)).status, 202);
+  assert.equal(route.mock.callCount(), 8);
+  assert.equal(syntheticRoute.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 5);
 });
 
 test("routes volume and signed file traffic to the configured origin through both entrypoints", async t => {

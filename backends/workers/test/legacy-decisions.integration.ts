@@ -40,8 +40,12 @@ test("v1 decisions keep request, Jev result, credit refusals and settlement cont
     .replaceAll(':"decision_role"', fixtureUser);
   const apiKey = "art_fixture-decision-tenant";
   const auth = `Bearer ${apiKey}`;
+  const camelBotsAuth = "Bearer art_fixture-camel-bots-app";
   const tenantConfig = {
-    tenants: { none: { tokenSha256: "0".repeat(64), billing: "none" } },
+    tenants: {
+      none: { tokenSha256: "0".repeat(64), billing: "none" },
+      "camel-bots": { tokenSha256: "1".repeat(64), billing: "none", platformKeys: true, decisionConcurrency: 48 },
+    },
     platformKeys: { openrouter: "fixture-platform-key" },
   };
   const f = await startFixture({
@@ -49,12 +53,17 @@ test("v1 decisions keep request, Jev result, credit refusals and settlement cont
     noCamelfsTier: true,
     databaseRole: { grants, fixtureUser },
     entrypoint: fileURLToPath(new URL("./legacy-decisions-entry.ts", import.meta.url)),
-    tenants: [{ id: "fixture", token: apiKey }, { id: "none", token: "art_fixture-unbilled", billing: "none", seedCredit: false }],
+    tenants: [
+      { id: "fixture", token: apiKey },
+      { id: "none", token: "art_fixture-unbilled", billing: "none", seedCredit: false },
+      { id: "camel-bots", token: camelBotsAuth.slice(7), billing: "none", seedCredit: false },
+    ],
     vars: {
       TEST_MODE: "1", TEST_MODEL: "1", AGENT_CREATE_DIAGNOSTICS: "1",
       AGENT_DECISIONS_URL: `http://127.0.0.1:${address.port}`,
       AGENT_OPENROUTER_CREDIT_MULTIPLIER: "1.2",
       AGENT_TENANTS_JSON: JSON.stringify(tenantConfig),
+      LEGACY_DECISIONS_BOTS_AUTH_SHA256: createHash("sha256").update(camelBotsAuth).digest("hex"),
     },
   });
   t.after(() => f.stop());
@@ -141,6 +150,57 @@ test("v1 decisions keep request, Jev result, credit refusals and settlement cont
   assert.equal((await f.db.query("select platform_cost from usage where tenant='none'")).rows[0].platform_cost, 0.0006);
   assert.equal((await send(item, null, { ...consoleHeaders, origin: f.url })).status, 200, f.worker.logs());
   assert.equal((await fetch(f.url + "/v1/me")).status, 418);
+
+  const sendApp = (body: unknown, authorization: string | null = camelBotsAuth, host = "run.camelai.com") =>
+    send(body, authorization, { "x-test-camel-bots": host });
+  const deniedOpenUpload = async (authorization: string) => {
+    const response = await send(item, authorization, { "x-test-camel-bots": "run.camelai.com", "x-test-open-upload": "1" });
+    await expectError(response, 401, "UNAUTHORIZED");
+    assert.equal(response.headers.get("x-test-upload-cancelled"), "true");
+  };
+  const priorCalls = calls.length;
+  await expectError(await sendApp(item, auth), 401, "UNAUTHORIZED");
+  await expectError(await sendApp(item, null), 401, "UNAUTHORIZED");
+  await expectError(await sendApp(item, `Bearer ${oauth}`), 401, "UNAUTHORIZED");
+  await deniedOpenUpload(auth);
+  assert.equal((await sendApp(item, camelBotsAuth, "unrelated.example")).status, 418);
+  await expectError(await sendApp("{"), 400, "INVALID_REQUEST");
+  assert.equal(calls.length, priorCalls);
+
+  await f.db.query("insert into end_user_settings (tenant,enabled,updated_at,allowances) values ('camel-bots',true,$1,$2)",
+    [now, JSON.stringify({ "decide:allowance": 1000 })]);
+  await f.db.query("insert into end_users (tenant,id,balance,created_at,updated_at) values ('camel-bots','app-wallet',1000,$1,$1)", [now]);
+  await f.db.query("insert into end_user_lots (tenant,end_user,key,amount,remaining,expires_at,created_at) values ('camel-bots','app-wallet','first',1000,1000,$1,$2)", [now + 300_000, now]);
+  await expectError(await sendApp({ ...item, subject: "empty", bucket: "decide:another-bot" }), 402, "END_USER_CREDIT");
+  assert.equal(calls.length, priorCalls);
+  const appDebit = await sendApp({ ...item, subject: "app-wallet", bucket: "decide:another-bot",
+    context: { bot: "b1122334455667788" } }, camelBotsAuth, "agents.camelai.dev");
+  const appAnswer = await appDebit.json() as { costUsd: number };
+  assert.equal(appDebit.status, 200, JSON.stringify(appAnswer) + f.worker.logs());
+  assert.equal(appAnswer.costUsd, 0.0005);
+  const { rows: [appUsage] } = await f.db.query("select end_user, amount, bucket from end_user_ledger where tenant='camel-bots'");
+  assert.deepEqual(appUsage, { end_user: "app-wallet", amount: "-600", bucket: "decide:another-bot" });
+
+  const appAllowance = await sendApp({ ...item, subject: "no-paid-balance", bucket: "decide:allowance" });
+  const allowanceAnswer = await appAllowance.json() as { costUsd: number };
+  assert.equal(appAllowance.status, 200, JSON.stringify(allowanceAnswer) + f.worker.logs());
+  assert.equal(allowanceAnswer.costUsd, 0.0005);
+  const { rows: [allowance] } = await f.db.query("select amount, allowance from end_user_ledger where tenant='camel-bots' and end_user='no-paid-balance'");
+  assert.deepEqual(allowance, { amount: "0", allowance: "600" });
+
+  // The app's prompt categorizer sends standalone batches without a bot or wallet.
+  const categorizer = await sendApp({ items: [item], actor: "ops:prompt-categories", dataCollection: "deny" });
+  const categorized = await categorizer.json() as { costUsd: number };
+  assert.equal(categorizer.status, 200, JSON.stringify(categorized) + f.worker.logs());
+  assert.equal(categorized.costUsd, 0.0005);
+  assert.equal(calls.length, priorCalls + 3);
+  assert.equal((await f.db.query("select count(*) from end_user_ledger where tenant='camel-bots'")).rows[0].count, "2");
+  assert.equal((await f.db.query("select sum(responses) as responses from usage where tenant='camel-bots'")).rows[0].responses, "3");
+  const appKeyHash = createHash("sha256").update(camelBotsAuth.slice(7)).digest("hex");
+  await f.db.query("update api_tokens set tenant='fixture' where sha256=$1", [appKeyHash]);
+  await expectError(await sendApp(item), 401, "UNAUTHORIZED");
+  await deniedOpenUpload(camelBotsAuth);
+  assert.equal(calls.length, priorCalls + 3);
 
   const restricted = await f.db.connect();
   try {
