@@ -12,7 +12,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { unstable_startWorker } from "wrangler";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool, parseSSE, type SSEMessage } from "../sdk/src/index.ts";
-import { importHistoryInChunks } from "../scripts/migrate-history.ts";
+import { importHistoryInChunks } from "../scripts/chunk-history.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");

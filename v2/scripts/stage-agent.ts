@@ -7,7 +7,8 @@ import type { RequestRecord } from "../../shared/client-protocol.ts";
 import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
 import { validVolumeId } from "../../src/volumes.ts";
 import { CamelRun, type V1HistoryImport } from "../sdk/src/index.ts";
-import { importHistoryInChunks, readV1History } from "./migrate-history.ts";
+import { importHistoryInChunks } from "./chunk-history.ts";
+import { readV1History } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
 
 interface SourceAgent {
