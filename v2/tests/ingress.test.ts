@@ -59,6 +59,31 @@ test("uses ECS only for legacy compatibility misses and keeps the original reque
   assert.equal(route.mock.callCount(), 2);
 });
 
+test("serves the original bearer identity on both hosts and leaves console traffic and unexpected errors alone", async t => {
+  const authorization = "Bearer original-key";
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 401 }));
+  const unavailable = new Error("database unavailable");
+  const route = t.mock.fn(async (request: Request) => {
+    if (request.headers.get("authorization") !== authorization) return null;
+    if (new URL(request.url).search) throw unavailable;
+    return Response.json({ tenant: "legacy" });
+  });
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    const url = `https://${host}/v1/me`;
+    const bearer = { headers: { authorization } };
+    assert.deepEqual(await (await worker.fetch(new Request(url, bearer), env)).json(), { tenant: "legacy" });
+    assert.equal(route.mock.calls.at(-1)?.arguments[0].url, url);
+    assert.equal((await worker.fetch(new Request(url, { headers: { cookie: "console=session" } }), env)).status, 401);
+    assert.equal((await worker.fetch(new Request(url, { headers: { authorization: "Bearer refused" } }), env)).status, 401);
+    assert.equal((await worker.fetch(new Request(url, { method: "HEAD", ...bearer }), env)).status, 401);
+    await assert.rejects(worker.fetch(new Request(url + "?unavailable", bearer), env), error => error === unavailable);
+  }
+  assert.equal((await worker.fetch(new Request("https://example.com/v1/me", { headers: { authorization } }), env)).status, 401);
+  assert.equal(route.mock.callCount(), 6);
+  assert.equal(origin.mock.callCount(), 7);
+});
+
 test("offers hosted MCP on both hosts and limits its origin binding to the legacy API", async t => {
   const answer = new Response(null, { status: 202 });
   const origin = t.mock.method(globalThis, "fetch", async () => answer);
