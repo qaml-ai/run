@@ -18,8 +18,9 @@ import { decideInput } from "./decisions.ts";
 import { searchOrder } from "./web-search.ts";
 import { canonical } from "../shared/durable-json.ts";
 import { humanInputSettings, type HumanInputSettings } from "./inputs.ts";
-import { mcpServersInput, mcpServerView, openApiInput, openApiView, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
+import { mcpServersInput, openApiInput, type McpServerSpec, type OpenApiSpec, type Sources } from "./tool-sources.ts";
 import type { ToolSourceView } from "./tool-servers.ts";
+import { definitionAgents, definitionView, listDefinitions, readDefinition } from "./v1-definition-reads.ts";
 
 /**
  * Agent definitions: reusable, tenant-level agent configurations (`definitions`).
@@ -95,7 +96,6 @@ export const OVERRIDES = ["model", "thinkingLevel", "maxOutputTokens", "temperat
 const PROVISION_FIELDS = ["definitionRevision", "humanInput", "name", "type", "ttlSeconds", "idleTtlSeconds", "mounts", "tools", "initialMessages", "systemPromptAppend"];
 /** Definitions a self-serve tenant may have; a tenant of the tenants file has its own limit (`maxDefinitions` option). */
 export const MAX_DEFINITIONS = 200;
-const validId = (id: string) => /^def_[a-f0-9]{20}$/.test(id);
 /** The server-side tool sources an agent takes from a definition, if it has any. */
 export function sources(spec: DefinitionSpec): Sources | undefined {
   const found: Sources = {
@@ -131,19 +131,13 @@ export class Definitions {
     this.customProviders = options.customProviders;
   }
 
-  private row(row: any): Definition {
-    return { id: row.id, tenant: row.tenant, name: row.name, revision: row.revision, spec: withoutOnExpire(withoutWorkflow(row.spec)), createdAt: row.created_at, updatedAt: row.updated_at };
-  }
   async read(tenant: string, id: string, revision?: number): Promise<Definition> {
-    const row = validId(id) ? (await this.db.query(revision === undefined ? "select * from definitions where id = $1 and tenant = $2" : "select * from definition_revisions where id = $1 and tenant = $2 and revision = $3", revision === undefined ? [id, tenant] : [id, tenant, revision])).rows[0] : undefined;
-    if (!row) throw new HttpError(404, `Unknown definition ${id}`);
-    return this.row(row);
+    return readDefinition<DefinitionSpec>(this.db, tenant, id, revision);
   }
 
   /** What callers see: the spec's fields, with secrets left out. */
-  view({ tenant: _tenant, spec, revised: _revised, ...definition }: Definition) {
-    const { channel: _channel, mcpServers, openApi, ...visible } = spec;
-    return { ...definition, ...visible, ...(mcpServers ? { mcpServers: mcpServers.map(mcpServerView) } : {}), ...(openApi ? { openApi: openApi.map(openApiView) } : {}) };
+  view(definition: Definition) {
+    return definitionView(definition);
   }
 
   /** What a save answers: the definition as callers see it, with `warnings` about builtins its tenant cannot use. */
@@ -154,11 +148,7 @@ export class Definitions {
 
   /** The tenant's definitions; `unused`: only those no live agent and no channel is made from, which deleting changes nothing for. */
   async list(tenant: string, { unused = false } = {}) {
-    const { rows } = await this.db.query(`select * from definitions d where tenant = $1 ${unused ? `
-      and not exists (select 1 from agents a where a.tenant = d.tenant and a.header->'definition'->>'id' = d.id and not a.revoked and a.purged_at is null and (a.expires_at is null or a.expires_at > $2))
-      and not exists (select 1 from channels c where c.tenant = d.tenant and c.channel->>'definition' = d.id)` : "and $2::bigint is not null"}
-      order by created_at, id`, [tenant, Date.now()]);
-    return rows.map(row => this.view(this.row(row)));
+    return listDefinitions<DefinitionSpec>(this.db, tenant, unused);
   }
   async get(tenant: string, id: string) { return this.view(await this.read(tenant, id)); }
 
@@ -241,11 +231,7 @@ export class Definitions {
 
   /** The tenant's live agents made from a definition, and the revision each has. */
   async agents(tenant: string, id: string): Promise<{ id: string; revision: number }[]> {
-    const { rows } = await this.db.query(`
-      select id, (header->'definition'->>'revision')::bigint as revision from agents
-      where tenant = $1 and header->'definition'->>'id' = $2 and not revoked and purged_at is null
-        and (expires_at is null or expires_at > $3) order by id`, [tenant, id, Date.now()]);
-    return rows.map(row => ({ id: row.id, revision: row.revision }));
+    return definitionAgents(this.db, tenant, id);
   }
 
   /**
@@ -374,20 +360,6 @@ export class Definitions {
     try { jsonWithinLimit(spec, 512 * 1024, "Definition"); } catch (error) { throw new HttpError(413, errorText(error)); }
     return spec;
   }
-}
-
-/** Stored workflow settings are ignored; only new API input is refused. */
-/** A stored definition's `humanInput.onExpire`, from before every expired input resumed the turn: ignored. */
-function withoutOnExpire(spec: DefinitionSpec): DefinitionSpec {
-  const humanInput = spec.humanInput as (HumanInputSettings & { onExpire?: unknown }) | undefined;
-  if (!humanInput || !("onExpire" in humanInput)) return spec;
-  const { onExpire: _onExpire, ...rest } = humanInput;
-  return { ...spec, humanInput: rest };
-}
-
-function withoutWorkflow(spec: DefinitionSpec): DefinitionSpec {
-  const { workflow: _workflow, ...rest } = spec as DefinitionSpec & { workflow?: unknown };
-  return { ...rest, ...(rest.builtins ? { builtins: rest.builtins.filter(name => name !== "workflow") } : {}) };
 }
 
 export const definitionId = (tenant: string, key: string) => `def_${createHash("sha256").update(`${tenant}:${key}`).digest("hex").slice(0, 20)}`;

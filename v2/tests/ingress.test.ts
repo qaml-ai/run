@@ -143,6 +143,30 @@ test("offers bearer credential reads by provisioning key on both legacy hosts", 
   assert.equal(route.mock.callCount(), 4);
 });
 
+test("dispatches only bearer definition reads on both legacy hosts", async t => {
+  const fallback = new Response(null, { status: 418 });
+  const origin = t.mock.method(globalThis, "fetch", async () => fallback);
+  const handled = new Response(null, { status: 204 });
+  const route = t.mock.fn(async (_request: Request) => handled);
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  const headers = { authorization: "Bearer existing-token" };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const path of ["/v1/definitions?unused=true", "/v1/definitions/def_123", "/v1/definitions/def_123/agents"]) {
+      const request = new Request(`https://${host}${path}`, { headers });
+      assert.equal(await worker.fetch(request, env), handled);
+      assert.equal(route.mock.calls.at(-1)?.arguments[0].url, request.url);
+    }
+  }
+  const base = "https://run.camelai.com/v1/definitions";
+  for (const request of [new Request(base), new Request(base, { method: "POST", headers }),
+    new Request(base + "/def_123", { method: "PATCH", headers }), new Request(base + "/%xx", { headers }),
+    new Request("https://example.com/v1/definitions", { headers })]) {
+    assert.equal(await worker.fetch(request, env), fallback);
+    assert.deepEqual(origin.mock.calls.at(-1)?.arguments, [request, { redirect: "manual" }]);
+  }
+  assert.equal(route.mock.callCount(), 6);
+});
+
 test("keeps legacy end-user writes on the origin while serving reads on the Worker", async t => {
   const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 201 }));
   const route = t.mock.fn(async () => new Response(null, { status: 204 }));
