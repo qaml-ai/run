@@ -12,6 +12,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { unstable_startWorker } from "wrangler";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool, parseSSE, type SSEMessage } from "../sdk/src/index.ts";
+import { importHistoryInChunks } from "../scripts/chunk-history.ts";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
@@ -1129,6 +1130,60 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(afterReset.status, "completed");
 
     await camel.close();
+  });
+
+  it("appends v1 history chunks once, in order, with the previous receipt", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "chunked-history-tenant",
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    try {
+      const agent = await camel.agents.upsert("chunked-history", {});
+      const source = "imported-v1-chunks";
+      const timestamp = Date.now();
+      const first = { role: "user", timestamp, content: "First message" };
+      const call = {
+        role: "assistant", timestamp,
+        content: [{ type: "toolCall", id: "lookup_call", name: "lookup", arguments: {} }],
+      };
+      const result = {
+        role: "toolResult", timestamp, toolCallId: "lookup_call", toolName: "lookup",
+        content: [{ type: "text", text: "Result" }],
+      };
+      const initial = { source, appendAfter: 0, messages: [first] };
+      const head = await agent.importV1History(initial);
+      assert.equal(head.count, 1);
+      assert.deepEqual(await agent.importV1History(initial), head);
+      const next = { source, previous: head.receipt, appendAfter: 1, messages: [call, result] };
+      await assert.rejects(agent.importV1History({ ...next, appendAfter: 2 }), { status: 409 });
+      await assert.rejects(agent.importV1History({ ...next, previous: "wrong" }), { status: 409 });
+      await assert.rejects(agent.importV1History({ ...next, messages: [call] }), { status: 422 });
+      const tail = await agent.importV1History(next);
+      assert.equal(tail.count, 3);
+      assert.deepEqual(await agent.importV1History(next), tail);
+      await assert.rejects(agent.importV1History(initial), { status: 409 });
+      await assert.rejects(agent.importV1History({ source, previous: tail.receipt, messages: [first] }), { status: 409 });
+      const history = await agent.history();
+      assert.deepEqual(history.map(row => row.seq), [1, 2, 3]);
+      assert.deepEqual(history.map(row => (row.content as { meta: { v1: unknown } }).meta.v1), [first, call, result]);
+
+      const largeAgent = await camel.agents.upsert("chunked-large-history", {});
+      const chunkBytes = 850 * 1024;
+      const largeMessages = Array.from({ length: 3 }, (_, sequence) => ({
+        role: "user", timestamp, content: String(sequence).repeat(chunkBytes),
+      }));
+      await assert.rejects(largeAgent.importV1History({
+        source, appendAfter: 0, messages: largeMessages.slice(0, 2),
+      }), { status: 413 });
+      assert.deepEqual(await largeAgent.history(), []);
+      const uploaded = await importHistoryInChunks(largeAgent, { source, messages: [...largeMessages, call, result] });
+      assert.equal(uploaded.count, 5);
+      const largeHistory = await largeAgent.history();
+      assert.deepEqual(largeHistory.map(row => (row.content as { meta: { v1: unknown } }).meta.v1),
+        [...largeMessages, call, result]);
+    } finally {
+      await camel.close();
+    }
   });
 
   it("auto-compacts imported history without splitting a tool call from any of its results", async () => {

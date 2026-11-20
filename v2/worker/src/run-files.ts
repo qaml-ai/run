@@ -2,6 +2,7 @@ import { z } from "zod";
 import { FILE_LIMITS } from "../../../src/limits.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { ApiError, type RunFile, type StoredRunFile } from "./types.ts";
+import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
 
 const runFilesSchema = z.array(z.object({
   path: z.string().transform(normalizeRepoPath).refine(
@@ -72,21 +73,36 @@ export async function verifyRunFiles(
 export interface ModelImage {
   contentType: string;
   base64: string;
+  inlineBlockIndex?: number;
 }
 
 export async function loadConversationImages(
   cfs: CamelFsClient,
-  messages: Array<{ files?: StoredRunFile[] }>,
+  messages: Array<{ files?: StoredRunFile[]; legacyInlineContent?: LegacyInlineBlock[] }>,
+  imageLimit: number = FILE_LIMITS.requestImages,
 ): Promise<Map<number, ModelImage[]>> {
   const images = new Map<number, ModelImage[]>();
   let remaining = FILE_LIMITS.requestImageBase64Bytes;
   let count = 0;
   // Older images outside the provider request budget remain explicit file references in the prompt.
   for (let index = messages.length - 1; index >= 0; index--) {
+    const inline = messages[index]?.legacyInlineContent;
+    if (inline) {
+      for (let blockIndex = inline.length - 1; blockIndex >= 0; blockIndex--) {
+        const block = inline[blockIndex]!;
+        if (block.type !== "image") continue;
+        remaining -= block.data.length;
+        if (remaining < 0 || ++count > imageLimit) return images;
+        const image = { contentType: block.mimeType, base64: block.data, inlineBlockIndex: blockIndex };
+        const atIndex = images.get(index);
+        if (atIndex) atIndex.push(image);
+        else images.set(index, [image]);
+      }
+    }
     for (const file of messages[index]?.files ?? []) {
       if (!isImageAttachment(file)) continue;
       remaining -= imageBase64Size(file.size);
-      if (remaining < 0 || ++count > FILE_LIMITS.requestImages) return images;
+      if (remaining < 0 || ++count > imageLimit) return images;
       const read = await cfs.read(file.lineage, { at: file.commit, path: file.path, limit: file.size + 1 });
       if (read.commit !== file.commit || read.size !== file.size || read.base64?.length !== imageBase64Size(file.size)) {
         throw new ApiError(422, "attachment_invalid", `Attachment ${file.path} could not be read as an image`);

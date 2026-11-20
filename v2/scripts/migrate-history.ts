@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import type { HistoryPage } from "../../clients/typescript.ts";
 import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
+import { importHistoryInChunks } from "./chunk-history.ts";
 import { CamelRun, type AgentHandle, type V1HistoryImport } from "../sdk/src/index.ts";
 
 export async function readV1History(v1Url: string, v1Key: string, sourceAgent: string) {
@@ -39,8 +40,10 @@ export async function migrateHistory(
   target: AgentHandle,
   previous?: string,
   attachments?: V1HistoryImport["attachments"],
+  chunked = false,
 ) {
-  return target.importV1History({ ...await readV1History(v1Url, v1Key, sourceAgent), previous, attachments });
+  const input = { ...await readV1History(v1Url, v1Key, sourceAgent), previous, attachments };
+  return chunked ? importHistoryInChunks(target, input) : target.importV1History(input);
 }
 
 function env(name: string): string {
@@ -50,10 +53,13 @@ function env(name: string): string {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { positionals, values } = parseArgs({ allowPositionals: true, options: { attachments: { type: "string" } } });
+  const { positionals, values } = parseArgs({
+    allowPositionals: true,
+    options: { attachments: { type: "string" }, chunked: { type: "boolean" } },
+  });
   const [sourceAgent, destinationAgent, previous, ...extra] = positionals;
   if (!sourceAgent || !destinationAgent || extra.length) {
-    throw new Error("Usage: node --experimental-strip-types v2/scripts/migrate-history.ts <v1-agent> <v2-agent> [previous-receipt] [--attachments manifest.json]");
+    throw new Error("Usage: node --experimental-strip-types v2/scripts/migrate-history.ts <v1-agent> <v2-agent> [previous-receipt | --chunked] [--attachments manifest.json]");
   }
   const v2 = new CamelRun({ baseUrl: env("V2_URL"), apiKey: env("V2_API_KEY") });
   try {
@@ -61,7 +67,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const attachments: V1HistoryImport["attachments"] = values.attachments
       ? JSON.parse(await readFile(values.attachments, "utf8"))
       : undefined;
-    console.log(JSON.stringify(await migrateHistory(env("V1_URL"), env("V1_API_KEY"), sourceAgent, destination, previous, attachments)));
+    console.log(JSON.stringify(await migrateHistory(env("V1_URL"), env("V1_API_KEY"), sourceAgent,
+      destination, previous, attachments, values.chunked)));
   } finally {
     await v2.close();
   }

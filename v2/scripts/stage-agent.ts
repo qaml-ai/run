@@ -7,6 +7,7 @@ import type { RequestRecord } from "../../shared/client-protocol.ts";
 import { fetchWithoutRedirects } from "../../src/core/no-redirect.ts";
 import { validVolumeId } from "../../src/volumes.ts";
 import { CamelRun, type V1HistoryImport } from "../sdk/src/index.ts";
+import { importHistoryInChunks } from "./chunk-history.ts";
 import { readV1History } from "./migrate-history.ts";
 import { migrateVolume } from "./migrate-volume.ts";
 
@@ -25,6 +26,7 @@ interface SharedDraft {
 interface StageOptions {
   initialCommit?: string;
   previous?: string;
+  chunked?: boolean;
   attachments?: V1HistoryImport["attachments"];
   validateHistory?: (messages: unknown[]) => void;
   sharedDraft?: SharedDraft;
@@ -97,7 +99,7 @@ export async function stageAgent(source: SourceAgent, v2: CamelRun, destination:
   }
 
   const workspace = await copyWorkspace();
-  const imported = await target.importV1History(input);
+  const imported = await (options.chunked ? importHistoryInChunks(target, input) : target.importV1History(input));
   if (!imported.receipt || imported.count !== history.messages.length) throw new Error("Incomplete v2 history receipt");
 
   try {
@@ -165,11 +167,15 @@ function env(name: string): string {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
-    options: { "camel-bots-draft": { type: "string" }, "initial-commit": { type: "string" }, previous: { type: "string" }, attachments: { type: "string" } },
+    options: {
+      "camel-bots-draft": { type: "string" },
+      "initial-commit": { type: "string" }, previous: { type: "string" },
+      chunked: { type: "boolean" }, attachments: { type: "string" },
+    },
   });
   const [source, destination, ...extra] = positionals;
   if (!source || !destination || extra.length) {
-    throw new Error("Usage: node --experimental-strip-types v2/scripts/stage-agent.ts <v1-agent> <v2-agent> [--initial-commit sha] [--previous receipt] [--attachments manifest.json] [--camel-bots-draft vol_id]");
+    throw new Error("Usage: node --experimental-strip-types v2/scripts/stage-agent.ts <v1-agent> <v2-agent> [--initial-commit sha] [--previous receipt | --chunked] [--attachments manifest.json] [--camel-bots-draft vol_id]");
   }
   const volumeId = values["camel-bots-draft"];
   if (volumeId !== undefined && !validVolumeId(volumeId)) throw new Error("Invalid Camel Bots draft volume ID");
@@ -186,7 +192,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       ? JSON.parse(await readFile(values.attachments, "utf8"))
       : undefined;
     console.log(JSON.stringify(await stageAgent({ url: env("V1_URL"), apiKey: env("V1_API_KEY"), agentId: source }, v2,
-      destination, { initialCommit: values["initial-commit"], previous: values.previous, attachments, sharedDraft })));
+      destination, { initialCommit: values["initial-commit"], previous: values.previous, chunked: values.chunked, attachments, sharedDraft })));
   } finally {
     await Promise.all([v2.close(), bots?.end()]);
   }

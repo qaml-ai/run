@@ -1,8 +1,11 @@
 import { z } from "zod";
 import { parseRunFiles } from "./run-files.ts";
+import { validateLegacyInlineContent } from "./legacy-inline-images.ts";
+import { FILE_LIMITS } from "../../../src/limits.ts";
 import { ApiError, type ChatRole, type RunFile, type StoredMessageContent, type ToolCallInvocation } from "./types.ts";
 
 const text = z.object({ type: z.literal("text"), text: z.string() });
+const image = z.object({ type: z.literal("image"), data: z.string(), mimeType: z.string() });
 const file = z.looseObject({
   type: z.literal("file"),
   path: z.string().startsWith("/workspace/"),
@@ -10,12 +13,13 @@ const file = z.looseObject({
   contentType: z.string(),
 });
 const workspaceContent = z.array(z.discriminatedUnion("type", [text, file]));
+const userContent = z.array(z.discriminatedUnion("type", [text, file, image]));
 const toolCall = z.object({ type: z.literal("toolCall"), id: z.string().min(1), name: z.string().min(1), arguments: z.record(z.string(), z.unknown()) });
 const thinking = z.object({ type: z.literal("thinking"), thinking: z.string() });
 const timestamp = z.number().int().nonnegative();
 const messageSchema = z.discriminatedUnion("role", [
   z.looseObject({ role: z.literal("system"), content: z.union([z.string(), z.array(text)]), timestamp }),
-  z.looseObject({ role: z.literal("user"), content: z.union([z.string(), workspaceContent]), timestamp }),
+  z.looseObject({ role: z.literal("user"), content: z.union([z.string(), userContent]), timestamp }),
   z.looseObject({ role: z.literal("assistant"), content: z.array(z.discriminatedUnion("type", [text, toolCall, thinking])), timestamp }),
   z.looseObject({ role: z.literal("toolResult"), content: workspaceContent, toolCallId: z.string().min(1), toolName: z.string().min(1), isError: z.boolean().optional(), timestamp }),
 ]);
@@ -23,6 +27,7 @@ const messageSchema = z.discriminatedUnion("role", [
 const importSchema = z.object({
   source: z.string().min(1),
   previous: z.string().optional(),
+  appendAfter: z.number().int().nonnegative().optional(),
   messages: z.array(z.unknown()),
   attachments: z.array(z.object({ messageIndex: z.number().int().nonnegative(), files: z.array(z.unknown()).min(1) })).optional(),
 });
@@ -38,7 +43,10 @@ type ImportedMessage = {
 export function parseV1History(body: unknown) {
   const input = importSchema.safeParse(body);
   if (!input.success) throw new ApiError(400, "invalid_history", "Expected a v1 source identifier and its messages");
-  const { source, previous, messages } = input.data;
+  const { source, previous, appendAfter, messages } = input.data;
+  if (appendAfter !== undefined && (messages.length === 0 || !Number.isSafeInteger(appendAfter + messages.length))) {
+    throw new ApiError(422, "invalid_history", "An appended history chunk must contain messages at valid sequence numbers");
+  }
   const attachments = new Map<number, RunFile[]>();
   for (const { messageIndex, files } of input.data.attachments ?? []) {
     if (messageIndex >= messages.length || attachments.has(messageIndex)) {
@@ -79,6 +87,11 @@ export function parseV1History(body: unknown) {
       ...(sourceFileSizes.size ? { sourceFileSizes } : {}),
     };
     const content: StoredMessageContent = { meta: { v1: original } };
+    if (message.role === "user" && Array.isArray(message.content) && message.content.some(block => block.type === "image")) {
+      if (files?.length) throw new ApiError(422, "unsupported_history", "Inline images and workspace files cannot share an imported message");
+      validateLegacyInlineContent(message.content);
+      content.legacyInlineImages = true;
+    }
     content.text = typeof message.content === "string" ? message.content : message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n");
     if (message.role === "toolResult") {
       if (pending.get(message.toolCallId) !== message.toolName) throw new ApiError(422, "invalid_history", `V1 tool result at message ${index} has no matching call`);
@@ -100,5 +113,32 @@ export function parseV1History(body: unknown) {
     return { role: message.role, content, createdAt: message.timestamp, ...workspaceFiles };
   });
   if (pending.size) throw new ApiError(422, "invalid_history", "V1 history ends with unanswered tool calls");
-  return { source, previous, messages: imported };
+  if (imported.some(message => message.content.legacyInlineImages)) {
+    if (appendAfter !== undefined) {
+      throw new ApiError(422, "unsupported_history", "Inline images require a single history import");
+    }
+    // V1 compacts when images exceed this budget. Keep that separate from this
+    // byte-preserving import, and do not mix its FileRef hydration policy yet.
+    if (imported.some(message => message.attachments?.length)) {
+      throw new ApiError(422, "unsupported_history", "Inline history cannot yet combine workspace attachments");
+    }
+    let imageCount = 0, imageBytes = 0;
+    for (const message of imported) {
+      if (!message.content.legacyInlineImages) continue;
+      // A SQLite-backed Durable Object row is limited to 8 MB. The storage
+      // transaction remains authoritative for the small record-header overhead.
+      if (new TextEncoder().encode(JSON.stringify(message.content)).byteLength >= 8_000_000) {
+        throw new ApiError(422, "unsupported_history", "Inline history exceeds the Durable Object row size");
+      }
+      const original = message.content.meta!.v1 as { content: Array<{ type: string; data?: string }> };
+      for (const block of original.content) if (block.type === "image") {
+        imageCount++;
+        imageBytes += block.data!.length;
+      }
+    }
+    if (imageCount > FILE_LIMITS.requestImages || imageBytes > FILE_LIMITS.requestImageBase64Bytes) {
+      throw new ApiError(422, "unsupported_history", "Inline history requires legacy image-budget compaction");
+    }
+  }
+  return { source, previous, appendAfter, messages: imported };
 }

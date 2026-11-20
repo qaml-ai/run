@@ -9,6 +9,7 @@ import {
   type ConversationMessage,
 } from "./providers.ts";
 import { verifyRunFiles } from "./run-files.ts";
+import { readLegacyInlineContent } from "./legacy-inline-images.ts";
 import { getTenantStub, platformCreditReserve } from "./tenant-do.ts";
 import type { ToolApproval } from "./tool-identity.ts";
 import {
@@ -126,6 +127,7 @@ export function buildConversationMessages(
       role: m.role,
       text,
       files,
+      legacyInlineContent: readLegacyInlineContent(m.content),
       toolCalls,
       toolCallId: m.content.toolCallId,
       toolName: m.content.toolName,
