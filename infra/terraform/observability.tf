@@ -137,18 +137,40 @@ resource "aws_cloudwatch_metric_alarm" "model_reasoning_replay" {
 # Slow first tokens: the provider is slow, or turns queue for the node.
 resource "aws_cloudwatch_metric_alarm" "first_token_slow" {
   alarm_name          = "${var.name}-first-token-slow"
-  alarm_description   = "p90 time to first token over 60 s for 15 minutes"
-  namespace           = "AgentRuntime"
-  metric_name         = "TimeToFirstTokenMs"
-  dimensions          = local.runtime_metric
-  extended_statistic  = "p90"
-  period              = 300
+  alarm_description   = "p90 time to first token over 60 s for 3 consecutive 5-minute periods, each with at least 20 samples"
   evaluation_periods  = 3
   threshold           = 60000
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics
   ok_actions          = local.alarm_topics
+
+  metric_query {
+    id          = "slow"
+    expression  = "IF(samples >= 20, p90, 0)"
+    label       = "Time to first token, p90 (ms)"
+    return_data = true
+  }
+  metric_query {
+    id = "p90"
+    metric {
+      namespace   = "AgentRuntime"
+      metric_name = "TimeToFirstTokenMs"
+      dimensions  = local.runtime_metric
+      stat        = "p90"
+      period      = 300
+    }
+  }
+  metric_query {
+    id = "samples"
+    metric {
+      namespace   = "AgentRuntime"
+      metric_name = "TimeToFirstTokenMs"
+      dimensions  = local.runtime_metric
+      stat        = "SampleCount"
+      period      = 300
+    }
+  }
 }
 
 # Webhook deliveries waiting: receivers down or slow. Run events settle threads and

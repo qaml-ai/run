@@ -131,13 +131,14 @@ resource "aws_cloudwatch_log_metric_filter" "quota_rejected" {
 
 resource "aws_cloudwatch_metric_alarm" "quota_rejected" {
   alarm_name          = "${var.name}-quota-rejected"
-  alarm_description   = "Agent starts refused at a tenant's or node's agent cap (quota_rejected in /ecs/${var.name})"
+  alarm_description   = "At least 5 agent starts refused at a tenant's or node's agent cap per 5-minute period for 3 consecutive periods (quota_rejected in /ecs/${var.name})"
   namespace           = "AgentRuntime/Logs"
   metric_name         = "QuotaRejected"
   statistic           = "Sum"
   period              = 300
-  evaluation_periods  = 1
-  threshold           = 1
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  threshold           = 5
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.alarm_topics
