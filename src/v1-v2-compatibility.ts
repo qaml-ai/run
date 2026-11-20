@@ -259,7 +259,7 @@ export class V1Compatibility {
     const result = z.object({
       id: z.string(), model: z.string(), instructions: z.string().nullish(),
       status: z.enum(["running", "idle"]), activeRunId: z.string().nullable(),
-      tools: z.array(z.object({ name: z.string(), description: z.string().optional(), inputSchema: z.unknown().optional() })).optional(),
+      tools: z.array(z.object({ name: z.string(), description: z.string().optional(), parameters: z.record(z.string(), z.unknown()).optional() })).optional(),
       mcpServers: z.array(z.object({ name: z.string(), url: z.string().optional() })).optional(),
       builtins: z.array(z.string()).optional(),
     }).safeParse(data);

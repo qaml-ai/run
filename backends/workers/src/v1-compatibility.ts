@@ -107,12 +107,13 @@ export async function handleLegacyAgentRequest(
       compatibility.detail(route, signal),
     ]);
     if (!agents[0]) throw unknownAgent();
-    const tools = current.tools ?? [];
+    const tools = (current.tools ?? []).map(({ name, description, parameters }) =>
+      ({ name, description: description ?? "", ...(parameters ? { parameters } : {}) }));
     const mcpServers = (current.mcpServers ?? []).map(({ name }) => ({ name }));
     const schemas = url.searchParams.get("schemas") === "true";
     const toolSources = [
-      ...(tools.length ? [{ kind: "application", name: "Application", status: "ready", tools: tools.map(({ inputSchema, ...tool }) =>
-        ({ ...tool, ...(schemas ? { inputSchema } : {}) })) }] : []),
+      ...(tools.length ? [{ kind: "application", name: "application", status: "listed", tools: tools.map(({ parameters, ...tool }) =>
+        ({ ...tool, ...(schemas && parameters ? { parameters } : {}) })) }] : []),
       ...mcpServers.map(({ name }) => ({ kind: "mcp", name, status: "unlisted", tools: [] })),
     ];
     return json({ ...agents[0], model: current.model, running: current.status === "running", systemPrompt: current.instructions ?? "",
