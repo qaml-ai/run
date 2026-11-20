@@ -10,6 +10,7 @@ export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined>
 export interface Env {
   MEDIA_BUCKET?: R2Bucket;
   IMAGES?: ImagesBinding;
+  SVG_RENDERER?: Fetcher;
   EVENTS_QUEUE?: Queue<QueueMessagePayload>;
   TENANT_DO: DurableObjectNamespace<TenantDO>;
   AGENT_DO: DurableObjectNamespace<AgentDO>;
@@ -44,6 +45,7 @@ export interface AuthContext {
 
 export type BuiltinSuite =
   | "files"
+  | "images"
   | "bash"
   | "codemode"
   | "delegate"

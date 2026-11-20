@@ -12,5 +12,5 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["worker/src/**/*.ts", "ingress/**/*.ts", "sdk/src/**/*.ts", "tests/**/*.ts"]
+  "include": ["worker/src/**/*.ts", "ingress/**/*.ts", "sdk/src/**/*.ts", "tests/**/*.ts", "svg-renderer/**/*.ts"]
 }

@@ -1,3 +1,4 @@
+import { readSvgRequest, renderSvg, resolveRenderFiles } from "./svg-render.ts";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -1089,6 +1090,17 @@ app.post("/v2/images", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   return handleImageGenerateRequest(c.env, auth.tenantId, c.req.raw);
+});
+
+app.post("/v2/images/render", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const body = await readSvgRequest(c.req.raw);
+  if (!body || typeof body !== "object" || body.format !== undefined && body.format !== "png") {
+    throw new ApiError(400, "invalid_svg", "Supply an SVG and select PNG output");
+  }
+  const files = await resolveRenderFiles(c.env, auth.tenantId, body.files);
+  return c.json(await renderSvg(c.env, body.svg, files));
 });
 
 app.get("/v2/images/:id", async (c) => {

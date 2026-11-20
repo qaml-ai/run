@@ -13,9 +13,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
+    "@resvg/resvg-wasm": "2.6.2",
     "hono": "^4.13.16",
     "jose": "^6.2.15",
     "quickjs-wasi": "3.6.2",
+    "saxes": "6.0.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

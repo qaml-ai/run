@@ -12,6 +12,7 @@
     "DEFAULT_MODEL": "openrouter/meta/muse-ember"
   },
   "images": { "binding": "IMAGES" },
+  "services": [{ "binding": "SVG_RENDERER", "service": "camelrun-v2-svg-renderer" }],
   "r2_buckets": [
     {
       "binding": "MEDIA_BUCKET",

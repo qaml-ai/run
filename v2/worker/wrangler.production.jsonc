@@ -13,6 +13,7 @@
     "TOOL_IDENTITY_ISSUER": "https://run.camelai.com/v2"
   },
   "images": { "binding": "IMAGES" },
+  "services": [{ "binding": "SVG_RENDERER", "service": "camelrun-v2-svg-renderer" }],
   "r2_buckets": [
     {
       "binding": "MEDIA_BUCKET",

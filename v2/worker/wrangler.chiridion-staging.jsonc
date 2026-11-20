@@ -13,6 +13,7 @@
     "TOOL_IDENTITY_ISSUER": "https://camelrun-v2-chiridion-staging.miguel-85b.workers.dev/v2"
   },
   "images": { "binding": "IMAGES" },
+  "services": [{ "binding": "SVG_RENDERER", "service": "camelrun-v2-svg-renderer" }],
   "r2_buckets": [
     { "binding": "MEDIA_BUCKET", "bucket_name": "camelrun-v2-chiridion-staging-media" }
   ],

@@ -1,5 +1,7 @@
 import { Buffer } from "node:buffer";
 import { imageHeader } from "../../../src/image-header.ts";
+import { SVG_RENDER_LIMITS } from "../../svg-renderer/limits.ts";
+import { renderSvg } from "./svg-render.ts";
 import { FILE_LIMITS } from "../../../src/limits.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
@@ -95,6 +97,19 @@ export interface ToolExecutionContext {
 }
 
 const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
+  images: [{
+    name: "render_image",
+    description: "Render an SVG to PNG, save it in the repo, and view the result. Reference input images by name in SVG and map each name to its repo file.",
+    parameters: {
+      type: "object",
+      properties: {
+        svg: { type: "string" },
+        files: { type: "object", additionalProperties: { type: "string" } },
+        path: { type: "string", description: "Repository path of the output PNG" },
+      },
+      required: ["svg", "path"],
+    },
+  }],
   files: [
     {
       name: "read_file",
@@ -524,6 +539,39 @@ export async function executeToolCall(
         mcpInput: { key: error.key, url, audience, subject, sealedState, mode: elicitation.mode },
       });
     }
+  }
+
+  if (toolName === "render_image") {
+    const path = normalizeRepoPath(String(args.path ?? ""));
+    if (!/\.png$/i.test(path)) throw new Error("Choose a .png output path");
+    const { repoId, lineage, branch } = await ctx.ensureAgentRepo();
+    const cfs = new CamelFsClient(ctx.env, ctx.config.tenantId);
+    if (args.files !== undefined && (!args.files || typeof args.files !== "object" || Array.isArray(args.files))) {
+      throw new Error("files must map SVG image names to repository paths");
+    }
+    const entries = Object.entries(args.files ?? {});
+    if (entries.length > SVG_RENDER_LIMITS.imageCount) throw new Error("Too many SVG input images");
+    const files: Record<string, { data: string }> = Object.create(null);
+    let remaining = SVG_RENDER_LIMITS.imageBase64Bytes;
+    for (const [name, filePath] of entries) {
+      if (typeof filePath !== "string") throw new Error("Expected a repository path for each SVG input image");
+      const limit = Math.min(Math.floor(remaining / 4) * 3, SVG_RENDER_LIMITS.imageBytes);
+      const file = await cfs.read(lineage, { at: branch, path: filePath, limit: limit + 1 });
+      if (!file.base64 || file.size > limit) throw new Error("SVG file exceeds the image byte budget or is empty");
+      remaining -= file.base64.length;
+      files[name] = { data: file.base64 };
+    }
+    const image = await renderSvg(ctx.env, args.svg, files);
+    const out = await cfs.write(lineage, {
+      ref: branch, holder: ctx.config.id, author: `agent:${ctx.config.id}`, message: `render ${path}`,
+      puts: [{ path, base64: image.data, mode: 0o644 }],
+    });
+    ctx.recordFilesChanged(out.changed);
+    void getTenantStub(ctx.env, ctx.config.tenantId).updateRepoCommit(repoId, out.commit).catch(() => {});
+    return { content: [
+      { type: "text", text: `Rendered ${image.width}×${image.height} PNG to ${path}` },
+      { type: "image", mimeType: image.contentType, data: image.data },
+    ] };
   }
 
   // 4. Built-in Repo File tools

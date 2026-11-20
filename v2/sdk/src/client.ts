@@ -5,7 +5,7 @@ import {
   type ApiToken, type BillingInfo, type CamelRunAdminOptions, type CamelRunOptions, type ChannelConfig,
   type ChannelInfo, type CreatedTenant, type CreateTenantOptions, type CreateTokenInput,
   type DecisionRequest, type DecisionResult, type DefinitionConfig, type FetchLike,
-  type GenerateImageInput, type ImageRecord, type LocalTool, type ProviderConfig, type RepoCommit,
+  type GenerateImageInput, type ImageRecord, type RenderImageOptions, type RenderedImage, type LocalTool, type ProviderConfig, type RepoCommit,
   type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
   type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SpeechInput,
   type SpeechResult, type StatelessRunOptions, type TenantInfo, type TranscribeInput,
@@ -226,6 +226,11 @@ export class CamelRun {
       const ct = res.headers.get("content-type") ?? "application/octet-stream";
       return ct.includes("application/json") ? ((await res.json()) as ImageRecord) : { id, contentType: ct, data: new Uint8Array(await res.arrayBuffer()) };
     },
+  };
+
+  readonly images = {
+    render: (svg: string, options?: RenderImageOptions): Promise<RenderedImage> =>
+      this.requestJson("POST", "/v2/images/render", { svg, files: options?.files }),
   };
 
   constructor(options: CamelRunOptions) {

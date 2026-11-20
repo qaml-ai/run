@@ -81,7 +81,7 @@ export interface BillingInfo { balanceUsd: number; monthlyCapUsd: number | null;
 export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey: string; }
 
 export type BuiltinCategory =
-  | "files" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
+  | "files" | "images" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
   | (string & {});
 
 export interface McpServerConfig {
@@ -281,6 +281,8 @@ export interface TranscribeInput {
 export interface TranscriptionResult { text: string; language?: string; costUsd?: number; [key: string]: unknown; }
 export interface SpeechInput { input: string; voice?: string; model?: string; format?: string; }
 export interface SpeechResult { audio?: Uint8Array; audioBase64?: string; contentType: string; id?: string; url?: string; costUsd?: number; }
+export interface RenderImageOptions { files?: Record<string, string | { data: string }>; }
+export interface RenderedImage { contentType: "image/png"; width: number; height: number; data: string; }
 export interface GenerateImageInput { prompt: string; model?: string; size?: string; quality?: string; format?: string; }
 export interface ImageRecord { id: string; url?: string; contentType?: string; base64?: string; data?: Uint8Array; prompt?: string; costUsd?: number; }
 
