@@ -32,7 +32,9 @@ const archivedInput: ArchivedV1Input<Input> = {
 };
 const resumed = { ...receipt, id: resumeId(receipt.id), method: "resume", suspension: receipt.id, began: 11, endedAt: 13 };
 
-function fixture({ published = true, hasArchive = true, history = false, historyAgent = destination, hasResume = true } = {}) {
+function fixture({ published = true, hasArchive = true, history = false, historyAgent = destination, hasResume = true,
+  eventResponse }: { published?: boolean; hasArchive?: boolean; history?: boolean; historyAgent?: string; hasResume?: boolean;
+    eventResponse?: (url: URL, init?: RequestInit) => Response } = {}) {
   const forwarded: string[] = [];
   const fingerprints = new Map<string, string>([["continued", receipt.fingerprint]]);
   const sql: Sql = {
@@ -81,6 +83,7 @@ function fixture({ published = true, hasArchive = true, history = false, history
       usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 }, error: null,
     });
     if (path.endsWith("/events")) {
+      if (eventResponse) return eventResponse(url, init);
       if (!history) return Response.json({ events: [], nextAfter: 0 });
       const events = [
         { seq: 1, runId: "run_native", type: "run_started", data: {} },
@@ -155,6 +158,125 @@ test("keeps the original cursor namespace and propagates legacy replay errors", 
     events: [{ id: 42, data: { type: "snapshot", cursor: 42, requestId: null, turn: null } }],
   });
   await assert.rejects(request("events?poll=1&snapshot=0", { headers: { "Last-Event-ID": "41" } }), { status: 409, code: "REPLAY_GAP" });
+});
+
+const wakeEvent = { seq: 1, runId: "run_native", type: "run_started", data: {} };
+
+test("an idle migrated poll uses a native event as a wakeup and returns the original ordered JSON page", async () => {
+  const calls: string[] = [];
+  let woke = false;
+  let cancelled = false;
+  const { request } = fixture({ history: true, eventResponse(url, init) {
+    const after = url.searchParams.get("after");
+    const follow = url.searchParams.get("follow");
+    calls.push(follow ? `follow:${after}` : after!);
+    if (follow) {
+      assert.equal(new Headers(init?.headers).get("accept"), "text/event-stream");
+      const stream = new ReadableStream({
+        start(controller) {
+          woke = true;
+          const dup = { ...wakeEvent, seq: 1 };
+          const fresh = { ...wakeEvent, seq: 2 };
+          controller.enqueue(new TextEncoder().encode(
+            `: heartbeat\n\nid: 1\ndata: ${JSON.stringify(dup)}\n\nid: 2\ndata: ${JSON.stringify(fresh)}\n\n`,
+          ));
+        },
+        cancel() { cancelled = true; },
+      });
+      return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+    }
+    if (after === "latest") return Response.json({ events: [], nextAfter: 1 });
+    if (!woke) return Response.json({ events: [], nextAfter: 1 });
+    return Response.json({ events: [
+      { ...wakeEvent, seq: 2 },
+      { ...wakeEvent, seq: 3, type: "run_completed" },
+      { ...wakeEvent, seq: 4, type: "not_projected" },
+    ], nextAfter: 4 });
+  } });
+  const response = await request("events?poll=1&wait=5&snapshot=0&request=native_request", {
+    headers: { "Last-Event-ID": "43" },
+  });
+  const page = await response!.json() as { cursor: number; events: Array<{ id: number; data: { type: string } }> };
+  assert.deepEqual(calls, ["latest", "1", "follow:1", "1"]);
+  assert.equal(cancelled, true);
+  assert.equal(page.cursor, 46);
+  assert.deepEqual(page.events.map(({ id, data }) => [id, data.type]), [[44, "event"], [45, "response"]]);
+});
+
+test("a quiet migrated poll expires with its cursor, one subscription and a final page read", async () => {
+  const calls: string[] = [];
+  let cancelled = false;
+  const { request } = fixture({ eventResponse(url) {
+    const after = url.searchParams.get("after");
+    const follow = url.searchParams.has("follow");
+    calls.push(follow ? `follow:${after}` : after!);
+    if (!follow) return Response.json({ events: [], nextAfter: 0 });
+    return new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  } });
+  // Node's AbortSignal timer is unref'ed. The HTTP request itself keeps the Worker alive in production.
+  const keepAlive = setTimeout(() => {}, 1_000);
+  try {
+    const response = await request("events?poll=1&wait=0.2005&snapshot=0");
+    assert.deepEqual(await response?.json(), { cursor: 42, events: [] });
+    assert.deepEqual(calls, ["latest", "0", "follow:0", "0"]);
+    assert.equal(cancelled, true);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("a generic body cancellation error at the owned poll deadline still returns the original cursor", async () => {
+  const calls: string[] = [];
+  const { request } = fixture({ eventResponse(url, init) {
+    const after = url.searchParams.get("after");
+    const follow = url.searchParams.has("follow");
+    calls.push(follow ? `follow:${after}` : after!);
+    if (!follow) return Response.json({ events: [], nextAfter: 0 });
+    const body = new ReadableStream({ start(controller) {
+      init?.signal?.addEventListener("abort", () => controller.error(new Error("Reader cancelled")), { once: true });
+    } });
+    return new Response(body, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const keepAlive = setTimeout(() => {}, 1_000);
+  try {
+    const response = await request("events?poll=1&wait=0.2&snapshot=0");
+    assert.equal(response?.status, 200);
+    assert.deepEqual(await response?.json(), { cursor: 42, events: [] });
+    assert.deepEqual(calls, ["latest", "0", "follow:0", "0"]);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("an upstream subscription that disconnects early fails explicitly instead of starting a poll loop", async () => {
+  const calls: string[] = [];
+  const { request } = fixture({ eventResponse(url) {
+    const after = url.searchParams.get("after");
+    const follow = url.searchParams.has("follow");
+    calls.push(follow ? `follow:${after}` : after!);
+    return follow ? new Response(": connected\n\n", { headers: { "content-type": "text/event-stream" } })
+      : Response.json({ events: [], nextAfter: 0 });
+  } });
+  await assert.rejects(request("events?poll=1&wait=5&snapshot=0"), { status: 502, code: "V2_RUNTIME_UNAVAILABLE" });
+  assert.deepEqual(calls, ["latest", "0", "follow:0"]);
+});
+
+test("aborting an idle migrated poll cancels its native subscription without a final page read", async () => {
+  const controller = new AbortController();
+  const reason = new DOMException("Test client disconnected", "AbortError");
+  const calls: string[] = [];
+  let cancelled = false;
+  const { request } = fixture({ eventResponse(url) {
+    const after = url.searchParams.get("after");
+    const follow = url.searchParams.has("follow");
+    calls.push(follow ? `follow:${after}` : after!);
+    if (!follow) return Response.json({ events: [], nextAfter: 0 });
+    setTimeout(() => controller.abort(reason), 10);
+    return new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  } });
+  await assert.rejects(request("events?poll=1&wait=5&snapshot=0", { signal: controller.signal }), reason);
+  assert.deepEqual(calls, ["latest", "0", "follow:0"]);
+  assert.equal(cancelled, true);
 });
 
 test("keeps scoped agent credentials without permitting browser-origin requests", async () => {

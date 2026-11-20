@@ -4,7 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { FRAME_BYTES, MAX_POLL_WAIT_MS, type ClientEvent, type RequestRecord, type TurnSnapshot } from "../shared/client-protocol.ts";
 import { parseSSE } from "../v2/sdk/src/sse.ts";
 import { HttpError } from "./core/http-error.ts";
-import { unsupportedV1Operation, v2Event, type MigratedAgent, type V1Compatibility, type V2Event } from "./v1-v2-compatibility.ts";
+import { unavailable, unsupportedV1Operation, v2Event, type MigratedAgent, type V1Compatibility, type V2Event } from "./v1-v2-compatibility.ts";
 
 const terminal = new Set(["run_completed", "run_failed", "run_cancelled", "input_required"]);
 const progress = new Set(["run_started", "message_start", "message_end", "text_delta", "tool_call_start", "tool_call_end"]);
@@ -17,6 +17,34 @@ events.get("*", c => compatibilityEvents(c, c.env.compatibility, c.env.route, c.
 /** Uses the same SSE handler from platforms that route with a standard Request. */
 export function compatibilityEventsResponse(request: Request, compatibility: V1Compatibility, route: MigratedAgent, reader?: StreamReader) {
   return events.fetch(request, { compatibility, route, reader });
+}
+
+/** Use the native hibernatable stream only to wake an empty poll. The JSON page still owns replay and cursors. */
+async function waitForEvent(compatibility: V1Compatibility, route: MigratedAgent, cursor: number, remaining: number, signal: AbortSignal) {
+  const controller = new AbortController();
+  const timeout = AbortSignal.timeout(Math.ceil(remaining));
+  const stopping = AbortSignal.any([signal, timeout]);
+  const abort = () => controller.abort(stopping.reason);
+  stopping.addEventListener("abort", abort, { once: true });
+  if (stopping.aborted) abort();
+  try {
+    const upstream = await compatibility.eventStream(route, cursor, controller);
+    for await (const message of parseSSE(upstream, controller.signal)) {
+      const event = v2Event.parse(JSON.parse(message.data));
+      if (event.seq > cursor) {
+        controller.abort();
+        return;
+      }
+    }
+    if (!timeout.aborted) throw unavailable();
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!timeout.aborted) throw error instanceof HttpError ? error : unavailable();
+  } finally {
+    stopping.removeEventListener("abort", abort);
+    controller.abort();
+  }
+  signal.throwIfAborted();
 }
 
 /** Replay and follow the v2 event buffer in the v1 cursor namespace. */
@@ -95,7 +123,8 @@ export async function compatibilityEvents(c: Context, compatibility: V1Compatibi
       if (frames.length || remaining <= 0 || signal.aborted) {
         return c.json({ cursor: route.event_base + cursor, events: frames.filter(event => event.data !== undefined) }, 200, { "Cache-Control": "no-store" });
       }
-      await delay(Math.min(remaining, 500), undefined, { signal });
+      if (page.events.length) await delay(Math.min(remaining, 500), undefined, { signal });
+      else await waitForEvent(compatibility, route, cursor, remaining, signal);
     }
   }
 
