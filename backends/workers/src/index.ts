@@ -348,6 +348,18 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
       }
     }
+    if (request.method === "GET" && (url.pathname === "/v1/inbox" || url.pathname === "/v1/inputs")) {
+      try {
+        await apiRequest(request, env);
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        if (!auth) throw new CoreHttpError(401, "Invalid or missing credentials");
+        const result = await inboxSql(env, sql => readInbox(sql, auth.tenantId, inboxQuery(url.searchParams)));
+        return publicPageHeaders(request, corsResponse(request, json(result)));
+      } catch (error) {
+        const failure = error instanceof InboxQueryError ? new CoreHttpError(400, error.message) : error;
+        return publicPageHeaders(request, corsResponse(request, httpFailure(failure, env)));
+      }
+    }
     const credentials = /^\/v1\/agents\/([^/]+)\/credentials$/.exec(url.pathname);
     const authorization = request.headers.get("authorization") ?? undefined;
     if (request.method === "GET" && credentials && authorization) {

@@ -1152,7 +1152,7 @@ export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
       const prefix = `/v2/agents/${agent}/`;
       const operation = path.startsWith(prefix) ? path.slice(prefix.length) : "";
       const write = request.method === "POST" && operation === "runs";
-      const read = request.method === "GET" && /^(?:history|events|runs(?:\/[^/]+)?)$/.test(operation);
+      const read = request.method === "GET" && /^(?:detail|history|events|runs(?:\/[^/]+)?)$/.test(operation);
       if (!/^tnt_[0-9a-f]{16}$/.test(tenant) || !/^agt_[0-9a-f]{16}$/.test(agent) || (!write && !read)) {
         return errorResponse(404, "not_found", "Unsupported legacy agent route");
       }
@@ -1164,7 +1164,9 @@ export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
         const value = request.headers.get(name);
         if (value) headers.set(name, value);
       }
-      const scoped = new Request(request, { headers });
+      const scoped = operation === "detail"
+        ? new Request(new URL(`/v2/agents/${agent}`, request.url), { headers })
+        : new Request(request, { headers });
       return write ? await startAgentRun(scoped, this.env, this.ctx, agent, true) : await app.fetch(scoped, this.env, this.ctx);
     } catch (error) {
       return toApiErrorResponse(error);

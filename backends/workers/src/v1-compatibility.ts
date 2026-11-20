@@ -13,13 +13,17 @@ import { PromptInput } from "../../../src/v1-prompt-schema.ts";
 import { unsupportedV1Operation, type CompatibilitySql, type V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { readText } from "./account-http.ts";
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
+import { listAgentPage, agentListQuery } from "../../../src/agent-directory-page.ts";
 
 const tenantPaths = /^\/v1\/agents\/(client_[a-f0-9]{40})\/(prompt|mounts|events|state|history|inputs(?:\/[^/]+)?|requests\/[^/]+)$/;
 const agentPaths = /^\/clients\/(client_[a-f0-9]{40})\/(requests(?:\/[^/]+)?|events|state|history|inputs(?:\/[^/]+)?)$/;
+const agentDetail = /^\/v1\/agents\/(client_[a-f0-9]{40})$/;
 
 export function legacyAgentRequest(request: Request) {
   if (request.headers.has("upgrade")) return;
   const url = new URL(request.url);
+  const detail = request.method === "GET" ? agentDetail.exec(url.pathname) : undefined;
+  if (detail) return { agent: detail[1], operation: "detail", scoped: false };
   const match = agentPaths.exec(url.pathname) ?? tenantPaths.exec(url.pathname);
   if (!match) return;
   const [, agent, operation] = match;
@@ -96,6 +100,24 @@ export async function handleLegacyAgentRequest(
   const signal = request.signal;
   const route = await compatibility.route(tenant, agent, request.method === "POST" ? signal : undefined);
   if (!route) return;
+  if (operation === "detail") {
+    if (url.searchParams.get("refresh") === "true") throw unsupportedV1Operation();
+    const [{ agents }, current] = await Promise.all([
+      listAgentPage(sql, tenant, agentListQuery(new URLSearchParams({ id: agent }))),
+      compatibility.detail(route, signal),
+    ]);
+    if (!agents[0]) throw unknownAgent();
+    const tools = current.tools ?? [];
+    const mcpServers = (current.mcpServers ?? []).map(({ name }) => ({ name }));
+    const schemas = url.searchParams.get("schemas") === "true";
+    const toolSources = [
+      ...(tools.length ? [{ kind: "application", name: "Application", status: "ready", tools: tools.map(({ inputSchema, ...tool }) =>
+        ({ ...tool, ...(schemas ? { inputSchema } : {}) })) }] : []),
+      ...mcpServers.map(({ name }) => ({ kind: "mcp", name, status: "unlisted", tools: [] })),
+    ];
+    return json({ ...agents[0], model: current.model, running: current.status === "running", systemPrompt: current.instructions ?? "",
+      builtins: current.builtins ?? [], tools, mcpServers, toolSources });
+  }
   async function archived(id: string): Promise<RequestRecord | undefined> {
     const { rows: [row] } = await sql.query<{ receipt: RequestRecord | null }>(
       `select (select value from jsonb_array_elements(receipts) where value->>'id' = $3) as receipt

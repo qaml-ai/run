@@ -141,7 +141,8 @@ export class V1Compatibility {
     return new V1Compatibility(sql, (route, path, init) => {
       const key = credentials.get(route.destination_tenant);
       if (!key) throw new HttpError(503, "The migrated agent's runtime credential is unavailable", "V2_CREDENTIAL_UNAVAILABLE");
-      const endpoint = new URL(`agents/${encodeURIComponent(route.destination_agent)}/${path}`, root);
+      const agentPath = `agents/${encodeURIComponent(route.destination_agent)}`;
+      const endpoint = new URL(path === "detail" ? agentPath : `${agentPath}/${path}`, root);
       const headers = new Headers(init.headers);
       headers.set("authorization", `Bearer ${key}`);
       return fetchWithoutRedirects(request, endpoint, { ...init, headers });
@@ -251,6 +252,19 @@ export class V1Compatibility {
     const activity = activityOf(projected);
     const activeRun = projected[state.data.runs.findIndex(run => run.id === state.data.activeRunId)]?.id ?? null;
     return { cursor, requests: [...source, ...projected], ...activity, activeRun };
+  }
+
+  async detail(route: MigratedAgent, signal?: AbortSignal) {
+    const { response, data } = await this.call(route, "detail", undefined, signal);
+    const result = z.object({
+      id: z.string(), model: z.string(), instructions: z.string().nullish(),
+      status: z.enum(["running", "idle"]), activeRunId: z.string().nullable(),
+      tools: z.array(z.object({ name: z.string(), description: z.string().optional(), inputSchema: z.unknown().optional() })).optional(),
+      mcpServers: z.array(z.object({ name: z.string(), url: z.string().optional() })).optional(),
+      builtins: z.array(z.string()).optional(),
+    }).safeParse(data);
+    if (!response.ok || !result.success || result.data.id !== route.destination_agent) throw unavailable();
+    return result.data;
   }
 
   private v1RequestId(run: Run) {

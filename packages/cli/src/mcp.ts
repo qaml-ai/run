@@ -36,7 +36,11 @@ export function createServer(api: () => Api, options: { cwd?: string } = {}) {
   };
   for (const tool of tools(api, { local })) {
     server.registerTool(tool.name, { title: tool.title, description: tool.description, inputSchema: tool.input, annotations: { title: tool.title, ...tool.annotations } }, (async (args: any) => {
-      try { return { content: [{ type: "text", text: capped(resultText(await tool.run(args))) }] }; }
+      try {
+        const result = await tool.run(args);
+        const text = tool.name === "list_models" ? JSON.stringify(result) : capped(resultText(result));
+        return { content: [{ type: "text", text }] };
+      }
       catch (error) { return { isError: true, content: [{ type: "text", text: errorText(error) }] }; }
     }) as any);
   }

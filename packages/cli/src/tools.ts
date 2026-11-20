@@ -61,8 +61,14 @@ export function tools(api: () => Api, options: { local?: LocalFiles } = {}): Too
     return { ...await client.me(), url: client.url };
   }, read);
 
-  tool("list_models", "List models", "The models agents can use, with context window, reasoning support, price and toolCallStreaming (true: tool-call arguments stream as written, so a page can render a section while it is written; false: they arrive in one piece; \"unknown\": not measured): pass a model's id as `model` to create_agent, configure_agent or a manifest. Changes nothing.", { available: z.boolean().optional().describe("Only models the account has a key for (default true)") }, async ({ available }) => {
-    const models: any[] = await api().get(`/v1/models${available === false ? "" : "?available=true"}`);
+  tool("list_models", "List models", "The models agents can use, with context window, reasoning support, price and toolCallStreaming (true: tool-call arguments stream as written, so a page can render a section while it is written; false: they arrive in one piece; \"unknown\": not measured): pass a model's id as `model` to create_agent, configure_agent or a manifest. Changes nothing.", {
+    available: z.boolean().optional().describe("Only models the account has a key for (default true)"),
+    provider: z.string().min(1).optional().describe("Only models from this provider, such as azure"),
+  }, async ({ available, provider }) => {
+    const query = new URLSearchParams();
+    if (available !== false) query.set("available", "true");
+    if (provider) query.set("provider", provider);
+    const models: any[] = await api().get(`/v1/models${query.size ? `?${query}` : ""}`);
     return models.map(({ id, name, contextWindow, reasoning, cost, available, toolCallStreaming }) => ({ id, name, available, contextWindow, reasoning, cost, toolCallStreaming }));
   }, read);
 
