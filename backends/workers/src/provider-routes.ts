@@ -9,6 +9,7 @@ import { modelCatalog } from "./model.ts";
 import type { AuthContext } from "./control.ts";
 import { sourceUrl } from "./tool-sources.ts";
 import { keyServices, type KeyEnv } from "./security-services.ts";
+import { legacyKeyedProviders } from "./legacy-account-model-policy.ts";
 
 const reply = (value: unknown) => Response.json(value, { headers:{"cache-control":"no-store"} });
 const aad = (tenant: string, name: string, scope: string) => scope ? `model-provider:${tenant}:scope:${scope}:${name}` : `model-provider:${tenant}:${name}`;
@@ -23,21 +24,22 @@ export async function customProviderList(env: ProviderKeyEnv, tenant: string, sc
 }
 
 /** Custom provider declarations and secrets use the existing relational schema, independently of live agents. */
-export async function providerRoutes(request: Request, env: ProviderKeyEnv & {MODEL:string;TEST_MODEL?:string}, auth: AuthContext): Promise<Response | undefined> {
+export async function providerRoutes(request: Request, env: ProviderKeyEnv & {MODEL:string;TEST_MODEL?:string}, auth: AuthContext, legacyPolicy?: string): Promise<Response | undefined> {
   const url = new URL(request.url), path = url.pathname;
   const tenant = auth.tenantId;
   if (path === "/v1/models" && request.method === "GET") {
     const provider = url.searchParams.get("provider") ?? undefined;
     const services = await keyServices(env as KeyEnv);
-    const custom = await services.modelProviders.resolvable(tenant,url.searchParams.get("keyScope") ?? undefined);
+    const scope = url.searchParams.get("keyScope") ?? undefined;
+    const custom = legacyPolicy ? await resolveCustomProviders(env, tenant, scope) : await services.modelProviders.resolvable(tenant, scope);
     const declared = Object.entries(custom ?? {}).filter(([name]) => !provider || name===provider).flatMap(([name,entry]) => entry.models.map(model => ({...modelInfo(resolveModel(`${name}/${model.id}`,undefined,custom)),available:true})));
     const endpoints = services.tenants.modelEndpoints(tenant) ?? {};
     const own = Object.entries(endpoints).filter(([name]) => !provider || name===provider).flatMap(([name, endpoint]) => Object.keys(endpoint.models ?? {}).map(id => ({...modelInfo(resolveModel(`${name}/${id}`,endpoints)),toolCallStreaming:toolCallStreaming(id),available:true})));
-    const keyed = await services.accounts.keyedProviders(tenant);
+    const keyed = legacyPolicy ? await legacyKeyedProviders(legacyPolicy, services.accounts, tenant) : await services.accounts.keyedProviders(tenant);
     const supported = new Set(listProviders().filter(entry=>entry.apiKey).map(entry=>entry.id));
     const catalog = modelCatalog(env,provider).map(model => {
       const [name,...id] = model.routes?.[0]?.split("/") ?? [model.provider,model.modelId];
-      return {...model,available:(supported.has(name) || name==="azure") && keyed(name,id.join("/"))};
+      return {...model,available:(supported.has(name) || name==="azure") && (keyed(name,id.join("/")) || (name !== "azure" && Object.hasOwn(endpoints, name)))};
     });
     const models = [...own,...declared,...catalog];
     const shown = url.searchParams.get("available")==="true" ? models.filter(model=>model.available) : models;

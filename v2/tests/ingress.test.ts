@@ -125,6 +125,23 @@ test("offers hosted MCP on both hosts and limits its origin binding to the legac
   assert.equal(origin.mock.callCount(), 2);
 });
 
+test("serves model discovery through the compatibility Worker with ECS disabled", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
+  const route = t.mock.fn(async (request: Request) => Response.json({
+    available: new URL(request.url).searchParams.get("available"),
+    authorization: request.headers.get("authorization"),
+  }));
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route }, LEGACY_ECS_FALLBACK: "0" };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    const response = await worker.fetch(new Request(`https://${host}/v1/models?available=true`, {
+      headers: { authorization: "Bearer original-key" },
+    }), env);
+    assert.deepEqual(await response.json(), { available: "true", authorization: "Bearer original-key" });
+  }
+  assert.equal(route.mock.callCount(), 2);
+  assert.equal(origin.mock.callCount(), 0);
+});
+
 test("can select one test credential before sending all legacy requests to the Worker", async t => {
   const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
   const route = t.mock.fn(async () => new Response(null, { status: 204 }));
