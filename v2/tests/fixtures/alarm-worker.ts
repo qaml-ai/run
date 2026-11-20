@@ -1,12 +1,36 @@
 import app, { AgentDO as RuntimeAgentDO, TenantDO as RuntimeTenantDO } from "../../worker/src/index.ts";
+import type { Env } from "../../worker/src/types.ts";
 import { mintTenantApiKey } from "../../worker/src/crypto.ts";
 import { getTenantStub } from "../../worker/src/tenant-do.ts";
-import type { Env } from "../../worker/src/types.ts";
 
+const textTestTenant = "tnt_0000000000000001";
 const chiridionTestTenant = "tnt_0000000000000002";
 
 export class TenantDO extends RuntimeTenantDO {
   private modelIndexUpdatesEnabled = true;
+  private failTextSettlement = false;
+  private legacyTextRpc = false;
+
+  useLegacyTextRpc(): void {
+    this.legacyTextRpc = true;
+  }
+
+  override async claimTextRun(key: string): Promise<void> {
+    if (this.legacyTextRpc) throw new Error("Existing billing object does not implement claimTextRun");
+    return super.claimTextRun(key);
+  }
+
+  failNextTextSettlement(): void {
+    this.failTextSettlement = true;
+  }
+
+  override async settleUsage(input: Parameters<RuntimeTenantDO["settleUsage"]>[0]) {
+    if (this.failTextSettlement) {
+      this.failTextSettlement = false;
+      throw new Error("Synthetic settlement failure");
+    }
+    return super.settleUsage(input);
+  }
 
   setModelIndexUpdatesEnabled(enabled: boolean): void {
     this.modelIndexUpdatesEnabled = enabled;
@@ -61,6 +85,20 @@ export default {
   ...app,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/test-text-tenant" && request.method === "POST") {
+      const stub = env.TENANT_DO.get(env.TENANT_DO.idFromName(textTestTenant)) as unknown as TenantDO;
+      if (url.searchParams.has("failSettlement")) {
+        await stub.failNextTextSettlement();
+        return new Response(null, { status: 204 });
+      }
+      await stub.useLegacyTextRpc();
+      const minted = await mintTenantApiKey(textTestTenant);
+      await getTenantStub(env, textTestTenant).initTenant({
+        tenantId: textTestTenant, name: "text test", initialCreditsUsd: 0, concurrencyLimit: 1,
+        keyId: minted.id, keyPrefix: minted.prefix, keyHash: minted.keyHash,
+      });
+      return Response.json({ apiKey: minted.token });
+    }
     if (url.pathname === "/test-chiridion-tenant" && request.method === "POST") {
       const minted = await mintTenantApiKey(chiridionTestTenant);
       await getTenantStub(env, chiridionTestTenant).initTenant({

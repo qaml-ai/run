@@ -30,6 +30,7 @@ export async function executeStatelessRun(
   tenantId: string,
   body: StatelessRunInput,
   signal?: AbortSignal,
+  confirmUsage = false,
 ): Promise<Record<string, unknown>> {
   if (typeof body.input !== "string") {
     throw new ApiError(400, "invalid_request", "`input` must be a string");
@@ -52,6 +53,7 @@ export async function executeStatelessRun(
   const toolCallsSummary: ToolCallSummary[] = [];
   let finalText = "";
   let structuredOutput: unknown = null;
+  let error: { code: string; message: string } | null = null;
 
   for (let step = 0; step < maxSteps; step++) {
     let stepText = "";
@@ -93,8 +95,12 @@ export async function executeStatelessRun(
       if (body.outputSchema) {
         try {
           structuredOutput = JSON.parse(finalText.trim());
+          if (confirmUsage && (!structuredOutput || typeof structuredOutput !== "object" || Array.isArray(structuredOutput))) {
+            error = { code: "output_missing", message: "The model returned no structured output" };
+          }
         } catch {
-          throw new ApiError(422, "output_schema_invalid", "Stateless run response was not valid JSON");
+          if (!confirmUsage) throw new ApiError(422, "output_schema_invalid", "Stateless run response was not valid JSON");
+          error = { code: "output_missing", message: "The model returned no structured output" };
         }
       }
       break;
@@ -156,7 +162,7 @@ export async function executeStatelessRun(
   }
 
   if (usage.inputTokens > 0 || usage.outputTokens > 0 || usage.costUsd > 0) {
-    await getTenantStub(env, tenantId)
+    const settlement = getTenantStub(env, tenantId)
       .settleUsage({
         refId: `srun:${runId}`,
         model,
@@ -165,14 +171,15 @@ export async function executeStatelessRun(
         vmMs: 0,
         costUsd: usage.costUsd,
         note: "POST /v2/runs",
-      })
-      .catch(() => {});
+      });
+    if (confirmUsage) await settlement;
+    else await settlement.catch(() => {});
   }
 
   return {
     id: runId,
     agentId: null,
-    status: "completed",
+    status: error ? "failed" : "completed",
     text: finalText,
     output: structuredOutput,
     batchedInto: null,
@@ -180,6 +187,6 @@ export async function executeStatelessRun(
     toolCalls: toolCallsSummary,
     filesChanged: [],
     usage,
-    error: null,
+    error,
   };
 }

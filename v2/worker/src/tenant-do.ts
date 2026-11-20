@@ -111,6 +111,7 @@ export function getTenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
 
 export class TenantDO extends DurableObject<Env> {
   private schemaReady = false;
+  private textRunSchemaReady = false;
   private lastKeyTouchAt = new Map<string, number>();
 
   private ensureSql(): void {
@@ -770,6 +771,27 @@ export class TenantDO extends DurableObject<Env> {
   async releaseSlot(runId: string): Promise<void> {
     this.ensureSql();
     this.ctx.storage.sql.exec(`DELETE FROM active_leases WHERE run_id = ?1`, runId);
+  }
+
+  async claimTextRun(key: string): Promise<void> {
+    if (!this.textRunSchemaReady) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS text_run_starts (
+          request_key TEXT PRIMARY KEY,
+          expires_at INTEGER NOT NULL
+        );
+      `);
+      this.textRunSchemaReady = true;
+    }
+    const now = Date.now();
+    // Keep only opaque keys. Expire them after 60s of work plus 60s of replay protection and prune on the next call.
+    this.ctx.storage.sql.exec(`DELETE FROM text_run_starts WHERE expires_at <= ?1`, now);
+    const rows = this.ctx.storage.sql.exec(
+      `INSERT INTO text_run_starts (request_key, expires_at) VALUES (?1, ?2)
+       ON CONFLICT DO NOTHING RETURNING request_key`,
+      key, now + 120_000,
+    ).toArray();
+    if (rows.length === 0) throw new ApiError(409, "duplicate_request", "This text run has already been requested");
   }
 
   async checkRateLimit(bucketKey = "api", cost = 1): Promise<void> {

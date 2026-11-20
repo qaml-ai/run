@@ -75,6 +75,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let lastProviderMessages: ProviderMessage[] | undefined;
   let lastProviderOptions: Record<string, unknown> | undefined;
   const azureRequests: Array<{ body: Record<string, unknown>; key?: string | string[]; authorization?: string }> = [];
+  let textTimeoutEntered: (() => void) | undefined;
   let actorToolGate: { started: () => void; resume: Promise<void> } | undefined;
   const actorTokens = new Map<string, string>();
   const receivedWebhooks: Array<{ headers: Record<string, string | string[] | undefined>; body: string }> = [];
@@ -188,12 +189,21 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       if (req.url === "/openai/v1/responses" && req.method === "POST") {
         const body = JSON.parse(rawBody) as Record<string, unknown>;
         azureRequests.push({ body, key: req.headers["api-key"], authorization: req.headers.authorization });
-        const input = body.input as Array<{ type?: string }>;
+        const input = body.input as Array<{ type?: string; content?: string }>;
+        const last = input.at(-1)?.content;
+        if (last === "native-text-timeout") {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.flushHeaders();
+          textTimeoutEntered?.();
+          const finish = setTimeout(() => res.end(), 2000);
+          res.once("close", () => clearTimeout(finish));
+          return;
+        }
+        const plain = last === "native-text-fixture" ? '{"ok":1}' : last === "native-text-invalid-json" ? "No object" : undefined;
         const toolResult = input.some((item) => item.type === "function_call_output");
-        const creditFixture = rawBody.includes("app-runtime-credit-fixture");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         const events = [
-          ...(toolResult || creditFixture
+          ...(plain !== undefined ? [{ type: "response.output_text.delta", delta: plain }] : toolResult || rawBody.includes("app-runtime-credit-fixture")
             ? [{ type: "response.output_text.delta", delta: "read the result" }]
             : [{ type: "response.output_item.done", item: { type: "function_call", name: "lookup", call_id: "call_azure_test", arguments: "{}" } }]),
           { type: "response.completed", response: { usage: { input_tokens: 160_000, output_tokens: 7 } } },
@@ -296,6 +306,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
             DEFAULT_MODEL: "mock/default",
             AZURE_OPENAI_SOL_ENDPOINT: auxUrl,
             AZURE_OPENAI_SOL_API_KEY: "fixture-azure-key",
+            BUILDER_CUTOVER_CREDIT_TENANT_ID: "tnt_0000000000000001",
             APP_RUNTIME_CREDIT_TENANT_IDS: "tnt_0000000000000002",
             TOOL_IDENTITY_ISSUER: `http://127.0.0.1:${workerPort}/v2`,
             TOOL_IDENTITY_PRIVATE_JWK: JSON.stringify({ ...toolKey, kid: "tool-fixture" }),
@@ -345,15 +356,17 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await migrationFixture.rehearseSignedTools(t, workerUrl, ADMIN_SECRET);
   });
 
-  it("routes the default alias to Azure Responses with low reasoning across tool calls", async () => {
+  it("keeps the developer prompt in the Azure Responses input prefix across tool calls", async () => {
     const created = await CamelRun.createTenant({
       baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "azure-sol-test", initialCreditsUsd: 1,
     });
+    const instructions = "Use the lookup result to answer the user.";
     const response = await fetch(`${workerUrl}/v2/runs`, {
       method: "POST",
       headers: { Authorization: `Bearer ${created.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "camelrun/default", input: "Call lookup before answering.",
+        instructions,
         tools: [{ name: "lookup", url: `${auxUrl}/webhook` }],
       }),
     });
@@ -366,12 +379,71 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       assert.equal(body.model, "gpt-6.2-sol");
       assert.deepEqual(body.reasoning, { effort: "low" });
       assert.equal(body.store, false);
+      assert.equal(Object.hasOwn(body, "instructions"), false);
+      assert.deepEqual((body.input as unknown[]).slice(0, 2), [
+        { role: "developer", content: instructions },
+        { role: "user", content: "Call lookup before answering." },
+      ]);
       assert.equal(key, "fixture-azure-key");
       assert.equal(authorization, undefined);
     }
     assert.ok((azureRequests[1].body.input as Array<{ type?: string; call_id?: string }>).some(
       (item) => item.type === "function_call_output" && item.call_id === "call_azure_test",
     ));
+  });
+
+  it("runs Camel Bots native text at zero balance, preserves Azure Sol options, and waits for settlement", async () => {
+    const seed = await fetch(workerUrl + "/test-text-tenant", { method: "POST" });
+    assert.equal(seed.status, 200);
+    const { apiKey } = await seed.json() as { apiKey: string };
+    const other = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "text denied" });
+    const call = (input: string, timeoutMs: number, token = apiKey, key = crypto.randomUUID()) => fetch(workerUrl + "/v2/runs/text", {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": key },
+      body: JSON.stringify({ input, instructions: "Be brief.", outputSchema: { type: "object", additionalProperties: true }, timeoutMs }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const before = azureRequests.length;
+    assert.equal((await call("native-text-fixture", 2000, other.apiKey)).status, 404);
+    assert.equal((await call("native-text-fixture", 60001)).status, 400);
+    assert.equal(azureRequests.length, before);
+    const keyForRun = crypto.randomUUID();
+    const duplicate = await Promise.all([call("native-text-fixture", 2000, apiKey, keyForRun), call("native-text-fixture", 2000, apiKey, keyForRun)]);
+    assert.deepEqual(duplicate.map(response => response.status).sort(), [200, 409]);
+    const response = duplicate.find(response => response.ok)!;
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json() as { text: string; output: unknown; usage: { costUsd: number } };
+    assert.equal(result.text, '{"ok":1}');
+    assert.deepEqual(result.output, { ok: 1 });
+    assert.equal(result.usage.costUsd, 0.32007);
+    const { body, key, authorization } = azureRequests[before]!;
+    assert.equal(key, "fixture-azure-key");
+    assert.equal(authorization, undefined);
+    assert.equal(body.model, "gpt-6.2-sol");
+    assert.deepEqual(body.reasoning, { effort: "low" });
+    assert.equal(body.store, false);
+    assert.equal(Object.hasOwn(body, "instructions"), false);
+    assert.deepEqual(body.input, [
+      { role: "developer", content: "Be brief." }, { role: "user", content: "native-text-fixture" },
+    ]);
+    assert.equal((await call("native-text-fixture", 2000, apiKey, keyForRun)).status, 409);
+    assert.equal((await call("native-text-invalid-json", 2000, apiKey, keyForRun)).status, 409);
+    assert.equal(azureRequests.length, before + 1);
+
+    const malformed = await call("native-text-invalid-json", 2000);
+    assert.equal(malformed.status, 200);
+    assert.equal((await malformed.json() as { error: { code: string } }).error.code, "output_missing");
+    const billing = await new CamelRun({ baseUrl: workerUrl, apiKey }).billing.get();
+    assert.equal(billing.usage.reduce((sum, usage) => sum + usage.runsCount!, 0), 2);
+    assert.ok(billing.balanceUsd > 24);
+    assert.equal((await fetch(workerUrl + "/test-text-tenant?failSettlement", { method: "POST" })).status, 204);
+    assert.equal((await call("native-text-fixture", 2000)).status, 500, "a failed usage commit never replies with a model result");
+    assert.deepEqual(await new CamelRun({ baseUrl: workerUrl, apiKey }).billing.get(), billing);
+    const entered = new Promise<void>(resolve => { textTimeoutEntered = resolve; });
+    const timed = call("native-text-timeout", 1000);
+    await Promise.race([entered, timed]);
+    assert.equal((await call("native-text-fixture", 2000)).status, 429, "the admitted call holds the single tenant slot");
+    assert.equal((await timed).status, 408);
+    assert.equal((await call("native-text-fixture", 2000)).status, 200, "the timed out run releases its slot");
   });
 
   it("runs Chiridion chat at zero shared balance and records usage", async t => {
