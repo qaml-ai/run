@@ -25,6 +25,7 @@ import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
 import { publicOrigins } from "./account-origins.ts";
 import { accountServices, accountIdentityResponse } from "./account-services.ts";
+import { legacyAccountModelPolicy } from "./legacy-account-model-policy.ts";
 import { OPS_METADATA_PATH } from "./account-oauth.ts";
 import { serveHostedMcp } from "./hosted-mcp.ts";
 import { legacyAgentList } from "./legacy-agent-list.ts";
@@ -328,10 +329,11 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
             const document = await publicDocument(call, env);
             if (document) return document;
           }
-          if (call.method === "GET" && target.pathname === "/v1/me" && auth?.principal) {
+          if (call.method === "GET" && target.pathname === "/v1/me" && auth?.principal && env.LEGACY_ACCOUNT_MODEL_POLICY) {
             await apiRequest(call, env);
             const { accounts } = await keyServices(env);
-            return accountIdentityResponse(accountServices(env, accounts, origin), auth.principal);
+            const policy = await legacyAccountModelPolicy(env.LEGACY_ACCOUNT_MODEL_POLICY, accounts, auth.tenantId);
+            return accountIdentityResponse(accountServices(env, accounts, origin), auth.principal, policy);
           }
           const response = await this.route(call.clone());
           return response ?? await env.MCP_LEGACY_API!.fetch(call, { redirect: "manual" });

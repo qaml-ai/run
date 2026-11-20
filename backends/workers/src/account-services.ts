@@ -153,12 +153,15 @@ export async function accountPrincipal(request: Request, service: AccountService
 }
 
 /** The caller's account projection, without account or billing maintenance. */
-export async function accountIdentityResponse(service: AccountServices, principal: Principal): Promise<Response> {
+export async function accountIdentityResponse(service: AccountServices, principal: Principal,
+  policy?: { configuredGithub?: string; canStoreKeys: boolean; defaultModel: string }): Promise<Response> {
   const tenant = principal.tenant;
   const person = principal as Principal & { login?: string; name?: string; signIn?: string };
-  const login = "login" in person ? person.login : await service.accounts.identity(tenant);
+  const login = "login" in person ? person.login : await service.accounts.identity(tenant, policy?.configuredGithub);
+  const canStoreKeys = policy?.canStoreKeys ?? service.accounts.canStoreKeys;
+  const defaultModel = policy?.defaultModel ?? await defaultModelFor(service.environment, tenant);
   return Response.json({ tenant, via: principal.via, ...(login ? { login } : {}), ...(person.name ? { name: person.name } : {}),
-    ...(person.signIn ? { signIn: person.signIn } : {}), canStoreKeys: service.accounts.canStoreKeys, defaultModel: await defaultModelFor(service.environment, tenant) },
+    ...(person.signIn ? { signIn: person.signIn } : {}), canStoreKeys, defaultModel },
   { headers: { "Cache-Control": "no-store" } });
 }
 
