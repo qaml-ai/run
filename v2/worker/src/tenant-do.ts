@@ -112,6 +112,7 @@ export function getTenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
 export class TenantDO extends DurableObject<Env> {
   private schemaReady = false;
   private textRunSchemaReady = false;
+  private legacyTextSchemaReady = false;
   private lastKeyTouchAt = new Map<string, number>();
 
   private ensureSql(): void {
@@ -792,6 +793,90 @@ export class TenantDO extends DurableObject<Env> {
       key, now + 120_000,
     ).toArray();
     if (rows.length === 0) throw new ApiError(409, "duplicate_request", "This text run has already been requested");
+  }
+
+  private prepareLegacyTextReceipts() {
+    if (!this.legacyTextSchemaReady) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS legacy_text_receipts (
+          id TEXT PRIMARY KEY,
+          fingerprint TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          body TEXT,
+          billing TEXT
+        )
+      `);
+      this.ctx.storage.sql.exec(`
+        CREATE INDEX IF NOT EXISTS legacy_text_expiry ON legacy_text_receipts(expires_at) WHERE expires_at > 0
+      `);
+      this.legacyTextSchemaReady = true;
+    }
+    // The response can expire while the routing record still owns this key. Keep the claim and any unsettled charge.
+    this.ctx.storage.sql.exec(`UPDATE legacy_text_receipts SET body = NULL, expires_at = 0 WHERE expires_at > 0 AND expires_at <= ?1`, Date.now());
+  }
+
+  private async scheduleLegacyTextExpiry() {
+    const [{ expires_at }] = this.ctx.storage.sql.exec<{ expires_at: number | null }>(
+      `SELECT MIN(expires_at) AS expires_at FROM legacy_text_receipts WHERE expires_at > 0`,
+    ).toArray();
+    if (expires_at === null) await this.ctx.storage.deleteAlarm();
+    else await this.ctx.storage.setAlarm(expires_at);
+  }
+
+  async alarm() {
+    this.prepareLegacyTextReceipts();
+    await this.scheduleLegacyTextExpiry();
+  }
+
+  private legacyTextReceipt(id: string) {
+    return this.ctx.storage.sql.exec<{ fingerprint: string; started_at: number; expires_at: number; body: string | null }>(
+      `SELECT fingerprint, started_at, expires_at, body FROM legacy_text_receipts WHERE id = ?1`, id,
+    ).toArray()[0] ?? null;
+  }
+
+  async readLegacyTextReceipt(id: string) {
+    this.prepareLegacyTextReceipts();
+    return this.legacyTextReceipt(id);
+  }
+
+  async claimLegacyTextReceipt(id: string, fingerprint: string) {
+    this.prepareLegacyTextReceipts();
+    const now = Date.now();
+    const inserted = this.ctx.storage.sql.exec(
+      `INSERT INTO legacy_text_receipts (id, fingerprint, started_at, expires_at) VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT DO NOTHING RETURNING id`, id, fingerprint, now, now + 120_000,
+    ).toArray().length === 1;
+    const receipt = this.legacyTextReceipt(id);
+    if (!receipt) throw new Error("Legacy text receipt was not reserved");
+    if (inserted) await this.scheduleLegacyTextExpiry();
+    return { inserted, ...receipt };
+  }
+
+  async finishLegacyTextReceipt(id: string, fingerprint: string, startedAt: number, body: string, expiresAt: number, billing: string | null) {
+    this.prepareLegacyTextReceipts();
+    const saved = this.ctx.storage.sql.exec(
+      `UPDATE legacy_text_receipts SET body = ?4, expires_at = ?5, billing = ?6
+       WHERE id = ?1 AND fingerprint = ?2 AND started_at = ?3 AND body IS NULL AND expires_at > 0 RETURNING id`,
+      id, fingerprint, startedAt, body, expiresAt, billing,
+    ).toArray();
+    if (!saved.length) throw new Error("Legacy text receipt is no longer owned by this execution");
+    await this.scheduleLegacyTextExpiry();
+  }
+
+  async readLegacyTextBilling(id: string, fingerprint: string) {
+    this.prepareLegacyTextReceipts();
+    return this.ctx.storage.sql.exec<{ billing: string | null }>(
+      `SELECT billing FROM legacy_text_receipts WHERE id = ?1 AND fingerprint = ?2`, id, fingerprint,
+    ).toArray()[0]?.billing ?? null;
+  }
+
+  async ackLegacyTextBilling(id: string, fingerprint: string) {
+    this.prepareLegacyTextReceipts();
+    this.ctx.storage.sql.exec(
+      `UPDATE legacy_text_receipts SET billing = '{"state":"settled"}'
+       WHERE id = ?1 AND fingerprint = ?2 AND billing IS NOT NULL`, id, fingerprint,
+    );
   }
 
   async checkRateLimit(bucketKey = "api", cost = 1): Promise<void> {

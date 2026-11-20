@@ -278,7 +278,7 @@ export interface ProviderCredentials {
 export type ModelStreamChunk =
   | { type: "text_delta"; delta: string }
   | { type: "tool_call"; id: string; name: string; argumentsJson: string; args: Record<string, unknown> }
-  | { type: "done"; inputTokens: number; outputTokens: number; stopReason: string };
+  | { type: "done"; inputTokens: number; outputTokens: number; stopReason: string; cacheReadTokens?: number };
 
 export interface LlmToolSchema {
   name: string;

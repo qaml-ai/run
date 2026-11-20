@@ -57,6 +57,7 @@ import {
 } from "./webhooks.ts";
 
 export { TenantDO, AgentDO };
+export { LegacyGatewayTextExecution } from "./legacy-gateway-text-execution.ts";
 
 const app = new Hono<{ Bindings: Env }>();
 
