@@ -15,6 +15,7 @@ import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
 import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
+import { definitionAgents, definitionView, legacyDefinitionRead, listDefinitions, readDefinition } from "../../../src/v1-definition-reads.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -278,6 +279,26 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
+    const definitionRead = env.LEGACY_DEFINITION_READS === "1" && legacyDefinitionRead(request);
+    if (definitionRead) {
+      try {
+        await apiRequest(request, env);
+        const authorization = request.headers.get("authorization")!;
+        if (BrowserTokens.carries(authorization)) {
+          new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(authorization);
+          throw new CoreHttpError(403, "A browser token only reads an agent's events, state, history and inputs");
+        }
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        if (!auth) return null;
+        const db = database(env);
+        const definition = definitionRead.id === undefined ? undefined : await readDefinition(db, auth.tenantId, definitionRead.id);
+        const value = !definition ? await listDefinitions(db, auth.tenantId, definitionRead.unused === true)
+          : definitionRead.agents ? await definitionAgents(db, auth.tenantId, definition.id) : definitionView(definition);
+        return publicPageHeaders(request, corsResponse(request, json(value)));
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
     const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
     const protectedResource = ["GET", "OPTIONS"].includes(request.method) && (
       ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", OPS_METADATA_PATH].includes(url.pathname)

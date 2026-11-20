@@ -1,6 +1,8 @@
 import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
 import { DECISION_LIMITS } from "../../src/core/limits.ts";
 
+import { legacyDefinitionRead } from "../../src/v1-definition-reads.ts";
+
 interface Env extends LegacyVolumeOrigin {
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
@@ -98,8 +100,9 @@ export default {
         { status: 503, headers: { "Cache-Control": "no-store" } });
     }
 
+    const definitionRead = legacyApiHost(hostname) && legacyDefinitionRead(request);
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
-        (pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
+        (definitionRead || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
          (request.method === "GET" && legacyEndUserRead.test(pathname)) || legacyOAuthRoute(pathname, request.method)) &&
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
