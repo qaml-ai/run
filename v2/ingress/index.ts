@@ -1,7 +1,5 @@
 import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
-
 import { legacyDefinitionRead } from "../../src/v1-definition-reads.ts";
-import { DECISION_LIMITS } from "../../src/core/limits.ts";
 import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../shared/legacy-gateway-text-address.ts";
 
 export interface LegacyOriginEnv extends LegacyVolumeOrigin {
@@ -14,6 +12,7 @@ interface Env extends LegacyOriginEnv {
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
   LEGACY_DECISIONS?: { route(request: Request): Promise<Response | null> };
   LEGACY_DECISIONS_CANARY_AUTH_SHA256?: string;
+  LEGACY_BOTS_IMAGES?: { route(request: Request): Promise<Response | null> };
   LEGACY_BOT_DECISIONS?: { route(request: Request): Promise<Response | null> };
   LEGACY_DECISIONS_BOTS_AUTH_SHA256?: string;
 }
@@ -90,6 +89,14 @@ export default {
       }
     }
 
+    if (env.LEGACY_BOTS_IMAGES && legacyApiHost(hostname) && pathname === "/v1/images" &&
+        request.method === "POST" && !request.headers.has("upgrade") &&
+        request.headers.get("content-type")?.toLowerCase().trim() === "application/json" &&
+        decisionsFingerprint(env.LEGACY_DECISIONS_BOTS_AUTH_SHA256) &&
+        await selected(request, env.LEGACY_DECISIONS_BOTS_AUTH_SHA256)) {
+      const image = await env.LEGACY_BOTS_IMAGES.route(request.clone());
+      if (image) return image;
+    }
     const legacyIdentity = legacyApiHost(hostname) && pathname === "/v1/me" && request.method === "GET" &&
       request.headers.has("authorization");
     const legacyCredentials = legacyApiHost(hostname) && request.method === "GET" &&
