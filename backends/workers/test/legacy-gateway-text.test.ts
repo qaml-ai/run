@@ -174,7 +174,7 @@ test("native POST and original-auth polling survive policy rollback on both alia
   assert.equal(changed?.status, 409);
   assert.equal((await changed?.json()).code, "IDEMPOTENCY_CONFLICT");
   const unreachable = await fixture.route(get("agents.camelai.dev"), "legacy-new", { unplug: true });
-  assert.equal(unreachable?.status, 503);
+  assert.equal(unreachable?.status, 409);
   fixture.ready();
   const oauth: AuthContext = { kind: "oauth", tenantId: tenant, scopes: ["*"], principal: { tenant, via: "oauth" } };
   const terminal = await fixture.route(get("run.camelai.com", "?wait=25"), "legacy-new", { auth: oauth });

@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
 import { EndUserCredits, utcDay } from "./end-user-credits.ts";
 import { legacyGatewayTextPayer, type LegacyGatewayTextPayer, type LegacyGatewayTextRun, type LegacyGatewayTextRuntime } from "./legacy-gateway-text.ts";
 import { platformUsage } from "./platform-pricing.ts";
@@ -22,14 +23,33 @@ export interface LegacyGatewayTextExecution {
 }
 
 type Payer = LegacyGatewayTextPayer & { fingerprint: string };
+type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: number; serviceTier?: string };
 type Env = PostgresEnv & {
   LEGACY_GATEWAY_TEXT_BILLING_TENANT: string;
   V2_LEGACY_GATEWAY_TEXT_EXECUTION: LegacyGatewayTextExecution;
 };
 
-const unavailable = () => Response.json({ error: "The run's accounting is unavailable; retry the same key", code: "RUNS_UNAVAILABLE" }, {
-  status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "1" },
-});
+function pending(id: string) {
+  return Response.json({ id, status: "running", text: "", error: null, usage: null, expiresAt: null,
+    toolCalls: [], toolErrors: [], sourceErrors: [], files: [] }, { status: 202, headers: { "Cache-Control": "no-store" } });
+}
+
+function legacyTextCost({ input, output, cacheRead, cacheWrite, serviceTier }: Tokens) {
+  if (![input, output, cacheRead, cacheWrite].every(value => Number.isSafeInteger(value) && value >= 0)) {
+    throw new Error("Invalid terminal text accounting receipt");
+  }
+  const priced = platformUsage({ input, output, cacheRead, cacheWrite, serviceTier, cost: { total: 0 } }, "azure", "gpt-6.2-sol");
+  const usd = priced.usage.cost.total;
+  if (!priced.known || !Number.isFinite(usd) || usd < 0) throw new Error("Original Azure Sol pricing is unavailable");
+  return usd;
+}
+
+async function projectCost(response: Response, receipt?: Tokens): Promise<Response> {
+  if (response.status !== 200) return response;
+  const body = await response.json() as { usage?: Tokens & { costUsd: number } };
+  if (body.usage) body.usage.costUsd = legacyTextCost(receipt ?? body.usage);
+  return Response.json(body, { headers: { "Cache-Control": "no-store" } });
+}
 
 export function accountedLegacyGatewayText(execution: LegacyGatewayTextExecution, credits: Pick<EndUserCredits, "debit">, tenant: string): LegacyGatewayTextRuntime {
   const validPayer = (id: string, payer: Payer) => /^[a-z0-9][a-z0-9-]{0,39}$/.test(tenant) && payer.legacyTenant === tenant &&
@@ -38,45 +58,47 @@ export function accountedLegacyGatewayText(execution: LegacyGatewayTextExecution
   async function settle(id: string, payer: Payer, response: Response): Promise<Response> {
     // No usage can be final while the native response is still running. An expired public response may still owe a debit.
     if (response.status === 202) return response;
+    let confirmedUsage = false;
     try {
       const receipt = await execution.billing(id, payer.fingerprint);
-      if (receipt?.state === "settled") return response;
+      if (receipt?.state === "settled") return await projectCost(response);
       if (!receipt) {
         // A failure without provider evidence is not billable. A successful provider response must have a receipt.
-        if (response.ok) throw new Error("Missing terminal text accounting receipt");
+        if (response.ok || response.status >= 500) throw new Error("Terminal text accounting cannot be confirmed");
         return response;
       }
-      const { startedAt, input, output, cacheRead, cacheWrite, serviceTier } = receipt;
-      if (!Number.isSafeInteger(startedAt) || startedAt <= 0 || startedAt > 8_640_000_000_000_000 ||
-          ![input, output, cacheRead, cacheWrite].every(value => Number.isSafeInteger(value) && value >= 0)) {
+      const { startedAt } = receipt;
+      if (!Number.isSafeInteger(startedAt) || startedAt <= 0 || startedAt > 8_640_000_000_000_000) {
         throw new Error("Invalid terminal text accounting receipt");
       }
-      const priced = platformUsage({ input, output, cacheRead, cacheWrite, serviceTier, cost: { total: 0 } }, "azure", "gpt-6.2-sol");
-      const usd = priced.usage.cost.total;
-      if (!priced.known || !Number.isFinite(usd) || usd < 0) throw new Error("Original Azure Sol pricing is unavailable");
+      const usd = legacyTextCost(receipt);
+      confirmedUsage = true;
       // MONEY: use the existing end-user transaction, allowance/markup policy and durable one-debit receipt.
       await credits.debit(tenant, payer.subject, payer.bucket, usd, `legacy-gateway-text:${id}`, {
         call: "response", provider: "azure", model: "gpt-6.2-sol", agent: "client_" + id.slice("run_".length),
         requestId: id, usageDay: utcDay(startedAt),
       });
       await execution.ackBilling(id, payer.fingerprint);
-      return response;
+      return await projectCost(response, receipt);
     } catch {
       void response.body?.cancel().catch(() => {});
       console.error(JSON.stringify({ type: "legacy_gateway_text_accounting_unavailable" }));
-      return unavailable();
+      // The gateway would start a different model with a new request ID in response to a 5xx.
+      return confirmedUsage ? pending(id) : legacyGatewayTextUncertain();
     }
   }
 
   return {
     async start(request) {
-      if (!validPayer(request.runId, request)) return unavailable();
+      if (!validPayer(request.runId, request)) return legacyGatewayTextUncertain();
       const { runId, fingerprint, input, instructions, json, timeoutMs } = request;
-      return settle(runId, request, await execution.run({ runId, fingerprint, input, instructions, json, timeoutMs }));
+      try { return await settle(runId, request, await execution.run({ runId, fingerprint, input, instructions, json, timeoutMs })); }
+      catch { return legacyGatewayTextUncertain(); }
     },
     async read(id, payer) {
-      if (!validPayer(id, payer)) return unavailable();
-      return settle(id, payer, await execution.read(id));
+      if (!validPayer(id, payer)) return legacyGatewayTextUncertain();
+      try { return await settle(id, payer, await execution.read(id)); }
+      catch { return legacyGatewayTextUncertain(); }
     },
   };
 }

@@ -17,7 +17,8 @@ export default {
     };
     const store = env.ROUTES.getByName(run.legacyTenant);
     const owner = await store.pin(run.runId, { owner: "native", fingerprint: run.fingerprint, subject: run.subject, bucket: run.bucket });
-    const terminal = () => Response.json({ id: run.runId, status: "completed", text: "fixture", usage: { costUsd: 0.012 } });
+    const terminal = () => Response.json({ id: run.runId, status: "completed", text: "fixture",
+      usage: { input: 1000, output: 50, cacheRead: 1000, cacheWrite: 0, costUsd: 0.012 } });
     const execution: LegacyGatewayTextExecution = {
       run: async () => state === "pending" ? Response.json({ id: run.runId, status: "running" }, { status: 202 }) : terminal(),
       read: async () => state === "expired" ? new Response(null, { status: 404 }) : terminal(),

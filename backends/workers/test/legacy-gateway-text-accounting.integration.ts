@@ -33,18 +33,19 @@ test("native retries keep the elected v1 payer and debit actual Azure usage exac
   }
   const ledger = () => fixture.db.query("select end_user,bucket,amount,raw,metadata from end_user_ledger where tenant='fixture'");
   assert.equal((await call("pending")).status, 202);
-  assert.equal((await call("missing")).status, 503);
+  assert.equal((await call("missing")).status, 409);
   assert.equal((await ledger()).rowCount, 0);
-  assert.equal((await call("ack-lost")).status, 503);
+  assert.equal((await call("ack-lost")).status, 202);
   const first = (await ledger()).rows;
   assert.equal(first.length, 1);
   assert.deepEqual([first[0].end_user, first[0].bucket, first[0].raw, first[0].amount, first[0].metadata.day],
     [run.subject, run.bucket, 2600, -2600, new Date(now).toISOString().slice(0, 10)]);
   const retry = await call("retry", { ...run, subject: "876543210987654321" });
   assert.equal(retry.status, 200);
-  assert.equal((await retry.json()).text, "fixture");
+  assert.deepEqual(await retry.json(), { id: run.runId, status: "completed", text: "fixture",
+    usage: { input: 1000, output: 50, cacheRead: 1000, cacheWrite: 0, costUsd: 0.0026 } });
   assert.equal((await call("expired")).status, 404);
   assert.equal((await call("settled")).status, 200);
   assert.deepEqual((await ledger()).rows, first);
-  assert.equal((await call("pending", { ...run, legacyTenant: "other" })).status, 503);
+  assert.equal((await call("pending", { ...run, legacyTenant: "other" })).status, 409);
 });

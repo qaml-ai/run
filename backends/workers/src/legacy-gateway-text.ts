@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { canonical } from "../../../shared/durable-json.ts";
+import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
 import { agentId } from "../../../src/v1-agent-credentials.ts";
 import type { AuthContext } from "./control.ts";
 
@@ -16,18 +17,6 @@ function record(value: unknown): RecordBody | null {
 }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const gatewayKey = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-export function legacyGatewayTextAddress(request: Request) {
-  const url = new URL(request.url);
-  if (url.protocol !== "https:" || (url.host !== "run.camelai.com" && url.host !== "agents.camelai.dev")) return;
-  const key = request.headers.get("idempotency-key") ?? "";
-  if (request.method === "POST" && url.pathname === "/v1/runs" && gatewayKey.test(key)) {
-    return { method: "POST", key } as const;
-  }
-  const runId = /^\/v1\/runs\/(run_[a-f0-9]{40})$/.exec(url.pathname)?.[1];
-  if (request.method === "GET" && runId) return { method: "GET", runId, wait: url.searchParams.get("wait") } as const;
-}
 
 export function legacyGatewayTextRoute(request: Request) {
   return legacyGatewayTextAddress(request)?.method === "POST" && !new URL(request.url).search &&
@@ -122,7 +111,6 @@ export function legacyGatewayTextInput(body: unknown, tenant: string, idempotenc
 
 const runError = (status: number, code: string, error: string, headers: Record<string, string> = {}) =>
   Response.json({ error, code }, { status, headers: { "Cache-Control": "no-store", ...headers } });
-const unavailable = () => runError(503, "RUNS_UNAVAILABLE", "The run's runtime is unavailable; retry the same key", { "Retry-After": "1" });
 
 function pendingPoll(response: Response) {
   return new Response(response.body, { status: 200, headers: response.headers });
@@ -167,7 +155,7 @@ export async function routeLegacyGatewayText(request: Request, options: {
   if (address.method === "GET") {
     const pin = await routes.lookup(address.runId);
     if (pin?.owner !== "native") return null;
-    if (!options.runtime) return unavailable();
+    if (!options.runtime) return legacyGatewayTextUncertain();
     await options.admitHttp();
     const { fingerprint, subject, bucket } = pin;
     return legacyGatewayTextRead(options.runtime, address.runId, { legacyTenant: scope.tenant, fingerprint, subject, bucket }, address.wait, request.signal);
@@ -191,7 +179,7 @@ export async function routeLegacyGatewayText(request: Request, options: {
   if (!input || pin.fingerprint !== input.fingerprint || pin.subject !== input.subject || pin.bucket !== input.bucket) {
     return runError(409, "IDEMPOTENCY_CONFLICT", "This Idempotency-Key was used for another run; use another key");
   }
-  if (!options.runtime) return unavailable();
+  if (!options.runtime) return legacyGatewayTextUncertain();
   await options.admitHttp();
   return options.runtime.start(input);
 }

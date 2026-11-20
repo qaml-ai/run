@@ -89,6 +89,7 @@ import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, se
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { legacyBrowserTokenAgent } from "../../../shared/legacy-browser-tokens.ts";
 import { routeLegacyGatewayText } from "./legacy-gateway-text.ts";
+import { legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
 import { legacyBrowserTokens } from "./legacy-browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
@@ -310,7 +311,8 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         });
         if (response) return publicPageHeaders(request, corsResponse(request, response));
       } catch (error) {
-        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+        const response = httpFailure(error, env);
+        return publicPageHeaders(request, corsResponse(request, response.status >= 500 ? legacyGatewayTextUncertain() : response));
       }
     }
     if (legacyBrowserTokenAgent(request)) {
