@@ -89,7 +89,15 @@ test("inline history retains original raster bytes and ordered provider content 
   }
   const old = await camel.agents.upsert("old-reader", { model: "mock/default", builtins: [] });
   await assert.rejects(old.importV1History({ source: "fixture", messages }), (error: any) => error.status === 503);
-  assert.equal((await old.history()).length, 0, "older reader refusal occurs before import mutation");
+  const plain = { role: "user", content: "Prior message", timestamp: 1 };
+  const prior = await old.importV1History({ source: "fixture", messages: [plain] });
+  await assert.rejects(old.importV1History({ source: "fixture", appendAfter: 1, previous: prior.receipt,
+    messages: [{ ...plain, content: "New chunk" }] }), { status: 503 });
+  assert.deepEqual((await old.history()).map(row => (row.content as any).meta.v1), [plain]);
+  await assert.rejects(agent.importV1History({ source: "fixture-v1", appendAfter: 4, previous: imported.receipt,
+    messages: [plain] }), { status: 409 });
+  await assert.rejects(agent.importV1History({ source: "fixture-v1", appendAfter: 4, previous: imported.receipt,
+    messages: messages.slice(0, 1) }), { status: 422 });
   const overBudget = await camel.agents.upsert("over-budget", { model: "mock/default", builtins: [] });
   await assert.rejects(overBudget.importV1History({ source: "fixture", messages: [{ role: "user", timestamp: 1,
     content: Array.from({ length: 41 }, () => images[0]!) }] }), (error: any) => error.status === 422);

@@ -6,9 +6,18 @@ export { TenantDO };
 
 export class AgentDO extends RuntimeAgentDO {
   override async importV1HistoryWithInlineImages(...args: Parameters<RuntimeAgentDO["importV1HistoryWithInlineImages"]>) {
-    const config = JSON.parse(this.ctx.storage.sql.exec<{ config_json: string }>("SELECT config_json FROM config WHERE id=1").one().config_json);
-    if (config.key === "old-reader") throw new ApiError(503, "old_fixture_reader", "Old fixture lacks inline import capability");
+    this.requireFixtureImportCapability();
     return super.importV1HistoryWithInlineImages(...args);
+  }
+
+  override async appendV1HistoryChunk(...args: Parameters<RuntimeAgentDO["appendV1HistoryChunk"]>) {
+    this.requireFixtureImportCapability();
+    return super.appendV1HistoryChunk(...args);
+  }
+
+  private requireFixtureImportCapability() {
+    const config = JSON.parse(this.ctx.storage.sql.exec<{ config_json: string }>("SELECT config_json FROM config WHERE id=1").one().config_json);
+    if (config.key === "old-reader") throw new ApiError(503, "old_fixture_reader", "Old fixture lacks the new import capability");
   }
 
   fixtureMessages(): StoredMessage[] {

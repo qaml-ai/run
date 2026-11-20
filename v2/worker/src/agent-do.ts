@@ -2052,6 +2052,19 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
+    if (input.appendAfter !== undefined) throw new ApiError(400, "invalid_history", "Use the chunked history import");
+    return this.storeV1History(input, receipt);
+  }
+
+  // A deferred Worker with an older AgentDO must fail before it can replace any history.
+  async appendV1HistoryChunk(input: ReturnType<typeof parseV1History>, receipt: string) {
+    if (input.appendAfter === undefined || input.messages.some(message => message.content.legacyInlineImages)) {
+      throw new ApiError(400, "invalid_history", "Expected a non-image history chunk");
+    }
+    return this.storeV1History(input, receipt);
+  }
+
+  private async storeV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
     this.ensureSql();
     const config = this.requireConfig();
     const messages: StoredMessageContent[] = [];
@@ -2075,25 +2088,35 @@ export class AgentDO extends DurableObject<Env> {
       }
       const sql = this.ctx.storage.sql;
       const current = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'").toArray()[0];
-      const imported = current ? JSON.parse(current.v) as { source: string; receipt: string } : undefined;
+      const imported = current ? JSON.parse(current.v) as { source: string; receipt: string; chunked?: true } : undefined;
       const used = sql.exec<{ used: number }>(`SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
         OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used`).one();
       if (used.used || (!imported && sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length)) {
         throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
       }
-      if (imported?.source === input.source && imported.receipt === receipt) return { receipt, count: input.messages.length };
+      const offset = input.appendAfter ?? 0;
+      const count = offset + input.messages.length;
+      if (imported?.source === input.source && imported.receipt === receipt) return { receipt, count };
       if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
         throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
       }
-      if (imported) sql.exec("DELETE FROM messages");
+      if (input.appendAfter !== undefined) {
+        if (offset > 0 && imported?.chunked !== true) {
+          throw new ApiError(409, "history_import_conflict", "Start chunked history at the beginning");
+        }
+        const { last } = sql.exec<{ last: number }>("SELECT COALESCE(MAX(seq), 0) AS last FROM messages").one();
+        if (offset !== last) throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
+      } else if (imported) {
+        sql.exec("DELETE FROM messages");
+      }
       for (const [index, message] of input.messages.entries()) {
         const content = messages[index]!;
         sql.exec("INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-          index + 1, message.role, JSON.stringify(content), estimateTokens(content.text ?? ""), message.createdAt);
+          offset + index + 1, message.role, JSON.stringify(content), estimateTokens(content.text ?? ""), message.createdAt);
       }
       sql.exec(`INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
-        JSON.stringify({ source: input.source, receipt }));
-      return { receipt, count: input.messages.length };
+        JSON.stringify({ source: input.source, receipt, chunked: input.appendAfter === undefined ? undefined : true }));
+      return { receipt, count };
     });
   }
 

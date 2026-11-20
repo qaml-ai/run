@@ -27,6 +27,7 @@ const messageSchema = z.discriminatedUnion("role", [
 const importSchema = z.object({
   source: z.string().min(1),
   previous: z.string().optional(),
+  appendAfter: z.number().int().nonnegative().optional(),
   messages: z.array(z.unknown()),
   attachments: z.array(z.object({ messageIndex: z.number().int().nonnegative(), files: z.array(z.unknown()).min(1) })).optional(),
 });
@@ -42,7 +43,10 @@ type ImportedMessage = {
 export function parseV1History(body: unknown) {
   const input = importSchema.safeParse(body);
   if (!input.success) throw new ApiError(400, "invalid_history", "Expected a v1 source identifier and its messages");
-  const { source, previous, messages } = input.data;
+  const { source, previous, appendAfter, messages } = input.data;
+  if (appendAfter !== undefined && (messages.length === 0 || !Number.isSafeInteger(appendAfter + messages.length))) {
+    throw new ApiError(422, "invalid_history", "An appended history chunk must contain messages at valid sequence numbers");
+  }
   const attachments = new Map<number, RunFile[]>();
   for (const { messageIndex, files } of input.data.attachments ?? []) {
     if (messageIndex >= messages.length || attachments.has(messageIndex)) {
@@ -110,6 +114,9 @@ export function parseV1History(body: unknown) {
   });
   if (pending.size) throw new ApiError(422, "invalid_history", "V1 history ends with unanswered tool calls");
   if (imported.some(message => message.content.legacyInlineImages)) {
+    if (appendAfter !== undefined) {
+      throw new ApiError(422, "unsupported_history", "Inline images require a single history import");
+    }
     // V1 compacts when images exceed this budget. Keep that separate from this
     // byte-preserving import, and do not mix its FileRef hydration policy yet.
     if (imported.some(message => message.attachments?.length)) {
@@ -133,5 +140,5 @@ export function parseV1History(body: unknown) {
       throw new ApiError(422, "unsupported_history", "Inline history requires legacy image-budget compaction");
     }
   }
-  return { source, previous, messages: imported };
+  return { source, previous, appendAfter, messages: imported };
 }

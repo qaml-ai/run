@@ -1131,6 +1131,61 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     await camel.close();
   });
 
+  it("appends v1 history chunks once, in order, with the previous receipt", async () => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "chunked-history-tenant",
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    try {
+      const agent = await camel.agents.upsert("chunked-history", {});
+      const source = "imported-v1-chunks";
+      const timestamp = Date.now();
+      const first = { role: "user", timestamp, content: "First message" };
+      const call = {
+        role: "assistant", timestamp,
+        content: [{ type: "toolCall", id: "lookup_call", name: "lookup", arguments: {} }],
+      };
+      const result = {
+        role: "toolResult", timestamp, toolCallId: "lookup_call", toolName: "lookup",
+        content: [{ type: "text", text: "Result" }],
+      };
+      const initial = { source, appendAfter: 0, messages: [first] };
+      const head = await agent.importV1History(initial);
+      assert.equal(head.count, 1);
+      assert.deepEqual(await agent.importV1History(initial), head);
+      const next = { source, previous: head.receipt, appendAfter: 1, messages: [call, result] };
+      await assert.rejects(agent.importV1History({ ...next, appendAfter: 2 }), { status: 409 });
+      await assert.rejects(agent.importV1History({ ...next, previous: "wrong" }), { status: 409 });
+      await assert.rejects(agent.importV1History({ ...next, messages: [call] }), { status: 422 });
+      const tail = await agent.importV1History(next);
+      assert.equal(tail.count, 3);
+      assert.deepEqual(await agent.importV1History(next), tail);
+      await assert.rejects(agent.importV1History(initial), { status: 409 });
+      const history = await agent.history();
+      assert.deepEqual(history.map(row => row.seq), [1, 2, 3]);
+      assert.deepEqual(history.map(row => (row.content as { meta: { v1: unknown } }).meta.v1), [first, call, result]);
+
+      const largeAgent = await camel.agents.upsert("chunked-large-history", {});
+      let receipt: string | undefined;
+      const chunkBytes = 850 * 1024;
+      for (let sequence = 0; sequence < 3; sequence++) {
+        const content = String(sequence).repeat(chunkBytes);
+        const chunk = await largeAgent.importV1History({
+          source, ...(receipt === undefined ? {} : { previous: receipt }), appendAfter: sequence,
+          messages: [{ role: "user", timestamp, content }],
+        });
+        assert.equal(chunk.count, sequence + 1);
+        receipt = chunk.receipt;
+      }
+      const largeHistory = await largeAgent.history();
+      const largeContents = largeHistory.map(row => (row.content as { meta: { v1: { content: string } } }).meta.v1.content);
+      assert.deepEqual(largeContents.map(content => Buffer.byteLength(content)), [chunkBytes, chunkBytes, chunkBytes]);
+      assert.deepEqual(largeContents.map(content => content[0]), ["0", "1", "2"]);
+    } finally {
+      await camel.close();
+    }
+  });
+
   it("auto-compacts imported history without splitting a tool call from any of its results", async () => {
     const { apiKey } = await CamelRun.createTenant({
       baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "compaction-tenant", initialCreditsUsd: 1,

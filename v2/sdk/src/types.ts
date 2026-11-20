@@ -160,6 +160,8 @@ export interface V1HistoryImport {
   source: string;
   messages: unknown[];
   previous?: string;
+  /** Append after this many imported messages, using the previous chunk receipt. */
+  appendAfter?: number;
   attachments?: Array<{ messageIndex: number; files: RunFile[] }>;
 }
 

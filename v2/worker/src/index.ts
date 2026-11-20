@@ -771,6 +771,10 @@ app.get("/v2/agents/:idOrKey/history/import", async (c) => {
 app.put("/v2/agents/:idOrKey/history/import", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
   const input = parseV1History(await c.req.json().catch(() => null));
+  if (input.appendAfter !== undefined) {
+    const receipt = await sha256Hex(JSON.stringify(["v1-history-chunk", input.source, input.previous, input.appendAfter, input.messages]));
+    return c.json(await stub.appendV1HistoryChunk(input, receipt));
+  }
   const receipt = await sha256Hex(JSON.stringify([input.source, input.messages]));
   return c.json(await (input.messages.some(message => message.content.legacyInlineImages)
     ? stub.importV1HistoryWithInlineImages(input, receipt)
