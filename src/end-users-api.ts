@@ -123,6 +123,11 @@ export function endUserRoutes(route: Route, context: () => EndUserCredits | unde
     from: c.req.query("from"), to: c.req.query("to"), bucket: c.req.query("bucket"), limit: page(c.req.query("limit"), "limit"),
   })));
   route(createRoute({
+    method: "post", path: "/v1/end-users/{id}/transfers", request: { params: endUserId, body: body(z.object({
+      to: z.string().min(1).max(200), amount: z.number().int().positive(), key: z.string().min(1).max(180), description: z.string().min(1).max(200).optional(),
+    })) }, responses: { 200: reply("Both ledger sides, committed atomically with lot expiry preserved", z.object({ debit: schema.EndUserLedgerEntry, credits: z.array(schema.EndUserLedgerEntry), replayed: z.boolean() })) },
+  }), async c => json(c, 200, await service().transfer(c.var.principal.tenant, c.req.param("id")!, await read(c))));
+  route(createRoute({
     method: "post", path: "/v1/end-users/{id}/lots", request: { params: endUserId, body: body(schema.EndUserLotInput) },
     responses: { 201: reply("Part of the balance marked to expire; the balance is unchanged", schema.EndUserMarkedLot), 200: reply("The key was marked already: its lot", schema.EndUserMarkedLot) },
   }), async c => {
