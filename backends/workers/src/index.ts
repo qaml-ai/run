@@ -88,7 +88,7 @@ import { receiveChannelEmail } from "./channel-email.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks, consumeAccountDeletionMessage } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { legacyBrowserTokenAgent } from "../../../shared/legacy-browser-tokens.ts";
-import { legacyGatewayTextAccess, legacyGatewayTextPrincipal, readLegacyGatewayText } from "./legacy-gateway-text.ts";
+import { routeLegacyGatewayText } from "./legacy-gateway-text.ts";
 import { legacyBrowserTokens } from "./legacy-browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
@@ -297,19 +297,23 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
-    if (env.V2_LEGACY_GATEWAY_TEXT && env.LEGACY_GATEWAY_TEXT_ACCESS) {
+    if (env.LEGACY_GATEWAY_TEXT_ROUTES && env.LEGACY_GATEWAY_TEXT_ACCESS) {
       try {
-        const access = legacyGatewayTextAccess(request, env.LEGACY_GATEWAY_TEXT_ACCESS);
-        if (access) {
-          const auth = await authenticateMoney(request, env, { bearerOnly: true });
-          if (!legacyGatewayTextPrincipal(auth, access)) return null;
-          const input = await readLegacyGatewayText(request, access.tenant);
-          if (!input) return null;
-          await apiRequest(request, env);
-          const result = await env.V2_LEGACY_GATEWAY_TEXT.start(input);
-          if (result.disposition === "legacy") return null;
-          return publicPageHeaders(request, corsResponse(request, result.response));
-        }
+        const response = await routeLegacyGatewayText(request, {
+          config: env.LEGACY_GATEWAY_TEXT_ACCESS,
+          routes: tenant => env.LEGACY_GATEWAY_TEXT_ROUTES!.getByName(tenant),
+          auth: async () => {
+            const principal = await authenticateMoney(request, env);
+            if (principal?.kind !== "console" || request.method !== "POST") return principal;
+            const { accounts } = await keyServices(env);
+            const { auth } = accountServices(env, accounts, new URL(env.AGENT_PUBLIC_URL || request.url).origin);
+            return auth.allowsMutation(request) ? principal : null;
+          },
+          legacyExists: async id => !!(await database(env).query("SELECT 1 FROM agents WHERE id = $1", [id])).rowCount,
+          admitHttp: () => apiRequest(request, env),
+          runtime: env.V2_LEGACY_GATEWAY_TEXT,
+        });
+        if (response) return publicPageHeaders(request, corsResponse(request, response));
       } catch (error) {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
       }

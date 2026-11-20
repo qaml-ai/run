@@ -16,30 +16,47 @@ function record(value: unknown): RecordBody | null {
 }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const gatewayKey = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function legacyGatewayTextAddress(request: Request) {
+  const url = new URL(request.url);
+  if (url.protocol !== "https:" || (url.host !== "run.camelai.com" && url.host !== "agents.camelai.dev")) return;
+  const key = request.headers.get("idempotency-key") ?? "";
+  if (request.method === "POST" && url.pathname === "/v1/runs" && gatewayKey.test(key)) {
+    return { method: "POST", key } as const;
+  }
+  const runId = /^\/v1\/runs\/(run_[a-f0-9]{40})$/.exec(url.pathname)?.[1];
+  if (request.method === "GET" && runId) return { method: "GET", runId, wait: url.searchParams.get("wait") } as const;
+}
 
 export function legacyGatewayTextRoute(request: Request) {
-  const url = new URL(request.url);
-  return request.method === "POST" && url.protocol === "https:" &&
-    (url.host === "run.camelai.com" || url.host === "agents.camelai.dev") && url.pathname === "/v1/runs" &&
-    !url.search && request.headers.get("content-type")?.toLowerCase().trim() === "application/json" &&
+  return legacyGatewayTextAddress(request)?.method === "POST" && !new URL(request.url).search &&
     request.headers.get("authorization")?.startsWith("Bearer ") &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(request.headers.get("idempotency-key") ?? "");
+    request.headers.get("content-type")?.toLowerCase().trim() === "application/json";
 }
 
 type Access = { tenant: string };
 
+function gatewayScope(config: string) {
+  const value = record(JSON.parse(config));
+  if (!value || typeof value.tenant !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(value.tenant) ||
+      typeof value.authorizationSha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.authorizationSha256) ||
+      (value.mode !== undefined && value.mode !== "legacy-new" && value.mode !== "native-new")) {
+    throw new Error("Invalid legacy gateway text credential scope");
+  }
+  return { tenant: value.tenant, authorizationSha256: value.authorizationSha256, nativeNew: value.mode === "native-new" };
+}
+
+function gatewayCredentialMatches(request: Request, fingerprint: string) {
+  const actual = hash(request.headers.get("authorization")!);
+  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(fingerprint, "hex"));
+}
+
 /** The configured digest selects one existing credential; its real principal must still match. */
 export function legacyGatewayTextAccess(request: Request, config: string | undefined): Access | null {
   if (!config || !legacyGatewayTextRoute(request)) return null;
-  const value = record(JSON.parse(config));
-  if (!value || typeof value.tenant !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(value.tenant) ||
-      typeof value.authorizationSha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.authorizationSha256)) {
-    throw new Error("Invalid legacy gateway text credential scope");
-  }
-  const actual = hash(request.headers.get("authorization")!);
-  return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(value.authorizationSha256, "hex"))
-    ? { tenant: value.tenant }
-    : null;
+  const scope = gatewayScope(config);
+  return gatewayCredentialMatches(request, scope.authorizationSha256) ? { tenant: scope.tenant } : null;
 }
 
 export function legacyGatewayTextPrincipal(auth: AuthContext | null, access: Access) {
@@ -60,12 +77,20 @@ export type LegacyGatewayTextRun = {
   bucket: string;
 };
 
+/** The accounting path behind this binding must preserve the original payer. Its private transport never falls back. */
 export interface LegacyGatewayTextRuntime {
-  /** Resolve pre-existing legacy ownership or claim and serve the original run receipt. */
-  start(input: LegacyGatewayTextRun): Promise<
-    { disposition: "legacy" } | { disposition: "handled"; response: Response }
-  >;
+  start(input: LegacyGatewayTextRun): Promise<Response>;
+  read(id: string): Promise<Response>;
 }
+
+export type LegacyGatewayTextOwner = { owner: "legacy" } | { owner: "native"; fingerprint: string };
+export interface LegacyGatewayTextRouteStore {
+  lookup(id: string): Promise<LegacyGatewayTextOwner | null>;
+  pin(id: string, owner: LegacyGatewayTextOwner): Promise<LegacyGatewayTextOwner>;
+}
+
+const legacySessionId = (tenant: string, key: string) => agentId(tenant, "run-" + hash(key).slice(0, 40));
+const runIdOf = (session: string) => "run_" + session.slice("client_".length);
 
 function supportedOutput(value: unknown) {
   const output = record(value);
@@ -75,30 +100,102 @@ function supportedOutput(value: unknown) {
 }
 
 /** Map the exact r745 SDK body before either runtime admits work. Everything else stays on the original route. */
-export function legacyGatewayTextInput(body: unknown, tenant: string, idempotencyKey: string): LegacyGatewayTextRun | null {
+export function legacyGatewayTextInput(body: unknown, tenant: string, idempotencyKey: string, replay = false): LegacyGatewayTextRun | null {
   const value = record(body);
   if (!value || Object.keys(value).some(key => !gatewayFields.has(key))) return null;
   const { input, systemPrompt, model, runLimits, subject, bucket, output, wait, ...policy } = value;
   const limits = record(runLimits);
+  const validWait = replay ? (wait === undefined || typeof wait === "boolean" || typeof wait === "number" && wait >= 0) : wait === true;
   if (typeof input !== "string" || !input.trim() || (systemPrompt !== undefined && typeof systemPrompt !== "string") ||
       model !== GATEWAY_MODEL || policy.codeMode !== false || policy.retentionSeconds !== 60 || policy.dataCollection !== "deny" ||
-      wait !== true || !limits || Object.keys(limits).length !== 1 || typeof limits.maxSeconds !== "number" ||
+      !validWait || !limits || Object.keys(limits).length !== 1 || typeof limits.maxSeconds !== "number" ||
       !Number.isSafeInteger(limits.maxSeconds) || limits.maxSeconds < 1 || limits.maxSeconds > 60 ||
       typeof bucket !== "string" || !/^bot:[a-f0-9]{16}$/.test(bucket) ||
       typeof subject !== "string" || !(subject === bucket || /^[0-9]{17,20}$/.test(subject)) ||
       (output !== undefined && !supportedOutput(output))) return null;
 
   const { wait: _wait, ...asked } = value;
-  const oldSession = agentId(tenant, "run-" + hash(idempotencyKey).slice(0, 40));
   return {
-    legacyTenant: tenant, runId: "run_" + oldSession.slice("client_".length), idempotencyKey,
+    legacyTenant: tenant, runId: runIdOf(legacySessionId(tenant, idempotencyKey)), idempotencyKey,
     fingerprint: hash(canonical(asked)), input, ...(systemPrompt !== undefined ? { instructions: systemPrompt } : {}),
     json: output !== undefined, timeoutMs: limits.maxSeconds * 1000, subject, bucket,
   };
 }
 
+const runError = (status: number, code: string, error: string, headers: Record<string, string> = {}) =>
+  Response.json({ error, code }, { status, headers: { "Cache-Control": "no-store", ...headers } });
+const unavailable = () => runError(503, "RUNS_UNAVAILABLE", "The run's runtime is unavailable; retry the same key", { "Retry-After": "1" });
+
+function pendingPoll(response: Response) {
+  return new Response(response.body, { status: 200, headers: response.headers });
+}
+
+async function legacyGatewayTextRead(runtime: LegacyGatewayTextRuntime, runId: string, wait: string | null, signal: AbortSignal) {
+  const seconds = wait === null ? 0 : Number(wait);
+  if (!Number.isFinite(seconds) || seconds < 0) return runError(400, "INVALID_REQUEST", "wait is true, or a number of seconds");
+  const deadline = Date.now() + Math.min(25, seconds) * 1000;
+  for (;;) {
+    signal.throwIfAborted();
+    const response = await runtime.read(runId);
+    if (response.status !== 202) return response;
+    const left = deadline - Date.now();
+    if (left <= 0) return pendingPoll(response);
+    void response.body?.cancel().catch(() => {});
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); reject(signal.reason); };
+      const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, Math.min(left, 1000));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) { signal.removeEventListener("abort", abort); abort(); }
+    });
+  }
+}
+
+/** Decide ownership before checking whether the posted shape qualifies for new native work. */
+export async function routeLegacyGatewayText(request: Request, options: {
+  config: string;
+  routes(tenant: string): LegacyGatewayTextRouteStore;
+  auth(): Promise<AuthContext | null>;
+  legacyExists(session: string): Promise<boolean>;
+  admitHttp(): Promise<unknown>;
+  runtime?: LegacyGatewayTextRuntime;
+}): Promise<Response | null> {
+  const address = legacyGatewayTextAddress(request);
+  if (!address) return null;
+  const scope = gatewayScope(options.config);
+  const auth = await options.auth();
+  if (auth?.tenantId !== scope.tenant || auth.principal?.tenant !== scope.tenant) return null;
+  const routes = options.routes(scope.tenant);
+
+  if (address.method === "GET") {
+    if ((await routes.lookup(address.runId))?.owner !== "native") return null;
+    if (!options.runtime) return unavailable();
+    await options.admitHttp();
+    return legacyGatewayTextRead(options.runtime, address.runId, address.wait, request.signal);
+  }
+
+  const session = legacySessionId(scope.tenant, address.key);
+  const runId = runIdOf(session);
+  let pin = await routes.lookup(runId);
+  if (pin?.owner === "legacy") return null;
+  const selectsNew = scope.nativeNew && !!options.runtime && legacyGatewayTextPrincipal(auth, scope) && legacyGatewayTextRoute(request) &&
+    gatewayCredentialMatches(request, scope.authorizationSha256);
+  let input = selectsNew ? await readLegacyGatewayText(request, scope.tenant) : null;
+  if (!pin) {
+    const fresh = input && !await options.legacyExists(session) ? input : null;
+    pin = await routes.pin(runId, fresh ? { owner: "native", fingerprint: fresh.fingerprint } : { owner: "legacy" });
+  }
+  if (pin.owner === "legacy") return null;
+  input ??= await readLegacyGatewayText(request, scope.tenant, true);
+  if (!input || pin.fingerprint !== input.fingerprint) {
+    return runError(409, "IDEMPOTENCY_CONFLICT", "This Idempotency-Key was used for another run; use another key");
+  }
+  if (!options.runtime) return unavailable();
+  await options.admitHttp();
+  return options.runtime.start(input);
+}
+
 /** Inspect a bounded clone so an unselected request reaches the old node with its original body intact. */
-export async function readLegacyGatewayText(request: Request, tenant: string): Promise<LegacyGatewayTextRun | null> {
+export async function readLegacyGatewayText(request: Request, tenant: string, replay = false): Promise<LegacyGatewayTextRun | null> {
   const reader = request.clone().body?.getReader();
   if (!reader) return null;
   const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -117,7 +214,7 @@ export async function readLegacyGatewayText(request: Request, tenant: string): P
       if (length > MAX_RUN_BODY_BYTES) return null;
       raw += text.decode(value, { stream: true });
     }
-    return legacyGatewayTextInput(JSON.parse(raw), tenant, request.headers.get("idempotency-key")!);
+    return legacyGatewayTextInput(JSON.parse(raw), tenant, request.headers.get("idempotency-key")!, replay);
   } catch {
     // Transport and parser behavior remains owned by the original route until a valid shape is selected.
     return null;
