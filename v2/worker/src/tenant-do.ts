@@ -92,6 +92,16 @@ type SealedProviderRow = {
   model_aliases_json: string | null;
 };
 
+export function platformCreditReserve(env: Env, tenantId: string) {
+  if (tenantId === env.BUILDER_CUTOVER_CREDIT_TENANT_ID) {
+    return { prefix: "builder-cutover-reserve:", note: "Temporary Camel Bots cutover credit reserve", code: "builder_credit_reserve" };
+  }
+  if (env.APP_RUNTIME_CREDIT_TENANT_IDS?.split(",").includes(tenantId)) {
+    return { prefix: "app-runtime-reserve:", note: "App platform runtime credit reserve", code: "app_runtime_credit_reserve" };
+  }
+  return null;
+}
+
 export function getTenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
   if (!tenantId) {
     throw new ApiError(400, "missing_tenant", "Missing tenant identifier");
@@ -606,17 +616,17 @@ export class TenantDO extends DurableObject<Env> {
   }): Promise<{ balanceUsd: number }> {
     const profile = this.requireProfile();
     const refId = input.refId.trim();
-    const keepCreditReserve = profile.id === this.env.BUILDER_CUTOVER_CREDIT_TENANT_ID;
-    if (keepCreditReserve && refId.startsWith("builder-cutover-reserve:")) {
-      throw new ApiError(400, "invalid_credit_ref", "The builder credit reserve reference is reserved");
+    const reserve = platformCreditReserve(this.env, profile.id);
+    if (reserve && refId.startsWith(reserve.prefix)) {
+      throw new ApiError(400, "invalid_credit_ref", "The credit reserve reference is reserved");
     }
     this.ctx.storage.transactionSync(() => {
       const existing = this.ctx.storage.sql
         .exec<{ id: string }>(`SELECT id FROM credit_ledger WHERE ref_id = ?1 LIMIT 1`, refId)
         .toArray();
       if (existing.length === 0) {
-        if (keepCreditReserve && input.amountUsd < 0 && profile.balanceUsd + input.amountUsd <= 0) {
-          throw new ApiError(409, "builder_credit_reserve", "The builder tenant must retain a positive balance");
+        if (reserve && input.amountUsd < 0 && profile.balanceUsd + input.amountUsd <= 0) {
+          throw new ApiError(409, reserve.code, "The reserve tenant must retain a positive balance");
         }
         this.ctx.storage.sql.exec(
           `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
@@ -683,13 +693,15 @@ export class TenantDO extends DurableObject<Env> {
           input.vmMs,
           input.costUsd,
         );
-        if (profile.id === this.env.BUILDER_CUTOVER_CREDIT_TENANT_ID && remaining < 15) {
+        const reserve = platformCreditReserve(this.env, profile.id);
+        if (reserve && remaining < 15) {
           this.ctx.storage.sql.exec(
             `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
-             VALUES (?1, ?2, ?3, 'grant', 'Temporary Camel Bots cutover credit reserve', ?4)`,
+             VALUES (?1, ?2, ?3, 'grant', ?4, ?5)`,
             randomId("led", 8),
-            `builder-cutover-reserve:${input.refId}`,
+            reserve.prefix + input.refId,
             25 - remaining,
+            reserve.note,
             now,
           );
           this.ctx.storage.sql.exec(`UPDATE tenant_profile SET balance_usd = 25 WHERE id = 1`);

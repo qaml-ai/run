@@ -190,9 +190,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         azureRequests.push({ body, key: req.headers["api-key"], authorization: req.headers.authorization });
         const input = body.input as Array<{ type?: string }>;
         const toolResult = input.some((item) => item.type === "function_call_output");
+        const creditFixture = rawBody.includes("app-runtime-credit-fixture");
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         const events = [
-          ...(toolResult
+          ...(toolResult || creditFixture
             ? [{ type: "response.output_text.delta", delta: "read the result" }]
             : [{ type: "response.output_item.done", item: { type: "function_call", name: "lookup", call_id: "call_azure_test", arguments: "{}" } }]),
           { type: "response.completed", response: { usage: { input_tokens: 160_000, output_tokens: 7 } } },
@@ -295,6 +296,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
             DEFAULT_MODEL: "mock/default",
             AZURE_OPENAI_SOL_ENDPOINT: auxUrl,
             AZURE_OPENAI_SOL_API_KEY: "fixture-azure-key",
+            APP_RUNTIME_CREDIT_TENANT_IDS: "tnt_0000000000000002",
             TOOL_IDENTITY_ISSUER: `http://127.0.0.1:${workerPort}/v2`,
             TOOL_IDENTITY_PRIVATE_JWK: JSON.stringify({ ...toolKey, kid: "tool-fixture" }),
           },
@@ -370,6 +372,23 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.ok((azureRequests[1].body.input as Array<{ type?: string; call_id?: string }>).some(
       (item) => item.type === "function_call_output" && item.call_id === "call_azure_test",
     ));
+  });
+
+  it("runs Chiridion chat at zero shared balance and records usage", async t => {
+    const seed = await fetch(workerUrl + "/test-chiridion-tenant", { method: "POST" });
+    assert.equal(seed.status, 200);
+    const { apiKey } = await seed.json() as { apiKey: string };
+    const client = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => client.close());
+    assert.equal((await client.billing.get()).balanceUsd, 0);
+
+    const agent = await client.agents.upsert("chiridion-credit-fixture", { model: "azure/gpt-6.2-sol" });
+    const run = await agent.run("app-runtime-credit-fixture");
+    assert.equal(run.status, "completed");
+    assert.equal(run.text, "read the result");
+    const billing = await client.billing.get();
+    assert.equal(billing.balanceUsd, 25);
+    assert.ok(billing.usage.some(row => (row.costUsd ?? 0) > 0));
   });
 
   it("1. tenants, API keys, billing credits, and scoped agent tokens enforce boundaries", async () => {
