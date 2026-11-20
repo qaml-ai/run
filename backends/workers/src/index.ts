@@ -302,13 +302,8 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         const response = await routeLegacyGatewayText(request, {
           config: env.LEGACY_GATEWAY_TEXT_ACCESS,
           routes: tenant => env.LEGACY_GATEWAY_TEXT_ROUTES!.getByName(tenant),
-          auth: async () => {
-            const principal = await authenticateMoney(request, env);
-            if (principal?.kind !== "console" || request.method !== "POST") return principal;
-            const { accounts } = await keyServices(env);
-            const { auth } = accountServices(env, accounts, new URL(env.AGENT_PUBLIC_URL || request.url).origin);
-            return auth.allowsMutation(request) ? principal : null;
-          },
+          // The original API uses cookies only when Authorization is absent.
+          auth: () => authenticateMoney(request, env, { bearerOnly: !!request.headers.get("authorization") }),
           legacyExists: async id => !!(await database(env).query("SELECT 1 FROM agents WHERE id = $1", [id])).rowCount,
           admitHttp: () => apiRequest(request, env),
           runtime: env.V2_LEGACY_GATEWAY_TEXT,
