@@ -31,10 +31,10 @@ export function prepareSvg(svg: unknown, files: unknown) {
     if (inputBytes > LIMITS.imageBase64Bytes) throw new Error("SVG image byte budget exceeded");
     const bytes = Buffer.from(file.data, "base64");
     const header = imageHeader(bytes);
-    if (!header?.width || !header.height || !["image/png", "image/jpeg", "image/webp"].includes(header.mimeType) ||
+    if (!header?.width || !header.height || !["image/png", "image/jpeg"].includes(header.mimeType) ||
         bytes.length > LIMITS.imageBytes || Math.max(header.width, header.height) > LIMITS.imageSide ||
         bytes.toString("base64") !== file.data || !imageIntact(bytes, header.mimeType)) {
-      throw new Error("SVG files must be valid PNG, JPEG or WebP within the image limits");
+      throw new Error("SVG files must be valid PNG or JPEG within the image limits");
     }
     images.set(name, { href: `data:${header.mimeType};base64,${file.data}`, pixels: header.width * header.height });
   }
