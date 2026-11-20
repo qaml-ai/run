@@ -15,6 +15,8 @@ import { database } from './postgres.ts';
 import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts';
 import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
+import { v1AgentCredentials } from "../../../src/v1-agent-credentials.ts";
+import { validId } from "../../../src/v1-client-state.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -263,6 +265,15 @@ function legacyCompatibility(
   return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
 }
 
+async function legacyAccountIdentity(request: Request, env: Env, principal: NonNullable<Awaited<ReturnType<typeof authenticateMoney>>>["principal"]) {
+  if (!env.LEGACY_ACCOUNT_MODEL_POLICY || !principal) return;
+  await apiRequest(request, env);
+  const { accounts } = await keyServices(env);
+  const policy = await legacyAccountModelPolicy(env.LEGACY_ACCOUNT_MODEL_POLICY, accounts, principal.tenant);
+  const origin = new URL(env.AGENT_PUBLIC_URL || request.url).origin;
+  return accountIdentityResponse(accountServices(env, accounts, origin), principal, policy);
+}
+
 function hostedMcpResponse(request: Request, env: Env, auth: Awaited<ReturnType<typeof authenticateMoney>>, fetchRest: typeof fetch) {
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
@@ -278,6 +289,38 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/v1/me" && env.LEGACY_ACCOUNT_MODEL_POLICY &&
+        request.headers.has("authorization")) {
+      try {
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        const identity = await legacyAccountIdentity(request, env, auth?.principal);
+        return identity ? publicPageHeaders(request, corsResponse(request, identity)) : null;
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
+    const credentials = /^\/v1\/agents\/([^/]+)\/credentials$/.exec(url.pathname);
+    const authorization = request.headers.get("authorization") ?? undefined;
+    if (request.method === "GET" && credentials && authorization) {
+      let ref: string;
+      try { ref = decodeURIComponent(credentials[1]); } catch { return null; }
+      if (!validId(ref)) return null;
+      try {
+        await apiRequest(request, env);
+        if (BrowserTokens.carries(authorization)) {
+          new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(authorization);
+          throw new CoreHttpError(403, "A browser token only reads an agent's events, state, history and inputs");
+        }
+        const auth = await authenticateMoney(request, env, { bearerOnly: true });
+        if (!auth) return null;
+        const secret = env.AGENT_SESSION_SECRET;
+        if (!secret) throw new CoreHttpError(503, "Agent credentials are unavailable");
+        const value = await v1AgentCredentials(database(env), secret, auth.tenantId, ref, { verifyDigest: true });
+        return publicPageHeaders(request, corsResponse(request, json(value)));
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
     const mcp = url.pathname === "/mcp" && ["GET", "POST", "DELETE", "OPTIONS"].includes(request.method);
     const protectedResource = ["GET", "OPTIONS"].includes(request.method) && (
       ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource", OPS_METADATA_PATH].includes(url.pathname)
@@ -329,11 +372,9 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
             const document = await publicDocument(call, env);
             if (document) return document;
           }
-          if (call.method === "GET" && target.pathname === "/v1/me" && auth?.principal && env.LEGACY_ACCOUNT_MODEL_POLICY) {
-            await apiRequest(call, env);
-            const { accounts } = await keyServices(env);
-            const policy = await legacyAccountModelPolicy(env.LEGACY_ACCOUNT_MODEL_POLICY, accounts, auth.tenantId);
-            return accountIdentityResponse(accountServices(env, accounts, origin), auth.principal, policy);
+          if (call.method === "GET" && target.pathname === "/v1/me") {
+            const identity = await legacyAccountIdentity(call, env, auth?.principal);
+            if (identity) return identity;
           }
           const response = await this.route(call.clone());
           return response ?? await env.MCP_LEGACY_API!.fetch(call, { redirect: "manual" });

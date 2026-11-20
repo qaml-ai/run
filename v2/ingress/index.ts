@@ -12,6 +12,7 @@ interface Env extends LegacyVolumeOrigin {
 }
 
 const legacyAgentRoute = /^\/(?:v1\/agents|clients)\/client_[a-f0-9]{40}\/[^/]+(?:\/[^/]+)?$/;
+const legacyCredentialsRoute = /^\/v1\/agents\/(?:[A-Za-z0-9_-]|%[a-fA-F0-9]{2}){1,80}\/credentials$/;
 const legacyEndUserRead = /^\/v1\/end-users(?:\/[^/]+(?:\/(?:usage|days|ledger))?)?$/;
 const legacyProtectedResource = /^\/\.well-known\/oauth-protected-resource(?:\/mcp|\/v1\/(?:ops|agents\/client_[a-f0-9]{40})\/mcp)?$/;
 
@@ -98,8 +99,12 @@ export default {
         { status: 503, headers: { "Cache-Control": "no-store" } });
     }
 
+    const legacyIdentity = legacyApiHost(hostname) && pathname === "/v1/me" && request.method === "GET" &&
+      request.headers.has("authorization");
+    const legacyCredentials = legacyApiHost(hostname) && request.method === "GET" &&
+      request.headers.has("authorization") && legacyCredentialsRoute.test(pathname);
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
-        (pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
+        (legacyIdentity || legacyCredentials || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
          (request.method === "GET" && legacyEndUserRead.test(pathname)) || legacyOAuthRoute(pathname, request.method)) &&
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
