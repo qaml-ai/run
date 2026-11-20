@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { startFixture } from "./fixture.ts";
+import { ARCHIVE_KIND } from "../../../src/pi-durable/ordinals.ts";
 import { hash, resumeId } from "../../../src/v1-client-state.ts";
 
 test("legacy prompts and reads cross nested Worker bindings without serializing abort signals", { timeout: 180_000 }, async t => {
@@ -16,6 +17,24 @@ test("legacy prompts and reads cross nested Worker bindings without serializing 
   });
   t.after(() => f.stop());
   await f.db.query(`insert into agents(id,tenant,header,revision,name,type,model) values($1,'fixture',$2,1,'','agent','test')`, [agent, JSON.stringify({ digest: hash(agentKey) })]);
+  const unmigrated = `client_${"3".repeat(40)}`;
+  await f.db.query(`insert into agents(id,tenant,header,revision,name,type,model) values($1,'fixture',$2,1,'','agent','test')`, [unmigrated, JSON.stringify({ digest: hash(agentKey) })]);
+  const message = { role: "user", timestamp: 1, content: "Existing history" };
+  await f.db.query(`insert into pi_durable_metadata(session_id,next_id,next_seq,history_next) values($1,'2',2,1)`, [unmigrated]);
+  await f.db.query(`insert into pi_durable_entries(session_id,id,conversation_id,commit_seq,record,msg_from,msg_count,msg_skip,turn_start)
+    values($1,1,1,1,$2,0,1,0,true)`, [unmigrated, JSON.stringify({ kind: ARCHIVE_KIND, data: { messages: [message] } })]);
+  const sourceHeaders = { authorization: `Bearer ${apiKey}` };
+  const source = `${f.url}/v1/agents/${unmigrated}`;
+  const full = await fetch(`${source}/history`, { headers: sourceHeaders });
+  assert.equal(full.status, 200, await full.clone().text());
+  assert.deepEqual(await full.json(), { messages: [message] });
+  const page = await fetch(`${source}/history?after=0&limit=1`, { headers: sourceHeaders });
+  assert.equal(page.status, 200, await page.clone().text());
+  assert.deepEqual((await page.json() as { entries: unknown[] }).entries, [{ index: 0, message }]);
+  const sourceInputs = await fetch(`${source}/inputs`, { headers: sourceHeaders });
+  assert.equal(sourceInputs.status, 200, await sourceInputs.clone().text());
+  assert.deepEqual(await sourceInputs.json(), []);
+  assert.equal((await fetch(`${source}/history`)).status, 401);
   await f.db.query(`insert into agent_v2_cutovers(tenant,agent,operation) values('fixture',$1,$2)`, [agent, randomUUID()]);
   await f.db.query(`insert into agent_v2_routes(tenant,agent,destination_tenant,destination_agent,event_base)
     values('fixture',$1,$2,$3,0)`, [agent, `tnt_${"1".repeat(16)}`, `agt_${"2".repeat(16)}`]);
