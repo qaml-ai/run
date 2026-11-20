@@ -490,7 +490,7 @@ test("strict ingress and the MCP tool origin reject misses without contacting EC
     for (const path of ["/v1", "/v1/agents", "/v1/models", "/%76%31/agents", "/clients/old", "/mcp", "/mcp/"]) {
       const response = await worker.fetch(new Request(`https://${host}${path}`), env);
       assert.equal(response.status, 410, path);
-      assert.equal((await response.json()).code, "V1_OPERATION_RETIRED");
+      assert.equal(((await response.json()) as { code: string }).code, "V1_OPERATION_RETIRED");
     }
     const mcp = await worker.fetch(new Request(`https://${host}/mcp`, { headers: { authorization: "Bearer fixture" } }), env);
     assert.equal(mcp.status, 200);
