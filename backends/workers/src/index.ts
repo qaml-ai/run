@@ -89,7 +89,7 @@ import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, se
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
 import { legacyBrowserTokenAgent } from "../../../shared/legacy-browser-tokens.ts";
 import { routeLegacyGatewayText } from "./legacy-gateway-text.ts";
-import { legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
+import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
 import { legacyBrowserTokens } from "./legacy-browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
@@ -299,7 +299,8 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     const env = this.env;
     const url = new URL(request.url);
     const gatewayText = env.V2_LEGACY_GATEWAY_TEXT;
-    if (gatewayText && env.LEGACY_GATEWAY_TEXT_ACCESS) {
+    if (env.LEGACY_GATEWAY_TEXT_ACCESS && legacyGatewayTextAddress(request)) {
+      if (!gatewayText) return publicPageHeaders(request, corsResponse(request, legacyGatewayTextUncertain()));
       try {
         const response = await routeLegacyGatewayText(request, {
           config: env.LEGACY_GATEWAY_TEXT_ACCESS,
