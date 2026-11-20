@@ -1,9 +1,11 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
 import { EndUserCredits, utcDay } from "./end-user-credits.ts";
-import { legacyGatewayTextPayer, type LegacyGatewayTextPayer, type LegacyGatewayTextRun, type LegacyGatewayTextRuntime } from "./legacy-gateway-text.ts";
+import { legacyGatewayTextPayer, type LegacyGatewayTextOwner, type LegacyGatewayTextPayer, type LegacyGatewayTextRouteStore, type LegacyGatewayTextRun, type LegacyGatewayTextRuntime } from "./legacy-gateway-text.ts";
 import { platformUsage } from "./platform-pricing.ts";
 import { database, type PostgresEnv } from "./postgres.ts";
+
+export { LegacyGatewayTextRoutes } from "./legacy-gateway-text-routes.ts";
 
 type Receipt = { state: "settled" } | {
   state: "due";
@@ -27,6 +29,7 @@ type Tokens = { input: number; output: number; cacheRead: number; cacheWrite: nu
 type Env = PostgresEnv & {
   LEGACY_GATEWAY_TEXT_BILLING_TENANT: string;
   V2_LEGACY_GATEWAY_TEXT_EXECUTION: LegacyGatewayTextExecution;
+  LEGACY_GATEWAY_TEXT_ROUTES: { getByName(tenant: string): LegacyGatewayTextRouteStore };
 };
 
 function pending(id: string) {
@@ -104,7 +107,19 @@ export function accountedLegacyGatewayText(execution: LegacyGatewayTextExecution
 }
 
 /** Only the original-auth, sticky compatibility route can call the accounting service. */
-export class LegacyGatewayTextAccounting extends WorkerEntrypoint<Env> implements LegacyGatewayTextRuntime {
+export class LegacyGatewayTextAccounting extends WorkerEntrypoint<Env> implements LegacyGatewayTextRuntime, LegacyGatewayTextRouteStore {
+  private routes() {
+    return this.env.LEGACY_GATEWAY_TEXT_ROUTES.getByName(this.env.LEGACY_GATEWAY_TEXT_BILLING_TENANT);
+  }
+
+  async lookup(id: string) {
+    return this.routes().lookup(id);
+  }
+
+  async pin(id: string, owner: LegacyGatewayTextOwner) {
+    return this.routes().pin(id, owner);
+  }
+
   private runtime() {
     return accountedLegacyGatewayText(this.env.V2_LEGACY_GATEWAY_TEXT_EXECUTION,
       new EndUserCredits(database(this.env)), this.env.LEGACY_GATEWAY_TEXT_BILLING_TENANT);
