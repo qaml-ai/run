@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -63,6 +64,7 @@ test("the named hosted MCP Worker preserves bearer credentials and issuer discov
   });
   assert.match(framing.headers.get("content-type")!, /^application\/json\b/);
   assert.equal((await framing.json() as { id: number }).id, 1);
+  assert.equal((await fetch(`${f.url}/llms.txt`)).status, 418);
 
   for (const [token, via] of [[apiKey, "token"], [oauth, "oauth"]]) {
     const client = new Client({ name: "legacy-workerd-test", version: "1" });
@@ -77,6 +79,15 @@ test("the named hosted MCP Worker preserves bearer credentials and issuer discov
       const content = result.content as { type: string; text: string }[];
       assert.equal(content[0].type, "text");
       assert.deepEqual(JSON.parse(content[0].text), { tenant: "fixture", via, url: origin });
+      for (const path of [undefined, "guides/definitions.md"]) {
+        const document = await client.callTool({ name: "read_docs", arguments: path ? { path } : {} });
+        const file = new URL(`../../../docs/${path ?? "llms.txt"}`, import.meta.url);
+        assert.equal(document.isError, undefined);
+        assert.deepEqual(document.content, [{ type: "text", text: (await readFile(file, "utf8")).replaceAll("https://run.camelai.com", origin) }]);
+      }
+      const missing = await client.callTool({ name: "read_docs", arguments: { path: "unknown-document.md" } });
+      assert.equal(missing.isError, true);
+      assert.match((missing.content as { text: string }[])[0].text, /^404: \/docs\/unknown-document\.md: no such page/);
     } finally {
       await client.close();
     }

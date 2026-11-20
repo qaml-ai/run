@@ -19,7 +19,7 @@ import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
 import { profileHttp } from "./db-profile.ts";
-import { publicRoutes, publicPageHeaders, authenticationHint } from "./public-http.ts";
+import { publicDocument, publicRoutes, publicPageHeaders, authenticationHint } from "./public-http.ts";
 import { firstPrompt } from "./first-prompt.ts";
 import { builtinWarnings } from "./builtin-warnings.ts";
 import { serveAgentMcp, agentMcpPreflight, agentMcpSignIn } from "./agent-mcp.ts";
@@ -323,6 +323,10 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
           const call = new Request(input, init);
           const target = new URL(call.url);
           if (target.origin !== origin || target.pathname === "/mcp") return new Response(null, { status: 403 });
+          if (call.method === "GET" && (target.pathname === "/llms.txt" || /^\/docs\/.+\.md$/.test(target.pathname))) {
+            const document = await publicDocument(call, env);
+            if (document) return document;
+          }
           const response = await this.route(call.clone());
           return response ?? await env.MCP_LEGACY_API!.fetch(call, { redirect: "manual" });
         });
