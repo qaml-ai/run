@@ -87,6 +87,10 @@ import { workerChannels } from "./channels.ts";
 import { receiveChannelEmail } from "./channel-email.ts";
 import { publicMoneyRoutes, authenticateMoney, moneyRoutes, moneyMaintenance, sendMoneyWebhooks, consumeAccountDeletionMessage } from "./money-api.ts";
 import { BrowserTokens, type BrowserClaims } from "./browser-tokens.ts";
+import { legacyBrowserTokenAgent } from "../../../shared/legacy-browser-tokens.ts";
+import { routeLegacyGatewayText } from "./legacy-gateway-text.ts";
+import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../../shared/legacy-gateway-text-address.ts";
+import { legacyBrowserTokens } from "./legacy-browser-tokens.ts";
 import { apiRequest, createAdmission, admissionError, admissionHeaders, errorFields, errorHeaders } from "./admission.ts";
 import { BROWSER_READS, corsPreflight, corsResponse } from "./cors.ts";
 import { browserResponse } from "./browser-response.ts";
@@ -248,6 +252,16 @@ async function legacyRuntimeRequest(send: (request: Request) => Promise<Response
 }
 
 /** Runs before the pilot's directory, whose stored agent headers differ from Node's. */
+function legacyCompatibilityService(env: Env) {
+  const sql = database(env);
+  const service = env.V2_LEGACY_RUNS;
+  return service
+    ? new V1Compatibility(sql, (route, path, init) => legacyRuntimeRequest(
+      request => service.route(route.destination_tenant, route.destination_agent, request),
+      `https://legacy-v2.internal/v2/agents/${encodeURIComponent(route.destination_agent)}/${path}`, init))
+    : V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
+}
+
 function legacyCompatibility(
   request: Request,
   env: Env,
@@ -255,15 +269,9 @@ function legacyCompatibility(
   browser?: BrowserClaims,
 ) {
   if (!legacyAgentRequest(request)) return;
-  const sql = database(env);
-  const service = env.V2_LEGACY_RUNS;
-  const compatibility = service
-    ? new V1Compatibility(sql, (route, path, init) => legacyRuntimeRequest(
-      request => service.route(route.destination_tenant, route.destination_agent, request),
-      `https://legacy-v2.internal/v2/agents/${encodeURIComponent(route.destination_agent)}/${path}`, init))
-    : V1Compatibility.configured(sql, env.AGENT_V2_COMPAT_API_KEYS, env.AGENT_V2_COMPAT_URL);
+  const compatibility = legacyCompatibilityService(env);
   if (!compatibility) return;
-  return handleLegacyAgentRequest(request, sql, compatibility, principal, browser);
+  return handleLegacyAgentRequest(request, database(env), compatibility, principal, browser);
 }
 
 async function legacyAccountIdentity(request: Request, env: Env, principal: NonNullable<Awaited<ReturnType<typeof authenticateMoney>>>["principal"]) {
@@ -290,6 +298,35 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
+    const gatewayText = env.V2_LEGACY_GATEWAY_TEXT;
+    if (env.LEGACY_GATEWAY_TEXT_ACCESS && legacyGatewayTextAddress(request)) {
+      if (!gatewayText) return publicPageHeaders(request, corsResponse(request, legacyGatewayTextUncertain()));
+      try {
+        const response = await routeLegacyGatewayText(request, {
+          config: env.LEGACY_GATEWAY_TEXT_ACCESS,
+          routes: () => gatewayText,
+          // The original API uses cookies only when Authorization is absent.
+          auth: () => authenticateMoney(request, env, { bearerOnly: !!request.headers.get("authorization") }),
+          legacyExists: async id => !!(await database(env).query("SELECT 1 FROM agents WHERE id = $1", [id])).rowCount,
+          admitHttp: () => apiRequest(request, env),
+          runtime: gatewayText,
+        });
+        if (response) return publicPageHeaders(request, corsResponse(request, response));
+      } catch (error) {
+        const response = httpFailure(error, env);
+        return publicPageHeaders(request, corsResponse(request, response.status >= 500 ? legacyGatewayTextUncertain() : response));
+      }
+    }
+    if (legacyBrowserTokenAgent(request)) {
+      try {
+        const response = await legacyBrowserTokens(request, env, legacyCompatibilityService(env));
+        return response ? publicPageHeaders(request, corsResponse(request, response)) : null;
+      } catch (error) {
+        const response = httpFailure(error, env);
+        if (response.status === 503 && !response.headers.has("retry-after")) response.headers.set("Retry-After", "1");
+        return publicPageHeaders(request, corsResponse(request, response));
+      }
+    }
     if (request.method === "GET" && url.pathname === "/v1/me" && env.LEGACY_ACCOUNT_MODEL_POLICY &&
         request.headers.has("authorization")) {
       try {

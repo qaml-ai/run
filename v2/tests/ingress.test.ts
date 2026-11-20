@@ -84,6 +84,31 @@ test("serves the original bearer identity on both hosts and leaves console traff
   assert.equal(origin.mock.callCount(), 7);
 });
 
+test("keeps gateway run ownership on both aliases and on the private legacy-origin path", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async (_request: Request) => new Response(null, { status: 204 }));
+  const route = t.mock.fn(async (request: Request) => {
+    if (request.method === "GET") return Response.json({ status: "completed" });
+    if ((await request.json()).fixture === "unknown") throw new Error("fixture: outcome could not be confirmed");
+    return null;
+  });
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route },
+    LEGACY_GATEWAY_TEXT_ROUTING: "1", LEGACY_V1_CANARY_AUTH_SHA256: "0".repeat(64) };
+  const post = (host: string, fixture: string) => new Request(`https://${host}/v1/runs`, {
+    method: "POST", headers: { "idempotency-key": "a6d5b846-63db-401b-abfd-57bc9822780e" }, body: JSON.stringify({ fixture }),
+  });
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    const fallback = post(host, "old");
+    assert.equal((await worker.fetch(fallback, env)).status, 204);
+    assert.deepEqual(await fallback.json(), { fixture: "old" });
+    assert.equal((await fetchLegacyApi(post(host, "unknown"), env)).status, 409);
+    assert.equal((await worker.fetch(new Request(`https://${host}/v1/runs/run_${"a".repeat(40)}?wait=25`), env)).status, 200);
+  }
+  assert.equal(route.mock.callCount(), 6);
+  assert.equal(origin.mock.callCount(), 2);
+  assert.equal((await worker.fetch(post("run.camelai.com", "unknown"), { ...env, LEGACY_GATEWAY_TEXT_ROUTING: undefined })).status, 204);
+  assert.equal(route.mock.callCount(), 6);
+});
+
 test("offers hosted MCP on both hosts and limits its origin binding to the legacy API", async t => {
   const answer = new Response(null, { status: 202 });
   const origin = t.mock.method(globalThis, "fetch", async () => answer);
@@ -266,6 +291,34 @@ test("routes only the original Camel Bots credential, including calls with no bo
   assert.equal(route.mock.callCount(), 8);
   assert.equal(syntheticRoute.mock.callCount(), 2);
   assert.equal(origin.mock.callCount(), 5);
+});
+
+test("routes only the selected Camel Bots image request and preserves the body on a compatibility miss", async t => {
+  const authorization = "Bearer fixture-image-credential";
+  const origin = t.mock.method(globalThis, "fetch", async (request: Request) => new Response(await request.text(), { status: 202 }));
+  const route = t.mock.fn(async (request: Request) => {
+    const body = await request.text();
+    return body === "{}" ? new Response(body) : null;
+  });
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_BOTS_IMAGES: { route },
+    LEGACY_DECISIONS_BOTS_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex"),
+  };
+  const post = (host: string, body: string, auth = authorization, contentType = "application/json") =>
+    new Request(`https://${host}/v1/images`, {
+      method: "POST", body, headers: { authorization: auth, "content-type": contentType },
+    });
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    assert.equal((await worker.fetch(post(host, "{}"), env)).status, 200);
+    const miss = await worker.fetch(post(host, '{"unsupported":true}'), env);
+    assert.equal(miss.status, 202);
+    assert.equal(await miss.text(), '{"unsupported":true}');
+    assert.equal((await worker.fetch(post(host, "{}", "Bearer other"), env)).status, 202);
+    assert.equal((await worker.fetch(post(host, "{}", authorization, "text/plain"), env)).status, 202);
+  }
+  assert.equal(route.mock.callCount(), 4);
+  assert.equal(origin.mock.callCount(), 6);
 });
 
 test("routes volume and signed file traffic to the configured origin through both entrypoints", async t => {

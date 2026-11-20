@@ -6,9 +6,14 @@
   "account_id": "85bbd288051330fb51ee1c86031a299b",
   "workers_dev": false,
   "preview_urls": false,
+  "keep_vars": true,
+  "vars": { "LEGACY_GATEWAY_TEXT_ROUTING": "1" },
   "services": [
     { "binding": "V2", "service": "camelrun-v2-prod" },
-    { "binding": "LEGACY_V1", "service": "camelrun-v1-compat-prod", "entrypoint": "LegacyV1" }
+    { "binding": "LEGACY_V1", "service": "camelrun-v1-compat-prod", "entrypoint": "LegacyV1" },
+    { "binding": "LEGACY_DECISIONS", "service": "camelrun-v1-decisions-canary", "entrypoint": "LegacyDecisions" },
+    { "binding": "LEGACY_BOT_DECISIONS", "service": "camelrun-v1-decisions-cohort", "entrypoint": "LegacyCamelBotsDecisions" },
+    { "binding": "LEGACY_BOTS_IMAGES", "service": "camelrun-v1-bots-images", "entrypoint": "LegacyCamelBotsImages" }
   ],
   "routes": [
     { "pattern": "run.camelai.com/*", "zone_name": "camelai.com" },

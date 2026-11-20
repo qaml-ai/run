@@ -1,13 +1,18 @@
 import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
-
 import { legacyDefinitionRead } from "../../src/v1-definition-reads.ts";
+import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../shared/legacy-gateway-text-address.ts";
 
-interface Env extends LegacyVolumeOrigin {
-  V2: { fetch(request: Request): Promise<Response> };
+export interface LegacyOriginEnv extends LegacyVolumeOrigin {
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
+  LEGACY_GATEWAY_TEXT_ROUTING?: string;
+}
+
+interface Env extends LegacyOriginEnv {
+  V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
   LEGACY_DECISIONS?: { route(request: Request): Promise<Response | null> };
   LEGACY_DECISIONS_CANARY_AUTH_SHA256?: string;
+  LEGACY_BOTS_IMAGES?: { route(request: Request): Promise<Response | null> };
   LEGACY_BOT_DECISIONS?: { route(request: Request): Promise<Response | null> };
   LEGACY_DECISIONS_BOTS_AUTH_SHA256?: string;
 }
@@ -45,13 +50,20 @@ async function decisionService(request: Request, env: Env) {
 
 const legacyApiHost = (hostname: string) => hostname === "run.camelai.com" || hostname === "agents.camelai.dev";
 
-export function fetchLegacyApi(request: Request, env: LegacyVolumeOrigin = {}): Promise<Response> {
+async function gatewayText(request: Request, env: LegacyOriginEnv): Promise<Response | null> {
+  if (env.LEGACY_GATEWAY_TEXT_ROUTING !== "1" || request.headers.has("upgrade") || !legacyGatewayTextAddress(request)) return null;
+  if (!env.LEGACY_V1) return legacyGatewayTextUncertain();
+  try { return await env.LEGACY_V1.route(request.clone()); }
+  catch { return legacyGatewayTextUncertain(); }
+}
+
+export async function fetchLegacyApi(request: Request, env: LegacyOriginEnv = {}): Promise<Response> {
   const { protocol, hostname, pathname, port } = new URL(request.url);
   if (protocol !== "https:" || port || !legacyApiHost(hostname) ||
       (!pathname.startsWith("/v1/") && !pathname.startsWith("/clients/"))) {
-    return Promise.resolve(new Response(null, { status: 404 }));
+    return new Response(null, { status: 404 });
   }
-  return legacyVolumes(request, env) ?? fetch(request, { redirect: "manual" });
+  return legacyVolumes(request, env) ?? await gatewayText(request, env) ?? fetch(request, { redirect: "manual" });
 }
 
 export default {
@@ -64,6 +76,8 @@ export default {
     if (legacyApiHost(hostname)) {
       const volume = legacyVolumes(request, env);
       if (volume) return volume;
+      const gateway = await gatewayText(request, env);
+      if (gateway) return gateway;
     }
 
     if (legacyApiHost(hostname) && pathname === "/v1/decisions" && request.method === "POST" && !request.headers.has("upgrade")) {
@@ -75,6 +89,14 @@ export default {
       }
     }
 
+    if (env.LEGACY_BOTS_IMAGES && legacyApiHost(hostname) && pathname === "/v1/images" &&
+        request.method === "POST" && !request.headers.has("upgrade") &&
+        request.headers.get("content-type")?.toLowerCase().trim() === "application/json" &&
+        decisionsFingerprint(env.LEGACY_DECISIONS_BOTS_AUTH_SHA256) &&
+        await selected(request, env.LEGACY_DECISIONS_BOTS_AUTH_SHA256)) {
+      const image = await env.LEGACY_BOTS_IMAGES.route(request.clone());
+      if (image) return image;
+    }
     const legacyIdentity = legacyApiHost(hostname) && pathname === "/v1/me" && request.method === "GET" &&
       request.headers.has("authorization");
     const legacyCredentials = legacyApiHost(hostname) && request.method === "GET" &&

@@ -1,0 +1,11 @@
+{
+  "name": "camelrun-legacy-gateway-text-accounting-fixture",
+  "main": "../src/legacy-gateway-text-accounting.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat", "enable_request_signal"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "hyperdrive": [{"binding": "HYPERDRIVE", "id": "00000000000000000000000000000000"}],
+  "durable_objects": {"bindings":[{"name":"ROUTES","class_name":"LegacyGatewayTextRoutes"}]},
+  "migrations": [{"tag":"fixture","new_sqlite_classes":["LegacyGatewayTextRoutes"]}]
+}

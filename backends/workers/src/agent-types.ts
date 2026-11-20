@@ -95,6 +95,9 @@ export interface Env
   AGENT_V2_COMPAT_API_KEYS?: string;
   AGENT_V2_COMPAT_URL?: string;
   V2_LEGACY_RUNS?: { route(tenant: string, agent: string, request: Request): Promise<Response> };
+  V2_LEGACY_GATEWAY_TEXT?: import("./legacy-gateway-text.ts").LegacyGatewayTextRuntime &
+    import("./legacy-gateway-text.ts").LegacyGatewayTextRouteStore;
+  LEGACY_GATEWAY_TEXT_ACCESS?: string;
   MCP_LEGACY_API?: Fetcher;
   LEGACY_OAUTH_TOKEN_ROUTES?: string;
   LEGACY_ACCOUNT_MODEL_POLICY?: string;
