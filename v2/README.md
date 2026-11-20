@@ -98,11 +98,13 @@ Set `AZURE_OPENAI_SOL_ENDPOINT` to the Azure resource serving the
 selecting `azure/gpt-6.2-sol` as the Worker default. The same route serves
 explicit model requests and uses low reasoning effort.
 
-During the Camel Bots cutover, set `BUILDER_CUTOVER_CREDIT_TENANT_ID` to the
-shared builder credential's tenant ID in the production Worker version. Include
-this binding in each production release while the reserve is in use. The Worker
-records usage at the normal rate and restores that tenant's balance to $25 when
-a settlement leaves less than $15.
+Set `BUILDER_CUTOVER_CREDIT_TENANT_ID` to the shared Camel Bots tenant and
+`APP_RUNTIME_CREDIT_TENANT_IDS` to the comma-separated IDs of the other
+first-party app runtime tenants in the production Worker. The Worker admits
+turns on those authenticated service tenants regardless of the platform
+balance. It meters usage at the normal rate and restores the balance to $25
+when settlement leaves less than $15. Customer entitlements and credit limits
+remain enforced by each app. Verify both bindings on every production version.
 
 Build and check the release with the v2 package's pinned Wrangler:
 

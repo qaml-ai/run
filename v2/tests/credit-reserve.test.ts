@@ -11,16 +11,18 @@ interface BillingState {
   ledger: Array<{ amount_usd: number; kind: string }>;
 }
 
-test("the builder reserve preserves metered usage, deduplicates charges and rolls back failed grants", async t => {
+test("platform reserves preserve metered usage, deduplicate charges and rolls back failed grants", async t => {
   const dir = mkdtempSync(join(tmpdir(), "camelrun-credit-reserve-"));
   const config = join(dir, "wrangler.json");
   const builder = "fixture-builder-tenant";
+  const chiridion = "fixture-chiridion-tenant";
+  const botCanary = "fixture-bot-canary";
   writeFileSync(config, JSON.stringify({
     name: "credit-reserve-test",
     main: fileURLToPath(new URL("./fixtures/credit-reserve-worker.ts", import.meta.url)),
     compatibility_date: "2026-03-01",
     compatibility_flags: ["nodejs_compat", "enhanced_error_serialization"],
-    vars: { BUILDER_CUTOVER_CREDIT_TENANT_ID: builder },
+    vars: { BUILDER_CUTOVER_CREDIT_TENANT_ID: builder, APP_RUNTIME_CREDIT_TENANT_IDS: [chiridion, botCanary].join(",") },
     durable_objects: { bindings: [{ name: "TEST_TENANT", class_name: "CreditReserveTestTenant" }] },
     migrations: [{ tag: "v1", new_sqlite_classes: ["CreditReserveTestTenant"] }],
   }));
@@ -38,11 +40,16 @@ test("the builder reserve preserves metered usage, deduplicates charges and roll
   };
 
   await send("init", builder, 1);
+  await send("init", chiridion, 1);
+  await send("init", botCanary, 0);
   await send("init", "other", 1);
   await Promise.all([
     send("settle", builder, 30, "run:first"),
     send("settle", builder, 30, "run:first"),
     send("settle", builder, 2, "run:second"),
+    send("settle", chiridion, 30, "run:first"),
+    send("settle", chiridion, 30, "run:first"),
+    send("settle", botCanary, 30, "run:first"),
     send("settle", "other", 30, "run:first"),
   ]);
   const { billing, ledger } = await send<BillingState>("read", builder);
@@ -53,6 +60,14 @@ test("the builder reserve preserves metered usage, deduplicates charges and roll
   assert.equal((await send<BillingState>("read", "other")).billing.balanceUsd, -29);
   assert.equal((await send<{ code: string }>("grant", builder, -100, "correction", 409)).code, "builder_credit_reserve");
   assert.equal((await send<{ code: string }>("grant", builder, 1, "builder-cutover-reserve:bad", 400)).code, "invalid_credit_ref");
+
+  assert.equal((await send<BillingState>("read", botCanary)).billing.balanceUsd, 25);
+  const chiridionState = await send<BillingState>("read", chiridion);
+  assert.equal(chiridionState.billing.balanceUsd, 25);
+  assert.deepEqual(chiridionState.billing.usage.map(({ runsCount, costUsd }) => [runsCount, costUsd]), [[1, 30]]);
+  assert.equal(chiridionState.ledger.reduce((total, { amount_usd }) => total + amount_usd, 0), 25);
+  assert.equal((await send<{ code: string }>("grant", chiridion, -25, "correction", 409)).code, "app_runtime_credit_reserve");
+  assert.equal((await send<{ code: string }>("grant", chiridion, 1, "app-runtime-reserve:bad", 400)).code, "invalid_credit_ref");
 
   await send("collision", builder, undefined, "run:rollback");
   const before = await send("read", builder);

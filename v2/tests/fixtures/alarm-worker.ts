@@ -1,5 +1,9 @@
 import app, { AgentDO as RuntimeAgentDO, TenantDO as RuntimeTenantDO } from "../../worker/src/index.ts";
+import { mintTenantApiKey } from "../../worker/src/crypto.ts";
+import { getTenantStub } from "../../worker/src/tenant-do.ts";
 import type { Env } from "../../worker/src/types.ts";
+
+const chiridionTestTenant = "tnt_0000000000000002";
 
 export class TenantDO extends RuntimeTenantDO {
   private modelIndexUpdatesEnabled = true;
@@ -57,6 +61,14 @@ export default {
   ...app,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/test-chiridion-tenant" && request.method === "POST") {
+      const minted = await mintTenantApiKey(chiridionTestTenant);
+      await getTenantStub(env, chiridionTestTenant).initTenant({
+        tenantId: chiridionTestTenant, name: "Chiridion test", initialCreditsUsd: 0,
+        keyId: minted.id, keyPrefix: minted.prefix, keyHash: minted.keyHash,
+      });
+      return Response.json({ apiKey: minted.token });
+    }
     const tenant = /^\/test-model-index\/([^/]+)$/.exec(url.pathname);
     if (tenant && request.method === "POST") {
       const stub = env.TENANT_DO.get(env.TENANT_DO.idFromName(tenant[1]!)) as unknown as TenantDO;

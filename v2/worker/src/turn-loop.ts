@@ -9,7 +9,7 @@ import {
   type ConversationMessage,
 } from "./providers.ts";
 import { verifyRunFiles } from "./run-files.ts";
-import { getTenantStub } from "./tenant-do.ts";
+import { getTenantStub, platformCreditReserve } from "./tenant-do.ts";
 import type { ToolApproval } from "./tool-identity.ts";
 import {
   buildToolCatalog,
@@ -352,8 +352,8 @@ export async function runAgentTurn(
   const usage = spendLimit === null ? emptyUsage() : adapter.getRunRecord(params.runId).usage;
   if (spendLimit !== null && usage.costUsd >= spendLimit) throw runSpendLimitError(spendLimit);
 
-  // Credit balance pre-check (non-mock models require positive balance if tenant exists)
-  if (!config.model.startsWith("mock") && config.model !== "mock") {
+  // Platform apps authorize each caller themselves. Their shared reserve meters usage.
+  if (!config.model.startsWith("mock") && !platformCreditReserve(adapter.env, config.tenantId)) {
     const balanceUsd =
       params.prefetchedBalanceUsd !== undefined
         ? params.prefetchedBalanceUsd

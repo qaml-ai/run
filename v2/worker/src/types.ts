@@ -14,6 +14,7 @@ export interface Env {
   ADMIN_SECRET: string;
   VAULT_SECRET: string;
   BUILDER_CUTOVER_CREDIT_TENANT_ID?: string;
+  APP_RUNTIME_CREDIT_TENANT_IDS?: string;
   CAMELFS_URL: string;
   CAMELFS_SIGNING_KEY?: string;
   CAMELFS_DEV_TOKEN?: string;
