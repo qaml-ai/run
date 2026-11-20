@@ -649,6 +649,8 @@ async function* streamOpenAiResponses(
   req: StreamModelRequest,
 ): AsyncGenerator<ModelStreamChunk, void, unknown> {
   const inputItems: Array<Record<string, unknown>> = [];
+  // Keep the agent prompt in the input prefix so GPT-6.2 can cache it.
+  if (req.instructions) inputItems.push({ role: "developer", content: req.instructions });
   for (const m of req.messages) {
     if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
       if (m.text) {
@@ -689,7 +691,6 @@ async function* streamOpenAiResponses(
     payload.reasoning = { effort: "low" };
     payload.store = false;
   }
-  if (req.instructions) payload.instructions = req.instructions;
   if (req.maxOutputTokens) payload.max_output_tokens = req.maxOutputTokens;
   if (req.tools && req.tools.length > 0) {
     payload.tools = req.tools.map((t) => ({

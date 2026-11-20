@@ -853,6 +853,50 @@ app.post("/v2/runs", async (c) => {
   return c.json(out);
 });
 
+app.post("/v2/runs/text", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  if (auth.tenantId !== c.env.BUILDER_CUTOVER_CREDIT_TENANT_ID) {
+    throw new ApiError(404, "not_found", "Text runs are unavailable for this tenant");
+  }
+  const key = c.req.header("idempotency-key")?.toLowerCase();
+  if (!key || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(key)) {
+    throw new ApiError(400, "invalid_request", "Text runs require a UUID v4 Idempotency-Key");
+  }
+  const body = await c.req.json().catch(() => null) as { input?: string; instructions?: string; outputSchema?: Record<string, unknown>; timeoutMs?: number } | null;
+  const { input, instructions, outputSchema, timeoutMs } = body ?? {};
+  if (typeof input !== "string" || !input.trim() || (instructions !== undefined && typeof instructions !== "string") ||
+      typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000 ||
+      (outputSchema !== undefined && (outputSchema?.type !== "object" || outputSchema.additionalProperties !== true ||
+        Object.keys(outputSchema).length !== 2))) {
+    throw new ApiError(400, "invalid_request", "Text runs need text, a deadline of at most 60000 ms, and optionally JSON object output");
+  }
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([c.req.raw.signal, deadline]);
+  const tenant = getTenantStub(c.env, auth.tenantId);
+  const leaseId = randomId("srun", 8);
+  let acquired = false;
+  try {
+    // New duplicate claims use their own name. Existing tenant objects can still be on an older
+    // version during deferred upgrades, so they only receive the original billing and quota RPCs.
+    await getTenantStub(c.env, `camelrun:text-run-admission:${auth.tenantId}`).claimTextRun(key);
+    await tenant.checkRateLimit("runs");
+    await tenant.acquireSlot(leaseId, leaseId, timeoutMs);
+    acquired = true;
+    signal.throwIfAborted();
+    const reply = await executeStatelessRun(c.env, auth.tenantId, {
+      input, instructions, outputSchema, model: "azure/gpt-6.2-sol", maxSteps: 1,
+    }, signal, true);
+    signal.throwIfAborted();
+    return c.json(reply);
+  } catch (error) {
+    if (deadline.aborted) throw new ApiError(408, "deadline_exceeded", "The model exceeded its deadline");
+    throw error;
+  } finally {
+    if (acquired) await tenant.releaseSlot(leaseId).catch(() => {});
+  }
+});
+
 app.post("/v2/decisions", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
