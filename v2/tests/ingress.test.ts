@@ -526,3 +526,35 @@ test("strict ingress preserves the independent volume and billing services", asy
   assert.equal(billing.mock.callCount(), 1);
   assert.equal(origin.mock.callCount(), 0);
 });
+
+test("v1 bridge flag routes translated v1 writes and channel webhooks to LEGACY_V1 without ECS", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response("ECS", { status: 599 }));
+  const route = t.mock.fn(async (request: Request) => Response.json({ routed: new URL(request.url).pathname, method: request.method }));
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_V1: { route },
+    LEGACY_V1_BRIDGE: "1",
+    LEGACY_ECS_FALLBACK: "0",
+  };
+  const auth = { authorization: "Bearer art_test" };
+  for (const [method, path, headers] of [
+    ["POST", "/v1/definitions", auth],
+    ["PATCH", "/v1/definitions/def_1", auth],
+    ["DELETE", "/v1/definitions/def_1", auth],
+    ["POST", "/v1/runs", auth],
+    ["POST", "/v1/speech", auth],
+    ["POST", "/v1/transcriptions", auth],
+    ["POST", "/v1/images", auth],
+    ["POST", "/v1/decisions", auth],
+    ["POST", "/channels/webhook/ch_8e5cb819d504259d334e", {}],
+  ] as const) {
+    const res = await worker.fetch(new Request(`https://run.camelai.com${path}`, {
+      method,
+      headers,
+      body: method === "POST" || method === "PATCH" ? "{}" : undefined,
+    }), env);
+    assert.equal(res.status, 200, `${method} ${path}`);
+    assert.deepEqual(await res.json(), { routed: path, method });
+  }
+  assert.equal(origin.mock.callCount(), 0);
+});

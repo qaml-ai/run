@@ -10,12 +10,14 @@ import { senderInput } from "./sender.ts";
 import { compatibilityEventsResponse } from "../../../src/v1-compatibility-events.ts";
 import { compatibilityHistory } from "../../../src/v1-compatibility-history.ts";
 import { PromptInput } from "../../../src/v1-prompt-schema.ts";
-import { unsupportedV1Operation, type CompatibilitySql, type V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
+import { unsupportedV1Operation, type CompatibilitySql, type MigratedAgent, type V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { readText } from "./account-http.ts";
 import { readableFrame, readableMessage, readableRequest, type BrowserClaims } from "./browser-tokens.ts";
 import { AgentHistory, historyPageInput } from "../../../src/history-pages.ts";
 import type { Db } from "./postgres.ts";
 import { listAgentPage, agentListQuery } from "../../../src/agent-directory-page.ts";
+import type { Env } from "./agent-types.ts";
+import type { BridgedAgentMeta } from "./v1-v2-bridge.ts";
 
 const tenantPaths = /^\/v1\/agents\/(client_[a-f0-9]{40})\/(prompt|mounts|events|state|history|inputs(?:\/[^/]+)?|requests\/[^/]+)$/;
 const agentPaths = /^\/clients\/(client_[a-f0-9]{40})\/(requests(?:\/[^/]+)?|events|state|history|inputs(?:\/[^/]+)?)$/;
@@ -67,13 +69,14 @@ async function agentTenant(request: Request, sql: CompatibilitySql, agent: strin
   return source.tenant;
 }
 
-/** Legacy tenant and agent identity use Postgres even when all model work happens on v2. */
+/** Legacy tenant and agent identity use Postgres even when all model work happens on v2; newly bridged v1 agents live directly on v2. */
 export async function handleLegacyAgentRequest(
   request: Request,
   sql: Db,
   compatibility: V1Compatibility,
   principal: { tenantId: string; kind: string } | null,
   browser?: BrowserClaims,
+  bridge?: Env["V2_LEGACY_RUNS"],
 ): Promise<Response | undefined> {
   const url = new URL(request.url);
   const match = legacyAgentRequest(request);
@@ -84,30 +87,78 @@ export async function handleLegacyAgentRequest(
     if (request.method !== "GET" || !scopes.includes(operation)) throw new HttpError(403, "This browser token does not grant this read");
     if (browser.agent !== agent) return; // The original agent route continues to handle child streams.
   }
-  const tenant = scoped ? await agentTenant(request, sql, agent) : browser?.tenant ?? principal?.tenantId;
+
+  let bridgedRoute: MigratedAgent | undefined;
+  let tenant: string | undefined;
+  if (scoped) {
+    try {
+      tenant = await agentTenant(request, sql, agent);
+    } catch (err) {
+      // Support bridged agent tokens (`cr_agt_<tnt>_<agt>.<secret>`) created via POST /v1/agents on v2.
+      const authorization = request.headers.get("authorization");
+      const token = authorization?.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+      if (token.startsWith("cr_agt_") && bridge?.verifyBridgedAgentToken) {
+        const verified = await bridge.verifyBridgedAgentToken(token);
+        if (verified && verified.key === agent) {
+          tenant = verified.tenantId;
+          bridgedRoute = {
+            tenant: verified.tenantId,
+            agent,
+            destination_tenant: verified.tenantId,
+            destination_agent: verified.agentId,
+            event_base: 0,
+            bridged: true,
+          };
+        }
+      }
+      if (!bridgedRoute) throw err;
+    }
+  } else {
+    tenant = browser?.tenant ?? principal?.tenantId;
+  }
   if (!tenant || (principal?.kind === "console" && request.headers.has("authorization"))) {
     throw new HttpError(401, "Invalid or missing credentials");
   }
 
+  let pgSource: { mounts: unknown[] | null } | undefined;
   if (!scoped) {
     const { rows: [source] } = await sql.query<{ mounts: unknown[] | null }>(
       `select header->'mounts' as mounts from agents where id = $1 and tenant = $2 and not revoked and purged_at is null
         and (expires_at is null or expires_at > $3) and header->'run' is null`, [agent, tenant, Date.now()],
     );
-    if (!source) throw unknownAgent();
+    pgSource = source;
+    if (!pgSource && bridge?.resolveBridgedAgent) {
+      const bridged = await bridge.resolveBridgedAgent(tenant, agent);
+      if (bridged) {
+        bridgedRoute = {
+          tenant,
+          agent,
+          destination_tenant: bridged.tenantId,
+          destination_agent: bridged.agentId,
+          event_base: 0,
+          bridged: true,
+        };
+      }
+    }
+    if (!pgSource && !bridgedRoute) throw unknownAgent();
     // Mount metadata belongs to the original agent and remains readable while it drains.
-    if (operation === "mounts") return json(source.mounts ?? []);
+    if (operation === "mounts") return json(pgSource?.mounts ?? []);
   }
 
   const signal = request.signal;
-  const route = await compatibility.route(tenant, agent, request.method === "POST" ? signal : undefined);
+  const route = bridgedRoute ?? await compatibility.route(tenant, agent, request.method === "POST" ? signal : undefined);
   if (!route) {
     if (request.method !== "GET") return;
     if (operation === "inputs") {
       const state = url.searchParams.get("state");
       if (!scoped && state !== null && !inputStates.has(state)) throw new HttpError(400, "Invalid input state");
-      const inputs = await new Inputs({ db: sql }).list(tenant, { agent, state: state ?? undefined });
-      return json(browser ? readableMessage(browser, inputs) : inputs);
+      try {
+        const inputs = await new Inputs({ db: sql }).list(tenant, { agent, state: state ?? undefined });
+        return json(browser ? readableMessage(browser, inputs) : inputs);
+      } catch (err) {
+        if ((err as { code?: string })?.code === "42501") return;
+        throw err;
+      }
     }
     if (operation === "history") {
       const history = new AgentHistory(sql, true);
@@ -118,15 +169,52 @@ export async function handleLegacyAgentRequest(
         maxBytes: url.searchParams.get("maxBytes") ?? undefined,
       };
       const bounds = historyPageInput(query);
-      const value = Object.values(query).every(value => value === undefined)
-        ? { messages: await history.messages(agent, 0, undefined, 16 * 1024 * 1024) }
-        : bounds.after !== undefined ? await history.pageAfter(agent, { ...bounds, after: bounds.after }) : await history.page(agent, bounds);
-      return json(browser ? readableMessage(browser, value) : value);
+      try {
+        const value = Object.values(query).every(value => value === undefined)
+          ? { messages: await history.messages(agent, 0, undefined, 16 * 1024 * 1024) }
+          : bounds.after !== undefined ? await history.pageAfter(agent, { ...bounds, after: bounds.after }) : await history.page(agent, bounds);
+        return json(browser ? readableMessage(browser, value) : value);
+      } catch (err) {
+        if ((err as { code?: string })?.code === "42501") return;
+        throw err;
+      }
     }
     if (operation !== "detail") return;
   }
   if (operation === "detail") {
     if (url.searchParams.get("refresh") === "true") throw unsupportedV1Operation();
+    if (route?.bridged) {
+      const [current, meta] = await Promise.all([
+        compatibility.detail(route, signal),
+        bridge?.getMeta ? bridge.getMeta<BridgedAgentMeta>(tenant, "agent", agent) : Promise.resolve(null),
+      ]);
+      const tools = (current.tools ?? []).map(({ name, description, parameters }) =>
+        ({ name, description: description ?? "", ...(parameters ? { parameters } : {}) }));
+      const mcpServers = (current.mcpServers ?? []).map(({ name }) => ({ name }));
+      const schemas = url.searchParams.get("schemas") === "true";
+      const toolSources = [
+        ...(tools.length ? [{ kind: "application", name: "application", status: "listed", tools: tools.map(({ parameters, ...tool }) =>
+          ({ ...tool, ...(schemas && parameters ? { parameters } : {}) })) }] : []),
+        ...mcpServers.map(({ name }) => ({ kind: "mcp", name, status: "unlisted", tools: [] })),
+      ];
+      return json({
+        id: agent,
+        ...(meta?.key ? { key: meta.key } : {}),
+        name: meta?.name ?? "",
+        type: "agent",
+        metadata: meta?.metadata ?? {},
+        ...(meta?.definition ? { definition: meta.definition } : {}),
+        model: current.model,
+        connected: false,
+        running: current.status === "running",
+        expiresAt: null,
+        systemPrompt: current.instructions ?? "",
+        builtins: current.builtins ?? [],
+        tools,
+        mcpServers,
+        toolSources,
+      });
+    }
     const [{ agents }, current] = await Promise.all([
       listAgentPage(sql, tenant, agentListQuery(new URLSearchParams({ id: agent }))),
       route && compatibility.detail(route, signal),
@@ -147,6 +235,7 @@ export async function handleLegacyAgentRequest(
   }
   if (!route) return;
   async function archived(id: string): Promise<RequestRecord | undefined> {
+    if (route!.bridged) return undefined;
     const { rows: [row] } = await sql.query<{ receipt: RequestRecord | null }>(
       `select (select value from jsonb_array_elements(receipts) where value->>'id' = $3) as receipt
         from agent_v2_receipt_archives where tenant = $1 and agent = $2`, [tenant, agent, id],
@@ -155,6 +244,10 @@ export async function handleLegacyAgentRequest(
     return row.receipt ?? undefined;
   }
   if (operation === "inputs" || operation.startsWith("inputs/")) {
+    if (route.bridged) {
+      if (request.method === "GET") return json([]);
+      throw new HttpError(404, "Unknown input");
+    }
     return historicalInputs(request, sql, tenant, agent, operation, scoped, browser);
   }
   if (operation === "prompt") {
@@ -180,12 +273,14 @@ export async function handleLegacyAgentRequest(
     until: browser.exp,
   });
   if (operation === "state") {
-    const requests = sql.query<{ receipts: RequestRecord[] }>(
-      "select receipts from agent_v2_receipt_archives where tenant = $1 and agent = $2", [tenant, agent],
-    ).then(({ rows: [row] }) => {
-      if (!row) throw archiveUnavailable();
-      return row.receipts;
-    });
+    const requests = route.bridged
+      ? Promise.resolve<RequestRecord[]>([])
+      : sql.query<{ receipts: RequestRecord[] }>(
+          "select receipts from agent_v2_receipt_archives where tenant = $1 and agent = $2", [tenant, agent],
+        ).then(({ rows: [row] }) => {
+          if (!row) throw archiveUnavailable();
+          return row.receipts;
+        });
     const state = await compatibility.state(route, requests, signal);
     return json(browser ? readableMessage(browser, { ...state, requests: state.requests.map(readableRequest) }) : state);
   }

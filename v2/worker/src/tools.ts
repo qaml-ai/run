@@ -14,6 +14,7 @@ import {
   ApiError,
   extractApiError,
   type AgentConfig,
+  type AgentUpsertInput,
   type BuiltinSuite,
   type CustomToolSpec,
   type Env,
@@ -269,11 +270,12 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
     {
       name: "delegate",
       description:
-        "Synchronously delegate a task to a child agent (optionally on a forked repo) and return its result.",
+        "Synchronously delegate a task to a child agent (optionally from a named definition or on a forked repo) and return its result.",
       parameters: {
         type: "object",
         properties: {
           prompt: { type: "string" },
+          definition: { type: "string" },
           key: { type: "string" },
           model: { type: "string" },
           instructions: { type: "string" },
@@ -284,11 +286,12 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
     },
     {
       name: "spawn_agent",
-      description: "Start an asynchronous child agent run and return its handle.",
+      description: "Start an asynchronous child agent run (optionally from a named definition) and return its handle.",
       parameters: {
         type: "object",
         properties: {
           prompt: { type: "string" },
+          definition: { type: "string" },
           key: { type: "string" },
           model: { type: "string" },
           instructions: { type: "string" },
@@ -806,14 +809,24 @@ export async function executeToolCall(
   // 7. Sub-agent delegation suite (`delegate`, `spawn_agent`, `send_message`, `wait_agent`)
   if (toolName === "delegate" || toolName === "spawn_agent") {
     const synchronous = toolName === "delegate";
+    const definitionSlug =
+      typeof args.definition === "string" && args.definition.trim() ? args.definition.trim() : undefined;
+    const defEntry = definitionSlug
+      ? await getTenantStub(ctx.env, ctx.config.tenantId).getDefinition(definitionSlug)
+      : null;
+    const defCfg = defEntry?.config;
     const childKey =
       typeof args.key === "string" && args.key.trim()
         ? args.key.trim()
         : `${ctx.config.key}__sub_${randomId("c", 4)}`;
     const prompt = String(args.prompt ?? "");
-    const model = typeof args.model === "string" ? args.model : ctx.config.model;
+    const model =
+      typeof args.model === "string" ? args.model : (defCfg?.model ?? ctx.config.model);
     const instructions =
-      typeof args.instructions === "string" ? args.instructions : ctx.config.instructions;
+      typeof args.instructions === "string"
+        ? args.instructions
+        : (defCfg?.instructions ?? ctx.config.instructions);
+    const childBuiltins = (defCfg?.builtins ?? ctx.config.builtins).filter((b) => b !== "delegate");
 
     let childRepoId: string | null = ctx.config.repoId;
     let childLineage: string | null = ctx.config.lineage;
@@ -838,7 +851,10 @@ export async function executeToolCall(
     const childAgent = await upsertChildAgentInCluster(ctx.env, ctx.config.tenantId, childKey, {
       model,
       instructions,
-      builtins: ctx.config.builtins.filter((b) => b !== "delegate"),
+      builtins: childBuiltins,
+      tools: defCfg?.tools,
+      mcpServers: defCfg?.mcpServers,
+      definitionSlug: defEntry?.slug ?? null,
       repoId: childRepoId,
       lineage: childLineage,
       branch: childBranch,
@@ -1017,6 +1033,9 @@ async function upsertChildAgentInCluster(
     model: string;
     instructions: string;
     builtins: BuiltinSuite[];
+    tools?: AgentUpsertInput["tools"];
+    mcpServers?: AgentUpsertInput["mcpServers"];
+    definitionSlug?: string | null;
     repoId: string | null;
     lineage: string | null;
     branch: string;
@@ -1037,7 +1056,7 @@ async function upsertChildAgentInCluster(
       model: opts.model,
       repoId: opts.repoId,
       branch: opts.branch,
-      definitionSlug: null,
+      definitionSlug: opts.definitionSlug ?? null,
     });
   }
 
@@ -1047,7 +1066,10 @@ async function upsertChildAgentInCluster(
     key,
     model: opts.model,
     instructions: opts.instructions,
+    definition: opts.definitionSlug ?? undefined,
     builtins: opts.builtins,
+    tools: opts.tools,
+    mcpServers: opts.mcpServers,
     repoId: opts.repoId,
     lineage: opts.lineage,
     branch: opts.branch,

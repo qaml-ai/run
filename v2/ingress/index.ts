@@ -5,6 +5,7 @@ import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../shar
 
 export interface LegacyOriginEnv extends LegacyVolumeOrigin {
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
+  LEGACY_V1_BRIDGE?: string;
   LEGACY_GATEWAY_TEXT_ROUTING?: string;
   LEGACY_ECS_FALLBACK?: string;
 }
@@ -95,6 +96,19 @@ export async function fetchLegacyApi(request: Request, env: LegacyOriginEnv = {}
     (env.LEGACY_ECS_FALLBACK === "0" ? legacyUnavailable() : fetch(request, { redirect: "manual" }));
 }
 
+const legacyChannelWebhookRoute = /^\/channels\/[^/]+\/[^/]+$/;
+const legacyDefinitionWriteRoute = /^\/v1\/definitions(?:\/[^/]+)?$/;
+const legacyStatelessRunRoute = /^\/v1\/runs(?:\/run_[a-f0-9]{16,40})?$/;
+const legacyMediaDecisionPaths = new Set(["/v1/speech", "/v1/transcriptions", "/v1/images", "/v1/decisions"]);
+
+function legacyBridgedApiRoute(pathname: string, method: string, hasAuth: boolean) {
+  if (!hasAuth) return false;
+  if (legacyDefinitionWriteRoute.test(pathname) && ["POST", "PATCH", "DELETE"].includes(method)) return true;
+  if (legacyStatelessRunRoute.test(pathname) && (method === "POST" || (method === "GET" && pathname.length > "/v1/runs".length))) return true;
+  if (method === "POST" && legacyMediaDecisionPaths.has(pathname)) return true;
+  return false;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { hostname, pathname } = new URL(request.url);
@@ -102,13 +116,21 @@ export default {
       return env.V2.fetch(request);
     }
 
+    let gatewayTried = false;
     if (legacyApiHost(hostname)) {
       const billing = legacyBillingCallback(request, env.LEGACY_BILLING);
       if (billing) return billing;
       const volume = legacyVolumeOrigin(request, env, "edge");
       if (volume) return volume;
+      if (env.LEGACY_GATEWAY_TEXT_ROUTING === "1" && !request.headers.has("upgrade") && legacyGatewayTextAddress(request)) {
+        gatewayTried = true;
+      }
       const gateway = await gatewayText(request, env);
       if (gateway) return gateway;
+      if (env.LEGACY_V1 && env.LEGACY_V1_BRIDGE === "1" && request.method === "POST" && !request.headers.has("upgrade") && legacyChannelWebhookRoute.test(pathname)) {
+        const delivered = await env.LEGACY_V1.route(request.clone());
+        if (delivered) return delivered;
+      }
     }
 
     if (legacyApiHost(hostname) && pathname === "/v1/decisions" && request.method === "POST" && !request.headers.has("upgrade")) {
@@ -135,8 +157,10 @@ export default {
     const legacyCredentials = legacyApiHost(hostname) && request.method === "GET" &&
       request.headers.has("authorization") && legacyCredentialsRoute.test(pathname);
     const definitionRead = legacyApiHost(hostname) && legacyDefinitionRead(request);
+    const bridgedApi = env.LEGACY_V1_BRIDGE === "1" && !gatewayTried && legacyApiHost(hostname) &&
+      legacyBridgedApiRoute(pathname, request.method, request.headers.has("authorization"));
     if (env.LEGACY_V1 && !request.headers.has("upgrade") &&
-        (legacyIdentity || legacyAccountRead || legacyCredentials || definitionRead || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
+        (legacyIdentity || legacyAccountRead || legacyCredentials || definitionRead || bridgedApi || pathname === "/mcp" || pathname === "/v1/agents" || legacyAgentRoute.test(pathname) ||
          legacyEndUserRoute(pathname, request.method) || legacyOAuthRoute(pathname, request.method)) &&
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());

@@ -15,6 +15,7 @@ export type MigratedAgent = {
   destination_tenant: string;
   destination_agent: string;
   event_base: number;
+  bridged?: boolean;
 };
 type ArchivedRequest = (requestId: string) => Promise<RequestRecord | undefined>;
 export type CompatibilitySql = { query<Row = unknown>(text: string, values?: unknown[]): Promise<{ rows: Row[]; rowCount: number | null }> };
@@ -171,6 +172,7 @@ export class V1Compatibility {
   }
 
   private async fingerprint(route: MigratedAgent, id: string) {
+    if (route.bridged) return undefined;
     const { rows } = await this.sql.query<{ fingerprint: string }>(
       "select fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = $3",
       [route.tenant, route.agent, id],
@@ -179,6 +181,7 @@ export class V1Compatibility {
   }
 
   private async reserve(route: MigratedAgent, id: string, fingerprint: string) {
+    if (route.bridged) return true;
     const result = await this.sql.query(
       `insert into agent_v2_requests (tenant, agent, request_id, fingerprint) values ($1, $2, $3, $4)
        on conflict (tenant, agent, request_id) do nothing`,
@@ -237,7 +240,7 @@ export class V1Compatibility {
       const v1Id = this.v1RequestId(run);
       return { run, v1Id };
     });
-    const v1Ids = keyed.flatMap(({ v1Id }) => v1Id === undefined ? [] : [v1Id]);
+    const v1Ids = route.bridged ? [] : keyed.flatMap(({ v1Id }) => v1Id === undefined ? [] : [v1Id]);
     const { rows } = v1Ids.length ? await this.sql.query<{ request_id: string; fingerprint: string }>(
       "select request_id, fingerprint from agent_v2_requests where tenant = $1 and agent = $2 and request_id = any($3::text[])",
       [route.tenant, route.agent, v1Ids],
@@ -245,7 +248,7 @@ export class V1Compatibility {
     const fingerprints = new Map(rows.map(row => [row.request_id, row.fingerprint]));
     const projected = keyed.map(({ v1Id, run }) => {
       if (v1Id === undefined) return this.nativeRunView(run);
-      const fingerprint = fingerprints.get(v1Id);
+      const fingerprint = route.bridged ? `v2:${run.id}` : fingerprints.get(v1Id);
       if (!fingerprint) throw unsupportedV1Operation();
       return projectRun(run, v1Id, fingerprint);
     });
@@ -291,7 +294,7 @@ export class V1Compatibility {
     const run = await this.readRun(route, runId, signal);
     const id = this.v1RequestId(run);
     if (id === undefined) return this.nativeRunView(run);
-    const fingerprint = await this.fingerprint(route, id);
+    const fingerprint = route.bridged ? `v2:${run.id}` : await this.fingerprint(route, id);
     if (!fingerprint) throw unsupportedV1Operation();
     return projectRun(run, id, fingerprint);
   }
@@ -350,13 +353,19 @@ export class V1Compatibility {
         return source;
       }
     }
-    if (!text || files?.length || allowDisconnected !== undefined || whileRunning === "steer"
-      || Object.keys(options).length || (actor !== undefined && (!actor.trim() || actor.length > 200))) {
+    if (!text || (!route.bridged && (files?.length || allowDisconnected !== undefined || whileRunning === "steer"
+      || Object.keys(options).length)) || (actor !== undefined && (!actor.trim() || actor.length > 200))) {
       throw new HttpError(501, "This prompt uses options that have no v1 compatibility mapping", "V1_COMPAT_UNSUPPORTED");
     }
+    const outputOption = route.bridged && "output" in options && options.output ? { outputSchema: options.output } : {};
     const firstAttempt = existing === undefined && await this.reserve(route, id, fingerprint);
     const found = firstAttempt ? undefined : await this.run(route, id, undefined, signal);
-    const run = found ?? await this.run(route, id, { prompt: text, actor }, signal);
+    const run = found ?? await this.run(route, id, {
+      prompt: text,
+      actor,
+      ...(route.bridged && whileRunning === "steer" ? { whileRunning: "steer" } : {}),
+      ...outputOption,
+    }, signal);
     if (!run) throw unavailable();
     return projectRun(run, id, fingerprint);
   }
@@ -365,7 +374,7 @@ export class V1Compatibility {
     const wait = Number(waitSeconds ?? 0);
     if (!Number.isFinite(wait) || wait < 0) throw new HttpError(400, "wait is a number of seconds");
     if (!validId(id)) throw new HttpError(404, "Unknown request");
-    const fingerprint = await this.fingerprint(route, id);
+    const fingerprint = route.bridged ? `v2:${id}` : await this.fingerprint(route, id);
     if (!fingerprint) {
       const record = await archived(id);
       if (record) return record;
@@ -375,7 +384,7 @@ export class V1Compatibility {
     for (;;) {
       const run = await this.run(route, id, undefined, signal);
       if (!run) throw new HttpError(404, "Unknown request");
-      const record = projectRun(run, id, fingerprint);
+      const record = projectRun(run, id, route.bridged ? `v2:${run.id}` : fingerprint);
       const remaining = deadline - Date.now();
       if (record.state === "completed" || remaining <= 0) return record;
       await delay(Math.min(remaining, 500), undefined, { signal });

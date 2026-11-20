@@ -1699,4 +1699,203 @@ export class TenantDO extends DurableObject<Env> {
     this.ctx.storage.sql.exec(`DELETE FROM channels WHERE id = ?1`, channelId);
     return true;
   }
+
+  // ---- Legacy v1 -> v2 Translation Bridge Helpers ----
+
+  private ensureLegacyBridgeTables(): void {
+    this.ensureSql();
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS legacy_bridge_key (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        sealed_token TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS legacy_bridge_meta (
+        kind TEXT NOT NULL,
+        id TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, id)
+      );
+      CREATE TABLE IF NOT EXISTS legacy_webhook_channels (
+        id TEXT PRIMARY KEY,
+        v1_tenant TEXT NOT NULL,
+        v2_tenant_id TEXT NOT NULL,
+        channel_type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        definition_id TEXT,
+        settings_json TEXT NOT NULL DEFAULT '{}',
+        sealed_secret TEXT NOT NULL,
+        sealed_reply_url TEXT,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+  }
+
+  async ensureLegacyBridgeTenant(input: {
+    tenantId: string;
+    name: string;
+    initialCreditsUsd?: number;
+    keyId: string;
+    keyPrefix: string;
+    keyHash: string;
+    sealedToken: string;
+  }): Promise<{ profile: TenantProfile; sealedToken: string }> {
+    this.ensureLegacyBridgeTables();
+    const existing = this.readProfileOrNull();
+    const existingKey = this.ctx.storage.sql
+      .exec<{ sealed_token: string }>(`SELECT sealed_token FROM legacy_bridge_key WHERE id = 1`)
+      .toArray()[0];
+    if (existing && existingKey) {
+      return { profile: existing, sealedToken: existingKey.sealed_token };
+    }
+    const now = Date.now();
+    const initialCredits = Number(input.initialCreditsUsd ?? 25);
+    this.ctx.storage.transactionSync(() => {
+      if (!existing) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO tenant_profile (id, tenant_id, name, tier, balance_usd, monthly_cap_usd, concurrency_limit, rate_limit_rpm, created_at)
+           VALUES (1, ?1, ?2, 'pro', ?3, 1000, 25, 600, ?4)`,
+          input.tenantId,
+          input.name,
+          initialCredits,
+          now,
+        );
+        if (initialCredits !== 0) {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
+             VALUES (?1, 'initial_grant', ?2, 'grant', 'Initial v1 bridge tenant credits', ?3)`,
+            randomId("led", 8),
+            initialCredits,
+            now,
+          );
+        }
+      }
+      if (!existingKey) {
+        this.ctx.storage.sql.exec(
+          `INSERT OR IGNORE INTO api_keys (id, name, prefix, key_hash, scopes_json, created_at)
+           VALUES (?1, 'v1-bridge', ?2, ?3, '["*"]', ?4)`,
+          input.keyId,
+          input.keyPrefix,
+          input.keyHash,
+          now,
+        );
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO legacy_bridge_key (id, sealed_token) VALUES (1, ?1)`,
+          input.sealedToken,
+        );
+      }
+    });
+    return {
+      profile: this.requireProfile(),
+      sealedToken: existingKey?.sealed_token ?? input.sealedToken,
+    };
+  }
+
+  async putLegacyBridgeMeta(kind: string, id: string, data: unknown): Promise<void> {
+    this.ensureLegacyBridgeTables();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO legacy_bridge_meta (kind, id, data_json, updated_at) VALUES (?1, ?2, ?3, ?4)`,
+      kind,
+      id,
+      JSON.stringify(data),
+      Date.now(),
+    );
+  }
+
+  async getLegacyBridgeMeta<T = unknown>(kind: string, id: string): Promise<T | null> {
+    this.ensureLegacyBridgeTables();
+    const row = this.ctx.storage.sql
+      .exec<{ data_json: string }>(`SELECT data_json FROM legacy_bridge_meta WHERE kind = ?1 AND id = ?2 LIMIT 1`, kind, id)
+      .toArray()[0];
+    return row ? (JSON.parse(row.data_json) as T) : null;
+  }
+
+  async listLegacyBridgeMeta<T = unknown>(kind: string): Promise<Array<{ id: string; data: T }>> {
+    this.ensureLegacyBridgeTables();
+    return this.ctx.storage.sql
+      .exec<{ id: string; data_json: string }>(
+        `SELECT id, data_json FROM legacy_bridge_meta WHERE kind = ?1 ORDER BY updated_at DESC`,
+        kind,
+      )
+      .toArray()
+      .map((row) => ({ id: row.id, data: JSON.parse(row.data_json) as T }));
+  }
+
+  async deleteLegacyBridgeMeta(kind: string, id: string): Promise<boolean> {
+    this.ensureLegacyBridgeTables();
+    const exists = this.ctx.storage.sql
+      .exec<{ id: string }>(`SELECT id FROM legacy_bridge_meta WHERE kind = ?1 AND id = ?2 LIMIT 1`, kind, id)
+      .toArray();
+    if (!exists.length) return false;
+    this.ctx.storage.sql.exec(`DELETE FROM legacy_bridge_meta WHERE kind = ?1 AND id = ?2`, kind, id);
+    return true;
+  }
+
+  async upsertLegacyWebhookChannel(input: {
+    id: string;
+    v1Tenant: string;
+    v2TenantId: string;
+    channelType: string;
+    name: string;
+    definitionId: string | null;
+    settingsJson: string;
+    sealedSecret: string;
+    sealedReplyUrl: string | null;
+  }): Promise<void> {
+    this.ensureLegacyBridgeTables();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO legacy_webhook_channels
+         (id, v1_tenant, v2_tenant_id, channel_type, name, definition_id, settings_json, sealed_secret, sealed_reply_url, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+      input.id,
+      input.v1Tenant,
+      input.v2TenantId,
+      input.channelType,
+      input.name,
+      input.definitionId,
+      input.settingsJson,
+      input.sealedSecret,
+      input.sealedReplyUrl,
+      Date.now(),
+    );
+  }
+
+  async getLegacyWebhookChannel(id: string): Promise<{
+    id: string;
+    v1Tenant: string;
+    v2TenantId: string;
+    channelType: string;
+    name: string;
+    definitionId: string | null;
+    settingsJson: string;
+    sealedSecret: string;
+    sealedReplyUrl: string | null;
+  } | null> {
+    this.ensureLegacyBridgeTables();
+    const row = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        v1_tenant: string;
+        v2_tenant_id: string;
+        channel_type: string;
+        name: string;
+        definition_id: string | null;
+        settings_json: string;
+        sealed_secret: string;
+        sealed_reply_url: string | null;
+      }>(`SELECT * FROM legacy_webhook_channels WHERE id = ?1 LIMIT 1`, id)
+      .toArray()[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      v1Tenant: row.v1_tenant,
+      v2TenantId: row.v2_tenant_id,
+      channelType: row.channel_type,
+      name: row.name,
+      definitionId: row.definition_id,
+      settingsJson: row.settings_json,
+      sealedSecret: row.sealed_secret,
+      sealedReplyUrl: row.sealed_reply_url,
+    };
+  }
 }

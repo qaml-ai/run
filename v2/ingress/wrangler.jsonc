@@ -7,7 +7,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "keep_vars": true,
-  "vars": { "LEGACY_GATEWAY_TEXT_ROUTING": "1", "LEGACY_ECS_FALLBACK": "0", "LEGACY_VOLUMES_STRICT_GLOBAL": "1" },
+  "vars": { "LEGACY_GATEWAY_TEXT_ROUTING": "1", "LEGACY_V1_BRIDGE": "1", "LEGACY_ECS_FALLBACK": "0", "LEGACY_VOLUMES_STRICT_GLOBAL": "1" },
   "services": [
     { "binding": "V2", "service": "camelrun-v2-prod" },
     { "binding": "LEGACY_V1", "service": "camelrun-v1-compat-prod", "entrypoint": "LegacyV1" },

@@ -36,6 +36,14 @@ import { EndUserCredits } from "./end-user-credits.ts";
 import { endUserRoutes } from "./end-user-routes.ts";
 import { V1Compatibility } from "../../../src/v1-v2-compatibility.ts";
 import { handleLegacyAgentRequest, legacyAgentRequest } from "./v1-compatibility.ts";
+import {
+  handleBridgedAgentCreate,
+  handleBridgedAgentMutation,
+  handleBridgedDefinitionRoutes,
+  handleBridgedMediaOrDecision,
+  handleBridgedStatelessRuns,
+  type BridgedAgentMeta,
+} from "./v1-v2-bridge.ts";
 import { resolveDefinition, definitionUpsert } from "./definitions.ts";
 import { sweepComputers, sweepSnapshots } from './computers/service.ts';
 import { CamelAgent, json, type Env } from "./agent.ts";
@@ -271,7 +279,7 @@ function legacyCompatibility(
   if (!legacyAgentRequest(request)) return;
   const compatibility = legacyCompatibilityService(env);
   if (!compatibility) return;
-  return handleLegacyAgentRequest(request, database(env), compatibility, principal, browser);
+  return handleLegacyAgentRequest(request, database(env), compatibility, principal, browser, env.V2_LEGACY_RUNS);
 }
 
 async function legacyAccountIdentity(request: Request, env: Env, principal: NonNullable<Awaited<ReturnType<typeof authenticateMoney>>>["principal"]) {
@@ -298,6 +306,19 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     if (preflight) return preflight;
     const env = this.env;
     const url = new URL(request.url);
+    const legacyChannelMatch = request.method === "POST" ? /^\/channels\/([^/]+)\/([^/]+)$/.exec(url.pathname) : null;
+    if (legacyChannelMatch && env.V2_LEGACY_RUNS?.legacyChannelWebhook) {
+      try {
+        const response = await env.V2_LEGACY_RUNS.legacyChannelWebhook(
+          decodeURIComponent(legacyChannelMatch[1]),
+          decodeURIComponent(legacyChannelMatch[2]),
+          request,
+        );
+        if (response) return publicPageHeaders(request, corsResponse(request, response));
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
     const gatewayText = env.V2_LEGACY_GATEWAY_TEXT;
     if (env.LEGACY_GATEWAY_TEXT_ACCESS && legacyGatewayTextAddress(request)) {
       if (!gatewayText) return publicPageHeaders(request, corsResponse(request, legacyGatewayTextUncertain()));
@@ -379,6 +400,23 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         if (!secret) throw new CoreHttpError(503, "Agent credentials are unavailable");
         const value = await v1AgentCredentials(database(env), secret, auth.tenantId, ref, { verifyDigest: true });
         return publicPageHeaders(request, corsResponse(request, json(value)));
+      } catch (error) {
+        return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
+      }
+    }
+    const bridgedDefinitionPath = /^\/v1\/definitions(?:\/[^/]+(?:\/agents)?)?$/.test(url.pathname);
+    if (bridgedDefinitionPath && env.V2_LEGACY_RUNS?.bridge && ["GET", "POST", "PATCH", "DELETE"].includes(request.method)) {
+      try {
+        await apiRequest(request, env);
+        const authorization = request.headers.get("authorization") ?? "";
+        if (BrowserTokens.carries(authorization)) {
+          new BrowserTokens(env.AGENT_SESSION_SECRET ?? env.API_TOKEN).verify(authorization);
+          throw new CoreHttpError(403, "A browser token only reads an agent's events, state, history and inputs");
+        }
+        const auth = await authenticateMoney(request, env, { bearerOnly: !!authorization });
+        if (!auth) throw new CoreHttpError(401, "Invalid or missing credentials");
+        const response = await handleBridgedDefinitionRoutes(request, env, database(env), auth.tenantId);
+        if (response) return publicPageHeaders(request, corsResponse(request, response));
       } catch (error) {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
       }
@@ -467,12 +505,26 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
     }
     if (!env.V2_LEGACY_RUNS && !env.AGENT_V2_COMPAT_API_KEYS) return null;
     const list = request.method === "GET" && url.pathname === "/v1/agents";
+    const createAgent = request.method === "POST" && url.pathname === "/v1/agents" && !!env.V2_LEGACY_RUNS?.bridge;
+    const agentMutationMatch = env.V2_LEGACY_RUNS?.bridge
+      ? /^\/v1\/agents\/(client_[a-f0-9]{40})(\/abort|\/configuration)?$/.exec(url.pathname)
+      : null;
+    const agentMutation = agentMutationMatch && (
+      (request.method === "DELETE" && !agentMutationMatch[2]) ||
+      (request.method === "POST" && agentMutationMatch[2] === "/abort") ||
+      (request.method === "PATCH" && (!agentMutationMatch[2] || agentMutationMatch[2] === "/configuration"))
+    ) ? { agentId: agentMutationMatch[1], tail: agentMutationMatch[2] ?? "" } : null;
+    const statelessRun = !!env.V2_LEGACY_RUNS?.bridge &&
+      ((request.method === "POST" && url.pathname === "/v1/runs") ||
+        (request.method === "GET" && /^\/v1\/runs\/run_[a-f0-9]{16,40}$/.test(url.pathname)));
+    const mediaOrDecision = !!env.V2_LEGACY_RUNS?.bridge && request.method === "POST" &&
+      ["/v1/speech", "/v1/transcriptions", "/v1/images", "/v1/decisions"].includes(url.pathname);
     const endUsers = (url.pathname === "/v1/end-user-settings" && ["GET", "PUT", "PATCH"].includes(request.method)) ||
       (request.method === "GET" && /^\/v1\/end-users(?:\/[^/]+(?:\/(?:usage|days|ledger))?)?$/.test(url.pathname)) ||
       (request.method === "PATCH" && /^\/v1\/end-users\/[^/]+$/.test(url.pathname)) ||
       (request.method === "POST" && /^\/v1\/end-users\/[^/]+\/(?:lots|entries)$/.test(url.pathname));
     const target = legacyAgentRequest(request);
-    if (!list && !endUsers && !target) return null;
+    if (!list && !createAgent && !agentMutation && !statelessRun && !mediaOrDecision && !endUsers && !target) return null;
     try {
       await apiRequest(request, env);
       const bearer = request.headers.get("authorization") ?? undefined;
@@ -483,9 +535,49 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
       let response: Response | undefined;
       if (endUsers) {
         if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
-        response = await endUserRoutes(request, principal.tenantId, new EndUserCredits(database(env)));
-      } else if (list) response = await legacyAgentList(request, database(env), principal);
-      else response = await legacyCompatibility(request, env, principal, browser);
+        try {
+          response = await endUserRoutes(request, principal.tenantId, new EndUserCredits(database(env)));
+        } catch (err) {
+          if ((err as { code?: string })?.code === "42501") return null;
+          throw err;
+        }
+      } else if (createAgent) {
+        if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
+        response = await handleBridgedAgentCreate(request, env, database(env), principal.tenantId);
+      } else if (agentMutation) {
+        if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
+        response = await handleBridgedAgentMutation(request, env, database(env), principal.tenantId, agentMutation.agentId, agentMutation.tail);
+      } else if (statelessRun) {
+        if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
+        response = await handleBridgedStatelessRuns(request, env, database(env), principal.tenantId);
+      } else if (mediaOrDecision) {
+        if (!principal || (principal.kind === "console" && bearer)) throw new CoreHttpError(401, "Invalid or missing credentials");
+        response = await handleBridgedMediaOrDecision(request, env, principal.tenantId);
+      } else if (list) {
+        const listed = await legacyAgentList(request, database(env), principal);
+        response = listed;
+        if (listed?.ok && principal && env.V2_LEGACY_RUNS?.listMeta && !url.searchParams.has("cursor")) {
+          const bridgedMetas = await env.V2_LEGACY_RUNS.listMeta<BridgedAgentMeta>(principal.tenantId, "agent");
+          if (bridgedMetas.length) {
+            const payload = (await listed.json()) as { agents?: Array<Record<string, unknown>>; nextCursor?: string | null };
+            const existingIds = new Set((payload.agents ?? []).map((a) => String(a.id ?? "")));
+            const extras = bridgedMetas
+              .filter(({ data }) => !existingIds.has(data.id))
+              .map(({ data }) => ({
+                id: data.id,
+                ...(data.key ? { key: data.key } : {}),
+                name: data.name,
+                type: "agent",
+                metadata: data.metadata,
+                ...(data.definition ? { definition: data.definition } : {}),
+                connected: false,
+                running: false,
+                expiresAt: null,
+              }));
+            response = json({ ...payload, agents: [...extras, ...(payload.agents ?? [])] });
+          }
+        }
+      } else response = await legacyCompatibility(request, env, principal, browser);
       return response ? publicPageHeaders(request, corsResponse(request, response)) : null;
     } catch (error) {
       return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));

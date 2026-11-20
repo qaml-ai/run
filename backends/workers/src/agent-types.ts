@@ -94,7 +94,17 @@ export interface Env
   AGENT_VOICE_SESSIONS_PER_TENANT?: string;
   AGENT_V2_COMPAT_API_KEYS?: string;
   AGENT_V2_COMPAT_URL?: string;
-  V2_LEGACY_RUNS?: { route(tenant: string, agent: string, request: Request): Promise<Response> };
+  V2_LEGACY_RUNS?: {
+    route(tenant: string, agent: string, request: Request): Promise<Response>;
+    bridge?(v1Tenant: string, path: string, request: Request, options?: { initialCreditsUsd?: number }): Promise<Response>;
+    resolveBridgedAgent?(v1Tenant: string, idOrKey: string): Promise<{ tenantId: string; agentId: string; key: string; tokenHash: string } | null>;
+    verifyBridgedAgentToken?(token: string): Promise<{ tenantId: string; agentId: string; key: string } | null>;
+    putMeta?(v1Tenant: string, kind: string, id: string, data: unknown): Promise<void>;
+    getMeta?<T = unknown>(v1Tenant: string, kind: string, id: string): Promise<T | null>;
+    listMeta?<T = unknown>(v1Tenant: string, kind: string): Promise<Array<{ id: string; data: T }>>;
+    deleteMeta?(v1Tenant: string, kind: string, id: string): Promise<boolean>;
+    legacyChannelWebhook?(type: string, channelId: string, request: Request): Promise<Response | null>;
+  };
   V2_LEGACY_GATEWAY_TEXT?: import("./legacy-gateway-text.ts").LegacyGatewayTextRuntime &
     import("./legacy-gateway-text.ts").LegacyGatewayTextRouteStore;
   LEGACY_GATEWAY_TEXT_ACCESS?: string;
