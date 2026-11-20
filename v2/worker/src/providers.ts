@@ -676,6 +676,17 @@ async function* streamOpenAiChat(
   };
 }
 
+type ResponsesUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  input_tokens_details?: { cached_tokens?: number };
+};
+
+function cachedResponsesTokens(usage?: ResponsesUsage): number {
+  const cached = usage?.input_tokens_details?.cached_tokens ?? 0;
+  return Number.isSafeInteger(cached) && cached > 0 && cached <= (usage?.input_tokens ?? 0) ? cached : 0;
+}
+
 async function* streamOpenAiResponses(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -769,7 +780,7 @@ async function* streamOpenAiResponses(
         arguments?: string;
         content?: Array<{ type?: string; text?: string }>;
       }>;
-      usage?: { input_tokens?: number; output_tokens?: number };
+      usage?: ResponsesUsage;
     };
     let outLen = 0;
     for (const item of json.output ?? []) {
@@ -795,6 +806,7 @@ async function* streamOpenAiResponses(
       type: "done",
       inputTokens: json.usage?.input_tokens ?? estimateInputFromMessages(req),
       outputTokens: json.usage?.output_tokens ?? Math.max(1, Math.ceil(outLen / 4)),
+      cacheReadTokens: cachedResponsesTokens(json.usage),
       stopReason: "stop",
     };
     return;
@@ -803,6 +815,7 @@ async function* streamOpenAiResponses(
   let inputTokens = 0;
   let outputTokens = 0;
   let outChars = 0;
+  let cacheReadTokens = 0;
 
   for await (const frame of parseSseFrames(res.body, req.signal)) {
     if (frame.data === "[DONE]") break;
@@ -831,10 +844,11 @@ async function* streamOpenAiResponses(
     } else if (type === "error" || type === "response.failed") {
       throw new ApiError(502, "provider_error", "The Responses API failed after accepting the request");
     } else if (type === "response.completed" && ev.response && typeof ev.response === "object") {
-      const usage = (ev.response as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+      const usage = (ev.response as { usage?: ResponsesUsage }).usage;
       if (usage) {
         inputTokens = usage.input_tokens ?? inputTokens;
         outputTokens = usage.output_tokens ?? outputTokens;
+        cacheReadTokens = cachedResponsesTokens(usage);
       }
     }
   }
@@ -843,6 +857,7 @@ async function* streamOpenAiResponses(
     type: "done",
     inputTokens: inputTokens || estimateInputFromMessages(req),
     outputTokens: outputTokens || Math.max(1, Math.ceil(outChars / 4)),
+    cacheReadTokens,
     stopReason: "stop",
   };
 }

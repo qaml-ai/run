@@ -57,6 +57,7 @@ import {
 } from "./webhooks.ts";
 
 export { TenantDO, AgentDO };
+export { LegacyGatewayTextExecution } from "./legacy-gateway-text-execution.ts";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -649,6 +650,16 @@ app.patch("/v2/agents/:idOrKey/model", async (c) => {
     throw new ApiError(503, "model_update_unavailable", "The tenant is still using an earlier runtime version");
   }
   return c.json(await stub.updateModelIfIdle(body.model.trim(), body.expectedModel.trim()));
+});
+
+app.patch("/v2/agents/:idOrKey/spend-limit", async (c) => {
+  const { auth, agentId, stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const body = await c.req.json().catch(() => null) as { spendLimitUsd?: unknown; expectedSpendLimitUsd?: unknown } | null;
+  if (typeof body?.spendLimitUsd !== "number" || !Number.isFinite(body.spendLimitUsd) || body.spendLimitUsd < 0 ||
+      typeof body.expectedSpendLimitUsd !== "number" || !Number.isFinite(body.expectedSpendLimitUsd) || body.expectedSpendLimitUsd < 0) {
+    throw new ApiError(400, "invalid_spend_limit", "Spend limits must be finite non-negative numbers");
+  }
+  return c.json(await stub.updateSpendLimitIfIdle({ tenantId: auth.tenantId, agentId }, body.spendLimitUsd, body.expectedSpendLimitUsd));
 });
 
 app.delete("/v2/agents/:idOrKey", async (c) => {

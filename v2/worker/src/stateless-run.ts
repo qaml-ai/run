@@ -31,7 +31,8 @@ export async function executeStatelessRun(
   body: StatelessRunInput,
   signal?: AbortSignal,
   confirmUsage = false,
-): Promise<Record<string, unknown>> {
+  onCacheRead?: (tokens: number) => void,
+) {
   if (typeof body.input !== "string") {
     throw new ApiError(400, "invalid_request", "`input` must be a string");
   }
@@ -81,6 +82,7 @@ export async function executeStatelessRun(
         });
       } else if (chunk.type === "done") {
         addModelUsage(usage, model, chunk.inputTokens, chunk.outputTokens);
+        if (chunk.cacheReadTokens) onCacheRead?.(chunk.cacheReadTokens);
       }
     }
 
