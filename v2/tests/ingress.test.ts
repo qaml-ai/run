@@ -118,7 +118,7 @@ test("offers bearer credential reads by provisioning key on both legacy hosts", 
   const fallback = new Response(null, { status: 418 });
   const refused = new Response(null, { status: 403 });
   const origin = t.mock.method(globalThis, "fetch", async () => fallback);
-  const route = t.mock.fn(async () => refused);
+  const route = t.mock.fn(async (_request: Request) => refused);
   const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
   const options = { headers: { authorization: "Bearer fixture" } };
   const path = (ref: string) => `/v1/agents/${ref}/credentials`;
