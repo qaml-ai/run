@@ -38,7 +38,7 @@ test("native retries keep the elected v1 payer and debit actual Azure usage exac
   assert.equal((await call("ack-lost")).status, 202);
   const first = (await ledger()).rows;
   assert.equal(first.length, 1);
-  assert.deepEqual([first[0].end_user, first[0].bucket, first[0].raw, first[0].amount, first[0].metadata.day],
+  assert.deepEqual([first[0].end_user, first[0].bucket, Number(first[0].raw), Number(first[0].amount), first[0].metadata.day],
     [run.subject, run.bucket, 2600, -2600, new Date(now).toISOString().slice(0, 10)]);
   const retry = await call("retry", { ...run, subject: "876543210987654321" });
   assert.equal(retry.status, 200);
