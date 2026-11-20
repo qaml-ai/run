@@ -98,6 +98,7 @@ export class AgentDO extends DurableObject<Env> {
   private queueDrain: Promise<void> | null = null;
   private inputResumeWork: Promise<RunRecord> | null = null;
   private destroying = false;
+  private storageGeneration = 0;
   private runWaiters = new Map<string, Array<(rec: RunRecord) => void>>();
   private sseListeners = new Set<(ev: AgentEventRecord) => void>();
   private pendingWsCalls = new Map<string, PendingWsCall>();
@@ -1146,15 +1147,17 @@ export class AgentDO extends DurableObject<Env> {
       queueMode: cfg.queue.mode,
     });
 
+    // Deletion may cancel this row while the alarm write is awaiting storage.
+    const generation = this.storageGeneration;
+    const settlement = wait ? this.waitForRunSettlement(runId) : undefined;
     // Persist a wake-up before acknowledging acceptance so eviction can recover the queue.
     await this.scheduleNextAlarm();
-    const drainPromise = this.drainRunQueue();
-    this.ctx.waitUntil(drainPromise);
-
-    if (!wait) {
-      return this.materializeRunRecord(runId);
+    if (this.storageGeneration !== generation) {
+      if (settlement) return settlement;
+      throw new ApiError(409, "agent_deleting", "The agent was deleted while queuing the run");
     }
-    return this.waitForRunSettlement(runId);
+    this.ctx.waitUntil(this.drainRunQueue());
+    return settlement ?? this.materializeRunRecord(runId);
   }
 
   private runSpendLimit(runId: string): number | null {
@@ -1168,7 +1171,7 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private async drainRunQueue(): Promise<void> {
-    if (this.destroying || this.queueDrain || this.activeRunId) return;
+    if (this.destroying || !this.sqlReady || this.queueDrain || this.activeRunId) return;
     const drain = (async () => {
       while (!this.destroying) {
         // Do not start a new queued run while another run is paused awaiting human input
@@ -1428,6 +1431,7 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private async scheduleNextAlarm(): Promise<void> {
+    if (this.destroying || !this.sqlReady) return;
     const cfg = this.readConfigOrNull();
     if (!cfg) return;
 
@@ -1493,10 +1497,13 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
+    if (this.destroying) return;
     this.ensureSql();
     const cfg = this.readConfigOrNull();
     if (!cfg) return;
 
+    const generation = this.storageGeneration;
+    const stopping = () => this.destroying || this.storageGeneration !== generation;
     const now = Date.now();
 
     // 1. Expire stale pending human inputs
@@ -1527,6 +1534,7 @@ export class AgentDO extends DurableObject<Env> {
 
     this.reportStalledRuns(now);
     await this.scheduleNextAlarm();
+    if (stopping()) return;
     this.ctx.waitUntil(this.drainRunQueue());
 
     // 2. Clean up expired VM session leases
@@ -1541,6 +1549,7 @@ export class AgentDO extends DurableObject<Env> {
       if (cfg.lineage) {
         const cfs = new CamelFsClient(this.env, cfg.tenantId);
         await cfs.stopVm(vm.vm_id, cfg.lineage).catch(() => {});
+        if (stopping()) return;
       }
     }
 
@@ -1561,7 +1570,12 @@ export class AgentDO extends DurableObject<Env> {
         nextDue,
         sch.id,
       );
-      await this.enqueueOrRunInternal({ prompt: sch.prompt, wait: false });
+      try {
+        await this.enqueueOrRunInternal({ prompt: sch.prompt, wait: false });
+      } catch (error) {
+        if (!stopping()) throw error;
+      }
+      if (stopping()) return;
     }
 
     // 4. Idle dreaming consolidation
@@ -1583,17 +1597,18 @@ export class AgentDO extends DurableObject<Env> {
           String(this.lastDreamedSeq),
         );
         await performDreamConsolidation(this.buildAdapter()).catch(() => {});
+        if (stopping()) return;
       }
     }
 
     try {
-      await this.deliverDueAppWebhooks(now);
+      await this.deliverDueAppWebhooks(now, stopping);
     } finally {
-      await this.scheduleNextAlarm();
+      if (!stopping()) await this.scheduleNextAlarm();
     }
   }
 
-  private async deliverDueAppWebhooks(now: number): Promise<void> {
+  private async deliverDueAppWebhooks(now: number, stopping: () => boolean): Promise<void> {
     const deliveries = this.ctx.storage.sql.exec<{ id: string; message_json: string; attempts: number }>(
       "SELECT id, message_json, attempts FROM app_webhook_deliveries WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 10",
       now,
@@ -1601,8 +1616,9 @@ export class AgentDO extends DurableObject<Env> {
     await Promise.all(deliveries.map(async ({ id, message_json, attempts }) => {
       try {
         await deliverWebhookMessage(this.env, JSON.parse(message_json), true);
-        this.ctx.storage.sql.exec("DELETE FROM app_webhook_deliveries WHERE id = ?", id);
+        if (!stopping()) this.ctx.storage.sql.exec("DELETE FROM app_webhook_deliveries WHERE id = ?", id);
       } catch (error) {
+        if (stopping()) return;
         const delivery = { id, attempt: attempts + 1, code: extractApiError(error)?.code };
         if (attempts === 2) {
           console.error({ message: "App turn webhook delivery delayed", ...delivery });
@@ -2668,6 +2684,7 @@ export class AgentDO extends DurableObject<Env> {
       }
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
+      this.storageGeneration++;
       this.cachedConfig = null;
       this.preRunHints.clear();
       this.sqlReady = false;
