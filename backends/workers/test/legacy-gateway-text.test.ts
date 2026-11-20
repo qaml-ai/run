@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { Agents } from "../../../clients/agents.ts";
 import {
-  legacyGatewayTextAccess, legacyGatewayTextInput, legacyGatewayTextPrincipal, readLegacyGatewayText,
+  legacyGatewayTextRoute, legacyGatewayTextInput, legacyGatewayTextPrincipal, readLegacyGatewayText,
   routeLegacyGatewayText, type LegacyGatewayTextOwner,
 } from "../src/legacy-gateway-text.ts";
 import type { AuthContext } from "../src/control.ts";
@@ -32,9 +32,8 @@ test("the existing SDK sends the exact same typed, deterministically keyed run o
   for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
     const agents = new Agents({ url: "https://" + host, apiKey: credential.slice("Bearer ".length), fetch: async (resource, init) => {
       const request = new Request(resource, init);
-      const access = legacyGatewayTextAccess(request, scope);
-      assert.ok(access);
-      assert.ok(legacyGatewayTextPrincipal({ kind: "operator", tenantId: tenant, scopes: ["*"], principal: { via: "operator", tenant } }, access));
+      assert.ok(legacyGatewayTextRoute(request));
+      assert.ok(legacyGatewayTextPrincipal({ kind: "operator", tenantId: tenant, scopes: ["*"], principal: { via: "operator", tenant } }, { tenant }));
       const input = await readLegacyGatewayText(request, tenant);
       assert.ok(input);
       assert.equal(input.instructions, "fixture instructions");
@@ -60,16 +59,16 @@ test("the existing SDK sends the exact same typed, deterministically keyed run o
   assert.equal(observed[0].runId, "run_8cf6a63c8f048fe8e5dec18caf5fd2fbdb92c1eb");
 });
 
-test("other credentials, aliases, tenants and OAuth never select the legacy gateway text adapter", () => {
-  assert.equal(legacyGatewayTextAccess(makeRequest(gatewayBody), undefined), null);
-  assert.equal(legacyGatewayTextAccess(makeRequest(gatewayBody, "example.test"), scope), null);
-  assert.equal(legacyGatewayTextAccess(makeRequest(gatewayBody, "run.camelai.com:8443"), scope), null);
-  assert.equal(legacyGatewayTextAccess(makeRequest(gatewayBody, "run.camelai.com", "/v1/runs?wait=1"), scope), null);
-  assert.equal(legacyGatewayTextAccess(makeRequest(gatewayBody, undefined, undefined, { authorization: "Bearer foreign" }), scope), null);
-  assert.equal(legacyGatewayTextAccess(makeRequest(gatewayBody, undefined, undefined, { "idempotency-key": "historical-key" }), scope), null);
-  const access = legacyGatewayTextAccess(makeRequest(gatewayBody), scope)!;
-  assert.equal(legacyGatewayTextPrincipal({ kind: "operator", tenantId: "foreign", scopes: ["*"], principal: { tenant: "foreign", via: "operator" } }, access), false);
-  assert.equal(legacyGatewayTextPrincipal({ kind: "oauth", tenantId: tenant, scopes: ["*"], principal: { tenant, via: "oauth" } }, access), false);
+test("other credentials, aliases, tenants and OAuth do not select new native work", async () => {
+  const fixture = routeFixture();
+  assert.equal(legacyGatewayTextRoute(makeRequest(gatewayBody, "example.test")), false);
+  assert.equal(legacyGatewayTextRoute(makeRequest(gatewayBody, "run.camelai.com:8443")), false);
+  assert.equal(legacyGatewayTextRoute(makeRequest(gatewayBody, "run.camelai.com", "/v1/runs?wait=1")), false);
+  assert.equal(legacyGatewayTextRoute(makeRequest(gatewayBody, undefined, undefined, { "idempotency-key": "historical-key" })), false);
+  assert.equal(await fixture.route(makeRequest(gatewayBody, undefined, undefined, { authorization: "Bearer alternate" }), "native-new"), null);
+  assert.equal(legacyGatewayTextPrincipal({ kind: "operator", tenantId: "foreign", scopes: ["*"], principal: { tenant: "foreign", via: "operator" } }, { tenant }), false);
+  assert.equal(legacyGatewayTextPrincipal({ kind: "oauth", tenantId: tenant, scopes: ["*"], principal: { tenant, via: "oauth" } }, { tenant }), false);
+  assert.deepEqual(fixture.starts, []);
 });
 
 test("unsupported requests have no translated admission and keep the original JSON body for ECS", async () => {

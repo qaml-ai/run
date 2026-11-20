@@ -52,13 +52,6 @@ function gatewayCredentialMatches(request: Request, fingerprint: string) {
   return timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(fingerprint, "hex"));
 }
 
-/** The configured digest selects one existing credential; its real principal must still match. */
-export function legacyGatewayTextAccess(request: Request, config: string | undefined): Access | null {
-  if (!config || !legacyGatewayTextRoute(request)) return null;
-  const scope = gatewayScope(config);
-  return gatewayCredentialMatches(request, scope.authorizationSha256) ? { tenant: scope.tenant } : null;
-}
-
 export function legacyGatewayTextPrincipal(auth: AuthContext | null, access: Access) {
   return auth?.tenantId === access.tenant && auth.principal?.tenant === access.tenant &&
     (auth.principal.via === "token" || auth.principal.via === "operator");
