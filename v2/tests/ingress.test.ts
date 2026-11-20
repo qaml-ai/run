@@ -114,6 +114,35 @@ test("can select one test credential before sending all legacy requests to the W
   assert.equal(origin.mock.callCount(), 2);
 });
 
+test("offers bearer credential reads by provisioning key on both legacy hosts", async t => {
+  const fallback = new Response(null, { status: 418 });
+  const refused = new Response(null, { status: 403 });
+  const origin = t.mock.method(globalThis, "fetch", async () => fallback);
+  const route = t.mock.fn(async () => refused);
+  const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route } };
+  const options = { headers: { authorization: "Bearer fixture" } };
+  const path = (ref: string) => `/v1/agents/${ref}/credentials`;
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const ref of ["original-key", "%6Friginal-key"]) {
+      const request = new Request(`https://${host}${path(ref)}`, options);
+      assert.equal(await worker.fetch(request, env), refused);
+      assert.equal(route.mock.calls.at(-1)?.arguments[0].url, request.url);
+    }
+  }
+  for (const request of [
+    new Request(`https://example.com${path("original-key")}`, options),
+    new Request(`https://run.camelai.com${path("original-key")}`),
+    new Request(`https://run.camelai.com${path("original-key")}`, { ...options, method: "POST" }),
+    new Request(`https://run.camelai.com${path("original-key")}`, { headers: { ...options.headers, upgrade: "websocket" } }),
+    new Request(`https://run.camelai.com${path("a".repeat(81))}`, options),
+    new Request(`https://run.camelai.com${path("%xx")}`, options),
+  ]) {
+    assert.equal(await worker.fetch(request, env), fallback);
+    assert.deepEqual(origin.mock.calls.at(-1)?.arguments, [request, { redirect: "manual" }]);
+  }
+  assert.equal(route.mock.callCount(), 4);
+});
+
 test("keeps legacy end-user writes on the origin while serving reads on the Worker", async t => {
   const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 201 }));
   const route = t.mock.fn(async () => new Response(null, { status: 204 }));

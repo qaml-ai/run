@@ -58,6 +58,8 @@ test("legacy agent credentials match the original REST response using read-only 
   };
   await seed("fixture", "project", { revoked: true });
   const keyed = await seed("fixture", "project", { generation: 1 });
+  const foreign = await seed("other", "project");
+  await seed("fixture", "deleted", { revoked: true });
   const rotated = await seed("fixture", "private", { keyless: true, rotation: 2, expiresAt: Date.now() + 120_000 });
   const keyless = await seed("fixture", "random", { keyless: true });
   const expired = await seed("fixture", "expired", { expiresAt: 1 });
@@ -99,11 +101,34 @@ test("legacy agent credentials match the original REST response using read-only 
   await compare(keyed.id, oauthToken, 403);
   await compare(keyed.id, browser, 403);
   await compare(keyed.id, "abt_invalid", 401);
+  await compare("project", token, 200, keyed.digest);
+  await compare("%70roject", token, 200, keyed.digest);
+  await compare("project", other, 200, foreign.digest);
+  await compare("operator", operator, 200, op.digest);
+  await compare("operator", other, 404);
+  await compare("deleted", token, 404);
+  await compare("expired", token, 404);
+  await compare("run", token, 404);
+  await compare("project", oauthToken, 403);
+  await compare("project", browser, 403);
+  await compare("project", "abt_invalid", 401);
+
+  const nextDigest = sha(createHmac("sha256", secret).update(`client-rotated:fixture:${keyed.id}:1`).digest("hex"));
+  await f.db.query("update agents set header = header::jsonb || $2::jsonb where id = $1", [keyed.id, { digest: nextDigest, tokenRotation: 1 }]);
+  await compare("project", token, 200, nextDigest);
+  await compare(keyed.id, token, 200, nextDigest);
+
   const mismatched = await direct(corrupt.id, token);
   assert.equal(mismatched.status, 503);
   assert.deepEqual(await mismatched.json(), { error: "Agent credentials are unavailable", code: "UNAVAILABLE" });
+  assert.equal((await direct("corrupt", token)).status, 503);
   assert.equal((await direct(keyed.id, "art_unknown")).status, 418);
-  assert.equal((await direct("project", token)).status, 418);
   assert.equal((await direct(keyed.id, token, origin, "POST")).status, 418);
   assert.equal((await fetch(f.url + path(keyed.id))).status, 418);
+  assert.equal((await direct("project", "art_unknown")).status, 418);
+  assert.equal((await direct("project", token, origin, "POST")).status, 418);
+  assert.equal((await fetch(f.url + path("project"))).status, 418);
+  for (const malformed of ["%", "%FF", "name%2Fchild", "name%252D", "x".repeat(81)]) {
+    assert.equal((await direct(malformed, token)).status, 418);
+  }
 });

@@ -16,6 +16,7 @@ import { inboxQuery, readInbox, InboxQueryError } from '../../../shared/inbox.ts
 import { withSql as inboxSql, database as inboxDatabase } from './postgres.ts';
 import { sweepInputMirrors } from "./input-mirror.ts";
 import { v1AgentCredentials } from "../../../src/v1-agent-credentials.ts";
+import { validId } from "../../../src/v1-client-state.ts";
 import { HttpError as CoreHttpError } from "../../../src/core/http-error.ts";
 import { serveToolFile } from './tool-files.ts';
 import { withMoneyMetrics } from "./money-metrics.ts";
@@ -298,9 +299,12 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
       }
     }
-    const credentials = /^\/v1\/agents\/(client_[a-f0-9]{40})\/credentials$/.exec(url.pathname);
+    const credentials = /^\/v1\/agents\/([^/]+)\/credentials$/.exec(url.pathname);
     const authorization = request.headers.get("authorization") ?? undefined;
     if (request.method === "GET" && credentials && authorization) {
+      let ref: string;
+      try { ref = decodeURIComponent(credentials[1]); } catch { return null; }
+      if (!validId(ref)) return null;
       try {
         await apiRequest(request, env);
         if (BrowserTokens.carries(authorization)) {
@@ -311,7 +315,7 @@ export class LegacyV1 extends WorkerEntrypoint<Env> {
         if (!auth) return null;
         const secret = env.AGENT_SESSION_SECRET;
         if (!secret) throw new CoreHttpError(503, "Agent credentials are unavailable");
-        const value = await v1AgentCredentials(database(env), secret, auth.tenantId, credentials[1], { verifyDigest: true });
+        const value = await v1AgentCredentials(database(env), secret, auth.tenantId, ref, { verifyDigest: true });
         return publicPageHeaders(request, corsResponse(request, json(value)));
       } catch (error) {
         return publicPageHeaders(request, corsResponse(request, httpFailure(error, env)));
