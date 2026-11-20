@@ -108,31 +108,31 @@ export function accountedLegacyGatewayText(execution: LegacyGatewayTextExecution
 
 /** Only the original-auth, sticky compatibility route can call the accounting service. */
 export class LegacyGatewayTextAccounting extends WorkerEntrypoint<Env> implements LegacyGatewayTextRuntime, LegacyGatewayTextRouteStore {
-  private routes() {
+  #routes() {
     return this.env.LEGACY_GATEWAY_TEXT_ROUTES.getByName(this.env.LEGACY_GATEWAY_TEXT_BILLING_TENANT);
   }
 
   async lookup(id: string) {
-    return this.routes().lookup(id);
+    return this.#routes().lookup(id);
   }
 
   async pin(id: string, owner: LegacyGatewayTextOwner) {
-    return this.routes().pin(id, owner);
+    return this.#routes().pin(id, owner);
   }
 
-  private runtime() {
+  #runtime() {
     return accountedLegacyGatewayText(this.env.V2_LEGACY_GATEWAY_TEXT_EXECUTION,
       new EndUserCredits(database(this.env)), this.env.LEGACY_GATEWAY_TEXT_BILLING_TENANT);
   }
 
   async start(input: LegacyGatewayTextRun) {
-    const operation = this.runtime().start(input);
+    const operation = this.#runtime().start(input);
     this.ctx.waitUntil(operation.then(() => {}, () => {}));
     return operation;
   }
 
   async read(id: string, payer: Payer) {
-    return this.runtime().read(id, payer);
+    return this.#runtime().read(id, payer);
   }
 }
 

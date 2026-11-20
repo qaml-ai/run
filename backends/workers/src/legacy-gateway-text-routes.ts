@@ -15,7 +15,7 @@ export class LegacyGatewayTextRoutes extends DurableObject<unknown> implements L
     )`);
   }
 
-  private current(id: string): LegacyGatewayTextOwner | null {
+  #current(id: string): LegacyGatewayTextOwner | null {
     const row = this.ctx.storage.sql.exec<{ native_fingerprint: string | null; subject: string; bucket: string }>(
       "SELECT native_fingerprint, subject, bucket FROM run_owners WHERE id = ?", id,
     ).toArray()[0];
@@ -26,7 +26,7 @@ export class LegacyGatewayTextRoutes extends DurableObject<unknown> implements L
   }
 
   async lookup(id: string): Promise<LegacyGatewayTextOwner | null> {
-    return this.current(id);
+    return this.#current(id);
   }
 
   async pin(id: string, owner: LegacyGatewayTextOwner): Promise<LegacyGatewayTextOwner> {
@@ -34,7 +34,7 @@ export class LegacyGatewayTextRoutes extends DurableObject<unknown> implements L
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO run_owners VALUES (?, ?, ?, ?)", id,
         owner.owner === "native" ? owner.fingerprint : null, owner.owner === "native" ? owner.subject : null,
         owner.owner === "native" ? owner.bucket : null);
-      return this.current(id)!;
+      return this.#current(id)!;
     });
   }
 }
