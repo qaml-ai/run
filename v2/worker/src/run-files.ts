@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+import { toolImageKey, type ToolImageRef } from "./tool-images.ts";
 import { z } from "zod";
 import { FILE_LIMITS } from "../../../src/limits.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
@@ -78,8 +80,9 @@ export interface ModelImage {
 
 export async function loadConversationImages(
   cfs: CamelFsClient,
-  messages: Array<{ files?: StoredRunFile[]; legacyInlineContent?: LegacyInlineBlock[] }>,
+  messages: Array<{ files?: StoredRunFile[]; legacyInlineContent?: LegacyInlineBlock[]; toolImages?: ToolImageRef[] }>,
   imageLimit: number = FILE_LIMITS.requestImages,
+  media?: { tenantId: string; bucket?: R2Bucket },
 ): Promise<Map<number, ModelImage[]>> {
   const images = new Map<number, ModelImage[]>();
   let remaining = FILE_LIMITS.requestImageBase64Bytes;
@@ -99,6 +102,18 @@ export async function loadConversationImages(
         else images.set(index, [image]);
       }
     }
+    // Walk newest messages first, while keeping each tool's original image order.
+    const toolImages = messages[index]?.toolImages ?? [];
+    const selected: ModelImage[] = [];
+    for (const ref of toolImages) {
+      remaining -= imageBase64Size(ref.size);
+      if (remaining < 0 || ++count > imageLimit) break;
+      const image = media && await media.bucket?.get(toolImageKey(media.tenantId, ref));
+      if (!image || image.size !== ref.size) throw new ApiError(502, "tool_image_unavailable", "A tool image could not be read");
+      selected.push({ contentType: ref.contentType, base64: Buffer.from(await image.arrayBuffer()).toString("base64") });
+    }
+    if (selected.length) images.set(index, [...(images.get(index) ?? []), ...selected]);
+    if (selected.length < toolImages.length) return images;
     for (const file of messages[index]?.files ?? []) {
       if (!isImageAttachment(file)) continue;
       remaining -= imageBase64Size(file.size);

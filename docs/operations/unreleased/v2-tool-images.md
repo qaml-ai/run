@@ -1,0 +1,3 @@
+### Tool-returned images in camelRun v2
+
+camelRun v2 now sends raster images returned by MCP, SDK, and webhook tools to the model. SDK and webhook tools can return MCP-style `content` blocks with `type: "image"`, base64 `data`, and `mimeType`. The `view_image` builtin lets agents inspect PNG, JPEG, GIF, and WebP files in a repository. History retains a reference to each image, with the bytes stored in the tenant's private media bucket.

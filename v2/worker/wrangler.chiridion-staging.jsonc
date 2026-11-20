@@ -12,6 +12,7 @@
     "DEFAULT_MODEL": "openrouter/openai/gpt-6-luna",
     "TOOL_IDENTITY_ISSUER": "https://camelrun-v2-chiridion-staging.miguel-85b.workers.dev/v2"
   },
+  "images": { "binding": "IMAGES" },
   "r2_buckets": [
     { "binding": "MEDIA_BUCKET", "bucket_name": "camelrun-v2-chiridion-staging-media" }
   ],

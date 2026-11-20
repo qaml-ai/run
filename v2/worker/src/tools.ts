@@ -1,3 +1,6 @@
+import { Buffer } from "node:buffer";
+import { imageHeader } from "../../../src/image-header.ts";
+import { FILE_LIMITS } from "../../../src/limits.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
@@ -103,6 +106,18 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
           at: { type: "string", description: "Ref or commit of the file version to read" },
           offset: { type: "number" },
           limit: { type: "number" },
+        },
+        required: ["path"],
+      },
+    },
+    {
+      name: "view_image",
+      description: "Inspect a PNG, JPEG, GIF, or WebP in the repository as an image.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative file path in the repo" },
+          at: { type: "string", description: "Ref or commit of the file version to inspect" },
         },
         required: ["path"],
       },
@@ -514,6 +529,7 @@ export async function executeToolCall(
   // 4. Built-in Repo File tools
   if (
     toolName === "read_file" ||
+    toolName === "view_image" ||
     toolName === "write_file" ||
     toolName === "edit_file" ||
     toolName === "list_files" ||
@@ -525,6 +541,19 @@ export async function executeToolCall(
   ) {
     const { repoId, lineage, branch } = await ctx.ensureAgentRepo();
     const cfs = new CamelFsClient(ctx.env, ctx.config.tenantId);
+
+    if (toolName === "view_image") {
+      const path = normalizeRepoPath(String(args.path ?? ""));
+      const maxBytes = Math.floor(FILE_LIMITS.requestImageBase64Bytes / 4) * 3;
+      const file = await cfs.read(lineage, { at: typeof args.at === "string" ? args.at : branch, path, limit: maxBytes + 1 });
+      if (file.size > maxBytes) throw new Error("Repository image exceeds the tool image byte budget");
+      const header = file.base64 && imageHeader(Buffer.from(file.base64, "base64"));
+      if (!header) throw new Error("Expected a PNG, JPEG, GIF, or WebP in the repository");
+      return { content: [
+        { type: "text", text: `Repository image ${path} at commit ${file.commit}` },
+        { type: "image", mimeType: header.mimeType, data: file.base64 },
+      ] };
+    }
 
     if (toolName === "read_file") {
       const path = normalizeRepoPath(String(args.path ?? ""));

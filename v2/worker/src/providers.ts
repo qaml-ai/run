@@ -3,6 +3,7 @@ import { randomId } from "./crypto.ts";
 import { loadConversationImages, type ModelImage } from "./run-files.ts";
 import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
 import { FILE_LIMITS } from "../../../src/limits.ts";
+import type { ToolImageRef } from "./tool-images.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
@@ -22,6 +23,7 @@ export interface ConversationMessage {
   text?: string;
   files?: StoredRunFile[];
   images?: ModelImage[];
+  toolImages?: ToolImageRef[];
   legacyInlineContent?: LegacyInlineBlock[];
   toolCalls?: ToolCallInvocation[];
   toolCallId?: string;
@@ -324,10 +326,11 @@ export async function* streamModelResponse(
     req.prefetchedProvider,
   );
 
-  if (endpoint.protocol !== "mock" && req.messages.some((message) => message.files?.length || message.legacyInlineContent)) {
+  if (endpoint.protocol !== "mock" && req.messages.some((message) => message.files?.length || message.legacyInlineContent || message.toolImages?.length)) {
     const images = await loadConversationImages(new CamelFsClient(req.env, req.tenantId), req.messages,
       endpoint.protocol === "anthropic" && req.messages.some(message => message.legacyInlineContent)
-        ? FILE_LIMITS.requestAnthropicImages : FILE_LIMITS.requestImages);
+        ? FILE_LIMITS.requestAnthropicImages : FILE_LIMITS.requestImages,
+      { tenantId: req.tenantId, bucket: req.env.MEDIA_BUCKET });
     req = {
       ...req,
       messages: req.messages.map((message, index) => ({ ...message, images: images.get(index),
@@ -467,7 +470,12 @@ async function* streamOpenAiChat(
   if (req.instructions) {
     apiMessages.push({ role: "system", content: req.instructions });
   }
+  const toolImages: Array<Record<string, unknown>> = [];
+  const flushToolImages = () => {
+    if (toolImages.length) apiMessages.push({ role: "user", content: toolImages.splice(0) });
+  };
   for (const m of req.messages) {
+    if (m.role !== "tool") flushToolImages();
     if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
       apiMessages.push({
         role: "assistant",
@@ -487,6 +495,10 @@ async function* streamOpenAiChat(
         tool_call_id: m.toolCallId ?? "call_0",
         content: m.text ?? "",
       });
+      if (m.images?.length) {
+        toolImages.push({ type: "text", text: `Images returned by tool call ${m.toolCallId}:` },
+          ...m.images.map(image => ({ type: "image_url", image_url: { url: imageDataUrl(image) } })));
+      }
     } else {
       apiMessages.push({
         role: m.role,
@@ -496,6 +508,7 @@ async function* streamOpenAiChat(
     }
   }
 
+  flushToolImages();
   const payload: Record<string, unknown> = {
     model: endpoint.modelId,
     messages: apiMessages,
@@ -687,7 +700,10 @@ async function* streamOpenAiResponses(
       inputItems.push({
         type: "function_call_output",
         call_id: m.toolCallId ?? "call_0",
-        output: m.text ?? "",
+        output: m.images?.length ? [
+          { type: "input_text", text: m.text ?? "" },
+          ...m.images.map(image => ({ type: "input_image", image_url: imageDataUrl(image), detail: "auto" })),
+        ] : m.text ?? "",
       });
     } else {
       inputItems.push({
@@ -870,7 +886,9 @@ async function* streamAnthropicMessages(
           {
             type: "tool_result",
             tool_use_id: m.toolCallId ?? "call_0",
-            content: m.text ?? "",
+            content: modelContentParts(m, text => ({ type: "text", text }), image => ({
+              type: "image", source: { type: "base64", media_type: image.contentType, data: image.base64 },
+            })) ?? m.text ?? "",
             is_error: Boolean(m.isError),
           },
         ],
@@ -1055,6 +1073,7 @@ async function* streamGeminiContent(
               response: { result: m.text ?? "" },
             },
           },
+          ...(m.images ?? []).map(image => ({ inlineData: { mimeType: image.contentType, data: image.base64 } })),
         ],
       });
     } else {
