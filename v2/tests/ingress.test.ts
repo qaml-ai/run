@@ -293,6 +293,34 @@ test("routes only the original Camel Bots credential, including calls with no bo
   assert.equal(origin.mock.callCount(), 5);
 });
 
+test("routes only the selected Camel Bots image request and preserves the body on a compatibility miss", async t => {
+  const authorization = "Bearer fixture-image-credential";
+  const origin = t.mock.method(globalThis, "fetch", async (request: Request) => new Response(await request.text(), { status: 202 }));
+  const route = t.mock.fn(async (request: Request) => {
+    const body = await request.text();
+    return body === "{}" ? new Response(body) : null;
+  });
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_BOTS_IMAGES: { route },
+    LEGACY_DECISIONS_BOTS_AUTH_SHA256: createHash("sha256").update(authorization).digest("hex"),
+  };
+  const post = (host: string, body: string, auth = authorization, contentType = "application/json") =>
+    new Request(`https://${host}/v1/images`, {
+      method: "POST", body, headers: { authorization: auth, "content-type": contentType },
+    });
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    assert.equal((await worker.fetch(post(host, "{}"), env)).status, 200);
+    const miss = await worker.fetch(post(host, '{"unsupported":true}'), env);
+    assert.equal(miss.status, 202);
+    assert.equal(await miss.text(), '{"unsupported":true}');
+    assert.equal((await worker.fetch(post(host, "{}", "Bearer other"), env)).status, 202);
+    assert.equal((await worker.fetch(post(host, "{}", authorization, "text/plain"), env)).status, 202);
+  }
+  assert.equal(route.mock.callCount(), 4);
+  assert.equal(origin.mock.callCount(), 6);
+});
+
 test("routes volume and signed file traffic to the configured origin through both entrypoints", async t => {
   const origin = t.mock.method(globalThis, "fetch", async () => new Response("ECS"));
   const boundFetch = t.mock.fn(async (request: Request, init?: RequestInit) => {
