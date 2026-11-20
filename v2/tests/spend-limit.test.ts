@@ -110,4 +110,33 @@ test("tenant-admin spend-limit CAS only changes the expected idle configuration"
     assert.equal((await response.json() as { error: { code: string } }).error.code, "agent_config_invalid");
     assert.deepEqual(await state(agent.id), before);
   });
+
+  await t.test("a suspended legacy repository backfill preserves a concurrent cap change", async () => {
+    const agent = await create("legacy-repo");
+    await fixture(agent.id, "legacy-repo");
+    const before = await state(agent.id);
+    const backfill = worker.fetch(origin + `/v2/agents/${agent.id}/repo`, {
+      method: "PUT", headers: { Authorization: "Bearer " + owner.apiKey }, signal: AbortSignal.timeout(5000),
+    });
+    try {
+      const deadline = Date.now() + 3000;
+      while (!(await (await fixture(owner.tenantId, "repo-pending")).json())) {
+        assert.ok(Date.now() < deadline, "backfill entered suspended repo read");
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      assert.deepEqual(await (await patch(agent.id)).json(), { spendLimitUsd: 0, changed: true });
+      await fixture(owner.tenantId, "repo-release");
+      assert.equal((await backfill).status, 200);
+      const after = await state(agent.id);
+      const previous = JSON.parse(before.config), current = JSON.parse(after.config);
+      assert.equal(current.spendLimitUsd, 0);
+      assert.equal(current.lineage, "fixture-lineage");
+      assert.deepEqual({ ...current, spendLimitUsd: previous.spendLimitUsd, lineage: previous.lineage, updatedAt: previous.updatedAt }, previous);
+      assert.deepEqual({ runs: after.runs, messages: after.messages, events: after.events },
+        { runs: before.runs, messages: before.messages, events: before.events });
+    } finally {
+      await fixture(owner.tenantId, "repo-release");
+      await backfill.catch(() => {});
+    }
+  });
 });

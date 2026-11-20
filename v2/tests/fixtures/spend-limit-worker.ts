@@ -3,6 +3,19 @@ import { toApiErrorResponse, type Env } from "../../worker/src/types.ts";
 
 export class TenantDO extends RuntimeTenantDO {
   override async updateAgentModel(): Promise<void> { throw new Error("Spend CAS must not write the tenant model index"); }
+  private repoReadPending = false;
+  private releaseRepoRead: (() => void) | undefined;
+
+  override async getRepo(repoId: string) {
+    if (repoId !== "fixture-legacy-repo") return super.getRepo(repoId);
+    this.repoReadPending = true;
+    await new Promise<void>(resolve => { this.releaseRepoRead = resolve; });
+    this.repoReadPending = false;
+    return { repoId, name: "fixture", lineage: "fixture-lineage", defaultRef: "refs/heads/main", commit: "fixture-commit", createdAt: 1 };
+  }
+
+  repoPending() { return this.repoReadPending; }
+  releaseRepo() { this.releaseRepoRead?.(); }
 }
 
 export class AgentDO extends RuntimeAgentDO {
@@ -32,6 +45,14 @@ export class AgentDO extends RuntimeAgentDO {
     Object.assign(this, { cachedConfig: null });
   }
 
+  seedLegacyRepo() {
+    const config = JSON.parse(this.ctx.storage.sql.exec<{ config_json: string }>("SELECT config_json FROM config WHERE id=1").one().config_json);
+    config.repoId = "fixture-legacy-repo";
+    config.lineage = null;
+    this.ctx.storage.sql.exec("UPDATE config SET config_json=? WHERE id=1", JSON.stringify(config));
+    Object.assign(this, { cachedConfig: null });
+  }
+
   resetForTest(): void { this.ctx.abort("synthetic cold spend CAS"); }
 }
 
@@ -40,12 +61,19 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const match = /^\/_spend_fixture\/([^/]+)\/([^/]+)$/.exec(new URL(request.url).pathname);
     if (!match) return app.fetch(request, env, ctx);
+    if (match[2] === "repo-pending" || match[2] === "repo-release") {
+      const tenant = env.TENANT_DO.get(env.TENANT_DO.idFromName(match[1]!)) as unknown as TenantDO;
+      if (match[2] === "repo-pending") return Response.json(await tenant.repoPending());
+      await tenant.releaseRepo();
+      return Response.json(null);
+    }
     const stub = env.AGENT_DO.get(env.AGENT_DO.idFromName(match[1]!)) as unknown as AgentDO;
     try {
       switch (match[2]) {
         case "seed": await stub.seed(await request.text()); break;
         case "state": return Response.json(await stub.fixtureState());
         case "corrupt": await stub.corruptCap(); break;
+        case "legacy-repo": await stub.seedLegacyRepo(); break;
         case "scope": return Response.json(await stub.updateSpendLimitIfIdle(await request.json(), 0, 10));
         case "cold":
           try { await stub.resetForTest(); } catch { return new Response(null, { status: 204 }); }

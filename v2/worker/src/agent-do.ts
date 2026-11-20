@@ -632,7 +632,8 @@ export class AgentDO extends DurableObject<Env> {
       const repo = await tenantStub.getRepo(cfg.repoId);
       cfg.lineage = repo.lineage;
       if (!cfg.branch) cfg.branch = repo.defaultRef;
-      this.writeConfig(cfg);
+      // Preserve configuration changes made while the repository lookup was pending.
+      this.writeConfig({ ...this.requireConfig(), lineage: cfg.lineage, branch: cfg.branch });
       return { repoId: cfg.repoId, lineage: repo.lineage, branch: cfg.branch };
     }
 
