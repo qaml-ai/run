@@ -25,7 +25,7 @@ export default {
     }
 
     await (initialization ??= initWasm(wasm));
-    let renderer: Resvg;
+    let renderer: InstanceType<typeof Resvg>;
     try {
       renderer = new Resvg(input.svg, {
         font: {

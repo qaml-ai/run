@@ -88,7 +88,7 @@ test("keeps gateway run ownership on both aliases and on the private legacy-orig
   const origin = t.mock.method(globalThis, "fetch", async (_request: Request) => new Response(null, { status: 204 }));
   const route = t.mock.fn(async (request: Request) => {
     if (request.method === "GET") return Response.json({ status: "completed" });
-    if ((await request.json()).fixture === "unknown") throw new Error("fixture: outcome could not be confirmed");
+    if ((await request.json() as { fixture?: string }).fixture === "unknown") throw new Error("fixture: outcome could not be confirmed");
     return null;
   });
   const env = { V2: { fetch: async () => new Response(null) }, LEGACY_V1: { route },

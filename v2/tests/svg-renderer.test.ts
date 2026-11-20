@@ -40,7 +40,7 @@ test("the renderer Worker draws text and embeds named raster inputs in the PNG",
     const out = Buffer.from(await response.arrayBuffer());
     const photoPixel = await sharp(out).extract({ left: 4, top: 4, width: 1, height: 1 }).removeAlpha().raw().toBuffer();
     assert.deepEqual([...photoPixel], [255, 0, 0]);
-    const textPixels = await sharp(out).extract({ left: 20, top: 30, width: 150, height: 35 }).removeAlpha().raw().toBuffer();
+    const textPixels: Uint8Array = await sharp(out).extract({ left: 20, top: 30, width: 150, height: 35 }).removeAlpha().raw().toBuffer();
     assert.ok(textPixels.some(channel => channel < 60), "the bundled font should draw visible text");
   } finally {
     await worker.dispose();
