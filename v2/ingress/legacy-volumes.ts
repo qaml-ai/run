@@ -1,3 +1,6 @@
+import { LEGACY_VOLUME_ADDRESS_LENGTH, LEGACY_VOLUME_CLIENT_ADDRESS, LEGACY_VOLUME_CLIENT_ZONE,
+  LEGACY_VOLUME_INTERNAL_CLIENT, legacyVolumeWorkerZone } from "./legacy-volume-client.ts";
+
 // The volume origin also authenticates the existing caller or signed file URL.
 const ORIGIN_HEADER = "x-camelrun-volume-origin";
 const VOLUME_ROUTE = /^\/v1\/(?:volumes|links)(?:\/|$)/;
@@ -6,6 +9,9 @@ const LINK_PATH = /^\/v1\/links\/([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+\//;
 
 export interface LegacyVolumeOrigin {
   LEGACY_VOLUMES?: { fetch(request: Request, init?: RequestInit): Promise<Response> };
+  LEGACY_VOLUMES_STRICT?: LegacyVolumeOrigin["LEGACY_VOLUMES"];
+  LEGACY_VOLUMES_STRICT_ID?: string;
+  LEGACY_VOLUMES_STRICT_GLOBAL?: string;
   LEGACY_VOLUMES_ORIGIN_TOKEN?: string;
   LEGACY_VOLUMES_ROLLOUT?: string;
   LEGACY_VOLUMES_READ_ROLLOUT?: string;
@@ -26,15 +32,17 @@ function volumeInPath(path: string) {
   }
 }
 
-export function legacyVolumes(request: Request, env: LegacyVolumeOrigin): Promise<Response> | undefined {
+export function legacyVolumes(request: Request, env: LegacyVolumeOrigin, source: "edge" | "mcp" = "edge"): Promise<Response> | undefined {
   const asked = new URL(request.url);
-  if (!env.LEGACY_VOLUMES || !VOLUME_ROUTE.test(asked.pathname)) return undefined;
+  if (!VOLUME_ROUTE.test(asked.pathname)) return undefined;
   const volume = volumeInPath(asked.pathname);
+  const strict = env.LEGACY_VOLUMES_STRICT_GLOBAL === "1" || !!volume && volume === env.LEGACY_VOLUMES_STRICT_ID;
+  const origin = strict ? env.LEGACY_VOLUMES_STRICT : env.LEGACY_VOLUMES;
   const selected = (rollout?: string) => rollout === "all" ||
     !!volume && !!rollout?.split(",").some(id => id.trim() === volume);
-  if (!selected(env.LEGACY_VOLUMES_ROLLOUT) &&
-      !(request.method === "GET" && selected(env.LEGACY_VOLUMES_READ_ROLLOUT))) return undefined;
-  if (!env.LEGACY_VOLUMES_ORIGIN_TOKEN) {
+  if (!strict && (!origin || (!selected(env.LEGACY_VOLUMES_ROLLOUT) &&
+      !(request.method === "GET" && selected(env.LEGACY_VOLUMES_READ_ROLLOUT))))) return undefined;
+  if (!origin || !env.LEGACY_VOLUMES_ORIGIN_TOKEN) {
     return Promise.resolve(volumeError(503, "VOLUME_ORIGIN_MISCONFIGURED", "Volume origin is misconfigured"));
   }
   // The VPC service chooses the private address and port. Its URL provides the original Host.
@@ -44,8 +52,21 @@ export function legacyVolumes(request: Request, env: LegacyVolumeOrigin): Promis
   upstream.headers.delete("x-agent-runtime-hop");
   upstream.headers.delete("x-agent-runtime-internal");
   upstream.headers.delete("x-agent-runtime-forwarded");
+  upstream.headers.delete(LEGACY_VOLUME_CLIENT_ADDRESS);
+  upstream.headers.delete(LEGACY_VOLUME_CLIENT_ZONE);
+  if (strict) {
+    // Only the public Worker and the private named MCP binding supply client metadata.
+    const address = request.headers.get("cf-connecting-ip")?.trim().toLowerCase();
+    if (source === "mcp") {
+      upstream.headers.set(LEGACY_VOLUME_CLIENT_ADDRESS, LEGACY_VOLUME_INTERNAL_CLIENT);
+    } else if (address && address.length <= LEGACY_VOLUME_ADDRESS_LENGTH && /^[0-9a-f:.]+$/.test(address)) {
+      upstream.headers.set(LEGACY_VOLUME_CLIENT_ADDRESS, address);
+    }
+    const zone = source === "edge" ? legacyVolumeWorkerZone(request.headers.get("cf-worker")) : undefined;
+    if (zone) upstream.headers.set(LEGACY_VOLUME_CLIENT_ZONE, zone);
+  }
   upstream.headers.set(ORIGIN_HEADER, env.LEGACY_VOLUMES_ORIGIN_TOKEN);
-  return env.LEGACY_VOLUMES.fetch(upstream, { redirect: "manual" }).catch(() => volumeError(502, "VOLUME_ORIGIN_UNAVAILABLE", "Volume origin is unavailable; retry"));
+  return origin.fetch(upstream, { redirect: "manual" }).catch(() => volumeError(502, "VOLUME_ORIGIN_UNAVAILABLE", "Volume origin is unavailable; retry"));
 }
 
 function volumeError(status: number, code: string, error: string) {

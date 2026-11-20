@@ -1,3 +1,4 @@
+import { legacyBillingCallback, type BillingCallbackOrigin } from "./ingress-billing.ts";
 import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
 import { legacyDefinitionRead } from "../../src/v1-definition-reads.ts";
 import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../shared/legacy-gateway-text-address.ts";
@@ -5,9 +6,11 @@ import { legacyGatewayTextAddress, legacyGatewayTextUncertain } from "../../shar
 export interface LegacyOriginEnv extends LegacyVolumeOrigin {
   LEGACY_V1?: { route(request: Request): Promise<Response | null> };
   LEGACY_GATEWAY_TEXT_ROUTING?: string;
+  LEGACY_ECS_FALLBACK?: string;
 }
 
 interface Env extends LegacyOriginEnv {
+  LEGACY_BILLING?: BillingCallbackOrigin;
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
   LEGACY_DECISIONS?: { route(request: Request): Promise<Response | null> };
@@ -50,6 +53,22 @@ async function decisionService(request: Request, env: Env) {
 
 const legacyApiHost = (hostname: string) => hostname === "run.camelai.com" || hostname === "agents.camelai.dev";
 
+function retiredApiPath(path: string) {
+  try { path = decodeURIComponent(path); } catch { /* Match the original path if encoding is invalid. */ }
+  return /^\/(?:v1|clients|mcp)(?:\/|$)/i.test(path);
+}
+
+function legacyUnavailable() {
+  return Response.json({ error: "This operation is unavailable on the legacy API. Use CamelRun v2.", code: "V1_OPERATION_RETIRED" },
+    { status: 410, headers: { "Cache-Control": "no-store" } });
+}
+
+function legacyVolumeOrigin(request: Request, env: LegacyOriginEnv, source: "edge" | "mcp") {
+  // Strict volumes run on the independently deployed volume service.
+  if (env.LEGACY_ECS_FALLBACK === "0" && env.LEGACY_VOLUMES_STRICT_GLOBAL !== "1") return;
+  return legacyVolumes(request, env, source);
+}
+
 async function gatewayText(request: Request, env: LegacyOriginEnv): Promise<Response | null> {
   if (env.LEGACY_GATEWAY_TEXT_ROUTING !== "1" || request.headers.has("upgrade") || !legacyGatewayTextAddress(request)) return null;
   if (!env.LEGACY_V1) return legacyGatewayTextUncertain();
@@ -63,7 +82,8 @@ export async function fetchLegacyApi(request: Request, env: LegacyOriginEnv = {}
       (!pathname.startsWith("/v1/") && !pathname.startsWith("/clients/"))) {
     return new Response(null, { status: 404 });
   }
-  return legacyVolumes(request, env) ?? await gatewayText(request, env) ?? fetch(request, { redirect: "manual" });
+  return legacyVolumeOrigin(request, env, "mcp") ?? await gatewayText(request, env) ??
+    (env.LEGACY_ECS_FALLBACK === "0" ? legacyUnavailable() : fetch(request, { redirect: "manual" }));
 }
 
 export default {
@@ -74,7 +94,9 @@ export default {
     }
 
     if (legacyApiHost(hostname)) {
-      const volume = legacyVolumes(request, env);
+      const billing = legacyBillingCallback(request, env.LEGACY_BILLING);
+      if (billing) return billing;
+      const volume = legacyVolumeOrigin(request, env, "edge");
       if (volume) return volume;
       const gateway = await gatewayText(request, env);
       if (gateway) return gateway;
@@ -108,6 +130,10 @@ export default {
         await selected(request, env.LEGACY_V1_CANARY_AUTH_SHA256)) {
       const compatible = await env.LEGACY_V1.route(request.clone());
       if (compatible) return compatible;
+    }
+
+    if (env.LEGACY_ECS_FALLBACK === "0" && legacyApiHost(hostname) && retiredApiPath(pathname)) {
+      return legacyUnavailable();
     }
 
     // On a Workers Route this sends the original request to the hostname's

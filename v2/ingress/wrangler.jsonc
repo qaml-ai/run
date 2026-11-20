@@ -7,13 +7,18 @@
   "workers_dev": false,
   "preview_urls": false,
   "keep_vars": true,
-  "vars": { "LEGACY_GATEWAY_TEXT_ROUTING": "1" },
+  "vars": { "LEGACY_GATEWAY_TEXT_ROUTING": "1", "LEGACY_ECS_FALLBACK": "0", "LEGACY_VOLUMES_STRICT_GLOBAL": "1" },
   "services": [
     { "binding": "V2", "service": "camelrun-v2-prod" },
     { "binding": "LEGACY_V1", "service": "camelrun-v1-compat-prod", "entrypoint": "LegacyV1" },
     { "binding": "LEGACY_DECISIONS", "service": "camelrun-v1-decisions-canary", "entrypoint": "LegacyDecisions" },
     { "binding": "LEGACY_BOT_DECISIONS", "service": "camelrun-v1-decisions-cohort", "entrypoint": "LegacyCamelBotsDecisions" },
     { "binding": "LEGACY_BOTS_IMAGES", "service": "camelrun-v1-bots-images", "entrypoint": "LegacyCamelBotsImages" }
+  ],
+  "vpc_services": [
+    {"binding": "LEGACY_BILLING", "service_id": "01a1f593-8919-72b0-a85e-e3be3b9dfe21"},
+    {"binding": "LEGACY_VOLUMES", "service_id": "01a1f53e-1f94-78b2-9b8e-132e4b17849a"},
+    {"binding": "LEGACY_VOLUMES_STRICT", "service_id": "01a1f81e-f9a2-71c3-82c4-e86bc127a8c2"}
   ],
   "routes": [
     { "pattern": "run.camelai.com/*", "zone_name": "camelai.com" },

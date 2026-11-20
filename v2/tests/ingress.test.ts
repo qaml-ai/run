@@ -457,3 +457,50 @@ test("all volume reads includes collections but does not retry ECS on a selected
   assert.equal(sidecar.mock.callCount(), 2);
   assert.equal(ecs.mock.callCount(), 2);
 });
+
+test("strict ingress and the MCP tool origin reject misses without contacting ECS", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 599 }));
+  const route = t.mock.fn(async (request: Request) => {
+    return new URL(request.url).pathname === "/mcp" && request.headers.has("authorization")
+      ? Response.json({ capabilities: {} }) : null;
+  });
+  const env = {
+    V2: { fetch: async () => Response.json({ native: true }) },
+    LEGACY_V1: { route },
+    LEGACY_ECS_FALLBACK: "0",
+  };
+  for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
+    for (const path of ["/v1", "/v1/agents", "/v1/models", "/%76%31/agents", "/clients/old", "/mcp", "/mcp/"]) {
+      const response = await worker.fetch(new Request(`https://${host}${path}`), env);
+      assert.equal(response.status, 410, path);
+      assert.equal((await response.json()).code, "V1_OPERATION_RETIRED");
+    }
+    const mcp = await worker.fetch(new Request(`https://${host}/mcp`, { headers: { authorization: "Bearer fixture" } }), env);
+    assert.equal(mcp.status, 200);
+    assert.equal((await fetchLegacyApi(new Request(`https://${host}/v1/models`), env)).status, 410);
+  }
+  assert.deepEqual(await (await worker.fetch(new Request("https://run.camelai.com/v2/me"), env)).json(), { native: true });
+  assert.equal(origin.mock.callCount(), 0);
+});
+
+test("strict ingress preserves the independent volume and billing services", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 599 }));
+  const volume = t.mock.fn(async (_request: Request) => new Response("workspace"));
+  const billing = t.mock.fn(async (_request: Request) => new Response(null, { status: 204 }));
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_ECS_FALLBACK: "0",
+    LEGACY_VOLUMES_STRICT_GLOBAL: "1",
+    LEGACY_VOLUMES_STRICT: { fetch: volume },
+    LEGACY_VOLUMES_ORIGIN_TOKEN: "fixture",
+    LEGACY_BILLING: { fetch: billing },
+  };
+  const file = new Request(`https://run.camelai.com/v1/volumes/vol_${"a".repeat(24)}/files/test`);
+  assert.equal(await (await worker.fetch(file, env)).text(), "workspace");
+  assert.equal(await (await fetchLegacyApi(file, env)).text(), "workspace");
+  assert.equal(volume.mock.calls.at(-1)?.arguments[0].headers.get("x-camelrun-volume-client-address"), "legacy-mcp");
+  const callback = new Request("https://run.camelai.com/v1/billing/stripe/webhook", { method: "POST", body: "{}" });
+  assert.equal((await worker.fetch(callback, env)).status, 204);
+  assert.equal(billing.mock.callCount(), 1);
+  assert.equal(origin.mock.callCount(), 0);
+});

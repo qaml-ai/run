@@ -108,9 +108,7 @@ The ingress can bind to the `LegacyV1` entrypoint exported by
 `backends/workers/src/legacy-entry.ts`. Its default HTTP handler returns 404.
 It answers agent listings and mount reads from the Node
 database. It serves the supported prompt, request, state, event, and history
-routes for a published agent, including the scoped `/clients` routes. A null
-result leaves the request on its existing route. An authentication, storage,
-or upstream failure returns an HTTP error.
+routes for a published agent, including the scoped `/clients` routes. With `LEGACY_ECS_FALLBACK=0`, a null result on `/v1`, `/clients` or `/mcp` returns HTTP 410. Authentication, storage, and upstream failures return an HTTP error.
 
 Use a Hyperdrive binding to the Node Postgres schema with query caching
 disabled. Give its role read access to `tenants`, `api_tokens`, `oauth_tokens`,
@@ -128,11 +126,10 @@ compatibility authentication. Connect `V2_LEGACY_RUNS` to the v2 Worker's
 binding. It verifies the published destination's tenant and agent and uses the
 agent's existing v2 permissions for runs, history, and events.
 
-When `MCP_LEGACY_API` is bound to the ingress's private ECS origin service,
+When `MCP_LEGACY_API` is bound to the ingress's named `LegacyOrigin` entrypoint,
 `LegacyV1` also serves `/mcp` and its OAuth discovery metadata. MCP retains
 the v1 bearer authorization and configured issuer. The generated MCP tools
-call the compatibility endpoints when available. Other MCP tool requests
-and OAuth consent, exchange, and revocation continue on their existing routes.
+call the compatibility endpoints when available. Unsupported MCP tool calls receive the same HTTP 410 from the named entrypoint. Discovery and supported OAuth routes continue to use the existing issuer.
 
 Keep the v1 ingress and its archived request store reachable during the
 transition. Confirm older clients can complete their production workflows
