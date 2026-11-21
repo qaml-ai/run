@@ -5,9 +5,11 @@
   "scripts": {
     "test": "node --experimental-strip-types --test --test-timeout=300000 tests/*.test.ts",
     "test:v2": "npm --prefix v2 run test",
-    "typecheck": "tsc -p tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p console/tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
     "typecheck:v2": "npm --prefix v2 run typecheck",
-    "test:ui": "vitest run --config packages/react/vitest.config.ts && vitest run --config packages/registry/vitest.config.ts && vitest run --config packages/bindings.vitest.config.ts",
+    "test:ui": "vitest run --config packages/react/vitest.config.ts && vitest run --config packages/registry/vitest.config.ts && vitest run --config packages/bindings.vitest.config.ts && npm run test:console",
+    "test:console": "vitest run --config console/vitest.config.ts",
+    "build:console": "vite build --config console/vite.config.ts",
     "registry": "node --experimental-strip-types --disable-warning=ExperimentalWarning packages/registry/build.ts"
   },
   "version": "0.1.0",

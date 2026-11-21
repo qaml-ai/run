@@ -2,7 +2,7 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "camelrun-v2-prod",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-01",
+  "compatibility_date": "2026-03-24",
   "compatibility_flags": [
     "nodejs_compat",
     "enhanced_error_serialization"
@@ -18,6 +18,7 @@
     "AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD": "0.003"
   },
   "images": { "binding": "IMAGES" },
+  "browser": { "binding": "BROWSER" },
   "services": [{ "binding": "SVG_RENDERER", "service": "camelrun-v2-svg-renderer" }],
   "r2_buckets": [
     {

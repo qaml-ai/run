@@ -1,4 +1,7 @@
-export interface Env {
+import { handleConsoleRequest, type ConsoleEnv } from "./console.ts";
+import { handleOpsRequest, type OpsEnv } from "./ops.ts";
+
+export interface Env extends ConsoleEnv, OpsEnv {
   V2: { fetch(request: Request): Promise<Response> };
 }
 
@@ -10,7 +13,7 @@ function isRetiredApiPath(path: string): boolean {
   } catch {
     // Match the original path if percent-encoding is invalid.
   }
-  return /^\/(?:v1|clients|mcp)(?:\/|$)/i.test(path);
+  return /^\/(?:v1|clients)(?:\/|$)/i.test(path);
 }
 
 function legacyRetired(): Response {
@@ -20,14 +23,35 @@ function legacyRetired(): Response {
   );
 }
 
+function forwardToV2Mcp(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  url.pathname = "/v2/mcp";
+  return env.V2.fetch(new Request(url, request));
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { hostname, pathname } = new URL(request.url);
     if (hostname === "run.camelai.com" && (pathname === "/v2" || pathname.startsWith("/v2/"))) {
       return env.V2.fetch(request);
     }
+    if (isApiHost(hostname) && pathname === "/mcp" && !request.headers.has("upgrade")) {
+      return forwardToV2Mcp(request, env);
+    }
+    if (
+      hostname === "run.camelai.com" &&
+      (pathname === "/.well-known/oauth-protected-resource/v2/mcp" ||
+        /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(pathname))
+    ) {
+      return env.V2.fetch(request);
+    }
 
     if (isApiHost(hostname)) {
+      const opsRes = await handleOpsRequest(request, env);
+      if (opsRes) return opsRes;
+      const consoleRes = await handleConsoleRequest(request, env);
+      if (consoleRes) return consoleRes;
+
       if (isRetiredApiPath(pathname)) return legacyRetired();
       if (request.method === "GET" || request.method === "HEAD") {
         if (pathname === "/") return Response.redirect("https://camelai.com/run", 302);

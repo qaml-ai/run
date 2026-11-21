@@ -1,6 +1,12 @@
 import { Buffer } from "node:buffer";
 import { imageHeader } from "./lib/image-header.ts";
 import { SVG_RENDER_LIMITS } from "../../svg-renderer/limits.ts";
+import {
+  assertScreenshotPathExtension,
+  BROWSER_TOOL_SCHEMAS,
+  executeBrowserTool,
+  isBrowserToolName,
+} from "./browser.ts";
 import { renderSvg } from "./svg-render.ts";
 import { FILE_LIMITS } from "./lib/limits.ts";
 import { getAgentStub } from "./agent-do.ts";
@@ -111,6 +117,7 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
       required: ["svg", "path"],
     },
   }],
+  browser: BROWSER_TOOL_SCHEMAS,
   files: [
     {
       name: "read_file",
@@ -1023,7 +1030,39 @@ export async function executeToolCall(
     return { query, results: [] };
   }
 
+  // 10. Cloudflare Browser Run (Kitesurf / Chromium) suite
+  if (isBrowserToolName(toolName)) {
+    return executeBrowserTool(ctx.env, toolName, args, {
+      signal: ctx.signal,
+      saveScreenshot: ({ path, contentType, base64, url }) =>
+        saveBrowserScreenshotToRepo(ctx, path, contentType, base64, url),
+    });
+  }
+
   throw new Error(`Unknown tool: ${toolName}`);
+}
+
+async function saveBrowserScreenshotToRepo(
+  ctx: ToolExecutionContext,
+  rawPath: string,
+  contentType: "image/png" | "image/jpeg" | "image/webp",
+  base64: string,
+  url: string,
+): Promise<string> {
+  const path = normalizeRepoPath(rawPath);
+  assertScreenshotPathExtension(path, contentType);
+  const { repoId, lineage, branch } = await ctx.ensureAgentRepo();
+  const cfs = new CamelFsClient(ctx.env, ctx.config.tenantId);
+  const out = await cfs.write(lineage, {
+    ref: branch,
+    holder: ctx.config.id,
+    author: `agent:${ctx.config.id}`,
+    message: `browser screenshot ${url.slice(0, 80)} -> ${path}`,
+    puts: [{ path, base64, mode: 0o644 }],
+  });
+  ctx.recordFilesChanged(out.changed);
+  void getTenantStub(ctx.env, ctx.config.tenantId).updateRepoCommit(repoId, out.commit).catch(() => {});
+  return path;
 }
 
 async function upsertChildAgentInCluster(

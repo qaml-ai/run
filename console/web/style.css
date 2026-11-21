@@ -1,0 +1,299 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Fonts are self-hosted: the console's CSP allows fonts from 'self' only. Figtree and
+   Geist Mono come from @fontsource (main.tsx). CamelCool is the display face, for the
+   few brand moments listed in console/DESIGN.md; Silkscreen is the pixel label face. */
+@font-face {
+	font-family: "CamelCool";
+	src: url("./fonts/camelCoolFont-Regular.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+/* TODO(font-apostrophe): remove once camelCoolFont ships U+0027/U+2019 */
+@font-face {
+	font-family: "CamelCool";
+	src: url("./fonts/silkscreen-latin-400-normal.woff2") format("woff2");
+	unicode-range: U+0027, U+2019;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "Silkscreen";
+	src: url("./fonts/silkscreen-latin-400-normal.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-unchecked {
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-selected {
+  &:where([data-selected="true"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@theme inline {
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--font-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
+	--font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+	--color-sidebar-ring: var(--sidebar-ring);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar: var(--sidebar);
+	--color-chart-5: var(--chart-5);
+	--color-chart-4: var(--chart-4);
+	--color-chart-3: var(--chart-3);
+	--color-chart-2: var(--chart-2);
+	--color-chart-1: var(--chart-1);
+	--color-ring: var(--ring);
+	--color-input: var(--input);
+	--color-border: var(--border);
+	--color-destructive: var(--destructive);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-accent: var(--accent);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-muted: var(--muted);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-secondary: var(--secondary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-primary: var(--primary);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-popover: var(--popover);
+	--color-card-foreground: var(--card-foreground);
+	--color-card: var(--card);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+	--radius-2xl: calc(var(--radius) + 8px);
+	--radius-3xl: calc(var(--radius) + 12px);
+	--radius-4xl: calc(var(--radius) + 16px);
+	--animate-collapsible-down: collapsible-down 0.25s ease-out;
+	--animate-collapsible-up: collapsible-up 0.2s ease-in forwards;
+	--animate-turn-trace-down: collapsible-down 0.36s ease-out;
+	--animate-turn-trace-up: collapsible-up 0.32s ease-in forwards;
+}
+
+/* camelStream's token sheet: two 5-step monochrome ramps (paper and ink) and two
+   accents, signal blue #5aa7ff and alert red #ff4d3d, which appear only in status
+   indicators, destructive actions and charts. Everything is square. */
+:root {
+  --tint-danger: #f7ded7;
+  --tint-info: #dde8f1;
+	--radius: 0rem;
+	color-scheme: light;
+	--background: #f6f4ee;
+	--foreground: #111113;
+	--card: #efede6;
+	--card-foreground: #111113;
+	--popover: #efede6;
+	--popover-foreground: #111113;
+	--primary: #111113;
+	--primary-foreground: #f6f4ee;
+	--secondary: #eceae2;
+	--secondary-foreground: #111113;
+	--muted: #eceae2;
+	--muted-foreground: #3f3f45;
+	--accent: #e7e4db;
+	--accent-foreground: #111113;
+	--destructive: #ff4d3d;
+	--border: #d5d2c9;
+	--input: #d5d2c9;
+	--ring: #8a888f;
+	--chart-1: #5aa7ff;
+	--chart-2: #8a888f;
+	--chart-3: #3f3f45;
+	--chart-4: #c6c3ba;
+	--chart-5: #111113;
+	--sidebar: #f6f4ee;
+	--sidebar-foreground: #111113;
+	--sidebar-primary: #111113;
+	--sidebar-primary-foreground: #f6f4ee;
+	--sidebar-accent: #efede6;
+	--sidebar-accent-foreground: #111113;
+	--sidebar-border: #d5d2c9;
+	--sidebar-ring: #8a888f;
+}
+
+.dark {
+  --tint-danger: #3c1816;
+  --tint-info: #1b2a3d;
+	color-scheme: dark;
+	--background: #0b0b0c;
+	--foreground: #f4f2ea;
+	--card: #101013;
+	--card-foreground: #f4f2ea;
+	--popover: #101013;
+	--popover-foreground: #f4f2ea;
+	--primary: #f4f2ea;
+	--primary-foreground: #0b0b0c;
+	--secondary: #18181d;
+	--secondary-foreground: #f4f2ea;
+	--muted: #18181d;
+	--muted-foreground: #b3b1aa;
+	--accent: #1c1c21;
+	--accent-foreground: #f4f2ea;
+	--destructive: #ff4d3d;
+	--border: #232329;
+	--input: #232329;
+	--ring: #6e6e77;
+	--chart-1: #5aa7ff;
+	--chart-2: #6e6e77;
+	--chart-3: #b3b1aa;
+	--chart-4: #2c2c31;
+	--chart-5: #f4f2ea;
+	--sidebar: #0b0b0c;
+	--sidebar-foreground: #f4f2ea;
+	--sidebar-primary: #f4f2ea;
+	--sidebar-primary-foreground: #0b0b0c;
+	--sidebar-accent: #101013;
+	--sidebar-accent-foreground: #f4f2ea;
+	--sidebar-border: #232329;
+	--sidebar-ring: #6e6e77;
+}
+
+@keyframes collapsible-down {
+	from {
+		height: 0;
+		opacity: 0;
+	}
+	to {
+		height: var(--radix-collapsible-content-height);
+		opacity: 1;
+	}
+}
+
+@keyframes collapsible-up {
+	from {
+		height: var(--radix-collapsible-content-height);
+		opacity: 1;
+	}
+	to {
+		height: 0;
+		opacity: 0;
+	}
+}
+
+@source "./";
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  body { @apply bg-background text-foreground font-sans antialiased; }
+
+  /* Square, monochrome checkboxes; the native control is the OS's rounded blue one. */
+  input[type="checkbox"] {
+    appearance: none;
+    display: inline-grid;
+    place-content: center;
+    flex-shrink: 0;
+    width: 0.875rem;
+    height: 0.875rem;
+    margin: 0;
+    border: 1px solid var(--input);
+    background-color: var(--background);
+    cursor: pointer;
+  }
+  input[type="checkbox"]::before {
+    content: "";
+    width: 0.5rem;
+    height: 0.5rem;
+    background-color: var(--background);
+    clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+    transform: scale(0);
+  }
+  input[type="checkbox"]:checked { border-color: var(--foreground); background-color: var(--foreground); }
+  input[type="checkbox"]:checked::before { transform: scale(1); }
+  input[type="checkbox"]:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.5; }
+}
+
+/* main.tsx sets the dark class once its script runs; until then, paint the dark ground
+   so a dark-mode visitor never sees a flash of paper. */
+@media (prefers-color-scheme: dark) {
+  html { background-color: #0b0b0c; }
+}
+
+/* Chat actions use the console signal blue. */
+.console-agent-chat {
+  --primary: #5aa7ff;
+  --primary-foreground: #111113;
+}
+
+.console-mobile-nav .overflow-x-auto,
+.console-mobile-nav nav {
+  flex-direction: column;
+  overflow: visible;
+}
+.console-mobile-nav [data-orientation="vertical"] { display: none; }

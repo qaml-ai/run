@@ -35,7 +35,7 @@ test("returns HTTP 410 V1_OPERATION_RETIRED for retired legacy API paths on API 
   const env = { V2: { fetch: native } };
 
   for (const host of ["run.camelai.com", "agents.camelai.dev"]) {
-    for (const path of ["/v1", "/v1/agents", "/v1/models", "/%76%31/agents", "/clients/old", "/mcp", "/mcp/"]) {
+    for (const path of ["/v1", "/v1/agents", "/v1/models", "/%76%31/agents", "/clients/old"]) {
       const response = await worker.fetch(new Request(`https://${host}${path}`), env);
       assert.equal(response.status, 410, `${host}${path}`);
       assert.equal(response.headers.get("cache-control"), "no-store");
@@ -46,23 +46,25 @@ test("returns HTTP 410 V1_OPERATION_RETIRED for retired legacy API paths on API 
   assert.equal(origin.mock.callCount(), 0);
 });
 
-test("passes non-API paths through to the configured origin without following redirects", async t => {
-  const originRedirect = new Response(null, { status: 307, headers: { Location: "/login" } });
-  const origin = t.mock.method(globalThis, "fetch", async () => originRedirect);
-  const native = t.mock.fn(async (_request: Request) => new Response(null));
+test("handles API-host root/docs redirects, health, and 404 without hitting dead origin", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 599 }));
+  const native = t.mock.fn(async (_request: Request) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
   const env = { V2: { fetch: native } };
 
-  for (const url of [
-    "https://run.camelai.com/",
-    "https://run.camelai.com/v20",
-    "https://run.camelai.com/oauth/authorize",
-    "https://agents.camelai.dev/v2/health",
-    "https://agents.camelai.dev/.well-known/oauth-protected-resource",
-  ]) {
-    const request = new Request(url);
-    assert.equal(await worker.fetch(request, env), originRedirect, url);
-    assert.deepEqual(origin.mock.calls.at(-1)?.arguments, [request, { redirect: "manual" }]);
+  const root = await worker.fetch(new Request("https://run.camelai.com/"), env);
+  assert.equal(root.status, 302);
+  assert.equal(root.headers.get("location"), "https://camelai.com/run");
+
+  const health = await worker.fetch(new Request("https://run.camelai.com/healthz"), env);
+  assert.equal(health.status, 200);
+  assert.equal(native.mock.callCount(), 1);
+
+  for (const url of ["https://run.camelai.com/v20", "https://agents.camelai.dev/unknown"]) {
+    const response = await worker.fetch(new Request(url), env);
+    assert.equal(response.status, 404, url);
   }
-  assert.equal(native.mock.callCount(), 0);
-  assert.equal(origin.mock.callCount(), 5);
+
+  const passthrough = await worker.fetch(new Request("https://other.example/path"), env);
+  assert.equal(passthrough.status, 599);
+  assert.equal(origin.mock.callCount(), 1);
 });

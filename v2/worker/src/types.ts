@@ -11,6 +11,7 @@ export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined>
 export interface Env {
   MEDIA_BUCKET?: R2Bucket;
   IMAGES?: ImagesBinding;
+  BROWSER?: BrowserRun;
   SVG_RENDERER?: Fetcher;
   EVENTS_QUEUE?: Queue<QueueMessagePayload>;
   TENANT_DO: DurableObjectNamespace<TenantDO>;
@@ -20,12 +21,18 @@ export interface Env {
   VAULT_SECRET: string;
   BUILDER_CUTOVER_CREDIT_TENANT_ID?: string;
   APP_RUNTIME_CREDIT_TENANT_IDS?: string;
+  OPS_INTERNAL_DOMAINS?: string;
   CAMELFS_URL: string;
   CAMELFS_SIGNING_KEY?: string;
   CAMELFS_DEV_TOKEN?: string;
   TOOL_IDENTITY_ISSUER?: string;
   TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;
+  BROWSER_DEFAULT_ENGINE?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_BROWSER_RUN_TOKEN?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_BROWSER_RUN_BASE_URL?: string;
   OPENAI_API_KEY?: string;
   AZURE_OPENAI_SOL_ENDPOINT?: string;
   AZURE_OPENAI_SOL_API_KEY?: string;
@@ -52,6 +59,7 @@ export interface AuthContext {
 export type BuiltinSuite =
   | "files"
   | "images"
+  | "browser"
   | "bash"
   | "codemode"
   | "delegate"

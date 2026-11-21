@@ -62,6 +62,40 @@ export async function sha256Hex(value: string): Promise<string> {
   return bytesToHex(new Uint8Array(digest));
 }
 
+export function constantTimeEqual(a: string, b: string): boolean {
+  const ba = encoder.encode(a);
+  const bb = encoder.encode(b);
+  const len = Math.max(ba.length, bb.length);
+  let diff = ba.length ^ bb.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (ba[i] ?? 0) ^ (bb[i] ?? 0);
+  }
+  return diff === 0;
+}
+
+const PBKDF2_ITERATIONS = 100_000;
+
+export async function hashPassword(password: string, existingSaltHex?: string): Promise<{ hash: string; salt: string }> {
+  const saltBytes = existingSaltHex
+    ? hexToBytes(existingSaltHex)
+    : crypto.getRandomValues(new Uint8Array(16));
+  const keyMaterial = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const derived = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: saltBytes as BufferSource, iterations: PBKDF2_ITERATIONS },
+    keyMaterial,
+    256,
+  );
+  return {
+    hash: bytesToHex(new Uint8Array(derived)),
+    salt: bytesToHex(saltBytes),
+  };
+}
+
+export async function verifyPassword(password: string, storedHash: string, storedSaltHex: string): Promise<boolean> {
+  const { hash } = await hashPassword(password, storedSaltHex);
+  return constantTimeEqual(hash, storedHash);
+}
+
 export async function mintTenantApiKey(tenantId: string): Promise<{
   id: string;
   token: string;

@@ -1,0 +1,133 @@
+import { useState } from "react";
+import { Github } from "lucide-react";
+import { PixelButton } from "@/components/ui/pixel-button";
+import { Separator } from "@/components/ui/separator";
+import { AuthLayout } from "@/components/auth-layout";
+import { ErrorAlert } from "@/components/common";
+import { useApi } from "@/lib/api";
+import { startNext } from "@/lib/onboarding";
+import { PasswordForm, SignUpForm } from "@/pages/password-sign-in";
+
+/** Google's "G", in the button's color: the console is monochrome. */
+function GoogleMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true" fill="currentColor">
+      <path d="M12 10.2v3.9h5.5c-.2 1.3-1.6 3.9-5.5 3.9-3.3 0-6-2.7-6-6.1s2.7-6.1 6-6.1c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.8 3.3 14.6 2.3 12 2.3 6.6 2.3 2.3 6.6 2.3 12s4.3 9.7 9.7 9.7c5.6 0 9.3-3.9 9.3-9.5 0-.6-.1-1.1-.2-1.6H12z" />
+    </svg>
+  );
+}
+
+type Mode = "signin" | "signup";
+const MODE_PATHS: Record<Mode, string> = { signin: "/console/", signup: "/console/signup" };
+
+function oauthUrl(provider: "github" | "google", next?: string): string {
+  const params = new URLSearchParams();
+  if (next) params.set("next", next);
+  const qs = params.toString();
+  return `/console/auth/${provider}${qs ? `?${qs}` : ""}`;
+}
+
+export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
+  const next =
+    startNext(location.pathname, location.search) ??
+    (new URLSearchParams(location.search).get("next") || undefined);
+  const methods = useApi<{
+    github?: boolean;
+    google?: boolean;
+    password?: boolean;
+    signup?: boolean;
+    open?: boolean;
+  }>("/console/auth/methods");
+  const [mode, setMode] = useState<Mode>(() => (location.pathname === MODE_PATHS.signup ? "signup" : "signin"));
+  const choose = (chosen: Mode) => {
+    history.replaceState(null, "", MODE_PATHS[chosen] + location.search);
+    setMode(chosen);
+  };
+
+  const providers = !!(methods.data?.github || methods.data?.google);
+  const error = new URLSearchParams(location.search).get("error") ?? "";
+  const shown: Mode = mode === "signup" && methods.data?.signup ? "signup" : "signin";
+
+  return (
+    <AuthLayout>
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <h1 className="text-xl font-semibold tracking-tight">
+            {shown === "signup" ? "Create your camelRun account" : "camelRun"}
+          </h1>
+          {shown === "signin" && (
+            <p className="text-muted-foreground text-sm text-balance">
+              Sign in to manage your agents, model keys and API keys.
+            </p>
+          )}
+        </div>
+
+        <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
+
+        {providers && (
+          <div className="flex flex-col gap-3">
+            {methods.data?.github && (
+              <PixelButton size="hero" href={oauthUrl("github", next)} className="w-full">
+                <Github className="size-3.5" aria-hidden="true" />
+                Continue with GitHub
+              </PixelButton>
+            )}
+            {methods.data?.google && (
+              <PixelButton size="hero" href={oauthUrl("google", next)} className="w-full">
+                <GoogleMark className="size-3.5" />
+                Continue with Google
+              </PixelButton>
+            )}
+            <p className="text-muted-foreground text-center text-xs text-balance">
+              {!methods.data?.github
+                ? "Any Google account can sign up."
+                : `Any GitHub${methods.data?.google ? " or Google" : ""} account can sign up.`}
+            </p>
+          </div>
+        )}
+
+        {methods.data?.password && (
+          <>
+            {providers && (
+              <div className="text-muted-foreground flex items-center gap-3 text-xs">
+                <Separator className="flex-1" />or<Separator className="flex-1" />
+              </div>
+            )}
+            {shown === "signup" ? (
+              <SignUpForm onSignedIn={onSignedIn} next={next} />
+            ) : (
+              <PasswordForm onSignedIn={onSignedIn} next={next} secondary={providers} />
+            )}
+            {(methods.data.signup || shown !== "signin") && (
+              <p className="text-muted-foreground text-center text-sm">
+                {shown === "signin" ? (
+                  <>
+                    New to camelRun?{" "}
+                    <button
+                      type="button"
+                      className="text-foreground underline underline-offset-4"
+                      onClick={() => choose("signup")}
+                    >
+                      Sign up with email
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    Have an account?{" "}
+                    <button
+                      type="button"
+                      className="text-foreground underline underline-offset-4"
+                      onClick={() => choose("signin")}
+                    >
+                      Sign in
+                    </button>
+                  </>
+                )}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </AuthLayout>
+  );
+}
