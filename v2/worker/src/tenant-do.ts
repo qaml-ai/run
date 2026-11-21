@@ -696,6 +696,8 @@ export class TenantDO extends DurableObject<Env> {
   async getBillingSummary(): Promise<{
     balanceUsd: number;
     monthlyCapUsd: number;
+    tier: string;
+    rateLimitRpm: number;
     busyAgents: { busy: number; limit: number | null };
     usage: Array<{
       day: string;
@@ -705,6 +707,14 @@ export class TenantDO extends DurableObject<Env> {
       outputTokens: number;
       vmMs: number;
       costUsd: number;
+    }>;
+    recent: Array<{
+      id: string;
+      refId: string;
+      amountUsd: number;
+      kind: string;
+      note: string | null;
+      createdAt: number;
     }>;
   }> {
     const p = this.requireProfile();
@@ -724,9 +734,21 @@ export class TenantDO extends DurableObject<Env> {
         cost_usd: number;
       }>(`SELECT * FROM usage_daily ORDER BY day DESC, model ASC LIMIT 90`)
       .toArray();
+    const ledgerRows = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        ref_id: string;
+        amount_usd: number;
+        kind: string;
+        note: string | null;
+        created_at: number;
+      }>(`SELECT id, ref_id, amount_usd, kind, note, created_at FROM credit_ledger ORDER BY created_at DESC LIMIT 50`)
+      .toArray();
     return {
       balanceUsd: p.balanceUsd,
       monthlyCapUsd: p.monthlyCapUsd,
+      tier: p.tier,
+      rateLimitRpm: p.rateLimitRpm,
       busyAgents: {
         busy: Number(busyRow?.busy ?? 0),
         limit: p.concurrencyLimit > 0 ? p.concurrencyLimit : null,
@@ -739,6 +761,14 @@ export class TenantDO extends DurableObject<Env> {
         outputTokens: u.output_tokens,
         vmMs: u.vm_ms,
         costUsd: u.cost_usd,
+      })),
+      recent: ledgerRows.map((l) => ({
+        id: l.id,
+        refId: l.ref_id,
+        amountUsd: Number(l.amount_usd),
+        kind: l.kind,
+        note: l.note,
+        createdAt: Number(l.created_at),
       })),
     };
   }
@@ -1595,11 +1625,18 @@ export class TenantDO extends DurableObject<Env> {
       repoId: string | null;
       branch: string;
       definition: string | null;
+      running: boolean;
       createdAt: number;
       updatedAt: number;
     }>
   > {
     this.requireProfile();
+    const now = Date.now();
+    this.pruneExpiredLeases(now);
+    const activeRows = this.ctx.storage.sql
+      .exec<{ agent_id: string }>(`SELECT DISTINCT agent_id FROM active_leases WHERE expires_at > ?1`, now)
+      .toArray();
+    const activeIds = new Set(activeRows.map((r) => r.agent_id));
     const rows = this.ctx.storage.sql
       .exec<{
         id: string;
@@ -1619,6 +1656,7 @@ export class TenantDO extends DurableObject<Env> {
       repoId: r.repo_id,
       branch: r.branch,
       definition: r.definition_slug,
+      running: activeIds.has(r.id),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     }));

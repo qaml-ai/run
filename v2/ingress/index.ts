@@ -1,3 +1,4 @@
+import { handleConsoleRequest, type ConsoleEnv } from "./console.ts";
 import { legacyBillingCallback, type BillingCallbackOrigin } from "./ingress-billing.ts";
 import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
 import { legacyDefinitionRead } from "../../src/v1-definition-reads.ts";
@@ -10,7 +11,7 @@ export interface LegacyOriginEnv extends LegacyVolumeOrigin {
   LEGACY_ECS_FALLBACK?: string;
 }
 
-interface Env extends LegacyOriginEnv {
+interface Env extends LegacyOriginEnv, ConsoleEnv {
   LEGACY_BILLING?: BillingCallbackOrigin;
   V2: { fetch(request: Request): Promise<Response> };
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
@@ -121,6 +122,11 @@ export default {
     const { hostname, pathname } = new URL(request.url);
     if (hostname === "run.camelai.com" && (pathname === "/v2" || pathname.startsWith("/v2/"))) {
       return env.V2.fetch(request);
+    }
+
+    if (legacyApiHost(hostname)) {
+      const consoleRes = await handleConsoleRequest(request, env);
+      if (consoleRes) return consoleRes;
     }
 
     let gatewayTried = false;
