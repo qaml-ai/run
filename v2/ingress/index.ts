@@ -27,8 +27,21 @@ export default {
       return env.V2.fetch(request);
     }
 
-    if (isApiHost(hostname) && isRetiredApiPath(pathname)) {
-      return legacyRetired();
+    if (isApiHost(hostname)) {
+      if (isRetiredApiPath(pathname)) return legacyRetired();
+      if (request.method === "GET" || request.method === "HEAD") {
+        if (pathname === "/") return Response.redirect("https://camelai.com/run", 302);
+        if (pathname === "/docs" || pathname.startsWith("/docs/")) return Response.redirect("https://camelai.com/docs/camelrun/overview", 302);
+        if (pathname === "/llms.txt") return Response.redirect("https://camelai.com/docs/llms.txt", 302);
+        if (pathname === "/robots.txt") return new Response("User-agent: *\nAllow: /\n", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=3600" } });
+        if (pathname === "/health" || pathname === "/healthz") {
+          return env.V2.fetch(new Request(new URL("/v2/health", request.url), request));
+        }
+      }
+      return Response.json(
+        { error: "Not found", api: "/v2", docs: "https://camelai.com/docs/camelrun/overview" },
+        { status: 404, headers: { "Cache-Control": "no-store" } },
+      );
     }
 
     // On a Workers Route this sends the original request to the hostname's
