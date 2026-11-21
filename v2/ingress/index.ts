@@ -14,6 +14,7 @@ export interface LegacyOriginEnv extends LegacyVolumeOrigin {
 interface Env extends LegacyOriginEnv, ConsoleEnv {
   LEGACY_BILLING?: BillingCallbackOrigin;
   V2: { fetch(request: Request): Promise<Response> };
+  V2_HOSTED_MCP?: string;
   LEGACY_V1_CANARY_AUTH_SHA256?: string;
   LEGACY_DECISIONS?: { route(request: Request): Promise<Response | null> };
   LEGACY_DECISIONS_CANARY_AUTH_SHA256?: string;
@@ -117,10 +118,38 @@ function legacyBridgedApiRoute(pathname: string, method: string, hasAuth: boolea
   return false;
 }
 
+function hasV2TenantBearer(request: Request): boolean {
+  const auth = request.headers.get("authorization");
+  return typeof auth === "string" && /^Bearer\s+cr_live_/i.test(auth.trim());
+}
+
+function forwardToV2Mcp(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  url.pathname = "/v2/mcp";
+  return env.V2.fetch(new Request(url, request));
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { hostname, pathname } = new URL(request.url);
     if (hostname === "run.camelai.com" && (pathname === "/v2" || pathname.startsWith("/v2/"))) {
+      return env.V2.fetch(request);
+    }
+    if (
+      legacyApiHost(hostname) &&
+      pathname === "/mcp" &&
+      !request.headers.has("upgrade") &&
+      (hasV2TenantBearer(request) ||
+        env.V2_HOSTED_MCP === "1" ||
+        (!env.LEGACY_V1 && env.LEGACY_ECS_FALLBACK === "0"))
+    ) {
+      return forwardToV2Mcp(request, env);
+    }
+    if (
+      hostname === "run.camelai.com" &&
+      (pathname === "/.well-known/oauth-protected-resource/v2/mcp" ||
+        /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(pathname))
+    ) {
       return env.V2.fetch(request);
     }
 
