@@ -100,7 +100,7 @@ export async function handleListVoiceCalls(c: Context<{ Bindings: Env }>): Promi
 
 export async function handleGetVoiceCall(c: Context<{ Bindings: Env }>): Promise<Response> {
   const auth = await authenticateRequest(c.env, c.req.raw);
-  const id = c.req.param("id");
+  const id = c.req.param("id") ?? "";
   if (!id.startsWith("vc_")) throw new ApiError(404, "voice_call_not_found", "Voice call not found");
   const call = await getVoiceCallStub(c.env, id).getCall(auth.tenantId);
   return c.json(call, 200, NO_STORE);
@@ -108,7 +108,7 @@ export async function handleGetVoiceCall(c: Context<{ Bindings: Env }>): Promise
 
 export async function handleUpdateVoiceCall(c: Context<{ Bindings: Env }>): Promise<Response> {
   const auth = await authenticateRequest(c.env, c.req.raw);
-  const id = c.req.param("id");
+  const id = c.req.param("id") ?? "";
   if (!id.startsWith("vc_")) throw new ApiError(404, "voice_call_not_found", "Voice call not found");
   const patch = parseSchema(VoiceCallUpdate, await readJsonBody(c.req.raw));
   const call = await getVoiceCallStub(c.env, id).updateCall(auth.tenantId, patch);
@@ -117,7 +117,7 @@ export async function handleUpdateVoiceCall(c: Context<{ Bindings: Env }>): Prom
 
 export async function handleEndVoiceCall(c: Context<{ Bindings: Env }>, withBody: boolean): Promise<Response> {
   const auth = await authenticateRequest(c.env, c.req.raw);
-  const id = c.req.param("id");
+  const id = c.req.param("id") ?? "";
   if (!id.startsWith("vc_")) throw new ApiError(404, "voice_call_not_found", "Voice call not found");
   const input = withBody ? parseSchema(VoiceCallEndInput, await readJsonBody(c.req.raw)) : {};
   const call = await getVoiceCallStub(c.env, id).endCall(auth.tenantId, input.reason ?? "requested");
@@ -126,7 +126,7 @@ export async function handleEndVoiceCall(c: Context<{ Bindings: Env }>, withBody
 
 export async function handleVoiceCallTranscript(c: Context<{ Bindings: Env }>): Promise<Response> {
   const auth = await authenticateRequest(c.env, c.req.raw);
-  const id = c.req.param("id");
+  const id = c.req.param("id") ?? "";
   if (!id.startsWith("vc_")) throw new ApiError(404, "voice_call_not_found", "Voice call not found");
   const input = parseSchema(VoiceTranscriptInput, await readJsonBody(c.req.raw, 64 * 1024, false));
   const out = await getVoiceCallStub(c.env, id).recordTranscript(auth.tenantId, input);

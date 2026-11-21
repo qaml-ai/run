@@ -242,11 +242,12 @@ test("v2 VoiceCallDO: OpenAI WebRTC sideband + ask_agent + hangup AND ElevenLabs
   assert.match(oaiCall.id, /^vc_[a-f0-9]{24}$/);
   assert.equal(oaiCall.state, "live");
   assert.ok(oaiCall.connect.sdpAnswer.includes("s=answer"));
-  assert.ok(sidebandSocket, "Expected OpenAI sideband WebSocket to connect");
+  const socket = sidebandSocket as Duplex | null;
+  assert.ok(socket, "Expected OpenAI sideband WebSocket to connect");
 
   // Trigger response.created + response.done + ask_agent + stay_silent over sideband
-  sidebandSocket.write(wsEncodeText(JSON.stringify({ type: "response.created", response: { id: "resp_1" } })));
-  sidebandSocket.write(
+  socket.write(wsEncodeText(JSON.stringify({ type: "response.created", response: { id: "resp_1" } })));
+  socket.write(
     wsEncodeText(
       JSON.stringify({
         type: "response.done",
@@ -261,7 +262,7 @@ test("v2 VoiceCallDO: OpenAI WebRTC sideband + ask_agent + hangup AND ElevenLabs
       }),
     ),
   );
-  sidebandSocket.write(
+  socket.write(
     wsEncodeText(
       JSON.stringify({
         type: "response.function_call_arguments.done",
@@ -272,7 +273,7 @@ test("v2 VoiceCallDO: OpenAI WebRTC sideband + ask_agent + hangup AND ElevenLabs
       }),
     ),
   );
-  sidebandSocket.write(
+  socket.write(
     wsEncodeText(
       JSON.stringify({
         type: "response.function_call_arguments.done",
