@@ -139,10 +139,27 @@ async function openSideband(
   key: string,
   events: SidebandEvents,
 ): Promise<Sideband> {
-  const response = await fetchImpl(url, {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const handshake = fetchImpl(url, {
     headers: { ...auth(key), Upgrade: "websocket" },
     redirect: "manual",
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  handshake
+    .then((res) => {
+      if (timedOut) res.webSocket?.close();
+    })
+    .catch(() => {});
+  const response = await Promise.race([
+    handshake,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new Error("OpenAI realtime sideband timed out"));
+      }, TIMEOUT_MS);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
   });
   const socket = response.webSocket;
   if (response.status !== 101 || !socket) throw await responseError(response, key);
