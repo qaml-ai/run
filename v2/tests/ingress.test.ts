@@ -558,3 +558,19 @@ test("v1 bridge flag routes translated v1 writes and channel webhooks to LEGACY_
   }
   assert.equal(origin.mock.callCount(), 0);
 });
+
+test("voice-only ECS fallback permits /v1/voice/* while keeping all other retired routes off ECS", async t => {
+  const origin = t.mock.method(globalThis, "fetch", async () => new Response("voice-ecs", { status: 200 }));
+  const env = {
+    V2: { fetch: async () => new Response(null) },
+    LEGACY_V1: { route: async () => null },
+    LEGACY_V1_BRIDGE: "1",
+    LEGACY_ECS_FALLBACK: "voice",
+  };
+  const voice = await worker.fetch(new Request("https://run.camelai.com/v1/voice/sessions", { method: "POST", body: "{}" }), env);
+  assert.equal(voice.status, 200);
+  assert.equal(await voice.text(), "voice-ecs");
+  const nonVoice = await worker.fetch(new Request("https://run.camelai.com/v1/unknown-legacy"), env);
+  assert.equal(nonVoice.status, 410);
+  assert.equal(origin.mock.callCount(), 1);
+});

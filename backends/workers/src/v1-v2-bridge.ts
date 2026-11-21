@@ -449,9 +449,9 @@ export async function handleBridgedAgentCreate(
       tenant,
       `/v2/agents/${encodeURIComponent(v2AgentId)}/history/import`,
       new Request(`https://legacy-v2.internal/v2/agents/${encodeURIComponent(v2AgentId)}/history/import`, {
-        method: "POST",
+        method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: initialMessages, repair: true }),
+        body: JSON.stringify({ source: `v1:${tenant}:${clientId}`, messages: initialMessages, repair: true }),
       }),
     );
   }

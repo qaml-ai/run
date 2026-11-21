@@ -75,7 +75,7 @@ function legacyUnavailable() {
 
 function legacyVolumeOrigin(request: Request, env: LegacyOriginEnv, source: "edge" | "mcp") {
   // Strict volumes run on the independently deployed volume service.
-  if (env.LEGACY_ECS_FALLBACK === "0" && env.LEGACY_VOLUMES_STRICT_GLOBAL !== "1") return;
+  if ((env.LEGACY_ECS_FALLBACK === "0" || env.LEGACY_ECS_FALLBACK === "voice") && env.LEGACY_VOLUMES_STRICT_GLOBAL !== "1") return;
   return legacyVolumes(request, env, source);
 }
 
@@ -93,13 +93,20 @@ export async function fetchLegacyApi(request: Request, env: LegacyOriginEnv = {}
     return new Response(null, { status: 404 });
   }
   return legacyVolumeOrigin(request, env, "mcp") ?? await gatewayText(request, env) ??
-    (env.LEGACY_ECS_FALLBACK === "0" ? legacyUnavailable() : fetch(request, { redirect: "manual" }));
+    (ecsFallbackBlocked(env.LEGACY_ECS_FALLBACK, pathname) ? legacyUnavailable() : fetch(request, { redirect: "manual" }));
 }
 
 const legacyChannelWebhookRoute = /^\/channels\/[^/]+\/[^/]+$/;
 const legacyDefinitionWriteRoute = /^\/v1\/definitions(?:\/[^/]+)?$/;
 const legacyStatelessRunRoute = /^\/v1\/runs(?:\/run_[a-f0-9]{16,40})?$/;
 const legacyMediaDecisionPaths = new Set(["/v1/speech", "/v1/transcriptions", "/v1/images", "/v1/decisions"]);
+const legacyVoicePath = /^\/v1\/voice(?:\/|$)/;
+
+function ecsFallbackBlocked(mode: string | undefined, pathname: string): boolean {
+  if (mode === "0") return true;
+  if (mode === "voice") return !legacyVoicePath.test(pathname);
+  return false;
+}
 
 function legacyBridgedApiRoute(pathname: string, method: string, hasAuth: boolean) {
   if (!hasAuth) return false;
@@ -167,7 +174,7 @@ export default {
       if (compatible) return compatible;
     }
 
-    if (env.LEGACY_ECS_FALLBACK === "0" && legacyApiHost(hostname) && retiredApiPath(pathname)) {
+    if (ecsFallbackBlocked(env.LEGACY_ECS_FALLBACK, pathname) && legacyApiHost(hostname) && retiredApiPath(pathname)) {
       return legacyUnavailable();
     }
 
