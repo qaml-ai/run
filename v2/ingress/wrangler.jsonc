@@ -14,7 +14,14 @@
     "not_found_handling": "none",
     "run_worker_first": true
   },
-  "vars": { "LEGACY_GATEWAY_TEXT_ROUTING": "1", "LEGACY_V1_BRIDGE": "1", "LEGACY_ECS_FALLBACK": "0", "LEGACY_VOLUMES_STRICT_GLOBAL": "1" },
+  "vars": {
+    "LEGACY_GATEWAY_TEXT_ROUTING": "1",
+    "LEGACY_V1_BRIDGE": "1",
+    "LEGACY_ECS_FALLBACK": "0",
+    "LEGACY_VOLUMES_STRICT_GLOBAL": "1",
+    "AGENT_ADMIN_ACCESS_TEAM": "qaml",
+    "AGENT_ADMIN_ACCESS_AUD": "041fd04d6d1fb5bc79df2e24d35bde86085109e322819cdc0964501ba5bd3478"
+  },
   "services": [
     { "binding": "V2", "service": "camelrun-v2-prod" },
     { "binding": "LEGACY_V1", "service": "camelrun-v1-compat-prod", "entrypoint": "LegacyV1" },

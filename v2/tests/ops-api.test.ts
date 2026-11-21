@@ -24,7 +24,7 @@ const VAULT_SECRET = "test-vault-secret-ops-api";
 test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects agents, and applies operator controls", async (t) => {
   // Spin up a local fake camelfsd health server
   const healthServer = createServer((req, res) => {
-    if (req.url === "/v0/health") {
+    if (req.url === "/healthz") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;

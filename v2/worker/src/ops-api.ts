@@ -881,7 +881,7 @@ async function probeCamelfsHealth(env: Env): Promise<AdminCheck> {
   }
   const started = Date.now();
   try {
-    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/v0/health`, {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/healthz`, {
       method: "GET",
       signal: AbortSignal.timeout(3_000),
     });
@@ -900,7 +900,7 @@ async function probeCamelfsHealth(env: Env): Promise<AdminCheck> {
       label: "camelfsd storage",
       status: "bad",
       value: `HTTP ${res.status}`,
-      detail: `${new URL(baseUrl).host}/v0/health returned HTTP ${res.status} (${latencyMs} ms).`,
+      detail: `${new URL(baseUrl).host}/healthz returned HTTP ${res.status} (${latencyMs} ms).`,
     };
   } catch (caught) {
     return {
