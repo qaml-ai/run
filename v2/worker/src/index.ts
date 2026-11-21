@@ -1224,6 +1224,37 @@ app.post("/v2/admin/legacy-bridge-token", async (c) => {
   return c.json({ v1Tenant: body.v1Tenant.trim(), v2TenantId: tenantId, apiKey: token });
 });
 
+app.post("/v2/admin/voice-agent-token", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await c.req.json()) as { v1Tenant?: string; v2TenantId?: string; agentId?: string };
+  const v1Tenant = body.v1Tenant?.trim();
+  const agentId = body.agentId?.trim();
+  if (!v1Tenant || !agentId) {
+    throw new ApiError(400, "invalid_request", "`v1Tenant` and `agentId` are required");
+  }
+  const candidates: string[] = [];
+  if (body.v2TenantId?.trim() && /^tnt_[0-9a-f]{16}$/.test(body.v2TenantId.trim())) {
+    candidates.push(body.v2TenantId.trim());
+  }
+  const bridgeTenantId = await legacyBridgeTenantId(v1Tenant);
+  if (!candidates.includes(bridgeTenantId)) {
+    candidates.push(bridgeTenantId);
+  }
+  for (const tenantId of candidates) {
+    const stub = getTenantStub(c.env, tenantId);
+    const profile = await stub.getProfile();
+    if (!profile) continue;
+    const entry = await stub.resolveAgent(agentId);
+    if (entry && entry.tenantId === tenantId) {
+      const agentToken = await openSecret(entry.sealedToken, c.env.VAULT_SECRET);
+      return c.json({ agentId: entry.id, tenantId, agentToken });
+    }
+  }
+  throw new ApiError(404, "agent_not_found", "Unknown agent");
+});
+
 /** Private binding used by the v1 adapter after it authenticates and loads a published migration route or translates v1 calls to v2. */
 export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
   async route(tenant: string, agent: string, request: Request): Promise<Response> {

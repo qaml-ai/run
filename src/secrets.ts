@@ -87,9 +87,26 @@ export async function runtimeSecrets(env = process.env) {
       modelResources: env.AGENT_AZURE_OPENAI_MODEL_RESOURCES ? JSON.parse(env.AGENT_AZURE_OPENAI_MODEL_RESOURCES) : undefined,
     }, "AGENT_AZURE_OPENAI_ENDPOINT and AGENT_AZURE_OPENAI_API_KEY");
   }
+  const v2AdminArn = exclusive(["AGENT_V2_ADMIN_SECRET"], "AGENT_V2_ADMIN_SECRET_ARN");
+  let v2AdminSecret = env.AGENT_V2_ADMIN_SECRET?.trim() || undefined;
+  if (v2AdminArn) {
+    let text = "";
+    try { text = await read(v2AdminArn); }
+    catch (error) { if ((error as Error).name !== "ResourceNotFoundException") throw error; }
+    if (text.trim()) {
+      try {
+        const parsed = JSON.parse(text) as { ADMIN_SECRET?: unknown; adminSecret?: unknown };
+        v2AdminSecret = typeof parsed.ADMIN_SECRET === "string" ? parsed.ADMIN_SECRET.trim()
+          : typeof parsed.adminSecret === "string" ? parsed.adminSecret.trim() : undefined;
+      } catch {
+        v2AdminSecret = text.trim();
+      }
+    }
+  }
   return {
     ...(journeySecret === undefined ? {} : { journeySecret }),
     ...(azureOpenAI ? { azureOpenAI } : {}),
+    ...(v2AdminSecret ? { v2AdminSecret } : {}),
     // Reports are the journey store's: with journey events waiting for their secret, they wait too.
     ...(journeyReportSecret && journeySecret !== null ? { journeyReportSecret } : {}),
     sessionSecret: sessionArn ? await read(sessionArn) : env.AGENT_SESSION_SECRET,

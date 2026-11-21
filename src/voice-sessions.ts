@@ -604,7 +604,7 @@ export class VoiceSessions {
   private settings(input: Record<string, unknown>, socket = false): VoiceOptions {
     const deliverGiven = input.deliver === undefined ? {} : object(input.deliver, "deliver");
     only(deliverGiven, "deliver", ["agent", "webhooks"]);
-    const agent = deliverGiven.agent === undefined ? undefined : text(deliverGiven.agent, "deliver.agent", /^client_[a-f0-9]{40}$/, "an agent id");
+    const agent = deliverGiven.agent === undefined ? undefined : text(deliverGiven.agent, "deliver.agent", /^(?:client_[a-f0-9]{40}|agt_[a-zA-Z0-9_-]{8,64})$/, "an agent id");
     if (deliverGiven.webhooks !== undefined && typeof deliverGiven.webhooks !== "boolean") throw new HttpError(400, "deliver.webhooks must be true or false");
     const webhooks = deliverGiven.webhooks !== false;
     const identity = identityInput({ subject: input.subject, context: input.context });

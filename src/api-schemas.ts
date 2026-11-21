@@ -1936,7 +1936,7 @@ const callMetadata = z.record(z.string(), z.unknown()).refine(value => Buffer.by
 const callSpeakers = z.record(z.string().min(1).max(100), z.string().min(1).max(VOICE_LIMITS.speakerNameChars))
   .refine(value => Object.keys(value).length <= VOICE_LIMITS.speakers, `speakers must name at most ${VOICE_LIMITS.speakers} users`);
 export const VoiceCallInput = z.strictObject({
-  agent: z.string().regex(/^client_[a-f0-9]{40}$/),
+  agent: z.string().regex(/^(?:client_[a-f0-9]{40}|agt_[a-zA-Z0-9_-]{8,64})$/),
   provider: z.enum(["openai", "elevenlabs"]),
   model: z.string().optional(),
   voice: z.string().optional(),

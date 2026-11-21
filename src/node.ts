@@ -93,6 +93,7 @@ import { nodeLoadLine, nodeUrl, supersession, taskAddress, TaskProtection } from
 import { cgroupMemory } from "./process-memory.ts";
 import { decisionLoadLine, recordCreate, safeError, Steps, webhookBacklogLine } from "./metrics.ts";
 import { runtimeSecrets } from "./secrets.ts";
+import { parseSSE } from "../v2/sdk/src/sse.ts";
 import { checkSandbox } from "./codemode.ts";
 import { PiV8Sandbox, type CodeSandboxes } from "./codemode-pi-launcher.ts";
 import { V8Exec } from "./v8-exec.ts";
@@ -725,12 +726,107 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
   }
 
   /** Delete an agent wherever it is served: here, or on the node that owns it. */
+  const v2VoiceBase = (config.env.AGENT_V2_URL || config.env.AGENT_PUBLIC_URL || "").trim().replace(/\/+$/, "");
+  const v2VoiceAdminSecret = secrets.v2AdminSecret;
+  let v2VoiceTenantMap: Record<string, string> = {};
+  if (config.env.AGENT_V2_TENANT_MAP?.trim()) {
+    try {
+      const parsed = JSON.parse(config.env.AGENT_V2_TENANT_MAP);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) v2VoiceTenantMap = parsed as Record<string, string>;
+    } catch { /* ignore invalid map */ }
+  }
+  async function resolveV2VoiceAgent(agent: string, tenant: string, signal?: AbortSignal): Promise<{ agentId: string; tenantId: string; agentToken: string } | null> {
+    if (!v2VoiceBase || !v2VoiceAdminSecret) return null;
+    const response = await fetch(`${v2VoiceBase}/v2/admin/voice-agent-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Key": v2VoiceAdminSecret },
+      body: JSON.stringify({ v1Tenant: tenant, v2TenantId: v2VoiceTenantMap[tenant], agentId: agent }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new HttpError(response.status, `v2 voice agent lookup failed (${response.status}): ${text.slice(0, 200)}`);
+    }
+    return await response.json() as { agentId: string; tenantId: string; agentToken: string };
+  }
+  async function voiceAgentOwned(agent: string, tenant: string): Promise<boolean> {
+    if (agent.startsWith("client_") && await clients.owns(agent, tenant, true)) return true;
+    return (await resolveV2VoiceAgent(agent, tenant)) !== null;
+  }
+  async function* submitStreamingV2(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
+    const resolved = await resolveV2VoiceAgent(agent, tenant, signal);
+    if (!resolved) throw new HttpError(404, "Unknown agent");
+    const prompt = typeof request.params?.text === "string" ? request.params.text : "";
+    const runRes = await fetch(`${v2VoiceBase}/v2/agents/${encodeURIComponent(resolved.agentId)}/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${resolved.agentToken}` },
+      body: JSON.stringify({ prompt, idempotencyKey: request.id }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    });
+    if (!runRes.ok) {
+      const errText = await runRes.text().catch(() => "");
+      throw new HttpError(runRes.status, `v2 agent run failed (${runRes.status}): ${errText.slice(0, 200)}`);
+    }
+    const run = await runRes.json() as { id: string; status?: string; outputText?: string | null; error?: string | null };
+    if (run.status === "completed" && typeof run.outputText === "string" && run.outputText) {
+      yield run.outputText;
+      return;
+    }
+    if (run.status === "failed" || run.status === "cancelled") {
+      throw new HttpError(502, run.error || `Agent run ${run.status}`);
+    }
+    const streamController = new AbortController();
+    const onAbort = () => streamController.abort(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) streamController.abort(signal.reason);
+    try {
+      const eventsRes = await fetch(
+        `${v2VoiceBase}/v2/agents/${encodeURIComponent(resolved.agentId)}/events?after=0&runId=${encodeURIComponent(run.id)}&follow=1`,
+        {
+          headers: { Accept: "text/event-stream", Authorization: `Bearer ${resolved.agentToken}` },
+          signal: streamController.signal,
+        },
+      );
+      if (!eventsRes.ok || !eventsRes.body) {
+        const errText = await eventsRes.text().catch(() => "");
+        throw new HttpError(eventsRes.status, `v2 agent events failed (${eventsRes.status}): ${errText.slice(0, 200)}`);
+      }
+      let yielded = false;
+      for await (const frame of parseSSE(eventsRes, streamController.signal)) {
+        if (!frame.data) continue;
+        let event: { type?: string; data?: Record<string, unknown> };
+        try { event = JSON.parse(frame.data) as { type?: string; data?: Record<string, unknown> }; }
+        catch { continue; }
+        if (event.type === "text_delta" && typeof event.data?.delta === "string" && event.data.delta) {
+          yielded = true;
+          yield event.data.delta;
+        } else if (event.type === "run_completed") {
+          if (!yielded && typeof event.data?.outputText === "string" && event.data.outputText) {
+            yield event.data.outputText;
+          }
+          return;
+        } else if (event.type === "run_failed" || event.type === "run_cancelled") {
+          const msg = typeof event.data?.error === "string" ? event.data.error : event.type;
+          throw new HttpError(502, msg);
+        }
+      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      streamController.abort();
+    }
+  }
+
   /**
    * Submit a prompt to an agent wherever it is served, and yield the text its run writes as it is written (voice
    * sessions speak an agent's reply as it comes). The agent's node streams it here as NDJSON lines ({"text"}, then
    * {"done"}).
    */
   async function* submitStreamingAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
+    if (v2VoiceBase && v2VoiceAdminSecret && (!agent.startsWith("client_") || !(await clients.owns(agent, tenant, true)))) {
+      yield* submitStreamingV2(agent, tenant, request, signal);
+      return;
+    }
     const owner = await clients.ownerElsewhere(agent);
     if (!owner) { yield* clients.submitStreaming(agent, tenant, request, signal); return; }
     yield* streamedText(agent, await signedPost(owner, `/internal/agents/${agent}/stream`, { tenant, request }, 15 * 60_000, signal).catch(error => { ownership.forget(agent); throw error; }));
@@ -957,7 +1053,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // Recordings are kept in the node's object storage, under recordings/.
     db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted,
-    agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    agentOwned: (agent, tenant) => voiceAgentOwned(agent, tenant),
     // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
     transcriber,
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
@@ -993,7 +1089,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     } : {}),
   });
   const calls = config.voice.realtime.some(provider => provider === "openai" || provider === "elevenlabs") ? new VoiceCalls({
-    db, node, admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted, agentOwned: (agent, tenant) => clients.owns(agent, tenant, true),
+    db, node, admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted, agentOwned: (agent, tenant) => voiceAgentOwned(agent, tenant),
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     ...(deps.voiceCallOverrides?.record ? {} : {
       recordIn: (sql, tenant, usage) => accounts.recordUsageIn(sql, tenant, "", usage),
