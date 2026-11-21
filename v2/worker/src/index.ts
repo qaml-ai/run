@@ -40,6 +40,17 @@ import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts"
 import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
+import { VoiceCallDO } from "./voice-call-do.ts";
+import {
+  handleCreateVoiceCall,
+  handleElevenLabsPostCall,
+  handleElevenLabsTool,
+  handleEndVoiceCall,
+  handleGetVoiceCall,
+  handleListVoiceCalls,
+  handleUpdateVoiceCall,
+  handleVoiceCallTranscript,
+} from "./voice-api.ts";
 import { toolIdentityKeys } from "./tool-identity.ts";
 import {
   ApiError,
@@ -58,7 +69,7 @@ import {
 } from "./webhooks.ts";
 import { signed as signLegacyWebhook, verifySignature as verifyLegacyWebhookSignature, webhookInbound, webhookSettings } from "../../../src/core/channels/webhook.ts";
 
-export { TenantDO, AgentDO };
+export { TenantDO, AgentDO, VoiceCallDO };
 export { LegacyGatewayTextExecution } from "./legacy-gateway-text-execution.ts";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -1054,6 +1065,16 @@ app.post("/v2/decisions", async (c) => {
   const out = await runDecisionClassifier(c.env, auth.tenantId, body);
   return c.json(out);
 });
+
+app.post("/v2/voice/calls", (c) => handleCreateVoiceCall(c));
+app.get("/v2/voice/calls", (c) => handleListVoiceCalls(c));
+app.get("/v2/voice/calls/:id", (c) => handleGetVoiceCall(c));
+app.patch("/v2/voice/calls/:id", (c) => handleUpdateVoiceCall(c));
+app.delete("/v2/voice/calls/:id", (c) => handleEndVoiceCall(c, false));
+app.post("/v2/voice/calls/:id/end", (c) => handleEndVoiceCall(c, true));
+app.post("/v2/voice/calls/:id/transcript", (c) => handleVoiceCallTranscript(c));
+app.post("/v2/voice/providers/elevenlabs/post-call", (c) => handleElevenLabsPostCall(c));
+app.post("/v2/voice/providers/elevenlabs/tools/:tool", (c) => handleElevenLabsTool(c));
 
 app.post("/v2/voice/sessions", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);

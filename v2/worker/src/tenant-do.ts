@@ -118,6 +118,7 @@ export class TenantDO extends DurableObject<Env> {
   private schemaReady = false;
   private textRunSchemaReady = false;
   private legacyTextSchemaReady = false;
+  private voiceSchemaReady = false;
   private lastKeyTouchAt = new Map<string, number>();
 
   private ensureSql(): void {
@@ -2061,5 +2062,267 @@ export class TenantDO extends DurableObject<Env> {
       sealedSecret: row.sealed_secret,
       sealedReplyUrl: row.sealed_reply_url,
     };
+  }
+
+  // ---- Voice Calls Index & ElevenLabs Provisioning Index ----
+
+  private ensureVoiceTables(): void {
+    if (this.voiceSchemaReady) return;
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS voice_calls (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        provider_call TEXT,
+        state TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_voice_calls_created ON voice_calls(created_at DESC, id DESC);
+      CREATE TABLE IF NOT EXISTS elevenlabs_call_webhooks (
+        key_hash TEXT PRIMARY KEY,
+        webhook_id TEXT NOT NULL,
+        sealed_secret TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS elevenlabs_call_agents (
+        agent_id TEXT PRIMARY KEY,
+        key_hash TEXT NOT NULL,
+        model TEXT NOT NULL,
+        persona_hash TEXT NOT NULL,
+        sealed_tool_secret TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_elevenlabs_agents_identity
+        ON elevenlabs_call_agents(key_hash, model, persona_hash);
+      CREATE TABLE IF NOT EXISTS elevenlabs_conversations (
+        provider_call TEXT PRIMARY KEY,
+        call_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    this.voiceSchemaReady = true;
+  }
+
+  async reserveVoiceCall(input: {
+    id: string;
+    agentId: string;
+    provider: string;
+    limit: number;
+  }): Promise<{ ok: true } | { ok: false; liveCount: number }> {
+    this.ensureVoiceTables();
+    return this.ctx.storage.transactionSync(() => {
+      const live = this.ctx.storage.sql
+        .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM voice_calls WHERE state != 'ended'`)
+        .one();
+      const liveCount = Number(live.cnt ?? 0);
+      if (liveCount >= input.limit) {
+        return { ok: false as const, liveCount };
+      }
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO voice_calls (id, agent_id, provider, provider_call, state, created_at, updated_at)
+         VALUES (?1, ?2, ?3, NULL, 'connecting', ?4, ?4)`,
+        input.id,
+        input.agentId,
+        input.provider,
+        now,
+      );
+      return { ok: true as const };
+    });
+  }
+
+  async updateVoiceCallIndex(input: {
+    id: string;
+    state: string;
+    providerCall?: string | null;
+  }): Promise<void> {
+    this.ensureVoiceTables();
+    this.ctx.storage.sql.exec(
+      `UPDATE voice_calls
+       SET state = ?2,
+           provider_call = COALESCE(?3, provider_call),
+           updated_at = ?4
+       WHERE id = ?1`,
+      input.id,
+      input.state,
+      input.providerCall ?? null,
+      Date.now(),
+    );
+  }
+
+  async listVoiceCallIds(input: { state?: "live" | "ended" | null; limit: number }): Promise<string[]> {
+    this.ensureVoiceTables();
+    const limit = Math.max(1, Math.min(100, Math.trunc(input.limit || 50)));
+    const rows = input.state === "ended"
+      ? this.ctx.storage.sql
+          .exec<{ id: string }>(
+            `SELECT id FROM voice_calls WHERE state = 'ended' ORDER BY created_at DESC, id DESC LIMIT ?1`,
+            limit,
+          )
+          .toArray()
+      : input.state === "live"
+        ? this.ctx.storage.sql
+            .exec<{ id: string }>(
+              `SELECT id FROM voice_calls WHERE state != 'ended' ORDER BY created_at DESC, id DESC LIMIT ?1`,
+              limit,
+            )
+            .toArray()
+        : this.ctx.storage.sql
+            .exec<{ id: string }>(
+              `SELECT id FROM voice_calls ORDER BY created_at DESC, id DESC LIMIT ?1`,
+              limit,
+            )
+            .toArray();
+    return rows.map((r) => r.id);
+  }
+
+  async getElevenLabsWebhook(keyHash: string): Promise<{ webhookId: string; sealedSecret: string } | null> {
+    this.ensureVoiceTables();
+    const row = this.ctx.storage.sql
+      .exec<{ webhook_id: string; sealed_secret: string }>(
+        `SELECT webhook_id, sealed_secret FROM elevenlabs_call_webhooks WHERE key_hash = ?1 LIMIT 1`,
+        keyHash,
+      )
+      .toArray()[0];
+    return row ? { webhookId: row.webhook_id, sealedSecret: row.sealed_secret } : null;
+  }
+
+  async putElevenLabsWebhook(input: {
+    keyHash: string;
+    webhookId: string;
+    sealedSecret: string;
+  }): Promise<{ webhookId: string; sealedSecret: string }> {
+    this.ensureVoiceTables();
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.ctx.storage.sql
+        .exec<{ webhook_id: string; sealed_secret: string }>(
+          `SELECT webhook_id, sealed_secret FROM elevenlabs_call_webhooks WHERE key_hash = ?1 LIMIT 1`,
+          input.keyHash,
+        )
+        .toArray()[0];
+      if (existing) return { webhookId: existing.webhook_id, sealedSecret: existing.sealed_secret };
+      this.ctx.storage.sql.exec(
+        `INSERT INTO elevenlabs_call_webhooks (key_hash, webhook_id, sealed_secret, created_at)
+         VALUES (?1, ?2, ?3, ?4)`,
+        input.keyHash,
+        input.webhookId,
+        input.sealedSecret,
+        Date.now(),
+      );
+      return { webhookId: input.webhookId, sealedSecret: input.sealedSecret };
+    });
+  }
+
+  async findElevenLabsAgent(input: {
+    keyHash: string;
+    model: string;
+    personaHash: string;
+  }): Promise<{ agentId: string; sealedToolSecret: string } | null> {
+    this.ensureVoiceTables();
+    const row = this.ctx.storage.sql
+      .exec<{ agent_id: string; sealed_tool_secret: string }>(
+        `SELECT agent_id, sealed_tool_secret FROM elevenlabs_call_agents
+         WHERE key_hash = ?1 AND model = ?2 AND persona_hash = ?3 LIMIT 1`,
+        input.keyHash,
+        input.model,
+        input.personaHash,
+      )
+      .toArray()[0];
+    if (!row) return null;
+    this.ctx.storage.sql.exec(
+      `UPDATE elevenlabs_call_agents SET last_used_at = ?2 WHERE agent_id = ?1`,
+      row.agent_id,
+      Date.now(),
+    );
+    return { agentId: row.agent_id, sealedToolSecret: row.sealed_tool_secret };
+  }
+
+  async putElevenLabsAgent(input: {
+    keyHash: string;
+    model: string;
+    personaHash: string;
+    agentId: string;
+    sealedToolSecret: string;
+  }): Promise<{ agentId: string; sealedToolSecret: string }> {
+    this.ensureVoiceTables();
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.ctx.storage.sql
+        .exec<{ agent_id: string; sealed_tool_secret: string }>(
+          `SELECT agent_id, sealed_tool_secret FROM elevenlabs_call_agents
+           WHERE key_hash = ?1 AND model = ?2 AND persona_hash = ?3 LIMIT 1`,
+          input.keyHash,
+          input.model,
+          input.personaHash,
+        )
+        .toArray()[0];
+      if (existing) return { agentId: existing.agent_id, sealedToolSecret: existing.sealed_tool_secret };
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO elevenlabs_call_agents (agent_id, key_hash, model, persona_hash, sealed_tool_secret, created_at, last_used_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)`,
+        input.agentId,
+        input.keyHash,
+        input.model,
+        input.personaHash,
+        input.sealedToolSecret,
+        now,
+      );
+      return { agentId: input.agentId, sealedToolSecret: input.sealedToolSecret };
+    });
+  }
+
+  async getElevenLabsAgentById(agentId: string): Promise<{ keyHash: string; sealedToolSecret: string } | null> {
+    this.ensureVoiceTables();
+    const row = this.ctx.storage.sql
+      .exec<{ key_hash: string; sealed_tool_secret: string }>(
+        `SELECT key_hash, sealed_tool_secret FROM elevenlabs_call_agents WHERE agent_id = ?1 LIMIT 1`,
+        agentId,
+      )
+      .toArray()[0];
+    return row ? { keyHash: row.key_hash, sealedToolSecret: row.sealed_tool_secret } : null;
+  }
+
+  async upsertElevenLabsConversation(input: {
+    providerCall: string;
+    callId: string;
+    tenantId: string;
+    state: string;
+  }): Promise<void> {
+    this.ensureVoiceTables();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO elevenlabs_conversations (provider_call, call_id, tenant_id, state, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(provider_call) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+      input.providerCall,
+      input.callId,
+      input.tenantId,
+      input.state,
+      Date.now(),
+    );
+  }
+
+  async findElevenLabsConversation(
+    providerCall: string,
+    liveOnly = false,
+  ): Promise<{ callId: string; tenantId: string; state: string } | null> {
+    this.ensureVoiceTables();
+    const row = liveOnly
+      ? this.ctx.storage.sql
+          .exec<{ call_id: string; tenant_id: string; state: string }>(
+            `SELECT call_id, tenant_id, state FROM elevenlabs_conversations WHERE provider_call = ?1 AND state = 'live' LIMIT 1`,
+            providerCall,
+          )
+          .toArray()[0]
+      : this.ctx.storage.sql
+          .exec<{ call_id: string; tenant_id: string; state: string }>(
+            `SELECT call_id, tenant_id, state FROM elevenlabs_conversations WHERE provider_call = ?1 LIMIT 1`,
+            providerCall,
+          )
+          .toArray()[0];
+    return row ? { callId: row.call_id, tenantId: row.tenant_id, state: row.state } : null;
   }
 }

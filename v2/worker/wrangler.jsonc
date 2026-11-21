@@ -10,7 +10,11 @@
     "CAMELFS_URL": "http://127.0.0.1:8790",
     "CAMELFS_SIGNING_KEY": "",
     "CAMELFS_DEV_TOKEN": "dev-camelfs-token",
-    "DEFAULT_MODEL": "openrouter/meta/muse-ember"
+    "DEFAULT_MODEL": "openrouter/meta/muse-ember",
+    "AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD": "0.08",
+    "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD": "0.001",
+    "AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD": "0.012",
+    "AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD": "0.003"
   },
   "images": { "binding": "IMAGES" },
   "r2_buckets": [
@@ -44,6 +48,10 @@
       {
         "name": "AGENT_DO",
         "class_name": "AgentDO"
+      },
+      {
+        "name": "VOICE_CALL_DO",
+        "class_name": "VoiceCallDO"
       }
     ]
   },
@@ -51,6 +59,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["TenantDO", "AgentDO"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["VoiceCallDO"]
     }
   ]
 }

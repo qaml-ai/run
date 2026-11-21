@@ -2,6 +2,7 @@ import type { DurableObject } from "cloudflare:workers";
 import type { TenantDO } from "./tenant-do.ts";
 import type { ToolImageRef } from "./tool-images.ts";
 import type { AgentDO } from "./agent-do.ts";
+import type { VoiceCallDO } from "./voice-call-do.ts";
 
 export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined> & {
   [K in Exclude<keyof T, keyof DurableObject<Env>>]: T[K];
@@ -14,6 +15,7 @@ export interface Env {
   EVENTS_QUEUE?: Queue<QueueMessagePayload>;
   TENANT_DO: DurableObjectNamespace<TenantDO>;
   AGENT_DO: DurableObjectNamespace<AgentDO>;
+  VOICE_CALL_DO?: DurableObjectNamespace<VoiceCallDO>;
   ADMIN_SECRET: string;
   VAULT_SECRET: string;
   BUILDER_CUTOVER_CREDIT_TENANT_ID?: string;
@@ -31,6 +33,10 @@ export interface Env {
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   ELEVENLABS_API_KEY?: string;
+  VOICE_OPENAI_BASE_URL?: string;
+  VOICE_ELEVENLABS_BASE_URL?: string;
+  VOICE_PUBLIC_URL?: string;
+  AGENT_VOICE_SESSIONS_PER_TENANT?: string;
 }
 
 export type AuthKind = "admin" | "tenant" | "agent";

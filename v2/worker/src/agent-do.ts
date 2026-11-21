@@ -1950,6 +1950,21 @@ export class AgentDO extends DurableObject<Env> {
     return this.enqueueOrRunInternal(body, hints);
   }
 
+  async appendPassiveNote(text: string, meta?: Record<string, unknown>): Promise<{ ok: true }> {
+    this.ensureSql();
+    this.requireConfig();
+    const content: StoredMessageContent = { text, ...(meta ? { meta } : {}) };
+    const contentJson = JSON.stringify(content);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
+       VALUES (NULL, 'user', ?1, ?2, ?3)`,
+      contentJson,
+      estimateTokens(text),
+      Date.now(),
+    );
+    return { ok: true };
+  }
+
   async getRun(runId: string, byIdempotencyKey = false): Promise<RunRecord> {
     this.ensureSql();
     if (byIdempotencyKey) {

@@ -10,7 +10,12 @@
   "vars": {
     "CAMELFS_URL": "https://fs-v2.camelai.dev",
     "DEFAULT_MODEL": "azure/gpt-6.2-sol",
-    "TOOL_IDENTITY_ISSUER": "https://run.camelai.com/v2"
+    "TOOL_IDENTITY_ISSUER": "https://run.camelai.com/v2",
+    "VOICE_PUBLIC_URL": "https://run.camelai.com",
+    "AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD": "0.08",
+    "AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD": "0.001",
+    "AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD": "0.012",
+    "AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD": "0.003"
   },
   "images": { "binding": "IMAGES" },
   "services": [{ "binding": "SVG_RENDERER", "service": "camelrun-v2-svg-renderer" }],
@@ -49,6 +54,10 @@
       {
         "name": "AGENT_DO",
         "class_name": "AgentDO"
+      },
+      {
+        "name": "VOICE_CALL_DO",
+        "class_name": "VoiceCallDO"
       }
     ]
   },
@@ -58,6 +67,12 @@
       "new_sqlite_classes": [
         "TenantDO",
         "AgentDO"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "VoiceCallDO"
       ]
     }
   ],
