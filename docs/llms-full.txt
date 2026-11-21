@@ -4438,6 +4438,34 @@ internet (three redirects at most). As multipart, each is a file part named `ima
 (`context` as JSON). A `mask` (a part, or `{data}`/`{url}`) says where the first image may change: transparent there,
 an image with an alpha channel in that image's format and size.
 
+## Rendering SVG cards in v2
+
+Send an SVG to `POST /v2/images/render` to get PNG bytes in base64. Use the SVG's dimensions to size the output.
+Point `<image href="photo.png">` at an entry in `files`. Each entry is an image ID from your tenant or
+`{ data: "<base64>" }`.
+
+```ts
+const card = await client.images.render(
+  '<svg width="440" height="80"><textbox x="16" y="10" width="408" height="60" ' +
+  'font-family="Sans" font-size="32" font-weight="bold">Maria da Conceição</textbox></svg>',
+);
+await writeFile("card.png", Buffer.from(card.data, "base64"));
+```
+
+A `<textbox>` accepts plain text, `x`, `y`, `width`, `height`, `fill`, and standard font family, weight, and style.
+Set `font-size` for the largest size and optionally `min-font-size` for the one-line and wrapping threshold, which
+defaults to 60%. The renderer tries one line first, then wraps at spaces and after hyphens, commas, and slashes.
+It can shrink further to 8 px and split long words at grapheme boundaries to fit. It returns an error when the
+box is too small for the full text. Options include `align="start|middle|end"` (default `start`),
+`valign="top|middle|bottom"` (default `middle`), and `line-height` (default `1.2`).
+
+Output is limited to 4,194,304 pixels. Supply up to 16 PNG or JPEG inputs, with a maximum of 10 MiB each and
+14 MiB across the base64 data.
+
+In v2, enable the `images` builtin suite to let an agent call `render_image`. It takes the SVG, an optional
+map of image names to repository paths, and the output PNG path. The `files` suite's `view_image` tool lets
+the model inspect an existing PNG, JPEG, GIF, or WebP in its repository.
+
 ## Saving images to files
 
 On Workers, send a `repo` ID and optional directory `path` (default `images`).

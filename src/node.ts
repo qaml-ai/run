@@ -793,7 +793,7 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
         throw new HttpError(eventsRes.status, `v2 agent events failed (${eventsRes.status}): ${errText.slice(0, 200)}`);
       }
       let yielded = false;
-      for await (const frame of parseSSE(eventsRes, streamController.signal)) {
+      for await (const frame of parseSSE(eventsRes.body, streamController.signal)) {
         if (!frame.data) continue;
         let event: { type?: string; data?: Record<string, unknown> };
         try { event = JSON.parse(frame.data) as { type?: string; data?: Record<string, unknown> }; }
