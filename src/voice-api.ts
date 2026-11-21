@@ -62,7 +62,8 @@ export function voiceRoutes(route: Route, voice: () => VoiceSessions | undefined
     }
     const sessions = service();
     if (raw.byteLength > 64 * 1024) throw new HttpError(413, "Request too large");
-    return json(c, 201, await sessions.create(tenant, parseBody(schema.VoiceSessionInput, input)));
+    const agentToken = c.req.header("x-camelrun-v2-agent-token")?.trim() || undefined;
+    return json(c, 201, await sessions.create(tenant, parseBody(schema.VoiceSessionInput, input), agentToken ? { agentToken } : undefined));
   });
   route(createRoute({
     method: "get", path: "/v1/voice/sessions",

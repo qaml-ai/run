@@ -750,12 +750,25 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     }
     return await response.json() as { agentId: string; tenantId: string; agentToken: string };
   }
-  async function voiceAgentOwned(agent: string, tenant: string): Promise<boolean> {
+  async function verifyV2AgentToken(agent: string, agentToken: string): Promise<boolean> {
+    if (!v2VoiceBase || !agent.startsWith("agt_") || !agentToken) return false;
+    const response = await fetch(`${v2VoiceBase}/v2/agents/${encodeURIComponent(agent)}`, {
+      headers: { Authorization: `Bearer ${agentToken}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return false;
+    const data = await response.json().catch(() => null) as { id?: string } | null;
+    return data?.id === agent;
+  }
+  async function voiceAgentOwned(agent: string, tenant: string, agentToken?: string): Promise<boolean> {
     if (agent.startsWith("client_") && await clients.owns(agent, tenant, true)) return true;
+    if (agent.startsWith("agt_") && agentToken) return verifyV2AgentToken(agent, agentToken);
     return (await resolveV2VoiceAgent(agent, tenant)) !== null;
   }
-  async function* submitStreamingV2(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
-    const resolved = await resolveV2VoiceAgent(agent, tenant, signal);
+  async function* submitStreamingV2(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal, agentToken?: string): AsyncGenerator<string> {
+    const resolved = agent.startsWith("agt_") && agentToken
+      ? { agentId: agent, tenantId: "", agentToken }
+      : await resolveV2VoiceAgent(agent, tenant, signal);
     if (!resolved) throw new HttpError(404, "Unknown agent");
     const prompt = typeof request.params?.text === "string" ? request.params.text : "";
     const runRes = await fetch(`${v2VoiceBase}/v2/agents/${encodeURIComponent(resolved.agentId)}/runs`, {
@@ -822,9 +835,9 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
    * sessions speak an agent's reply as it comes). The agent's node streams it here as NDJSON lines ({"text"}, then
    * {"done"}).
    */
-  async function* submitStreamingAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncGenerator<string> {
-    if (v2VoiceBase && v2VoiceAdminSecret && (!agent.startsWith("client_") || !(await clients.owns(agent, tenant, true)))) {
-      yield* submitStreamingV2(agent, tenant, request, signal);
+  async function* submitStreamingAnywhere(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal, agentToken?: string): AsyncGenerator<string> {
+    if (v2VoiceBase && ((agent.startsWith("agt_") && agentToken) || (v2VoiceAdminSecret && (!agent.startsWith("client_") || !(await clients.owns(agent, tenant, true)))))) {
+      yield* submitStreamingV2(agent, tenant, request, signal, agentToken);
       return;
     }
     const owner = await clients.ownerElsewhere(agent);
@@ -1053,12 +1066,12 @@ async function buildNode(config: NodeConfig, deps: NodeDeps): Promise<RuntimeNod
     // Recordings are kept in the node's object storage, under recordings/.
     db, storage, accounts, node, ownership, transports: voiceTransports, ...(deps.voiceEndpoints ? { endpoints: deps.voiceEndpoints } : {}),
     admit: admitVoice, tenantCreditExhausted: voiceCreditExhausted,
-    agentOwned: (agent, tenant) => voiceAgentOwned(agent, tenant),
+    agentOwned: (agent, tenant, agentToken) => voiceAgentOwned(agent, tenant, agentToken),
     // Listening sessions' utterances are transcribed and billed as POST /v1/transcriptions is.
     transcriber,
     record: (tenant, usage) => accounts.recordUsage(tenant, "", usage),
     // ask_agent prompts the session's agent wherever it runs.
-    submitStreaming: (agent, tenant, request, signal) => submitStreamingAnywhere(agent, tenant, request, signal),
+    submitStreaming: (agent, tenant, request, signal, agentToken) => submitStreamingAnywhere(agent, tenant, request, signal, agentToken),
     // A session's subject pays from its bucket, where the tenant meters its end users (end-user-credits.ts).
     credit: endUsers,
     perTenant: tenant => tenants.maxVoiceSessions(tenant) ?? config.voice.perTenant, perNode: config.voice.perNode, memoryHigh: () => supervisor.memoryHigh,

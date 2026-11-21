@@ -213,7 +213,7 @@ const ID = /^vs_[a-f0-9]{24}$/;
 export const BROWSER_TOKEN_MS = 10 * 60_000;
 const actor = (id: string) => `voice:${id}`;
 const aad = (id: string) => `voice:${id}`;
-type Secret = { sessionId: string; endpoint: string | null; token: string };
+type Secret = { sessionId: string; endpoint: string | null; token: string; agentToken?: string };
 
 /** A row of voice_sessions. */
 type Row = {
@@ -432,7 +432,7 @@ export interface VoiceSessionsOptions {
   admit(tenant: string): Promise<void>;
   tenantCreditExhausted?(tenant: string): Promise<boolean>;
   /** Whether an agent is the tenant's (and not deleted), for `deliver.agent`. */
-  agentOwned(agent: string, tenant: string): Promise<boolean>;
+  agentOwned(agent: string, tenant: string, agentToken?: string): Promise<boolean>;
   /** Speech to text for listening sessions, as `POST /v1/transcriptions` makes it; without it, brain listen is refused. */
   transcriber?: Transcriber;
   /** Utterances one node transcribes at once (VOICE_LIMITS.transcriptionsPerNode). */
@@ -440,7 +440,7 @@ export interface VoiceSessionsOptions {
   /** Records the brain's usage (its speech, its inputs' transcription), as a model response's is (billing, usage.recorded). */
   record(tenant: string, usage: UsageRecord): void;
   /** Submit a prompt to an agent wherever it is served, yielding the text its run writes as it is written (ask_agent); without it, no ask_agent. */
-  submitStreaming?(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal): AsyncIterable<string>;
+  submitStreaming?(agent: string, tenant: string, request: { id: string; method: string; params: Record<string, unknown> }, signal: AbortSignal, agentToken?: string): AsyncIterable<string>;
   /** How long ask_agent waits before asking again when the agent's host stopped under it (ASK_AGENT_RETRY_MS). */
   askAgentRetryMs?: number;
   /**
@@ -676,7 +676,8 @@ export class VoiceSessions {
    * Start a session from the credentials the app forwarded: stored (the grant sealed), then taken and connected here
    * when this node can, else by a peer's scan. Answers the session with the notice the app must post.
    */
-  async create(tenant: string, input: Record<string, unknown>) {
+  async create(tenant: string, input: Record<string, unknown>, extra?: { agentToken?: string }) {
+    const agentToken = extra?.agentToken?.trim() || undefined;
     only(input, "body", ["provider", "discord", "subject", "bucket", "context", "keyScope", "deliver", "language", "prompt", "silenceMs", "maxMinutes", "idleMinutes", "emptySeconds", "ignoreUserIds", "metadata", "notice", "speak", "bargeIn", "voice", "endOfTurn", "addressing", "brain", "realtime", "speakers"]);
     const provider = input.provider ?? "discord";
     if (provider !== "discord" && provider !== "browser") throw new HttpError(400, `provider must be one of: ${VOICE_PROVIDERS.join(", ")}`);
@@ -697,7 +698,7 @@ export class VoiceSessions {
     if (listen && !this.options.transcriber) throw new HttpError(404, "Listening sessions (brain listen) are not enabled on this runtime");
     if (!listen && !this.options.transports[provider]?.speaks) throw new HttpError(404, "Voice sessions are not enabled on this runtime: its connections cannot speak");
     if (options.endOfTurn?.mode === "smart" && !this.options.turnModels) throw new HttpError(404, "Smart end of turn is not enabled on this runtime: use endOfTurn silence");
-    if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant)) throw new HttpError(404, "Unknown agent in deliver.agent");
+    if (options.deliver.agent && !await this.options.agentOwned(options.deliver.agent, tenant, agentToken)) throw new HttpError(404, "Unknown agent in deliver.agent");
     await this.options.admit(tenant);
     const refused = options.subject !== undefined ? await this.options.credit?.refusal(tenant, options.subject, options.bucket ?? DEFAULT_BUCKET) : undefined;
     if (refused) throw new HttpError(402, refused.message, "END_USER_CREDIT", { endUser: options.subject, bucket: options.bucket ?? DEFAULT_BUCKET, reason: refused.reason });
@@ -714,7 +715,7 @@ export class VoiceSessions {
     }
     const now = Date.now();
     const limit = this.options.perTenant?.(tenant) ?? VOICE_LIMITS.perTenant;
-    const secret: Secret = { sessionId: credentials.sessionId, endpoint: credentials.endpoint, token: credentials.token };
+    const secret: Secret = { sessionId: credentials.sessionId, endpoint: credentials.endpoint, token: credentials.token, ...(agentToken ? { agentToken } : {}) };
     const row = await transaction(this.db, async sql => {
       // One at a time per tenant, so its limit holds.
       await sql.query("select pg_advisory_xact_lock(hashtext('voice-sessions:' || $1))", [tenant]);
@@ -813,7 +814,7 @@ export class VoiceSessions {
       const locked = (await sql.query("select * from voice_sessions where id = $1 for update", [current.id])).rows[0] as Row;
       if (locked.state === "ended") throw new HttpError(409, `This voice session ended (${locked.end_reason}); start a new one`, "VOICE_SESSION_ENDED");
       const secret: Secret = JSON.parse(this.options.accounts.unseal(aad(id), locked.sealed!));
-      const next: Secret = { sessionId: changes.sessionId ?? secret.sessionId, endpoint: changes.endpoint === undefined ? secret.endpoint : changes.endpoint, token: changes.token ?? secret.token };
+      const next: Secret = { sessionId: changes.sessionId ?? secret.sessionId, endpoint: changes.endpoint === undefined ? secret.endpoint : changes.endpoint, token: changes.token ?? secret.token, ...(secret.agentToken ? { agentToken: secret.agentToken } : {}) };
       const options = { ...locked.options, ...(ignore ? { ignoreUserIds: ignore } : {}), ...(metadata ? { metadata } : {}), ...(speakers ? { speakers } : {}) };
       return (await sql.query(`
         update voice_sessions set sealed = $2, options = $3, channel = $4, revision = revision + 1, updated_at = $5 where id = $1 returning *`,
@@ -1328,8 +1329,8 @@ export class VoiceSessions {
   }
 
   private credentials(row: Row): VoiceCredentials {
-    const secret: Secret = JSON.parse(this.options.accounts.unseal(aad(row.id), row.sealed!));
-    return { guildId: row.guild, channelId: row.channel, userId: row.bot_user, ...secret };
+    const { sessionId, endpoint, token }: Secret = JSON.parse(this.options.accounts.unseal(aad(row.id), row.sealed!));
+    return { guildId: row.guild, channelId: row.channel, userId: row.bot_user, sessionId, endpoint, token };
   }
 
   /** What a session's media needs of its settings. */
@@ -1704,6 +1705,7 @@ export class VoiceSessions {
     const credentials = await this.options.realtime!.key(held.tenant, options().keyScope, provider.key, realtime.model);
     if (!credentials) throw new Error(`No ${provider.key} key for a realtime brain`);
     const agent = options().deliver.agent;
+    const agentToken = held.row.sealed ? (JSON.parse(this.options.accounts.unseal(aad(held.id), held.row.sealed)) as Secret).agentToken : undefined;
     const submit = agent && this.options.submitStreaming ? this.options.submitStreaming : undefined;
     const identity = () => ({ ...(options().subject !== undefined ? { subject: options().subject } : {}), context: { ...options().context, voiceSession: held.id } });
     const config = {
@@ -1768,14 +1770,14 @@ export class VoiceSessions {
           };
           let text = "";
           try {
-            for await (const piece of submit(agent!, held.tenant, body, signal)) text += piece;
+            for await (const piece of submit(agent!, held.tenant, body, signal, agentToken)) text += piece;
           } catch (error) {
             // The agent's host stopped under the request (its node retiring or handing it off, as in a rollout): asked
             // once more, by the same id, it reaches the agent's next owner, which runs it (or answers it, if it ran).
             if (text || signal.aborted || !agentMoved(error)) throw error;
             log("voice_realtime_ask_agent_retry", { error: safeError(error) });
             await clock().sleep(this.options.askAgentRetryMs ?? ASK_AGENT_RETRY_MS, { signal });
-            for await (const piece of submit(agent!, held.tenant, body, signal)) text += piece;
+            for await (const piece of submit(agent!, held.tenant, body, signal, agentToken)) text += piece;
           }
           return text;
         },
