@@ -42,7 +42,7 @@ jobs:
         run: |
           XDG_CONFIG_HOME=/tmp/xdg WRANGLER_LOG_PATH=v2/.wrangler/logs \
             node --experimental-strip-types --disable-warning=ExperimentalWarning \
-            --test --test-concurrency=1 v2/tests/*.test.ts
+            --test --test-concurrency=1 --test-timeout=180000 v2/tests/*.test.ts
 
   camelfsd:
     timeout-minutes: 15

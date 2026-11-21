@@ -1,4 +1,5 @@
 import app, { AgentDO as RuntimeAgentDO, LegacyGatewayTextExecution, TenantDO as RuntimeTenantDO } from "../../worker/src/index.ts";
+export { VoiceCallDO } from "../../worker/src/index.ts";
 import type { Env } from "../../worker/src/types.ts";
 import { mintTenantApiKey } from "../../worker/src/crypto.ts";
 import { getTenantStub } from "../../worker/src/tenant-do.ts";
