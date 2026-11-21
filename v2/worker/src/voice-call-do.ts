@@ -770,7 +770,7 @@ export class VoiceCallDO extends DurableObject<Env> {
       const deadline = Date.now() + LATE_MS;
       while (Date.now() < deadline && !signal.aborted) {
         if (current.status === "completed") {
-          const text = (current.finalText ?? "").slice(0, 4000).trim();
+          const text = (current.text ?? "").slice(0, 4000).trim();
           return { outcome: "ok", reply: text };
         }
         if (current.status === "failed" || current.status === "cancelled" || current.status === "input_required") {
