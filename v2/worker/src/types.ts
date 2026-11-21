@@ -203,6 +203,7 @@ export interface RunFile {
 export interface StoredRunFile extends RunFile {
   lineage: string;
   size: number;
+  resized?: ToolImageRef;
 }
 
 export interface StartRunInput {

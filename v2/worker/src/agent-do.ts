@@ -2178,7 +2178,10 @@ export class AgentDO extends DurableObject<Env> {
       }
       const lineage = config.lineage;
       if (!lineage) throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
-      const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })));
+      const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })), {
+        env: this.env,
+        tenantId: config.tenantId,
+      });
       if (files.some(file => sourceFileSizes?.has(file.path) && sourceFileSizes.get(file.path) !== file.size)) {
         throw new ApiError(422, "invalid_history", "A pinned attachment differs in size from its v1 workspace file");
       }

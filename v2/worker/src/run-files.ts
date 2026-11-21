@@ -1,9 +1,11 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { imageHeader, imageIntact } from "../../../src/image-header.ts";
 import { toolImageKey, type ToolImageRef } from "./tool-images.ts";
 import { z } from "zod";
 import { FILE_LIMITS } from "../../../src/limits.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
-import { ApiError, type RunFile, type StoredRunFile } from "./types.ts";
+import { ApiError, type Env, type RunFile, type StoredRunFile } from "./types.ts";
 import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
 
 const runFilesSchema = z.array(z.object({
@@ -42,9 +44,63 @@ function imageHeaderMatches(base64: string, contentType: string): boolean {
   }
 }
 
+const MAX_RESIZABLE_IMAGE_BYTES = 32 * 1024 * 1024;
+
+async function resizeOversizedAttachmentImage(
+  cfs: CamelFsClient,
+  lineage: string,
+  file: RunFile,
+  size: number,
+  media: { env: Pick<Env, "MEDIA_BUCKET" | "IMAGES">; tenantId: string },
+): Promise<ToolImageRef> {
+  if (!media.env.IMAGES || !media.env.MEDIA_BUCKET) {
+    throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
+  }
+  if (size > MAX_RESIZABLE_IMAGE_BYTES) {
+    throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
+  }
+  const read = await cfs.read(lineage, { at: file.commit, path: file.path, limit: size + 1 });
+  if (read.commit !== file.commit || read.size !== size || !read.base64) {
+    throw new ApiError(422, "attachment_invalid", `Attachment ${file.path} could not be read as an image`);
+  }
+  const rawBytes = Buffer.from(read.base64, "base64");
+  const output = await media.env.IMAGES.input(new Blob([new Uint8Array(rawBytes)]).stream())
+    .transform({ width: FILE_LIMITS.requestImageSide, height: FILE_LIMITS.requestImageSide, fit: "scale-down" })
+    .output({ format: "image/jpeg", quality: 80, anim: false });
+  const response = output.response();
+  if (!response.ok) {
+    throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const header = imageHeader(bytes);
+  if (
+    !header ||
+    !header.width ||
+    !header.height ||
+    Math.max(header.width, header.height) > FILE_LIMITS.requestImageSide ||
+    bytes.length > FILE_LIMITS.requestImageBytes ||
+    !imageIntact(bytes, header.mimeType)
+  ) {
+    throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
+  }
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const ref: ToolImageRef = {
+    digest,
+    contentType: header.mimeType,
+    size: bytes.length,
+    width: header.width,
+    height: header.height,
+  };
+  await media.env.MEDIA_BUCKET.put(toolImageKey(media.tenantId, ref), new Uint8Array(bytes), {
+    httpMetadata: { contentType: ref.contentType },
+  });
+  return ref;
+}
+
 export async function verifyRunFiles(
   cfs: CamelFsClient,
   refs: Array<{ lineage: string; file: RunFile }>,
+  media?: { env: Pick<Env, "MEDIA_BUCKET" | "IMAGES">; tenantId: string },
 ): Promise<StoredRunFile[]> {
   if (refs.length > FILE_LIMITS.attachments) {
     throw new ApiError(413, "attachment_count", `A turn accepts up to ${FILE_LIMITS.attachments} attachments`);
@@ -57,17 +113,29 @@ export async function verifyRunFiles(
     if (commit !== file.commit || !entry) {
       throw new ApiError(400, "invalid_attachments", `Attachment ${file.path} is missing at the specified commit`);
     }
+    let resized: ToolImageRef | undefined;
     if (isImageAttachment(file)) {
-      imageBytes += imageBase64Size(entry.size);
-      if (entry.size === 0 || entry.size > FILE_LIMITS.requestImageBytes || imageBytes > FILE_LIMITS.requestImageBase64Bytes) {
+      if (entry.size === 0) {
         throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
       }
       const header = await cfs.read(lineage, { at: file.commit, path: file.path, limit: 12 });
       if (header.commit !== file.commit || !header.base64 || !imageHeaderMatches(header.base64, file.contentType)) {
         throw new ApiError(422, "attachment_invalid", `Attachment ${file.path} does not match its image type`);
       }
+      if (entry.size > FILE_LIMITS.requestImageBytes || imageBytes + imageBase64Size(entry.size) > FILE_LIMITS.requestImageBase64Bytes) {
+        if (!media) {
+          throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
+        }
+        resized = await resizeOversizedAttachmentImage(cfs, lineage, file, entry.size, media);
+        imageBytes += imageBase64Size(resized.size);
+        if (imageBytes > FILE_LIMITS.requestImageBase64Bytes) {
+          throw new ApiError(413, "attachment_size", `Image ${file.path} exceeds the model request image limit`);
+        }
+      } else {
+        imageBytes += imageBase64Size(entry.size);
+      }
     }
-    results.push({ ...file, lineage, size: entry.size });
+    results.push({ ...file, lineage, size: entry.size, ...(resized ? { resized } : {}) });
   }
   return results;
 }
@@ -116,6 +184,19 @@ export async function loadConversationImages(
     if (selected.length < toolImages.length) return images;
     for (const file of messages[index]?.files ?? []) {
       if (!isImageAttachment(file)) continue;
+      if (file.resized) {
+        remaining -= imageBase64Size(file.resized.size);
+        if (remaining < 0 || ++count > imageLimit) return images;
+        const stored = media && await media.bucket?.get(toolImageKey(media.tenantId, file.resized));
+        if (!stored || stored.size !== file.resized.size) {
+          throw new ApiError(422, "attachment_invalid", `Attachment ${file.path} could not be read as an image`);
+        }
+        const image = { contentType: file.resized.contentType, base64: Buffer.from(await stored.arrayBuffer()).toString("base64") };
+        const atIndex = images.get(index);
+        if (atIndex) atIndex.push(image);
+        else images.set(index, [image]);
+        continue;
+      }
       remaining -= imageBase64Size(file.size);
       if (remaining < 0 || ++count > imageLimit) return images;
       const read = await cfs.read(file.lineage, { at: file.commit, path: file.path, limit: file.size + 1 });

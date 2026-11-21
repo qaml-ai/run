@@ -507,7 +507,10 @@ export async function runAgentTurn(
   }
 
   const files = params.files.length
-    ? await verifyRunFiles(new CamelFsClient(adapter.env, config.tenantId), params.files)
+    ? await verifyRunFiles(new CamelFsClient(adapter.env, config.tenantId), params.files, {
+        env: adapter.env,
+        tenantId: config.tenantId,
+      })
     : undefined;
 
   adapter.appendMessage(params.runId, "user", {
