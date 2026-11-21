@@ -1459,13 +1459,23 @@ async function* streamMockModel(
     }
   }
 
-  // Also inspect all user messages in the current active turn before tool calls
+  // Also inspect earlier user messages only within the current active turn (e.g. a mid-turn steer
+  // injected after a tool result), never crossing a completed or aborted prior turn boundary.
   let directiveSourceIdx = turnStartIdx;
-  for (let i = req.messages.length - 1; i >= 0; i--) {
-    const msg = req.messages[i]!;
-    if (msg.role === "user" && msg.text && /\[(PARALLEL_CALL|CALL):/.test(msg.text)) {
-      directiveSourceIdx = i;
-      break;
+  if (
+    turnStartIdx >= 0 &&
+    !(req.messages[turnStartIdx]!.text && /\[(PARALLEL_CALL|CALL):/.test(req.messages[turnStartIdx]!.text!))
+  ) {
+    for (let i = turnStartIdx - 1; i >= 0; i--) {
+      const msg = req.messages[i]!;
+      if (msg.role === "assistant" && (!msg.toolCalls || msg.toolCalls.length === 0)) break;
+      if (msg.role === "user") {
+        if (req.messages[i + 1]?.role !== "assistant" || !req.messages[i + 1]?.toolCalls?.length) break;
+        if (msg.text && /\[(PARALLEL_CALL|CALL):/.test(msg.text)) {
+          directiveSourceIdx = i;
+          break;
+        }
+      }
     }
   }
 
