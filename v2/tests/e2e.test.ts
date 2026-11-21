@@ -18,10 +18,6 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
 const ADMIN_SECRET = "test-admin-secret-v2";
 const VAULT_SECRET = "test-vault-secret-32-bytes-minimum!!";
-// Load the optional Node fixture before registering tests so its database cleanup runs after the suite.
-const migrationFixture = process.env.CAMELRUN_TEST_V1_MIGRATION === "1"
-  ? await import(new URL("../scripts/v1-migration-fixture.ts", import.meta.url).href)
-  : undefined;
 
 async function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -296,24 +292,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const baseConfig = JSON.parse(readFileSync(join(ROOT, "worker/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
     const testConfigPath = join(tempDir, "wrangler.test.jsonc");
     const runtimeMain = join(ROOT, "tests/fixtures/alarm-worker.ts");
-    const testMain = join(tempDir, "migration-entry.mjs");
-    if (migrationFixture) writeFileSync(testMain, `
-      import worker from ${JSON.stringify(runtimeMain)};
-      export * from ${JSON.stringify(runtimeMain)};
-      export { LegacyAgentRuns } from ${JSON.stringify(join(ROOT, "worker/src/index.ts"))};
-      export default { ...worker, fetch(request, env, ctx) {
-        const tenant = request.headers.get('x-fixture-tenant');
-        return tenant
-          ? ctx.exports.LegacyAgentRuns.route(tenant, request.headers.get('x-fixture-agent'), request)
-          : worker.fetch(request, env, ctx);
-      } };
-    `);
     writeFileSync(
       testConfigPath,
       JSON.stringify(
         {
           ...baseConfig,
-          main: migrationFixture ? testMain : runtimeMain,
+          main: runtimeMain,
           vars: {
             ADMIN_SECRET,
             VAULT_SECRET,
@@ -363,14 +347,6 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     if (tempDir) {
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
-
-  it("moves three v1 bot drafts through the v2 client", { skip: !migrationFixture }, async (t) => {
-    await migrationFixture.rehearseMigration(t, workerUrl, ADMIN_SECRET);
-  });
-
-  it("authenticates v2 calls with the Camel Bots tool verifier", { skip: !migrationFixture }, async (t) => {
-    await migrationFixture.rehearseSignedTools(t, workerUrl, ADMIN_SECRET);
   });
 
   it("keeps the developer prompt in the Azure Responses input prefix across tool calls", async () => {

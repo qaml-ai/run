@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createPrivateKey } from "node:crypto";
 import { test } from "node:test";
-import { mintCamelfsToken } from "../backends/workers/test/camelfs-token.ts";
+import { mintCamelfsToken } from "./contract/camelfs-token.ts";
 import { runCamelfsRefsCases } from "./contract/camelfs-refs-cases.ts";
 
 const { CAMELFS_CONTRACT_URL: url, CAMELFS_CONTRACT_KEY: key, CAMELFS_CONTRACT_KID: kid,

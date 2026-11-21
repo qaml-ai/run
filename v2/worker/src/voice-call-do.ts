@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { timingSafeEqual } from "node:crypto";
-import { redactDetail } from "../../../src/voice-providers/socket.ts";
-import { NO_USAGE, REALTIME_VOICE_FOR, realtimePrice, type RealtimeUsage } from "../../../src/voice/realtime/provider.ts";
+import { redactDetail } from "./lib/voice-socket.ts";
+import { NO_USAGE, REALTIME_VOICE_FOR, realtimePrice, type RealtimeUsage } from "./lib/realtime-provider.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, type Env, type RpcStub } from "./types.ts";

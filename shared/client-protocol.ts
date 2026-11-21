@@ -21,11 +21,13 @@ export function outcomeEnding(outcome: Outcome | undefined): { error?: string; s
 /** `expiresAt` is null for agents that live until deleted. */
 export interface SessionCredentials { id: string; token: string; expiresAt: number | null }
 export type RequestMethod = "prompt" | "execute" | "status" | "abort" | "continue" | "steer" | "configure" | "resume";
+export type Sender = { id: string; name?: string; username?: string; thread?: string; role?: "owner" | "guest" };
+export type SharedAgent = { owner: Sender; members: Sender[] };
 export type RequestRecord = {
   /** Runtime-authored sender retained after queued parameters are discarded. */
-  sender?: import("../src/sender.ts").Sender;
+  sender?: Sender;
   heldForInput?: true;
-  sharedAgent?: import("../src/shared-agents.ts").SharedAgent | null;
+  sharedAgent?: SharedAgent | null;
   id: string; startedAt?: number; endedAt?: number; prompt?: string; code?: string; fingerprint: string; method: RequestMethod;
   /** "running" covers queued runs too: a run has begun once `began` is set. */
   state: "running" | "completed"; outcome?: Outcome;

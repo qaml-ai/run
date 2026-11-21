@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { imageHeader, imageIntact } from "../../../src/image-header.ts";
-import { FILE_LIMITS } from "../../../src/limits.ts";
+import { imageHeader, imageIntact } from "./lib/image-header.ts";
+import { FILE_LIMITS } from "./lib/limits.ts";
 import type { Env } from "./types.ts";
 
 export interface ToolImageRef {

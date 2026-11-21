@@ -2,7 +2,7 @@ import { CamelFsClient } from "./camelfs.ts";
 import { randomId } from "./crypto.ts";
 import { loadConversationImages, type ModelImage } from "./run-files.ts";
 import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
-import { FILE_LIMITS } from "../../../src/limits.ts";
+import { FILE_LIMITS } from "./lib/limits.ts";
 import type { ToolImageRef } from "./tool-images.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {

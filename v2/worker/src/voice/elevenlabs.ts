@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { elevenlabsLanguage } from "../../../../src/language.ts";
-import { redactDetail } from "../../../../src/voice-providers/socket.ts";
+import { elevenlabsLanguage } from "../lib/language.ts";
+import { redactDetail } from "../lib/voice-socket.ts";
 import { openSecret, sealSecret } from "../crypto.ts";
 import { getTenantStub } from "../tenant-do.ts";
 import type { Env } from "../types.ts";

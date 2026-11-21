@@ -1,4 +1,4 @@
-import type { RealtimeTool } from "../../../../src/voice/realtime/provider.ts";
+import type { RealtimeTool } from "../lib/realtime-provider.ts";
 
 export const ASK_AGENT: RealtimeTool = {
   name: "ask_agent",

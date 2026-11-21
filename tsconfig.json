@@ -13,5 +13,5 @@
       "@camelai/run/*": ["./clients/*.ts"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "clients/**/*.ts", "jobhost/**/*.ts"]
+  "include": ["tests/**/*.ts", "clients/**/*.ts", "jobhost/**/*.ts"]
 }

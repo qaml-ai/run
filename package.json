@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start:volumes": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/volume-server.ts",
-    "start:v1-billing-callbacks": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/v1-billing-callbacks-server.ts",
     "test": "node --experimental-strip-types --test --test-timeout=300000 tests/*.test.ts",
+    "test:v2": "npm --prefix v2 run test",
     "typecheck": "tsc -p tsconfig.json && tsc -p packages/react/tsconfig.json && tsc -p packages/registry/tsconfig.json && tsc -p packages/bindings.tsconfig.json && tsc -p packages/cli/tsconfig.json",
+    "typecheck:v2": "npm --prefix v2 run typecheck",
     "test:ui": "vitest run --config packages/react/vitest.config.ts && vitest run --config packages/registry/vitest.config.ts && vitest run --config packages/bindings.vitest.config.ts",
     "registry": "node --experimental-strip-types --disable-warning=ExperimentalWarning packages/registry/build.ts"
   },

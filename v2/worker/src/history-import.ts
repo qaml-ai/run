@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { parseRunFiles } from "./run-files.ts";
 import { validateLegacyInlineContent } from "./legacy-inline-images.ts";
-import { FILE_LIMITS } from "../../../src/limits.ts";
+import { FILE_LIMITS } from "./lib/limits.ts";
 import { ApiError, type ChatRole, type RunFile, type StoredMessageContent, type ToolCallInvocation } from "./types.ts";
 
 const text = z.object({ type: z.literal("text"), text: z.string() });

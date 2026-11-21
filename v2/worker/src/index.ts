@@ -69,7 +69,7 @@ import {
   listWebhookRecords,
   processEventsQueueBatch,
 } from "./webhooks.ts";
-import { signed as signLegacyWebhook, verifySignature as verifyLegacyWebhookSignature, webhookInbound, webhookSettings } from "../../../src/core/channels/webhook.ts";
+import { signed as signLegacyWebhook, verifySignature as verifyLegacyWebhookSignature, webhookInbound, webhookSettings } from "./lib/webhook.ts";
 
 export { TenantDO, AgentDO, VoiceCallDO };
 export { LegacyGatewayTextExecution } from "./legacy-gateway-text-execution.ts";

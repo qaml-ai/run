@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { TokenClaims } from "../../backends/workers/test/camelfs-token.ts";
+import type { TokenClaims } from "./camelfs-token.ts";
 
 type Target = {
   url: string;

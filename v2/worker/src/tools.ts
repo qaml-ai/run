@@ -1,8 +1,8 @@
 import { Buffer } from "node:buffer";
-import { imageHeader } from "../../../src/image-header.ts";
+import { imageHeader } from "./lib/image-header.ts";
 import { SVG_RENDER_LIMITS } from "../../svg-renderer/limits.ts";
 import { renderSvg } from "./svg-render.ts";
-import { FILE_LIMITS } from "../../../src/limits.ts";
+import { FILE_LIMITS } from "./lib/limits.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";

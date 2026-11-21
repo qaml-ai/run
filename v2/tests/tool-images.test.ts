@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
-import { FILE_LIMITS } from "../../src/limits.ts";
+import { FILE_LIMITS } from "../worker/src/lib/limits.ts";
 import { storeToolImages } from "../worker/src/tool-images.ts";
 
 const png = (width: number) => sharp({ create: { width, height: 1, channels: 3, background: "red" } }).png().toBuffer();

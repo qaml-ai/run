@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { imageHeader, imageIntact } from "../../../src/image-header.ts";
+import { imageHeader, imageIntact } from "./lib/image-header.ts";
 import { toolImageKey, type ToolImageRef } from "./tool-images.ts";
 import { z } from "zod";
-import { FILE_LIMITS } from "../../../src/limits.ts";
+import { FILE_LIMITS } from "./lib/limits.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { ApiError, type Env, type RunFile, type StoredRunFile } from "./types.ts";
 import type { LegacyInlineBlock } from "./legacy-inline-images.ts";

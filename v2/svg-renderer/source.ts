@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { SaxesParser } from "saxes";
-import { imageHeader, imageIntact } from "../../src/image-header.ts";
+import { imageHeader, imageIntact } from "../worker/src/lib/image-header.ts";
 import { SVG_RENDER_LIMITS as LIMITS } from "./limits.ts";
 import { normalizeMissingGlyphs } from "./fonts/coverage.ts";
 import { escapeXml as escape, renderTextbox, type MeasureText } from "./textbox.ts";

@@ -27,17 +27,21 @@ jobs:
       - uses: ./.github/actions/node-dependencies
       - uses: actions/setup-go@v5
         with: { go-version-file: v2/camelfsd/go.mod, cache-dependency-path: v2/camelfsd/go.sum }
-      - name: Build v2 camelfsd binary for E2E tests
+      - name: Build and test v2 camelfsd
         working-directory: v2/camelfsd
-        run: go build -o bin/camelfsd ./cmd/camelfsd
+        run: |
+          go test ./...
+          go build -o bin/camelfsd ./cmd/camelfsd
       - name: Install v2 dependencies
         working-directory: v2
         run: npm install --no-audit --no-fund
-      - name: Typecheck and bundle v2 Worker
+      - name: Typecheck and bundle v2 Workers
         working-directory: v2
         run: |
           npm run typecheck
           npm run build:worker
+          npm run build:ingress
+          npm run build:svg-renderer
       - name: Run v2 Worker & Ingress E2E tests
         run: |
           XDG_CONFIG_HOME=/tmp/xdg WRANGLER_LOG_PATH=v2/.wrangler/logs \

@@ -1,6 +1,6 @@
-import { closeDetail, messageJson, redactDetail } from "../../../../src/voice-providers/socket.ts";
-import { fetchWithoutRedirects } from "../../../../src/core/no-redirect.ts";
-import { NO_USAGE, type RealtimeTool, type RealtimeUsage } from "../../../../src/voice/realtime/provider.ts";
+import { closeDetail, messageJson, redactDetail } from "../lib/voice-socket.ts";
+import { fetchWithoutRedirects } from "../lib/no-redirect.ts";
+import { NO_USAGE, type RealtimeTool, type RealtimeUsage } from "../lib/realtime-provider.ts";
 
 export type OpenAICallsOptions = { baseUrl?: string; fetch?: typeof fetch };
 

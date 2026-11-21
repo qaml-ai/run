@@ -12,8 +12,8 @@ import { test, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { camelfsdClient, serveImportProxy } from "../jobhost/camelfsd.ts";
 import { Guest } from "../jobhost/guest.ts";
-import { camelfsStorage, StorageError } from "../backends/workers/src/repos/storage.ts";
-import type { CommitInput, CommitResult } from "../backends/workers/src/repos/storage.ts";
+import { camelfsStorage, StorageError } from "./contract/camelfs-storage.ts";
+import type { CommitInput, CommitResult } from "./contract/camelfs-storage.ts";
 
 // Only a real binary enables this test. CI requires it so a broken setup cannot skip.
 test("camelFS contract: runtime storage, import, jobhost proxy and guest against real camelfsd", {
@@ -657,21 +657,4 @@ async function refsContract(send: (request: Request) => Promise<Response>, origi
   await call("GET", "/commits/" + tip.commit, 410, { code: "lineage_deleted" });
 }
 
-test("camelFS refs contract: R2 fake", {
-  skip: !process.env.CAMELFS_CONTRACT_FAKE_REFS && "set CAMELFS_CONTRACT_FAKE_REFS=1 once the R2 fake is available",
-}, async () => {
-  const issuer = "https://runtime.contract.example";
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const kid = "refs-contract";
-  const tokenFor: RefToken = (lin, acc = "w", extra = {}) => {
-    const iat = Math.floor(Date.now() / 1000);
-    const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-    const input = `${encode({ alg: "EdDSA", kid, typ: "camelfs+jwt" })}.${encode({
-      iss: issuer, aud: "camelrun:camelfs", sub: "agent:contract", iat, exp: iat + 120, lin, acc, refs: [], ...extra,
-    })}`;
-    return `${input}.${sign(null, Buffer.from(input), privateKey).toString("base64url")}`;
-  };
-  const { fakeCamelfsd } = await import(new URL("../backends/workers/test/fake-camelfsd.ts", import.meta.url).href);
-  const fake = fakeCamelfsd("", { issuer, jwks: { keys: [{ ...publicKey.export({ format: "jwk" }), kid }] } });
-  await refsContract(fake.fetch, "http://camelfsd.test", tokenFor, true);
-});
+
