@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "about": "Prompts that need a workflow and a wait, for counting how the owner waits: workflow_status calls (polling) against the <workflow_notification>s it gets. Each runs to its end.",
-  "prompts": [
-    { "id": "three-agents", "files": { "dir": "docs", "count": 3, "template": "doc" },
-      "prompt": "Start a workflow with three worker agents, each writing a one-line summary of one of /repo/docs/d001.md, d002.md and d003.md (give each repo: your volume), and return their summaries. Tell me the three summaries when it is done." }
-  ]
-}

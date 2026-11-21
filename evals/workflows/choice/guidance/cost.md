@@ -1,1 +1,0 @@
-Your model is the expensive one. A workflow's worker agents run on a model about ten times cheaper and in parallel, so for many units of work, splitting them across agent() calls in a workflow is cheaper and faster than doing them yourself.

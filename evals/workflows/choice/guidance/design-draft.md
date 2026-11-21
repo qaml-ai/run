@@ -1,1 +1,0 @@
-Split the work across sub-agents with delegate when a task is many independent or repeated units of work (per file, per table, per source), needs more than a few sub-agents at once, or needs a second reader to check each result. Do it yourself when the task is a few files or one question: delegating it costs more and goes slower.

@@ -8,12 +8,10 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "types": ["node"],
-    // The quickstarts import the published SDK; here they are checked against this one.
     "paths": {
       "@camelai/run": ["./clients/typescript.ts"],
       "@camelai/run/*": ["./clients/*.ts"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "plugins/**/*.ts", "clients/**/*.ts", "examples/**/*.ts", "scripts/**/*.ts", "jobhost/**/*.ts", "evals/workflows/*.ts", "evals/workflows/lib/*.ts", "evals/workflows/tasks/*/score.ts"],
-  "exclude": ["examples/frontend"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "clients/**/*.ts", "jobhost/**/*.ts"]
 }
