@@ -826,6 +826,7 @@ async function* streamOpenAiResponses(
       name: t.name,
       description: t.description,
       parameters: t.parameters,
+      strict: false,
     }));
   }
   if (req.outputSchema) {
