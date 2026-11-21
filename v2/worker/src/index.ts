@@ -33,8 +33,10 @@ import { parseV1History } from "./history-import.ts";
 import {
   handleImageGenerateRequest,
   handleImageGetRequest,
+  handleImageModerationRequest,
   handleSpeechRequest,
   handleTranscriptionRequest,
+  handleVoiceSearchRequest,
 } from "./media.ts";
 import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
@@ -334,6 +336,93 @@ app.delete("/v2/key-scopes/:scope", async (c) => {
   return c.json({ deleted: true });
 });
 
+const V2_MODEL_CATALOG: Array<{
+  id: string;
+  provider: string;
+  modelId: string;
+  reasoning?: boolean;
+  maxTokens?: number;
+  input: string[];
+  cost: { input: number; output: number };
+}> = [
+  { id: "azure/gpt-6.2-sol", provider: "azure", modelId: "gpt-6.2-sol", reasoning: true, maxTokens: 128_000, input: ["text", "image"], cost: { input: 2, output: 10 } },
+  { id: "openrouter/meta/muse-ember", provider: "openrouter", modelId: "meta/muse-ember", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.1, output: 0.5 } },
+  { id: "openrouter/deepseek/deepseek-v4.1-flash", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash", reasoning: true, maxTokens: 65_536, input: ["text"], cost: { input: 0.3, output: 1.2 } },
+  { id: "openrouter/openai/gpt-6-luna", provider: "openrouter", modelId: "openai/gpt-6-luna", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 0.1, output: 0.5 } },
+  { id: "openai/gpt-5", provider: "openai", modelId: "gpt-5", reasoning: true, maxTokens: 128_000, input: ["text", "image"], cost: { input: 2.5, output: 10 } },
+  { id: "openai/gpt-4.1", provider: "openai", modelId: "gpt-4.1", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 2, output: 8 } },
+  { id: "openai/gpt-4.1-mini", provider: "openai", modelId: "gpt-4.1-mini", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.4, output: 1.6 } },
+  { id: "openai/gpt-4.1-nano", provider: "openai", modelId: "gpt-4.1-nano", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.1, output: 0.4 } },
+  { id: "openai/gpt-4o", provider: "openai", modelId: "gpt-4o", reasoning: false, maxTokens: 16_384, input: ["text", "image"], cost: { input: 2.5, output: 10 } },
+  { id: "openai/gpt-4o-mini", provider: "openai", modelId: "gpt-4o-mini", reasoning: false, maxTokens: 16_384, input: ["text", "image"], cost: { input: 0.15, output: 0.6 } },
+  { id: "anthropic/claude-sonnet-4-0", provider: "anthropic", modelId: "claude-sonnet-4-0", reasoning: true, maxTokens: 64_000, input: ["text", "image"], cost: { input: 3, output: 15 } },
+  { id: "anthropic/claude-3-5-haiku-latest", provider: "anthropic", modelId: "claude-3-5-haiku-latest", reasoning: false, maxTokens: 8_192, input: ["text", "image"], cost: { input: 0.8, output: 4 } },
+  { id: "gemini/gemini-2.5-pro", provider: "gemini", modelId: "gemini-2.5-pro", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 1.25, output: 10 } },
+  { id: "gemini/gemini-2.5-flash", provider: "gemini", modelId: "gemini-2.5-flash", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 0.15, output: 0.6 } },
+];
+
+app.get("/v2/models", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const providerFilter = c.req.query("provider")?.trim().toLowerCase() || null;
+  const availableOnly = c.req.query("available") === "true";
+  const keyScope = c.req.query("keyScope")?.trim() || null;
+  const tenantProviders = await getTenantStub(c.env, auth.tenantId).listProviders(keyScope);
+  const configured = new Set(tenantProviders.map((p) => p.provider.toLowerCase()));
+  const platformHas = (provider: string, modelId: string): boolean => {
+    if (keyScope) return false;
+    if (provider === "azure" && modelId === "gpt-6.2-sol") {
+      return Boolean(c.env.AZURE_OPENAI_SOL_API_KEY && c.env.AZURE_OPENAI_SOL_ENDPOINT);
+    }
+    if (provider === "openai") return Boolean(c.env.OPENAI_API_KEY);
+    if (provider === "anthropic") return Boolean(c.env.ANTHROPIC_API_KEY);
+    if (provider === "gemini" || provider === "google") return Boolean(c.env.GEMINI_API_KEY);
+    if (provider === "openrouter") return Boolean(c.env.OPENROUTER_API_KEY);
+    return false;
+  };
+  const isAvailable = (provider: string, modelId: string): boolean =>
+    configured.has(provider) ||
+    (provider === "openai" && configured.has("openai-responses")) ||
+    (provider === "gemini" && configured.has("google")) ||
+    platformHas(provider, modelId);
+
+  const models = V2_MODEL_CATALOG.map((m) => ({
+    ...m,
+    available: isAvailable(m.provider, m.modelId),
+  }));
+  const seen = new Set(models.map((m) => m.id));
+  for (const tp of tenantProviders) {
+    for (const alias of Object.keys(tp.modelAliases ?? {})) {
+      const id = `${tp.provider}/${alias}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      models.push({
+        id,
+        provider: tp.provider,
+        modelId: alias,
+        reasoning: false,
+        maxTokens: 32_768,
+        input: ["text", "image"],
+        cost: { input: 0.5, output: 2 },
+        available: true,
+      });
+    }
+  }
+  const filtered = models.filter((m) =>
+    (!providerFilter || m.provider === providerFilter) && (!availableOnly || m.available),
+  );
+  return c.json(filtered);
+});
+
+app.get("/v2/usage", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const rawDays = Number(c.req.query("days") ?? 30);
+  const days = Number.isFinite(rawDays) ? Math.min(365, Math.max(1, Math.floor(rawDays))) : 30;
+  const rows = await getTenantStub(c.env, auth.tenantId).getUsageDays(days);
+  return c.json({ days: rows });
+});
+
 app.get("/v2/billing", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
@@ -466,6 +555,57 @@ app.get("/v2/repos/:repoId/files", async (c) => {
   const limit = c.req.query("limit") ? Number(c.req.query("limit")) : undefined;
   const out = await cfs.read(repo.lineage, { at, path, offset, limit });
   return c.json(out);
+});
+
+const READ_ALL_MAX_FILES = 1_000;
+const READ_ALL_MAX_BYTES = 16 * 1024 * 1024;
+const READ_ALL_CONCURRENCY = 16;
+
+app.get("/v2/repos/:repoId/read-all", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
+  const cfs = new CamelFsClient(c.env, auth.tenantId);
+  const at = c.req.query("at") || repo.defaultRef;
+  const prefix = c.req.query("path") || "";
+  const listed = await cfs.ls(repo.lineage, { at, path: prefix, recursive: true });
+  const fileEntries = listed.entries.filter((e) => e.type === "file");
+  if (fileEntries.length > READ_ALL_MAX_FILES) {
+    throw new ApiError(413, "repo_too_many_files", `Repository has ${fileEntries.length} files (limit ${READ_ALL_MAX_FILES})`);
+  }
+  let totalBytes = 0;
+  for (const e of fileEntries) totalBytes += e.size;
+  if (totalBytes > READ_ALL_MAX_BYTES) {
+    throw new ApiError(413, "repo_too_large", `Repository total size ${totalBytes} exceeds ${READ_ALL_MAX_BYTES} bytes`);
+  }
+  const files: Array<{
+    path: string;
+    size: number;
+    mode: number;
+    hash: string;
+    binary: boolean;
+    content: string | null;
+    base64: string | null;
+  }> = new Array(fileEntries.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(READ_ALL_CONCURRENCY, fileEntries.length) }, async () => {
+    while (cursor < fileEntries.length) {
+      const idx = cursor++;
+      const entry = fileEntries[idx]!;
+      const read = await cfs.read(repo.lineage, { at: listed.commit, path: entry.path });
+      files[idx] = {
+        path: entry.path,
+        size: read.size,
+        mode: read.mode,
+        hash: entry.hash,
+        binary: read.binary,
+        content: read.content,
+        base64: read.base64,
+      };
+    }
+  });
+  await Promise.all(workers);
+  return c.json({ commit: listed.commit, files });
 });
 
 app.post("/v2/repos/:repoId/write", async (c) => {
@@ -1219,6 +1359,18 @@ app.post("/v2/speech", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   return handleSpeechRequest(c.env, auth.tenantId, c.req.raw);
+});
+
+app.get("/v2/voices/search", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  return handleVoiceSearchRequest(c.env, auth.tenantId, c.req.raw);
+});
+
+app.post("/v2/moderations/images", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  return handleImageModerationRequest(c.env, auth.tenantId, c.req.raw);
 });
 
 app.post("/v2/images", async (c) => {

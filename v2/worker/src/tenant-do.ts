@@ -362,6 +362,7 @@ export class TenantDO extends DurableObject<Env> {
 
   async getMe(): Promise<{
     tenantId: string;
+    tenant: string;
     name: string;
     balanceUsd: number;
     tier: string;
@@ -370,6 +371,7 @@ export class TenantDO extends DurableObject<Env> {
     const p = this.requireProfile();
     return {
       tenantId: p.id,
+      tenant: p.id,
       name: p.name,
       balanceUsd: p.balanceUsd,
       tier: p.tier,
@@ -634,26 +636,33 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   async listProviders(scope?: string | null): Promise<
-    Array<{ provider: string; baseUrl: string | null; apiStyle: ProviderApiStyle | null; updatedAt: number }>
+    Array<{
+      provider: string;
+      baseUrl: string | null;
+      apiStyle: ProviderApiStyle | null;
+      modelAliases?: Record<string, string>;
+      updatedAt: number;
+    }>
   > {
     this.requireProfile();
     const normScope = scope?.trim() || null;
     const rows = normScope
       ? this.ctx.storage.sql
-        .exec<{ provider: string; base_url: string | null; api_style: string | null; updated_at: number }>(
-          `SELECT provider, base_url, api_style, updated_at FROM scoped_provider_keys WHERE scope = ?1 ORDER BY provider ASC`,
+        .exec<{ provider: string; base_url: string | null; api_style: string | null; model_aliases_json: string | null; updated_at: number }>(
+          `SELECT provider, base_url, api_style, model_aliases_json, updated_at FROM scoped_provider_keys WHERE scope = ?1 ORDER BY provider ASC`,
           normScope,
         )
         .toArray()
       : this.ctx.storage.sql
-        .exec<{ provider: string; base_url: string | null; api_style: string | null; updated_at: number }>(
-          `SELECT provider, base_url, api_style, updated_at FROM provider_keys ORDER BY provider ASC`,
+        .exec<{ provider: string; base_url: string | null; api_style: string | null; model_aliases_json: string | null; updated_at: number }>(
+          `SELECT provider, base_url, api_style, model_aliases_json, updated_at FROM provider_keys ORDER BY provider ASC`,
         )
         .toArray();
     return rows.map((r) => ({
       provider: r.provider,
       baseUrl: r.base_url,
       apiStyle: (r.api_style as ProviderApiStyle | null) ?? null,
+      ...(r.model_aliases_json ? { modelAliases: JSON.parse(r.model_aliases_json) as Record<string, string> } : {}),
       updatedAt: r.updated_at,
     }));
   }
@@ -687,6 +696,7 @@ export class TenantDO extends DurableObject<Env> {
   async getBillingSummary(): Promise<{
     balanceUsd: number;
     monthlyCapUsd: number;
+    busyAgents: { busy: number; limit: number | null };
     usage: Array<{
       day: string;
       model: string;
@@ -698,6 +708,11 @@ export class TenantDO extends DurableObject<Env> {
     }>;
   }> {
     const p = this.requireProfile();
+    const now = Date.now();
+    this.ctx.storage.sql.exec(`DELETE FROM active_leases WHERE expires_at <= ?1`, now);
+    const busyRow = this.ctx.storage.sql
+      .exec<{ busy: number }>(`SELECT COUNT(DISTINCT agent_id) AS busy FROM active_leases WHERE expires_at > ?1`, now)
+      .toArray()[0];
     const rows = this.ctx.storage.sql
       .exec<{
         day: string;
@@ -712,6 +727,10 @@ export class TenantDO extends DurableObject<Env> {
     return {
       balanceUsd: p.balanceUsd,
       monthlyCapUsd: p.monthlyCapUsd,
+      busyAgents: {
+        busy: Number(busyRow?.busy ?? 0),
+        limit: p.concurrencyLimit > 0 ? p.concurrencyLimit : null,
+      },
       usage: rows.map((u) => ({
         day: u.day,
         model: u.model,
@@ -722,6 +741,43 @@ export class TenantDO extends DurableObject<Env> {
         costUsd: u.cost_usd,
       })),
     };
+  }
+
+  async getUsageDays(days = 30): Promise<
+    Array<{
+      day: string;
+      model: string;
+      kind: string;
+      cost: number;
+      platformCost: number;
+      responses: number;
+      input: number;
+      output: number;
+    }>
+  > {
+    this.requireProfile();
+    const clamped = Math.min(365, Math.max(1, Math.floor(days)));
+    const since = new Date(Date.now() - (clamped - 1) * 86_400_000).toISOString().slice(0, 10);
+    const rows = this.ctx.storage.sql
+      .exec<{
+        day: string;
+        model: string;
+        runs_count: number;
+        input_tokens: number;
+        output_tokens: number;
+        cost_usd: number;
+      }>(`SELECT day, model, runs_count, input_tokens, output_tokens, cost_usd FROM usage_daily WHERE day >= ?1 ORDER BY day DESC, model ASC`, since)
+      .toArray();
+    return rows.map((u) => ({
+      day: u.day,
+      model: u.model,
+      kind: "turn",
+      cost: Number(u.cost_usd),
+      platformCost: Number(u.cost_usd),
+      responses: Number(u.runs_count),
+      input: Number(u.input_tokens),
+      output: Number(u.output_tokens),
+    }));
   }
 
   async addCredits(input: {

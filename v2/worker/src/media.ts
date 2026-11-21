@@ -140,13 +140,15 @@ export async function handleSpeechRequest(
   req: Request,
 ): Promise<Response> {
   const body = (await req.json()) as {
-    input: string;
+    input?: string;
+    text?: string;
     voice?: string;
     model?: string;
-    format?: "mp3" | "wav";
+    format?: "mp3" | "wav" | "pcm";
   };
-  if (typeof body.input !== "string" || !body.input.trim()) {
-    throw new ApiError(400, "invalid_request", "`input` is required");
+  const speechInput = typeof body.input === "string" ? body.input : typeof body.text === "string" ? body.text : "";
+  if (!speechInput.trim()) {
+    throw new ApiError(400, "invalid_request", "`input` or `text` is required");
   }
 
   const model = body.model || "gpt-4o-mini-tts";
@@ -171,7 +173,7 @@ export async function handleSpeechRequest(
         body: JSON.stringify({
           model,
           voice,
-          input: body.input,
+          input: speechInput,
           response_format: body.format ?? "mp3",
         }),
       });
@@ -318,4 +320,227 @@ export async function handleImageGetRequest(
       "Cache-Control": "public, max-age=31536000, immutable",
     },
   });
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+const MAX_MODERATION_IMAGE_BYTES = 5 * 1024 * 1024;
+
+export async function handleImageModerationRequest(
+  env: Env,
+  tenantId: string,
+  req: Request,
+): Promise<Response> {
+  const rawCt = (req.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  if (rawCt !== "image/jpeg" && rawCt !== "image/png") {
+    throw new ApiError(400, "invalid_request", "Content-Type must be image/jpeg or image/png");
+  }
+  const buf = await req.arrayBuffer();
+  if (buf.byteLength === 0) {
+    throw new ApiError(400, "invalid_request", "Image body is empty");
+  }
+  if (buf.byteLength > MAX_MODERATION_IMAGE_BYTES) {
+    throw new ApiError(413, "payload_too_large", "Image exceeds 5 MiB moderation limit");
+  }
+
+  const cred = await getTenantStub(env, tenantId).getProviderSecret("openai");
+  const apiKey = cred?.apiKey || env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new ApiError(503, "missing_provider_key", "OpenAI API key is not configured for image moderation");
+  }
+
+  const base = (cred?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+  const dataUrl = `data:${rawCt};base64,${bytesToBase64(new Uint8Array(buf))}`;
+  const upstream = await fetch(`${base}/moderations`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "omni-moderation-latest",
+      input: [{ type: "image_url", image_url: { url: dataUrl } }],
+    }),
+  });
+  if (!upstream.ok) {
+    const detail = await upstream.text().catch(() => "");
+    throw new ApiError(
+      upstream.status >= 500 ? 502 : upstream.status,
+      "moderation_upstream_error",
+      detail.slice(0, 300) || `Upstream moderation failed (${upstream.status})`,
+    );
+  }
+  const data = (await upstream.json()) as {
+    id?: string;
+    model?: string;
+    results?: Array<{
+      flagged?: boolean;
+      categories?: Record<string, boolean>;
+      category_scores?: Record<string, number>;
+      category_applied_input_types?: Record<string, string[]>;
+    }>;
+  };
+  const first = data.results?.[0];
+  if (!data.id || !data.model || !first || typeof first.flagged !== "boolean") {
+    throw new ApiError(502, "moderation_upstream_error", "Malformed moderation response");
+  }
+  return jsonResponse({
+    id: data.id,
+    model: data.model,
+    flagged: first.flagged,
+    categories: first.categories ?? {},
+    category_scores: first.category_scores ?? {},
+    category_applied_input_types: first.category_applied_input_types ?? {},
+  });
+}
+
+type VoiceProvider = "elevenlabs" | "grok" | "openai" | "gemini";
+
+interface LibraryVoice {
+  provider: VoiceProvider;
+  id: string;
+  name: string;
+  description: string | null;
+  labels: Record<string, string>;
+  previewUrl: string | null;
+  category: string | null;
+  publicOwnerId: string | null;
+}
+
+const BUILTIN_VOICES: Record<Exclude<VoiceProvider, "elevenlabs">, Array<{ id: string; name: string; description: string; labels: Record<string, string> }>> = {
+  openai: [
+    { id: "alloy", name: "Alloy", description: "Neutral and balanced voice", labels: { gender: "neutral" } },
+    { id: "ash", name: "Ash", description: "Clear and steady voice", labels: { gender: "male" } },
+    { id: "ballad", name: "Ballad", description: "Warm and expressive voice", labels: { gender: "male" } },
+    { id: "coral", name: "Coral", description: "Bright and friendly voice", labels: { gender: "female" } },
+    { id: "echo", name: "Echo", description: "Resonant and calm voice", labels: { gender: "male" } },
+    { id: "sage", name: "Sage", description: "Calm and measured voice", labels: { gender: "female" } },
+    { id: "shimmer", name: "Shimmer", description: "Crisp and upbeat voice", labels: { gender: "female" } },
+    { id: "verse", name: "Verse", description: "Dynamic and engaging voice", labels: { gender: "male" } },
+    { id: "marin", name: "Marin", description: "Natural conversational voice", labels: { gender: "female" } },
+    { id: "cedar", name: "Cedar", description: "Grounded conversational voice", labels: { gender: "male" } },
+  ],
+  grok: [
+    { id: "ara", name: "Ara", description: "Warm conversational female voice", labels: { gender: "female" } },
+    { id: "eve", name: "Eve", description: "Energetic female voice", labels: { gender: "female" } },
+    { id: "leo", name: "Leo", description: "Authoritative male voice", labels: { gender: "male" } },
+    { id: "rex", name: "Rex", description: "Confident male voice", labels: { gender: "male" } },
+    { id: "sal", name: "Sal", description: "Smooth balanced voice", labels: { gender: "neutral" } },
+  ],
+  gemini: [
+    { id: "Puck", name: "Puck", description: "Upbeat conversational voice", labels: {} },
+    { id: "Charon", name: "Charon", description: "Informative deeper voice", labels: {} },
+    { id: "Kore", name: "Kore", description: "Firm clear voice", labels: {} },
+    { id: "Fenrir", name: "Fenrir", description: "Excitable expressive voice", labels: {} },
+    { id: "Aoede", name: "Aoede", description: "Breezy conversational voice", labels: {} },
+    { id: "Leda", name: "Leda", description: "Youthful bright voice", labels: {} },
+    { id: "Orus", name: "Orus", description: "Firm steady voice", labels: {} },
+    { id: "Zephyr", name: "Zephyr", description: "Bright smooth voice", labels: {} },
+  ],
+};
+
+export async function handleVoiceSearchRequest(
+  env: Env,
+  tenantId: string,
+  req: Request,
+): Promise<Response> {
+  const url = new URL(req.url);
+  const rawProvider = (url.searchParams.get("provider") ?? "elevenlabs").trim().toLowerCase();
+  if (rawProvider !== "elevenlabs" && rawProvider !== "openai" && rawProvider !== "grok" && rawProvider !== "gemini") {
+    throw new ApiError(400, "invalid_request", "Unsupported voice provider");
+  }
+  const q = (url.searchParams.get("q") ?? "").trim();
+  const category = (url.searchParams.get("category") ?? "").trim();
+  const limitRaw = Number(url.searchParams.get("limit") ?? 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(50, Math.max(1, Math.floor(limitRaw))) : 10;
+
+  if (rawProvider !== "elevenlabs") {
+    const qLower = q.toLowerCase();
+    const voices: LibraryVoice[] = BUILTIN_VOICES[rawProvider]
+      .filter((v) => !qLower || v.name.toLowerCase().includes(qLower) || v.id.toLowerCase().includes(qLower) || v.description.toLowerCase().includes(qLower))
+      .slice(0, limit)
+      .map((v) => ({
+        provider: rawProvider,
+        id: v.id,
+        name: v.name,
+        description: v.description,
+        labels: v.labels,
+        previewUrl: null,
+        category: null,
+        publicOwnerId: null,
+      }));
+    return jsonResponse({ voices });
+  }
+
+  const cred = await getTenantStub(env, tenantId).getProviderSecret("elevenlabs");
+  const apiKey = cred?.apiKey || env.ELEVENLABS_API_KEY;
+  if (!apiKey) {
+    throw new ApiError(503, "missing_provider_key", "ElevenLabs API key is not configured for voice search");
+  }
+  const base = (cred?.baseUrl || env.VOICE_ELEVENLABS_BASE_URL || "https://api.elevenlabs.io").replace(/\/+$/, "");
+  const query = new URLSearchParams({ page_size: String(limit) });
+  if (q) query.set("search", q);
+  if (category) query.set("category", category);
+
+  const upstream = await fetch(`${base}/v1/shared-voices?${query.toString()}`, {
+    headers: { "xi-api-key": apiKey, Accept: "application/json" },
+  });
+  if (!upstream.ok) {
+    const detail = await upstream.text().catch(() => "");
+    throw new ApiError(
+      upstream.status >= 500 ? 502 : upstream.status,
+      "voice_search_upstream_error",
+      detail.slice(0, 300) || `ElevenLabs voice search failed (${upstream.status})`,
+    );
+  }
+  const data = (await upstream.json()) as {
+    voices?: Array<{
+      voice_id?: string;
+      name?: string;
+      description?: string | null;
+      preview_url?: string | null;
+      category?: string | null;
+      public_owner_id?: string | null;
+      accent?: string;
+      gender?: string;
+      age?: string;
+      descriptive?: string;
+      use_case?: string;
+      language?: string;
+    }>;
+  };
+  const voices: LibraryVoice[] = (data.voices ?? [])
+    .filter((v): v is typeof v & { voice_id: string; name: string } => typeof v.voice_id === "string" && typeof v.name === "string")
+    .slice(0, limit)
+    .map((v) => {
+      const labels: Record<string, string> = {};
+      for (const [k, val] of [
+        ["accent", v.accent],
+        ["gender", v.gender],
+        ["age", v.age],
+        ["descriptive", v.descriptive],
+        ["use_case", v.use_case],
+        ["language", v.language],
+      ] as const) {
+        if (typeof val === "string" && val.trim()) labels[k] = val.trim();
+      }
+      return {
+        provider: "elevenlabs",
+        id: v.voice_id,
+        name: v.name,
+        description: typeof v.description === "string" ? v.description : null,
+        labels,
+        previewUrl: typeof v.preview_url === "string" ? v.preview_url : null,
+        category: typeof v.category === "string" ? v.category : null,
+        publicOwnerId: typeof v.public_owner_id === "string" ? v.public_owner_id : null,
+      };
+    });
+  return jsonResponse({ voices });
 }

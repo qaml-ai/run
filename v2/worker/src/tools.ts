@@ -648,6 +648,7 @@ export async function executeToolCall(
         : text.replace(oldString, newString);
       const out = await cfs.write(lineage, {
         ref: branch,
+        expectedCommit: current.commit,
         holder: ctx.config.id,
         author: `agent:${ctx.config.id}`,
         message: typeof args.message === "string" ? args.message : `edit ${path}`,

@@ -1752,4 +1752,67 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const history = await agent.history();
     assert.equal(history.filter(message => message.runId === queued.id && message.role === "user").length, 1);
   });
+
+  it("serves repo read-all snapshots, models catalog, usage days, busyAgents, voice search, and speech text alias", async (t) => {
+    const { apiKey } = await CamelRun.createTenant({ baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "v2-parity-routes" });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+    await camel.providers.set("openrouter", { apiKey: "fake-key", baseUrl: `${auxUrl}/v1` });
+
+    const repo = await camel.repos.create({ name: "bot-repo" });
+    const written = await camel.repos.write(repo.repoId, {
+      puts: [
+        { path: "bot.ts", content: "export default {};\n" },
+        { path: "src/helper.ts", content: "export const x = 1;\n" },
+      ],
+    });
+    const readAllRes = await fetch(`${workerUrl}/v2/repos/${repo.repoId}/read-all`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    assert.equal(readAllRes.status, 200);
+    const readAll = (await readAllRes.json()) as { commit: string; files: Array<{ path: string; content: string | null }> };
+    assert.equal(readAll.commit, written.commit);
+    assert.deepEqual(
+      readAll.files.map((f) => [f.path, f.content]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      [["bot.ts", "export default {};\n"], ["src/helper.ts", "export const x = 1;\n"]],
+    );
+
+    const modelsRes = await fetch(`${workerUrl}/v2/models?available=true`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    assert.equal(modelsRes.status, 200);
+    const models = (await modelsRes.json()) as Array<{ id: string; available: boolean }>;
+    assert.ok(models.some((m) => m.id === "openrouter/meta/muse-ember" && m.available));
+
+    const billingRes = await fetch(`${workerUrl}/v2/billing`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    assert.equal(billingRes.status, 200);
+    const billing = (await billingRes.json()) as { busyAgents?: { busy: number; limit: number | null } };
+    assert.equal(typeof billing.busyAgents?.busy, "number");
+    assert.ok(typeof billing.busyAgents?.limit === "number" || billing.busyAgents?.limit === null);
+
+    const usageRes = await fetch(`${workerUrl}/v2/usage?days=7`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    assert.equal(usageRes.status, 200);
+    const usage = (await usageRes.json()) as { days: unknown[] };
+    assert.ok(Array.isArray(usage.days));
+
+    const voicesRes = await fetch(`${workerUrl}/v2/voices/search?provider=openai&q=alloy`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    assert.equal(voicesRes.status, 200);
+    const voices = (await voicesRes.json()) as { voices: Array<{ provider: string; id: string }> };
+    assert.equal(voices.voices.length, 1);
+    assert.equal(voices.voices[0]!.id, "alloy");
+
+    const speechRes = await fetch(`${workerUrl}/v2/speech`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hello world", model: "mock/tts", format: "wav" }),
+    });
+    assert.equal(speechRes.status, 200);
+    assert.ok((await speechRes.arrayBuffer()).byteLength > 44);
+  });
 });
