@@ -81,7 +81,7 @@ export interface BillingInfo { balanceUsd: number; monthlyCapUsd: number | null;
 export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey: string; }
 
 export type BuiltinCategory =
-  | "files" | "images" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
+  | "files" | "images" | "browser" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
   | (string & {});
 
 export interface McpServerConfig {
