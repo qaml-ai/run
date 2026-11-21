@@ -61,7 +61,7 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
         tools: input.tools.map(tool => ({ type: "function", ...tool })), tool_choice: "auto",
       };
       const body = new FormData();
-      body.set("sdp", new Blob([input.sdp], { type: "application/sdp" }), "offer.sdp");
+      body.set("sdp", input.sdp);
       body.set("session", JSON.stringify(session));
       const response = await fetchWithoutRedirects(send, `${base}/realtime/calls`, {
         method: "POST", headers: auth(input.apiKey), body, signal: AbortSignal.timeout(TIMEOUT_MS),

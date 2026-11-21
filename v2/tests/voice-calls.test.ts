@@ -79,6 +79,8 @@ test("v2 VoiceCallDO: OpenAI WebRTC sideband + ask_agent + hangup AND ElevenLabs
 
       // OpenAI WebRTC SDP broker
       if (req.method === "POST" && url.pathname === "/v1/realtime/calls") {
+        assert.match(raw, /Content-Disposition: form-data; name="sdp"\r\n/);
+        assert.doesNotMatch(raw, /name="sdp";\s*filename=/);
         res.writeHead(201, {
           "Content-Type": "application/sdp",
           Location: "https://api.openai.com/v1/realtime/calls/rtc_call_123",

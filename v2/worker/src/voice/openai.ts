@@ -97,7 +97,7 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
         tool_choice: "auto",
       };
       const body = new FormData();
-      body.set("sdp", new Blob([input.sdp], { type: "application/sdp" }), "offer.sdp");
+      body.set("sdp", input.sdp);
       body.set("session", JSON.stringify(session));
       const response = await fetchWithoutRedirects(send, `${base}/realtime/calls`, {
         method: "POST",
