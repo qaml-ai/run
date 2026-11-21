@@ -25,8 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
-      - uses: actions/setup-node@v4
-        with: { node-version: "22" }
+      - uses: actions/setup-go@v5
+        with: { go-version-file: v2/camelfsd/go.mod, cache-dependency-path: v2/camelfsd/go.sum }
+      - name: Build v2 camelfsd binary for E2E tests
+        working-directory: v2/camelfsd
+        run: go build -o bin/camelfsd ./cmd/camelfsd
       - name: Install v2 dependencies
         working-directory: v2
         run: npm install --no-audit --no-fund
