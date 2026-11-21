@@ -119,6 +119,7 @@ export class TenantDO extends DurableObject<Env> {
   private textRunSchemaReady = false;
   private legacyTextSchemaReady = false;
   private voiceSchemaReady = false;
+  private consoleAccountsSchemaReady = false;
   private lastKeyTouchAt = new Map<string, number>();
 
   private ensureSql(): void {
@@ -2418,5 +2419,298 @@ export class TenantDO extends DurableObject<Env> {
           )
           .toArray()[0];
     return row ? { callId: row.call_id, tenantId: row.tenant_id, state: row.state } : null;
+  }
+
+  // ---- 10. Console Accounts Directory (used on singleton TenantDO "__console_accounts__") ----
+
+  private ensureConsoleAccountTables(): void {
+    if (this.consoleAccountsSchemaReady) return;
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS console_accounts (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        email TEXT,
+        login TEXT,
+        name TEXT,
+        password_hash TEXT,
+        password_salt TEXT,
+        sealed_console_key TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_console_accounts_email
+        ON console_accounts(email) WHERE email IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS console_identities (
+        identity_key TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_console_identities_account
+        ON console_identities(account_id);
+    `);
+    this.consoleAccountsSchemaReady = true;
+  }
+
+  private readConsoleAccountById(accountId: string): {
+    id: string;
+    tenantId: string;
+    email: string | null;
+    login: string | null;
+    name: string | null;
+    passwordHash: string | null;
+    passwordSalt: string | null;
+    sealedConsoleKey: string | null;
+    createdAt: number;
+    updatedAt: number;
+  } | null {
+    const row = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        tenant_id: string;
+        email: string | null;
+        login: string | null;
+        name: string | null;
+        password_hash: string | null;
+        password_salt: string | null;
+        sealed_console_key: string | null;
+        created_at: number;
+        updated_at: number;
+      }>(`SELECT * FROM console_accounts WHERE id = ?1 LIMIT 1`, accountId)
+      .toArray()[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      tenantId: row.tenant_id,
+      email: row.email,
+      login: row.login,
+      name: row.name,
+      passwordHash: row.password_hash,
+      passwordSalt: row.password_salt,
+      sealedConsoleKey: row.sealed_console_key,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  private findConsoleAccountByIdentityKeys(keys: string[]): ReturnType<TenantDO["readConsoleAccountById"]> {
+    for (const key of keys) {
+      if (!key) continue;
+      const ident = this.ctx.storage.sql
+        .exec<{ account_id: string }>(`SELECT account_id FROM console_identities WHERE identity_key = ?1 LIMIT 1`, key)
+        .toArray()[0];
+      if (ident) {
+        const acct = this.readConsoleAccountById(ident.account_id);
+        if (acct) return acct;
+      }
+    }
+    return null;
+  }
+
+  async lookupConsoleAccount(input: {
+    identityKeys: string[];
+    email?: string | null;
+  }): Promise<{
+    id: string;
+    tenantId: string;
+    email: string | null;
+    login: string | null;
+    name: string | null;
+    passwordHash: string | null;
+    passwordSalt: string | null;
+    sealedConsoleKey: string | null;
+  } | null> {
+    this.ensureConsoleAccountTables();
+    const byIdent = this.findConsoleAccountByIdentityKeys(input.identityKeys);
+    if (byIdent) return byIdent;
+    if (input.email) {
+      const row = this.ctx.storage.sql
+        .exec<{ id: string }>(`SELECT id FROM console_accounts WHERE email = ?1 LIMIT 1`, input.email)
+        .toArray()[0];
+      if (row) return this.readConsoleAccountById(row.id);
+    }
+    return null;
+  }
+
+  async saveConsoleAccount(input: {
+    accountId?: string;
+    tenantId: string;
+    identityKeys: string[];
+    email?: string | null;
+    login?: string | null;
+    name?: string | null;
+    passwordHash?: string | null;
+    passwordSalt?: string | null;
+    sealedConsoleKey?: string | null;
+    requireNewEmail?: boolean;
+  }): Promise<{
+    id: string;
+    tenantId: string;
+    email: string | null;
+    login: string | null;
+    name: string | null;
+    sealedConsoleKey: string | null;
+    created: boolean;
+  }> {
+    this.ensureConsoleAccountTables();
+    const now = Date.now();
+    return this.ctx.storage.transactionSync(() => {
+      let existing = input.accountId ? this.readConsoleAccountById(input.accountId) : null;
+      if (!existing) {
+        existing = this.findConsoleAccountByIdentityKeys(input.identityKeys);
+      }
+      if (!existing && input.email) {
+        const row = this.ctx.storage.sql
+          .exec<{ id: string }>(`SELECT id FROM console_accounts WHERE email = ?1 LIMIT 1`, input.email)
+          .toArray()[0];
+        if (row) existing = this.readConsoleAccountById(row.id);
+      }
+
+      if (input.requireNewEmail && existing) {
+        throw new ApiError(409, "email_exists", "An account with this email already exists");
+      }
+
+      if (existing) {
+        const nextEmail = existing.email ?? input.email ?? null;
+        const nextLogin = input.login ?? existing.login ?? null;
+        const nextName = input.name ?? existing.name ?? null;
+        const nextPasswordHash = input.passwordHash ?? existing.passwordHash ?? null;
+        const nextPasswordSalt = input.passwordSalt ?? existing.passwordSalt ?? null;
+        const nextKey = input.sealedConsoleKey ?? existing.sealedConsoleKey ?? null;
+        this.ctx.storage.sql.exec(
+          `UPDATE console_accounts
+           SET email = ?1, login = ?2, name = ?3, password_hash = ?4, password_salt = ?5,
+               sealed_console_key = ?6, updated_at = ?7
+           WHERE id = ?8`,
+          nextEmail,
+          nextLogin,
+          nextName,
+          nextPasswordHash,
+          nextPasswordSalt,
+          nextKey,
+          now,
+          existing.id,
+        );
+        for (const key of input.identityKeys) {
+          if (!key) continue;
+          this.ctx.storage.sql.exec(
+            `INSERT INTO console_identities (identity_key, account_id, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(identity_key) DO UPDATE SET account_id = excluded.account_id`,
+            key,
+            existing.id,
+            now,
+          );
+        }
+        return {
+          id: existing.id,
+          tenantId: existing.tenantId,
+          email: nextEmail,
+          login: nextLogin,
+          name: nextName,
+          sealedConsoleKey: nextKey,
+          created: false,
+        };
+      }
+
+      const accountId = input.accountId || randomId("usr", 8);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO console_accounts
+          (id, tenant_id, email, login, name, password_hash, password_salt, sealed_console_key, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)`,
+        accountId,
+        input.tenantId,
+        input.email ?? null,
+        input.login ?? null,
+        input.name ?? null,
+        input.passwordHash ?? null,
+        input.passwordSalt ?? null,
+        input.sealedConsoleKey ?? null,
+        now,
+      );
+      for (const key of input.identityKeys) {
+        if (!key) continue;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO console_identities (identity_key, account_id, created_at)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(identity_key) DO UPDATE SET account_id = excluded.account_id`,
+          key,
+          accountId,
+          now,
+        );
+      }
+      return {
+        id: accountId,
+        tenantId: input.tenantId,
+        email: input.email ?? null,
+        login: input.login ?? null,
+        name: input.name ?? null,
+        sealedConsoleKey: input.sealedConsoleKey ?? null,
+        created: true,
+      };
+    });
+  }
+
+  async linkConsoleAccountToTenant(input: {
+    tenantId: string;
+    identityKeys: string[];
+    email?: string | null;
+    login?: string | null;
+    name?: string | null;
+    sealedConsoleKey?: string | null;
+  }): Promise<{ id: string; tenantId: string; linkedKeys: string[] }> {
+    this.ensureConsoleAccountTables();
+    const now = Date.now();
+    const keys = [...new Set(input.identityKeys.filter(Boolean))];
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.ctx.storage.sql
+        .exec<{ id: string; email: string | null; login: string | null; name: string | null; sealed_console_key: string | null }>(
+          `SELECT id, email, login, name, sealed_console_key FROM console_accounts WHERE tenant_id = ?1 LIMIT 1`,
+          input.tenantId,
+        )
+        .toArray()[0];
+
+      let accountId: string;
+      if (existing) {
+        accountId = existing.id;
+        this.ctx.storage.sql.exec(
+          `UPDATE console_accounts
+           SET email = COALESCE(?1, email), login = COALESCE(?2, login), name = COALESCE(?3, name),
+               sealed_console_key = COALESCE(?4, sealed_console_key), updated_at = ?5
+           WHERE id = ?6`,
+          input.email ?? null,
+          input.login ?? null,
+          input.name ?? null,
+          input.sealedConsoleKey ?? null,
+          now,
+          accountId,
+        );
+      } else {
+        accountId = randomId("usr", 8);
+        this.ctx.storage.sql.exec(
+          `INSERT INTO console_accounts
+            (id, tenant_id, email, login, name, password_hash, password_salt, sealed_console_key, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?7)`,
+          accountId,
+          input.tenantId,
+          input.email ?? null,
+          input.login ?? null,
+          input.name ?? null,
+          input.sealedConsoleKey ?? null,
+          now,
+        );
+      }
+
+      for (const key of keys) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO console_identities (identity_key, account_id, created_at)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(identity_key) DO UPDATE SET account_id = excluded.account_id`,
+          key,
+          accountId,
+          now,
+        );
+      }
+      return { id: accountId, tenantId: input.tenantId, linkedKeys: keys };
+    });
   }
 }

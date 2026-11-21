@@ -19,6 +19,7 @@ import {
   listChannelRecords,
 } from "./channels.ts";
 import {
+  hashPassword,
   mintAgentToken,
   mintTenantApiKey,
   mintVoiceSessionId,
@@ -27,6 +28,7 @@ import {
   randomId,
   sealSecret,
   sha256Hex,
+  verifyPassword,
 } from "./crypto.ts";
 import { runDecisionClassifier, type DecisionRequest } from "./decisions.ts";
 import { parseV1History } from "./history-import.ts";
@@ -1539,6 +1541,256 @@ app.post("/v2/admin/voice-agent-token", async (c) => {
     }
   }
   throw new ApiError(404, "agent_not_found", "Unknown agent");
+});
+
+// ---- 5. Console Accounts (DO-backed, zero Postgres, admin-authenticated for ingress) ----
+
+const CONSOLE_ACCOUNTS_DO_NAME = "__console_accounts__";
+const DUMMY_PASSWORD_HASH = "0".repeat(64);
+const DUMMY_PASSWORD_SALT = "0".repeat(32);
+
+function normalizeConsoleEmail(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed || trimmed.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+async function ensureTenantConsoleKey(
+  env: Env,
+  tenantId: string,
+  displayName: string,
+  existingSealedKey: string | null,
+): Promise<{ apiKey: string; sealedConsoleKey: string }> {
+  if (existingSealedKey) {
+    return {
+      apiKey: await openSecret(existingSealedKey, env.VAULT_SECRET),
+      sealedConsoleKey: existingSealedKey,
+    };
+  }
+  const tenantStub = getTenantStub(env, tenantId);
+  const profile = await tenantStub.getProfile();
+  const minted = await mintTenantApiKey(tenantId);
+  if (!profile) {
+    await tenantStub.initTenant({
+      tenantId,
+      name: displayName,
+      tier: "pro",
+      initialCreditsUsd: 0,
+      keyId: minted.id,
+      keyPrefix: minted.prefix,
+      keyHash: minted.keyHash,
+    });
+  } else {
+    await tenantStub.createApiKey({
+      id: minted.id,
+      name: "console-session",
+      prefix: minted.prefix,
+      keyHash: minted.keyHash,
+      scopes: ["*"],
+    });
+  }
+  const sealedConsoleKey = await sealSecret(minted.token, env.VAULT_SECRET);
+  return { apiKey: minted.token, sealedConsoleKey };
+}
+
+app.post("/v2/admin/console/oauth-login", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    provider?: unknown;
+    externalId?: unknown;
+    email?: unknown;
+    login?: unknown;
+    name?: unknown;
+  };
+  const provider = body.provider === "github" || body.provider === "google" ? body.provider : null;
+  const externalId = typeof body.externalId === "string" ? body.externalId.trim() : "";
+  if (!provider || !externalId) {
+    throw new ApiError(400, "invalid_request", "`provider` ('github' | 'google') and `externalId` are required");
+  }
+  const email = normalizeConsoleEmail(body.email);
+  const login = typeof body.login === "string" && body.login.trim() ? body.login.trim() : email;
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
+
+  const identityKeys = [`${provider}:${externalId}`];
+  if (provider === "github" && login) identityKeys.push(`github_login:${login.toLowerCase()}`);
+  if (email) identityKeys.push(`email:${email}`);
+
+  const accountsStub = getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME);
+  const existing = await accountsStub.lookupConsoleAccount({ identityKeys, email });
+  const tenantId = existing?.tenantId ?? randomId("tnt", 8);
+  const displayName = name || login || email || `${provider}-${externalId}`;
+  const { apiKey, sealedConsoleKey } = await ensureTenantConsoleKey(
+    c.env,
+    tenantId,
+    displayName,
+    existing?.sealedConsoleKey ?? null,
+  );
+  const saved = await accountsStub.saveConsoleAccount({
+    accountId: existing?.id,
+    tenantId,
+    identityKeys,
+    email,
+    login,
+    name,
+    sealedConsoleKey,
+  });
+  return c.json({
+    tenantId: saved.tenantId,
+    apiKey,
+    email: saved.email,
+    login: saved.login,
+    name: saved.name,
+    created: saved.created,
+  });
+});
+
+app.post("/v2/admin/console/password-signup", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    email?: unknown;
+    password?: unknown;
+    name?: unknown;
+  };
+  const email = normalizeConsoleEmail(body.email);
+  if (!email) {
+    throw new ApiError(400, "invalid_email", "Enter a valid email address");
+  }
+  const password = typeof body.password === "string" ? body.password : "";
+  if (password.length < 8 || password.length > 256) {
+    throw new ApiError(400, "invalid_password", "Password must be between 8 and 256 characters");
+  }
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 120) : null;
+
+  const accountsStub = getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME);
+  const existing = await accountsStub.lookupConsoleAccount({ identityKeys: [`email:${email}`], email });
+  if (existing) {
+    throw new ApiError(409, "email_exists", "An account with this email already exists");
+  }
+
+  const { hash, salt } = await hashPassword(password);
+  const tenantId = randomId("tnt", 8);
+  const { apiKey, sealedConsoleKey } = await ensureTenantConsoleKey(c.env, tenantId, name || email, null);
+  const saved = await accountsStub.saveConsoleAccount({
+    tenantId,
+    identityKeys: [`email:${email}`],
+    email,
+    login: email,
+    name,
+    passwordHash: hash,
+    passwordSalt: salt,
+    sealedConsoleKey,
+    requireNewEmail: true,
+  });
+  return c.json(
+    {
+      tenantId: saved.tenantId,
+      apiKey,
+      email: saved.email,
+      login: saved.login,
+      name: saved.name,
+      created: true,
+    },
+    201,
+  );
+});
+
+app.post("/v2/admin/console/password-login", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { email?: unknown; password?: unknown };
+  const email = normalizeConsoleEmail(body.email);
+  const password = typeof body.password === "string" ? body.password : "";
+  if (!email || !password || password.length > 256) {
+    throw new ApiError(401, "unauthorized", "Wrong email or password");
+  }
+
+  const accountsStub = getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME);
+  const existing = await accountsStub.lookupConsoleAccount({ identityKeys: [`email:${email}`], email });
+  const ok = existing?.passwordHash && existing?.passwordSalt
+    ? await verifyPassword(password, existing.passwordHash, existing.passwordSalt)
+    : (await verifyPassword(password, DUMMY_PASSWORD_HASH, DUMMY_PASSWORD_SALT), false);
+
+  if (!existing || !ok) {
+    throw new ApiError(401, "unauthorized", "Wrong email or password");
+  }
+
+  const { apiKey, sealedConsoleKey } = await ensureTenantConsoleKey(
+    c.env,
+    existing.tenantId,
+    existing.name || existing.email || existing.tenantId,
+    existing.sealedConsoleKey,
+  );
+  if (!existing.sealedConsoleKey) {
+    await accountsStub.saveConsoleAccount({
+      accountId: existing.id,
+      tenantId: existing.tenantId,
+      identityKeys: [`email:${email}`],
+      sealedConsoleKey,
+    });
+  }
+  return c.json({
+    tenantId: existing.tenantId,
+    apiKey,
+    email: existing.email,
+    login: existing.login ?? existing.email,
+    name: existing.name,
+  });
+});
+
+app.post("/v2/admin/console/link", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await c.req.json().catch(() => ({}))) as {
+    tenantId?: unknown;
+    email?: unknown;
+    githubLogin?: unknown;
+    githubId?: unknown;
+    googleSub?: unknown;
+    name?: unknown;
+  };
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId.trim() : "";
+  if (!tenantId) {
+    throw new ApiError(400, "invalid_request", "`tenantId` is required");
+  }
+  const email = normalizeConsoleEmail(body.email);
+  const githubLogin = typeof body.githubLogin === "string" && body.githubLogin.trim() ? body.githubLogin.trim() : null;
+  const githubId = typeof body.githubId === "string" && body.githubId.trim() ? body.githubId.trim() : null;
+  const googleSub = typeof body.googleSub === "string" && body.googleSub.trim() ? body.googleSub.trim() : null;
+  const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
+
+  const identityKeys: string[] = [];
+  if (email) identityKeys.push(`email:${email}`);
+  if (githubLogin) identityKeys.push(`github_login:${githubLogin.toLowerCase()}`);
+  if (githubId) identityKeys.push(`github:${githubId}`);
+  if (googleSub) identityKeys.push(`google:${googleSub}`);
+  if (identityKeys.length === 0) {
+    throw new ApiError(400, "invalid_request", "Provide at least one of `email`, `githubLogin`, `githubId`, or `googleSub`");
+  }
+
+  const targetProfile = await getTenantStub(c.env, tenantId).getProfile();
+  if (!targetProfile) {
+    throw new ApiError(404, "tenant_not_found", `Tenant '${tenantId}' not found`);
+  }
+
+  const { sealedConsoleKey } = await ensureTenantConsoleKey(c.env, tenantId, name || targetProfile.name, null);
+  const linked = await getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME).linkConsoleAccountToTenant({
+    tenantId,
+    identityKeys,
+    email,
+    login: githubLogin ?? email,
+    name: name ?? targetProfile.name,
+    sealedConsoleKey,
+  });
+  return c.json({ ok: true, ...linked });
 });
 
 /** Private binding used by the v1 adapter after it authenticates and loads a published migration route or translates v1 calls to v2. */

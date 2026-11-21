@@ -18,6 +18,15 @@ export function AccountPage({ me }: { me: Me }) {
         <dl className="grid gap-3 text-sm sm:grid-cols-[160px_1fr]">
           <dt className="text-muted-foreground">Name</dt>
           <dd className="font-medium">{me.name}</dd>
+          {(me.email || me.login) && (
+            <>
+              <dt className="text-muted-foreground">Signed in as</dt>
+              <dd className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs">{me.email ?? me.login}</span>
+                {me.signIn && <Badge variant="outline">{me.signIn}</Badge>}
+              </dd>
+            </>
+          )}
           <dt className="text-muted-foreground">Tenant ID</dt>
           <dd className="inline-flex items-center gap-1 font-mono text-xs">
             {me.tenantId}

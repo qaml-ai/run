@@ -107,7 +107,9 @@ export interface Me {
   balanceUsd: number;
   tier: string;
   busyAgents: { active: number; limit: number };
+  email?: string;
   login?: string;
+  signIn?: "github" | "google" | "password";
 }
 
 export const accountLabel = (tenant: string) => (/^tnt_[0-9a-f]{16}$/.test(tenant) ? undefined : tenant);

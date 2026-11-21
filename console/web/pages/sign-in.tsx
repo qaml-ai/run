@@ -1,12 +1,12 @@
-import { useState, type FormEvent } from "react";
-import { Github, KeyRound, Loader2 } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { useState } from "react";
+import { Github } from "lucide-react";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { Separator } from "@/components/ui/separator";
 import { AuthLayout } from "@/components/auth-layout";
 import { ErrorAlert } from "@/components/common";
-import { api, useApi } from "@/lib/api";
+import { useApi } from "@/lib/api";
+import { startNext } from "@/lib/onboarding";
+import { PasswordForm, SignUpForm } from "@/pages/password-sign-in";
 
 /** Google's "G", in the button's color: the console is monochrome. */
 function GoogleMark({ className }: { className?: string }) {
@@ -17,87 +17,116 @@ function GoogleMark({ className }: { className?: string }) {
   );
 }
 
+type Mode = "signin" | "signup";
+const MODE_PATHS: Record<Mode, string> = { signin: "/console/", signup: "/console/signup" };
+
+function oauthUrl(provider: "github" | "google", next?: string): string {
+  const params = new URLSearchParams();
+  if (next) params.set("next", next);
+  const qs = params.toString();
+  return `/console/auth/${provider}${qs ? `?${qs}` : ""}`;
+}
+
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const methods = useApi<{ apiKey?: boolean; github?: boolean; google?: boolean; cookieAuth?: boolean }>("/console/auth/methods");
-  const [apiKey, setApiKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [submitError, setSubmitError] = useState<string>();
+  const next =
+    startNext(location.pathname, location.search) ??
+    (new URLSearchParams(location.search).get("next") || undefined);
+  const methods = useApi<{
+    github?: boolean;
+    google?: boolean;
+    password?: boolean;
+    signup?: boolean;
+    open?: boolean;
+  }>("/console/auth/methods");
+  const [mode, setMode] = useState<Mode>(() => (location.pathname === MODE_PATHS.signup ? "signup" : "signin"));
+  const choose = (chosen: Mode) => {
+    history.replaceState(null, "", MODE_PATHS[chosen] + location.search);
+    setMode(chosen);
+  };
 
-  const queryError = new URLSearchParams(location.search).get("error") ?? "";
   const providers = !!(methods.data?.github || methods.data?.google);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const trimmed = apiKey.trim();
-    if (!trimmed) return;
-    setBusy(true);
-    setSubmitError(undefined);
-    try {
-      await api("/console/auth/key", { method: "POST", body: { apiKey: trimmed } });
-      setApiKey("");
-      onSignedIn();
-    } catch (caught) {
-      setSubmitError((caught as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const error = new URLSearchParams(location.search).get("error") ?? "";
+  const shown: Mode = mode === "signup" && methods.data?.signup ? "signup" : "signin";
 
   return (
     <AuthLayout>
       <div className="flex flex-col gap-6">
         <div className="flex flex-col items-center gap-2 text-center">
-          <h1 className="text-xl font-semibold tracking-tight">camelRun</h1>
-          <p className="text-muted-foreground text-sm text-balance">
-            Sign in with your CamelRun v2 API key to manage agents, repositories, model keys and billing.
-          </p>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {shown === "signup" ? "Create your camelRun account" : "camelRun"}
+          </h1>
+          {shown === "signin" && (
+            <p className="text-muted-foreground text-sm text-balance">
+              Sign in to manage your agents, model keys and API keys.
+            </p>
+          )}
         </div>
 
-        <ErrorAlert error={submitError || queryError || undefined} title="Sign-in failed" className="mb-0" />
+        <ErrorAlert error={error || undefined} title="Sign-in failed" className="mb-0" />
 
         {providers && (
           <div className="flex flex-col gap-3">
             {methods.data?.github && (
-              <PixelButton size="hero" href="/console/auth/github" className="w-full">
+              <PixelButton size="hero" href={oauthUrl("github", next)} className="w-full">
                 <Github className="size-3.5" aria-hidden="true" />
                 Continue with GitHub
               </PixelButton>
             )}
             {methods.data?.google && (
-              <PixelButton size="hero" href="/console/auth/google" className="w-full">
+              <PixelButton size="hero" href={oauthUrl("google", next)} className="w-full">
                 <GoogleMark className="size-3.5" />
                 Continue with Google
               </PixelButton>
             )}
-            <div className="text-muted-foreground flex items-center gap-3 text-xs">
-              <Separator className="flex-1" />or<Separator className="flex-1" />
-            </div>
+            <p className="text-muted-foreground text-center text-xs text-balance">
+              {!methods.data?.github
+                ? "Any Google account can sign up."
+                : `Any GitHub${methods.data?.google ? " or Google" : ""} account can sign up.`}
+            </p>
           </div>
         )}
 
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="console-api-key">API key</Label>
-            <Input
-              id="console-api-key"
-              type="password"
-              autoComplete="current-password"
-              autoFocus
-              spellCheck={false}
-              placeholder="cr_live_…"
-              className="font-mono text-xs"
-              value={apiKey}
-              onChange={event => setApiKey(event.target.value)}
-            />
-            <p className="text-muted-foreground text-xs">
-              Validated against <span className="font-mono">/v2/me</span> and stored in an encrypted HttpOnly session cookie.
-            </p>
-          </div>
-          <PixelButton type="submit" size="hero" className="w-full" disabled={busy || !apiKey.trim()}>
-            {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <KeyRound className="size-3.5" aria-hidden="true" />}
-            {busy ? "Signing in…" : "Sign in"}
-          </PixelButton>
-        </form>
+        {methods.data?.password && (
+          <>
+            {providers && (
+              <div className="text-muted-foreground flex items-center gap-3 text-xs">
+                <Separator className="flex-1" />or<Separator className="flex-1" />
+              </div>
+            )}
+            {shown === "signup" ? (
+              <SignUpForm onSignedIn={onSignedIn} next={next} />
+            ) : (
+              <PasswordForm onSignedIn={onSignedIn} next={next} secondary={providers} />
+            )}
+            {(methods.data.signup || shown !== "signin") && (
+              <p className="text-muted-foreground text-center text-sm">
+                {shown === "signin" ? (
+                  <>
+                    New to camelRun?{" "}
+                    <button
+                      type="button"
+                      className="text-foreground underline underline-offset-4"
+                      onClick={() => choose("signup")}
+                    >
+                      Sign up with email
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    Have an account?{" "}
+                    <button
+                      type="button"
+                      className="text-foreground underline underline-offset-4"
+                      onClick={() => choose("signin")}
+                    >
+                      Sign in
+                    </button>
+                  </>
+                )}
+              </p>
+            )}
+          </>
+        )}
       </div>
     </AuthLayout>
   );
