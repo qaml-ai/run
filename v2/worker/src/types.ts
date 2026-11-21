@@ -92,6 +92,7 @@ export interface AgentConfig {
   tenantId: string;
   key: string;
   model: string;
+  keyScope?: string | null;
   instructions: string;
   definition?: string | null;
   tools: CustomToolSpec[];
@@ -111,6 +112,7 @@ export interface AgentConfig {
 
 export interface AgentUpsertInput {
   model?: string;
+  keyScope?: string | null;
   instructions?: string;
   definition?: string;
   tools?: CustomToolSpec[];
@@ -200,6 +202,7 @@ export interface StoredRunFile extends RunFile {
 export interface StartRunInput {
   prompt: string;
   actor?: string;
+  keyScope?: string | null;
   files?: RunFile[];
   idempotencyKey?: string;
   whileRunning?: "queue" | "steer";
@@ -212,7 +215,7 @@ export interface StartRunInput {
 export interface StartRunHints {
   runId?: string;
   preacquiredSlot?: boolean;
-  prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
+  prefetchedProvider?: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null };
   prefetchedBalanceUsd?: number;
 }
 
@@ -273,11 +276,21 @@ export interface ChildAgentRecord {
   result: unknown;
 }
 
+export type ProviderApiStyle =
+  | "openai-chat"
+  | "openai-responses"
+  | "openai-codex"
+  | "anthropic"
+  | "gemini";
+
 export interface ProviderCredentials {
   provider: string;
   apiKey: string;
   baseUrl?: string | null;
   modelAliases?: Record<string, string>;
+  headers?: Record<string, string>;
+  apiStyle?: ProviderApiStyle | null;
+  scope?: string | null;
 }
 
 export type ModelStreamChunk =

@@ -8,6 +8,7 @@ import {
   type AgentUpsertInput,
   type AuthContext,
   type Env,
+  type ProviderApiStyle,
   type ProviderCredentials,
   type RpcStub,
 } from "./types.ts";
@@ -39,6 +40,7 @@ export interface AgentIndexEntry {
   tokenHash: string;
   sealedToken: string;
   model: string;
+  keyScope?: string | null;
   repoId: string | null;
   branch: string;
   definition: string | null;
@@ -90,6 +92,9 @@ type SealedProviderRow = {
   sealed_api_key: string;
   base_url: string | null;
   model_aliases_json: string | null;
+  sealed_headers_json?: string | null;
+  api_style?: string | null;
+  scope?: string | null;
 };
 
 export function platformCreditReserve(env: Env, tenantId: string) {
@@ -221,14 +226,34 @@ export class TenantDO extends DurableObject<Env> {
         tokens REAL NOT NULL,
         updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS scoped_provider_keys (
+        scope TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        sealed_api_key TEXT NOT NULL,
+        base_url TEXT,
+        updated_at INTEGER NOT NULL,
+        model_aliases_json TEXT,
+        sealed_headers_json TEXT,
+        api_style TEXT,
+        PRIMARY KEY (scope, provider)
+      );
     `);
     const providerColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(provider_keys)").toArray();
     if (!providerColumns.some(({ name }) => name === "model_aliases_json")) {
       this.ctx.storage.sql.exec("ALTER TABLE provider_keys ADD COLUMN model_aliases_json TEXT");
     }
-    if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agents_index)")
-      .toArray().some(({ name }) => name === "model_revision")) {
+    if (!providerColumns.some(({ name }) => name === "sealed_headers_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE provider_keys ADD COLUMN sealed_headers_json TEXT");
+    }
+    if (!providerColumns.some(({ name }) => name === "api_style")) {
+      this.ctx.storage.sql.exec("ALTER TABLE provider_keys ADD COLUMN api_style TEXT");
+    }
+    const agentColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agents_index)").toArray();
+    if (!agentColumns.some(({ name }) => name === "model_revision")) {
       this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN model_revision INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!agentColumns.some(({ name }) => name === "key_scope")) {
+      this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN key_scope TEXT");
     }
     this.schemaReady = true;
   }
@@ -508,65 +533,152 @@ export class TenantDO extends DurableObject<Env> {
     apiKey: string,
     baseUrl?: string | null,
     modelAliases?: Record<string, string>,
-  ): Promise<{ provider: string; baseUrl: string | null; modelAliases?: Record<string, string>; updated: true }> {
+    options?: {
+      scope?: string | null;
+      headers?: Record<string, string> | null;
+      apiStyle?: ProviderApiStyle | null;
+    },
+  ): Promise<{
+    provider: string;
+    scope?: string;
+    baseUrl: string | null;
+    apiStyle?: ProviderApiStyle | null;
+    modelAliases?: Record<string, string>;
+    updated: true;
+  }> {
     this.requireProfile();
     const norm = provider.toLowerCase();
-    const sealed = await sealSecret(apiKey, this.env.VAULT_SECRET);
+    const scope = options?.scope?.trim() || null;
+    const sealed = apiKey ? await sealSecret(apiKey, this.env.VAULT_SECRET) : "";
+    const sealedHeaders = options?.headers !== undefined
+      ? (options.headers && Object.keys(options.headers).length > 0
+        ? await sealSecret(JSON.stringify(options.headers), this.env.VAULT_SECRET)
+        : null)
+      : undefined;
+    const apiStyle = options?.apiStyle === undefined ? undefined : (options.apiStyle ?? null);
     const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO provider_keys (provider, sealed_api_key, base_url, updated_at, model_aliases_json)
-       VALUES (?1, ?2, ?3, ?4, ?5)
-       ON CONFLICT(provider) DO UPDATE SET
-         sealed_api_key = excluded.sealed_api_key,
-         base_url = excluded.base_url,
-         updated_at = excluded.updated_at,
-         model_aliases_json = coalesce(excluded.model_aliases_json, provider_keys.model_aliases_json)`,
-      norm,
-      sealed,
-      baseUrl ?? null,
-      now,
-      modelAliases === undefined ? null : JSON.stringify(modelAliases),
-    );
-    return { provider: norm, baseUrl: baseUrl ?? null, ...(modelAliases && { modelAliases }), updated: true };
+    if (scope) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO scoped_provider_keys (scope, provider, sealed_api_key, base_url, updated_at, model_aliases_json, sealed_headers_json, api_style)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(scope, provider) DO UPDATE SET
+           sealed_api_key = excluded.sealed_api_key,
+           base_url = excluded.base_url,
+           updated_at = excluded.updated_at,
+           model_aliases_json = coalesce(excluded.model_aliases_json, scoped_provider_keys.model_aliases_json),
+           sealed_headers_json = CASE WHEN ?9 = 1 THEN excluded.sealed_headers_json ELSE scoped_provider_keys.sealed_headers_json END,
+           api_style = CASE WHEN ?10 = 1 THEN excluded.api_style ELSE scoped_provider_keys.api_style END`,
+        scope,
+        norm,
+        sealed,
+        baseUrl ?? null,
+        now,
+        modelAliases === undefined ? null : JSON.stringify(modelAliases),
+        sealedHeaders ?? null,
+        apiStyle ?? null,
+        options?.headers !== undefined ? 1 : 0,
+        options?.apiStyle !== undefined ? 1 : 0,
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO provider_keys (provider, sealed_api_key, base_url, updated_at, model_aliases_json, sealed_headers_json, api_style)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(provider) DO UPDATE SET
+           sealed_api_key = excluded.sealed_api_key,
+           base_url = excluded.base_url,
+           updated_at = excluded.updated_at,
+           model_aliases_json = coalesce(excluded.model_aliases_json, provider_keys.model_aliases_json),
+           sealed_headers_json = CASE WHEN ?8 = 1 THEN excluded.sealed_headers_json ELSE provider_keys.sealed_headers_json END,
+           api_style = CASE WHEN ?9 = 1 THEN excluded.api_style ELSE provider_keys.api_style END`,
+        norm,
+        sealed,
+        baseUrl ?? null,
+        now,
+        modelAliases === undefined ? null : JSON.stringify(modelAliases),
+        sealedHeaders ?? null,
+        apiStyle ?? null,
+        options?.headers !== undefined ? 1 : 0,
+        options?.apiStyle !== undefined ? 1 : 0,
+      );
+    }
+    return {
+      provider: norm,
+      ...(scope ? { scope } : {}),
+      baseUrl: baseUrl ?? null,
+      ...(apiStyle !== undefined ? { apiStyle } : {}),
+      ...(modelAliases && { modelAliases }),
+      updated: true,
+    };
   }
 
-  async getProviderSecret(provider: string): Promise<ProviderCredentials | null> {
+  async getProviderSecret(provider: string, scope?: string | null): Promise<ProviderCredentials | null> {
     if (!this.readProfileOrNull()) return null;
-    const row = this.findSealedProviderRow([provider]);
+    const row = this.findSealedProviderRow([provider], scope);
     return row && await this.openProviderCredentials(row);
   }
 
   private async openProviderCredentials(row: SealedProviderRow): Promise<ProviderCredentials> {
+    const headers = row.sealed_headers_json
+      ? JSON.parse(await openSecret(row.sealed_headers_json, this.env.VAULT_SECRET)) as Record<string, string>
+      : undefined;
     return {
       provider: row.provider,
-      apiKey: await openSecret(row.sealed_api_key, this.env.VAULT_SECRET),
+      apiKey: row.sealed_api_key ? await openSecret(row.sealed_api_key, this.env.VAULT_SECRET) : "",
       baseUrl: row.base_url,
       ...(row.model_aliases_json && { modelAliases: JSON.parse(row.model_aliases_json) as Record<string, string> }),
+      ...(headers && Object.keys(headers).length > 0 && { headers }),
+      ...(row.api_style && { apiStyle: row.api_style as ProviderApiStyle }),
+      ...(row.scope && { scope: row.scope }),
     };
   }
 
-  async listProviders(): Promise<
-    Array<{ provider: string; baseUrl: string | null; updatedAt: number }>
+  async listProviders(scope?: string | null): Promise<
+    Array<{ provider: string; baseUrl: string | null; apiStyle: ProviderApiStyle | null; updatedAt: number }>
   > {
     this.requireProfile();
-    const rows = this.ctx.storage.sql
-      .exec<{ provider: string; base_url: string | null; updated_at: number }>(
-        `SELECT provider, base_url, updated_at FROM provider_keys ORDER BY provider ASC`,
-      )
-      .toArray();
+    const normScope = scope?.trim() || null;
+    const rows = normScope
+      ? this.ctx.storage.sql
+        .exec<{ provider: string; base_url: string | null; api_style: string | null; updated_at: number }>(
+          `SELECT provider, base_url, api_style, updated_at FROM scoped_provider_keys WHERE scope = ?1 ORDER BY provider ASC`,
+          normScope,
+        )
+        .toArray()
+      : this.ctx.storage.sql
+        .exec<{ provider: string; base_url: string | null; api_style: string | null; updated_at: number }>(
+          `SELECT provider, base_url, api_style, updated_at FROM provider_keys ORDER BY provider ASC`,
+        )
+        .toArray();
     return rows.map((r) => ({
       provider: r.provider,
       baseUrl: r.base_url,
+      apiStyle: (r.api_style as ProviderApiStyle | null) ?? null,
       updatedAt: r.updated_at,
     }));
   }
 
-  async deleteProvider(provider: string): Promise<void> {
+  async deleteProvider(provider: string, scope?: string | null): Promise<void> {
     this.requireProfile();
-    this.ctx.storage.sql.exec(
-      `DELETE FROM provider_keys WHERE provider = ?1`,
-      provider.toLowerCase(),
-    );
+    const normScope = scope?.trim() || null;
+    if (normScope) {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM scoped_provider_keys WHERE scope = ?1 AND provider = ?2`,
+        normScope,
+        provider.toLowerCase(),
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM provider_keys WHERE provider = ?1`,
+        provider.toLowerCase(),
+      );
+    }
+  }
+
+  async deleteKeyScope(scope: string): Promise<void> {
+    this.requireProfile();
+    const normScope = scope.trim();
+    if (!normScope) return;
+    this.ctx.storage.sql.exec(`DELETE FROM scoped_provider_keys WHERE scope = ?1`, normScope);
   }
 
   // ---- 3. Billing, Credits, Concurrency Slots & Rate Limits ----
@@ -983,11 +1095,27 @@ export class TenantDO extends DurableObject<Env> {
 
   // ---- 5. Agents Directory (`agents_index`) ----
 
-  private findSealedProviderRow(candidates: string[]): SealedProviderRow | null {
+  private findSealedProviderRow(candidates: string[], scope?: string | null): SealedProviderRow | null {
+    const normScope = scope?.trim() || null;
+    if (normScope) {
+      for (const candidate of candidates) {
+        const row = this.ctx.storage.sql
+          .exec<SealedProviderRow>(
+            `SELECT scope, provider, sealed_api_key, base_url, model_aliases_json, sealed_headers_json, api_style
+             FROM scoped_provider_keys WHERE scope = ?1 AND provider = ?2 LIMIT 1`,
+            normScope,
+            candidate.toLowerCase(),
+          )
+          .toArray()[0];
+        if (row) return row;
+      }
+      return null;
+    }
     for (const candidate of candidates) {
       const row = this.ctx.storage.sql
         .exec<SealedProviderRow>(
-          `SELECT provider, sealed_api_key, base_url, model_aliases_json FROM provider_keys WHERE provider = ?1 LIMIT 1`,
+          `SELECT provider, sealed_api_key, base_url, model_aliases_json, sealed_headers_json, api_style
+           FROM provider_keys WHERE provider = ?1 LIMIT 1`,
           candidate.toLowerCase(),
         )
         .toArray()[0];
@@ -1004,6 +1132,7 @@ export class TenantDO extends DurableObject<Env> {
         token_hash: string;
         sealed_token: string;
         model: string;
+        key_scope: string | null;
         repo_id: string | null;
         branch: string;
         definition_slug: string | null;
@@ -1022,6 +1151,7 @@ export class TenantDO extends DurableObject<Env> {
       tokenHash: row.token_hash,
       sealedToken: row.sealed_token,
       model: row.model,
+      keyScope: row.key_scope ?? null,
       repoId: row.repo_id,
       branch: row.branch,
       definition: row.definition_slug,
@@ -1059,13 +1189,14 @@ export class TenantDO extends DurableObject<Env> {
     agentId: string;
     sealedToken: string;
     model: string;
+    keyScope: string | null;
     repoId: string | null;
     lineage: string | null;
     branch: string;
     definitionSlug: string | null;
     definitionConfig: AgentUpsertInput | null;
     slotAcquired: boolean;
-    prefetchedProvider?: { model: string; credentials: ProviderCredentials | null };
+    prefetchedProvider?: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null };
   }> {
     const profile = this.readProfileOrNull();
     if (!profile) {
@@ -1122,6 +1253,10 @@ export class TenantDO extends DurableObject<Env> {
         existing?.model ??
         params.defaultModel ??
         DEFAULT_MODEL_ID;
+      const keyScope =
+        params.input.keyScope !== undefined
+          ? (params.input.keyScope?.trim() || null)
+          : (defCfg?.keyScope !== undefined ? (defCfg.keyScope?.trim() || null) : (existing?.keyScope ?? null));
       const repoId =
         params.input.repoId !== undefined
           ? params.input.repoId
@@ -1142,9 +1277,10 @@ export class TenantDO extends DurableObject<Env> {
 
       const now = Date.now();
       this.ctx.storage.sql.exec(
-        `INSERT INTO agents_index (id, agent_key, token_hash, sealed_token, model, repo_id, branch, definition_slug, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+        `INSERT INTO agents_index (id, agent_key, token_hash, sealed_token, model, key_scope, repo_id, branch, definition_slug, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
          ON CONFLICT(id) DO UPDATE SET
+           key_scope = excluded.key_scope,
            repo_id = excluded.repo_id,
            branch = excluded.branch,
            definition_slug = COALESCE(excluded.definition_slug, agents_index.definition_slug),
@@ -1154,6 +1290,7 @@ export class TenantDO extends DurableObject<Env> {
         tokenHash,
         sealedToken,
         model,
+        keyScope,
         repoId,
         branch,
         definitionSlug,
@@ -1166,9 +1303,9 @@ export class TenantDO extends DurableObject<Env> {
       if (params.preacquireRunId) {
         this.acquireSlotSync(profile, params.preacquireRunId, agentId);
         slotAcquired = true;
-        const lookup = getProviderLookupCandidates(this.env, model);
+        const lookup = getProviderLookupCandidates(this.env, model, keyScope);
         if (!lookup.isMock) {
-          sealedProviderRow = this.findSealedProviderRow(lookup.candidates);
+          sealedProviderRow = this.findSealedProviderRow(lookup.candidates, keyScope);
         }
       }
 
@@ -1177,6 +1314,7 @@ export class TenantDO extends DurableObject<Env> {
         agentId,
         sealedToken,
         model,
+        keyScope,
         repoId,
         lineage,
         branch,
@@ -1187,10 +1325,14 @@ export class TenantDO extends DurableObject<Env> {
       };
     });
 
-    let prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
+    let prefetchedProvider: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null } | undefined;
     if (params.preacquireRunId) {
       const row = txResult.sealedProviderRow;
-      prefetchedProvider = { model: txResult.model, credentials: row && await this.openProviderCredentials(row) };
+      prefetchedProvider = {
+        model: txResult.model,
+        keyScope: txResult.keyScope,
+        credentials: row && await this.openProviderCredentials(row),
+      };
     }
 
     return {
@@ -1200,6 +1342,7 @@ export class TenantDO extends DurableObject<Env> {
       agentId: txResult.agentId,
       sealedToken: txResult.sealedToken,
       model: txResult.model,
+      keyScope: txResult.keyScope,
       repoId: txResult.repoId,
       lineage: txResult.lineage,
       branch: txResult.branch,
@@ -1221,6 +1364,7 @@ export class TenantDO extends DurableObject<Env> {
     agentIdFromToken?: string;
     idOrKey: string;
     defaultModel: string;
+    keyScopeOverride?: string | null;
     operation?: "read" | "run" | "input" | "admin";
     includeProviderCredentials?: boolean;
     preacquireRunId?: string;
@@ -1229,7 +1373,7 @@ export class TenantDO extends DurableObject<Env> {
     agentId: string;
     balanceUsd: number;
     slotAcquired: boolean;
-    prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
+    prefetchedProvider: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null } | undefined;
     modelIndexUpdates?: true;
   }> {
     const profile = this.readProfileOrNull();
@@ -1271,11 +1415,13 @@ export class TenantDO extends DurableObject<Env> {
 
     let agentId: string;
     let model: string;
+    let keyScope: string | null = null;
 
     if (auth.kind === "agent" && auth.agentId === params.idOrKey) {
       const row = this.resolveAgentSync(profile, auth.agentId);
       agentId = auth.agentId;
       model = row?.model ?? params.defaultModel;
+      keyScope = row?.keyScope ?? null;
     } else {
       const row = this.resolveAgentSync(profile, params.idOrKey);
       if (!row) {
@@ -1286,6 +1432,10 @@ export class TenantDO extends DurableObject<Env> {
       }
       agentId = row.id;
       model = row.model;
+      keyScope = row.keyScope ?? null;
+    }
+    if (params.keyScopeOverride !== undefined) {
+      keyScope = params.keyScopeOverride?.trim() || null;
     }
 
     let slotAcquired = false;
@@ -1295,11 +1445,15 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     const wantProvider = params.includeProviderCredentials ?? Boolean(params.preacquireRunId);
-    let prefetchedProvider: { model: string; credentials: ProviderCredentials | null } | undefined;
+    let prefetchedProvider: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null } | undefined;
     if (wantProvider) {
-      const lookup = getProviderLookupCandidates(this.env, model);
-      const sealedRow = lookup.isMock ? null : this.findSealedProviderRow(lookup.candidates);
-      prefetchedProvider = { model, credentials: sealedRow && await this.openProviderCredentials(sealedRow) };
+      const lookup = getProviderLookupCandidates(this.env, model, keyScope);
+      const sealedRow = lookup.isMock ? null : this.findSealedProviderRow(lookup.candidates, keyScope);
+      prefetchedProvider = {
+        model,
+        keyScope,
+        credentials: sealedRow && await this.openProviderCredentials(sealedRow),
+      };
     }
 
     return {
@@ -1345,8 +1499,18 @@ export class TenantDO extends DurableObject<Env> {
     );
   }
 
-  async updateAgentModel(agentId: string, model: string, revision: number): Promise<void> {
+  async updateAgentModel(agentId: string, model: string, revision: number, keyScope?: string | null): Promise<void> {
     this.requireProfile();
+    if (keyScope !== undefined) {
+      this.ctx.storage.sql.exec(
+        "UPDATE agents_index SET model = ?1, model_revision = ?2, key_scope = ?3 WHERE id = ?4 AND model_revision <= ?2",
+        model,
+        revision,
+        keyScope?.trim() || null,
+        agentId,
+      );
+      return;
+    }
     this.ctx.storage.sql.exec(
       "UPDATE agents_index SET model = ?1, model_revision = ?2 WHERE id = ?3 AND model_revision <= ?2",
       model,

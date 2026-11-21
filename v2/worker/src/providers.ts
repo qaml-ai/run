@@ -35,6 +35,7 @@ export interface StreamModelRequest {
   env: Env;
   tenantId: string;
   model: string;
+  keyScope?: string | null;
   instructions?: string;
   messages: ConversationMessage[];
   tools?: LlmToolSchema[];
@@ -48,11 +49,12 @@ export interface StreamModelRequest {
 }
 
 interface ResolvedEndpoint {
-  protocol: "mock" | "openai-chat" | "openai-responses" | "anthropic" | "gemini";
+  protocol: "mock" | "openai-chat" | "openai-responses" | "openai-codex" | "anthropic" | "gemini";
   providerName: string;
   modelId: string;
   apiKey: string;
   baseUrl: string;
+  headers?: Record<string, string>;
 }
 
 const AZURE_SOL = "azure/gpt-6.2-sol";
@@ -137,6 +139,7 @@ export function addVmUsage(usage: RunUsage, model: string, vmMs: number) {
 export function getProviderLookupCandidates(
   env: Env,
   rawModel: string,
+  keyScope?: string | null,
 ): {
   isMock: boolean;
   modelId: string;
@@ -158,9 +161,15 @@ export function getProviderLookupCandidates(
     modelId = model.slice(slashIdx + 1);
   }
 
-  if (model === AZURE_SOL) return { isMock: false, modelId, explicitProvider, candidates: [] };
+  if (model === AZURE_SOL) {
+    return { isMock: false, modelId, explicitProvider, candidates: keyScope?.trim() ? ["azure"] : [] };
+  }
   // An Azure deployment uses its own endpoint and key.
   if (explicitProvider === "azure") return { isMock: false, modelId, explicitProvider, candidates: ["azure"] };
+  if (explicitProvider === "openai-codex") return { isMock: false, modelId, explicitProvider, candidates: ["openai-codex"] };
+  if (explicitProvider === "custom" || explicitProvider?.startsWith("bedrock-openai-")) {
+    return { isMock: false, modelId, explicitProvider, candidates: [explicitProvider] };
+  }
 
   const candidates: string[] = [];
   if (explicitProvider) {
@@ -175,13 +184,32 @@ export function getProviderLookupCandidates(
   } else if (explicitProvider === "openai-responses") {
     candidates.push("openai-responses", "openai");
   } else {
-    if (/^(o3|gpt-5)/.test(modelId)) {
+    if (/^(o3|gpt-5|gpt-6)/.test(modelId)) {
       candidates.push("openai-responses");
     }
     candidates.push("openai");
   }
 
-  return { isMock: false, modelId, explicitProvider, candidates };
+  return { isMock: false, modelId, explicitProvider, candidates: [...new Set(candidates)] };
+}
+
+function hasCustomAuthHeaders(headers?: Record<string, string>): boolean {
+  return Boolean(headers && Object.keys(headers).length > 0);
+}
+
+function decodeCodexAccountId(accessToken: string): string | null {
+  try {
+    const [, payload] = accessToken.split(".");
+    if (!payload) return null;
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const claims = JSON.parse(atob(padded)) as Record<string, unknown>;
+    const auth = claims["https://api.openai.com/auth"];
+    const accountId = auth && typeof auth === "object" ? (auth as Record<string, unknown>).chatgpt_account_id : undefined;
+    return typeof accountId === "string" && accountId ? accountId : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveModelEndpoint(
@@ -189,9 +217,11 @@ export async function resolveModelEndpoint(
   tenantId: string,
   rawModel: string,
   prefetchedProvider?: { credentials: ProviderCredentials | null },
+  keyScope?: string | null,
 ): Promise<ResolvedEndpoint> {
+  const normScope = keyScope?.trim() || null;
   const { isMock, modelId: canonicalModelId, explicitProvider, candidates: lookupOrder } =
-    getProviderLookupCandidates(env, rawModel);
+    getProviderLookupCandidates(env, rawModel, normScope);
 
   if (isMock) {
     return {
@@ -203,7 +233,18 @@ export async function resolveModelEndpoint(
     };
   }
 
-  if (explicitProvider === "azure" && canonicalModelId === "gpt-6.2-sol") {
+  let stored: ProviderCredentials | null = null;
+  if (prefetchedProvider !== undefined) {
+    stored = prefetchedProvider.credentials;
+  } else if (lookupOrder.length > 0) {
+    const tenantStub = getTenantStub(env, tenantId);
+    for (const candidate of lookupOrder) {
+      stored = await tenantStub.getProviderSecret(candidate, normScope);
+      if (stored) break;
+    }
+  }
+
+  if (explicitProvider === "azure" && canonicalModelId === "gpt-6.2-sol" && !stored) {
     const { AZURE_OPENAI_SOL_ENDPOINT: endpoint, AZURE_OPENAI_SOL_API_KEY: apiKey } = env;
     if (!endpoint || !apiKey) {
       throw new ApiError(503, "missing_provider_key", "The platform Azure deployment for GPT-6.2 Sol is not configured");
@@ -217,24 +258,50 @@ export async function resolveModelEndpoint(
     };
   }
 
-  let stored: ProviderCredentials | null = null;
-  if (prefetchedProvider !== undefined) {
-    stored = prefetchedProvider.credentials;
-  } else {
-    const tenantStub = getTenantStub(env, tenantId);
-    for (const candidate of lookupOrder) {
-      stored = await tenantStub.getProviderSecret(candidate);
-      if (stored) break;
-    }
-  }
-
   const providerName = stored?.provider ?? lookupOrder[0] ?? "openai";
   const aliases = stored?.modelAliases;
   const modelId = aliases && Object.hasOwn(aliases, canonicalModelId) ? aliases[canonicalModelId] : canonicalModelId;
+  const headers = stored?.headers;
+  const hasHeaders = hasCustomAuthHeaders(headers);
+
+  if (stored?.apiStyle) {
+    const apiKey = stored.apiKey || "";
+    if (!apiKey && !hasHeaders) {
+      throw new ApiError(400, "missing_provider_key", `No API key or auth headers configured for provider '${providerName}'`);
+    }
+    const defaultBase =
+      stored.apiStyle === "anthropic" ? "https://api.anthropic.com"
+      : stored.apiStyle === "gemini" ? "https://generativelanguage.googleapis.com"
+      : stored.apiStyle === "openai-codex" ? "https://chatgpt.com/backend-api"
+      : "https://api.openai.com/v1";
+    return {
+      protocol: stored.apiStyle,
+      providerName,
+      modelId,
+      apiKey,
+      baseUrl: (stored.baseUrl || defaultBase).replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
+    };
+  }
+
+  if (providerName === "openai-codex") {
+    const apiKey = stored?.apiKey || "";
+    if (!apiKey && !hasHeaders) {
+      throw new ApiError(400, "missing_provider_key", "No credentials configured for provider 'openai-codex'");
+    }
+    return {
+      protocol: "openai-codex",
+      providerName: "openai-codex",
+      modelId,
+      apiKey,
+      baseUrl: (stored?.baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
+    };
+  }
 
   if (providerName === "anthropic" || (!explicitProvider && canonicalModelId.startsWith("claude-"))) {
-    const apiKey = stored?.apiKey || env.ANTHROPIC_API_KEY || "";
-    if (!apiKey) {
+    const apiKey = stored?.apiKey || (normScope ? "" : env.ANTHROPIC_API_KEY || "");
+    if (!apiKey && !hasHeaders) {
       throw new ApiError(400, "missing_provider_key", `No API key configured for provider 'anthropic'`);
     }
     return {
@@ -243,6 +310,7 @@ export async function resolveModelEndpoint(
       modelId,
       apiKey,
       baseUrl: (stored?.baseUrl || "https://api.anthropic.com").replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
     };
   }
 
@@ -251,8 +319,8 @@ export async function resolveModelEndpoint(
     providerName === "google" ||
     (!explicitProvider && canonicalModelId.startsWith("gemini-"))
   ) {
-    const apiKey = stored?.apiKey || env.GEMINI_API_KEY || "";
-    if (!apiKey) {
+    const apiKey = stored?.apiKey || (normScope ? "" : env.GEMINI_API_KEY || "");
+    if (!apiKey && !hasHeaders) {
       throw new ApiError(400, "missing_provider_key", `No API key configured for provider 'gemini'`);
     }
     return {
@@ -261,30 +329,32 @@ export async function resolveModelEndpoint(
       modelId,
       apiKey,
       baseUrl: (stored?.baseUrl || "https://generativelanguage.googleapis.com").replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
     };
   }
 
-  if (providerName === "openai-responses") {
-    const apiKey = stored?.apiKey || env.OPENAI_API_KEY || "";
-    if (!apiKey) {
+  if (providerName === "openai-responses" || providerName.startsWith("bedrock-openai-")) {
+    const apiKey = stored?.apiKey || (normScope || providerName.startsWith("bedrock-openai-") ? "" : env.OPENAI_API_KEY || "");
+    if (!apiKey && !hasHeaders) {
       throw new ApiError(
         400,
         "missing_provider_key",
-        `No API key configured for provider 'openai-responses'`,
+        `No API key configured for provider '${providerName}'`,
       );
     }
     return {
       protocol: "openai-responses",
-      providerName: "openai-responses",
+      providerName,
       modelId,
       apiKey,
       baseUrl: (stored?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
     };
   }
 
   if (providerName === "openrouter") {
-    const apiKey = stored?.apiKey || env.OPENROUTER_API_KEY || "";
-    if (!apiKey) {
+    const apiKey = stored?.apiKey || (normScope ? "" : env.OPENROUTER_API_KEY || "");
+    if (!apiKey && !hasHeaders) {
       throw new ApiError(400, "missing_provider_key", `No API key configured for provider 'openrouter'`);
     }
     return {
@@ -293,19 +363,20 @@ export async function resolveModelEndpoint(
       modelId,
       apiKey,
       baseUrl: (stored?.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
     };
   }
 
-  const apiKey = stored?.apiKey || (providerName === "azure" ? undefined : env.OPENAI_API_KEY);
-  if (!apiKey) {
+  const apiKey = stored?.apiKey || (normScope || providerName === "azure" || providerName === "custom" ? "" : env.OPENAI_API_KEY || "");
+  if (!apiKey && !hasHeaders) {
     throw new ApiError(
       400,
       "missing_provider_key",
       `No API key configured for provider '${providerName}'`,
     );
   }
-  if (providerName === "azure" && !stored?.baseUrl) {
-    throw new ApiError(400, "missing_provider_url", "An Azure provider requires its deployment base URL");
+  if ((providerName === "azure" || providerName === "custom") && !stored?.baseUrl) {
+    throw new ApiError(400, "missing_provider_url", `Provider '${providerName}' requires a base URL`);
   }
   return {
     protocol: "openai-chat",
@@ -313,6 +384,7 @@ export async function resolveModelEndpoint(
     modelId,
     apiKey,
     baseUrl: (stored?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, ""),
+    ...(hasHeaders ? { headers } : {}),
   };
 }
 
@@ -324,6 +396,7 @@ export async function* streamModelResponse(
     req.tenantId,
     req.model,
     req.prefetchedProvider,
+    req.keyScope,
   );
 
   if (endpoint.protocol !== "mock" && req.messages.some((message) => message.files?.length || message.legacyInlineContent || message.toolImages?.length)) {
@@ -349,6 +422,7 @@ export async function* streamModelResponse(
       yield* streamOpenAiChat(endpoint, req);
       return;
     case "openai-responses":
+    case "openai-codex":
       yield* streamOpenAiResponses(endpoint, req);
       return;
     case "anthropic":
@@ -440,8 +514,12 @@ function buildChatCompletionsUrl(baseUrl: string): string {
   return `${baseUrl}/v1/chat/completions`;
 }
 
-function buildResponsesUrl(baseUrl: string): string {
+function buildResponsesUrl(baseUrl: string, codex = false): string {
   if (baseUrl.endsWith("/responses")) return baseUrl;
+  if (codex) {
+    if (baseUrl.endsWith("/codex")) return `${baseUrl}/responses`;
+    return `${baseUrl}/codex/responses`;
+  }
   if (/\/v\d+$/.test(baseUrl)) return `${baseUrl}/responses`;
   return `${baseUrl}/v1/responses`;
 }
@@ -544,7 +622,8 @@ async function* streamOpenAiChat(
   const res = await fetch(buildChatCompletionsUrl(endpoint.baseUrl), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${endpoint.apiKey}`,
+      ...(endpoint.headers ?? {}),
+      ...(endpoint.apiKey ? { Authorization: `Bearer ${endpoint.apiKey}` } : {}),
       "Content-Type": "application/json",
       Accept: "text/event-stream, application/json",
     },
@@ -731,11 +810,16 @@ async function* streamOpenAiResponses(
     stream: true,
   };
   const azure = endpoint.providerName === "azure";
+  const codex = endpoint.protocol === "openai-codex";
   if (azure) {
     payload.reasoning = { effort: "low" };
     payload.store = false;
   }
-  if (req.maxOutputTokens) payload.max_output_tokens = req.maxOutputTokens;
+  if (codex) {
+    payload.store = false;
+    if (!payload.instructions) payload.instructions = "You are a helpful coding assistant.";
+  }
+  if (req.maxOutputTokens && !codex) payload.max_output_tokens = req.maxOutputTokens;
   if (req.tools && req.tools.length > 0) {
     payload.tools = req.tools.map((t) => ({
       type: "function",
@@ -755,13 +839,22 @@ async function* streamOpenAiResponses(
     };
   }
 
-  const res = await fetch(buildResponsesUrl(endpoint.baseUrl), {
+  const codexAccount = codex && endpoint.apiKey ? decodeCodexAccountId(endpoint.apiKey) : null;
+  const responseHeaders: Record<string, string> = {
+    ...(codex ? {
+      "openai-beta": "responses=experimental",
+      originator: "codex_cli_rs",
+      ...(codexAccount ? { "chatgpt-account-id": codexAccount } : {}),
+    } : {}),
+    ...(endpoint.headers ?? {}),
+    ...(endpoint.apiKey ? (azure ? { "api-key": endpoint.apiKey } : { Authorization: `Bearer ${endpoint.apiKey}` }) : {}),
+    "Content-Type": "application/json",
+    Accept: "text/event-stream, application/json",
+  };
+
+  const res = await fetch(buildResponsesUrl(endpoint.baseUrl, codex), {
     method: "POST",
-    headers: {
-      ...(azure ? { "api-key": endpoint.apiKey } : { Authorization: `Bearer ${endpoint.apiKey}` }),
-      "Content-Type": "application/json",
-      Accept: "text/event-stream, application/json",
-    },
+    headers: responseHeaders,
     body: JSON.stringify(payload),
     signal: req.signal,
   });
@@ -958,7 +1051,8 @@ async function* streamAnthropicMessages(
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      "x-api-key": endpoint.apiKey,
+      ...(endpoint.headers ?? {}),
+      ...(endpoint.apiKey ? { "x-api-key": endpoint.apiKey } : {}),
       "anthropic-version": "2023-06-01",
       "Content-Type": "application/json",
       Accept: "text/event-stream, application/json",
@@ -1137,11 +1231,14 @@ async function* streamGeminiContent(
 
   const url = `${endpoint.baseUrl}/v1beta/models/${encodeURIComponent(
     endpoint.modelId,
-  )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(endpoint.apiKey)}`;
+  )}:streamGenerateContent?alt=sse${endpoint.apiKey ? `&key=${encodeURIComponent(endpoint.apiKey)}` : ""}`;
 
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      ...(endpoint.headers ?? {}),
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify(payload),
     signal: req.signal,
   });

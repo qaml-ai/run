@@ -297,6 +297,7 @@ export async function performCompaction(
         env: adapter.env,
         tenantId: config.tenantId,
         model: config.model,
+        keyScope: config.keyScope ?? null,
         instructions:
           "Summarize the conversation history concisely, preserving key decisions, file paths, facts, and open tasks.",
         messages,
@@ -380,6 +381,7 @@ export async function performDreamConsolidation(
     env: adapter.env,
     tenantId: config.tenantId,
     model: config.model,
+    keyScope: config.keyScope ?? null,
     instructions: [
       "Consolidate durable lessons, user preferences, and repository architecture notes into clean Markdown for /workspace/MEMORY.md.",
       existingMemory ? `Existing MEMORY.md:\n${existingMemory}` : "",
@@ -911,17 +913,23 @@ async function continueTurnLoop(
       const assistant = { role: "assistant", timestamp, model: config.model };
       if (legacyEvents) adapter.emitEvent(runId, "message_start", { step, message: { ...assistant, content: [] } });
 
+      const effectiveScope = state.prefetchedProvider?.keyScope !== undefined
+        ? (state.prefetchedProvider.keyScope ?? null)
+        : (config.keyScope ?? null);
       for await (const chunk of streamModelResponse({
         env: adapter.env,
         tenantId: config.tenantId,
         model: config.model,
+        keyScope: effectiveScope,
         instructions: config.instructions,
         messages: convMessages,
         tools: catalog.schemas,
         outputSchema,
         signal: state.signal,
         purpose: "turn",
-        prefetchedProvider: state.prefetchedProvider?.model === config.model ? state.prefetchedProvider : undefined,
+        prefetchedProvider: state.prefetchedProvider?.model === config.model && (state.prefetchedProvider.keyScope ?? null) === effectiveScope
+          ? state.prefetchedProvider
+          : undefined,
       })) {
         if (state.signal.aborted && chunk.type !== "done") {
           throw new ApiError(499, "cancelled", "Run aborted");

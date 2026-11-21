@@ -179,28 +179,84 @@ app.delete("/v2/tokens/:id", async (c) => {
   return c.json({ deleted: true });
 });
 
-app.put("/v2/providers/:provider", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  assertTenantScope(auth);
-  const provider = c.req.param("provider").toLowerCase();
-  const body = (await c.req.json()) as { apiKey?: string; baseUrl?: string; modelAliases?: Record<string, string> };
-  if (typeof body.apiKey !== "string" || !body.apiKey.trim()) {
-    throw new ApiError(400, "invalid_request", "`apiKey` is required");
+const ALLOWED_API_STYLES = new Set([
+  "openai-chat",
+  "openai-responses",
+  "openai-codex",
+  "anthropic",
+  "gemini",
+]);
+
+function parseProviderUpsertBody(body: {
+  apiKey?: unknown;
+  baseUrl?: unknown;
+  modelAliases?: unknown;
+  headers?: unknown;
+  apiStyle?: unknown;
+}) {
+  const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+  const headersRaw = body.headers;
+  let headers: Record<string, string> | null | undefined = undefined;
+  if (headersRaw !== undefined) {
+    if (headersRaw === null) {
+      headers = null;
+    } else if (typeof headersRaw !== "object" || Array.isArray(headersRaw)) {
+      throw new ApiError(400, "invalid_request", "`headers` must be a map of header names to string values");
+    } else {
+      headers = {};
+      for (const [k, v] of Object.entries(headersRaw as Record<string, unknown>)) {
+        if (!k.trim() || typeof v !== "string" || !v.trim()) {
+          throw new ApiError(400, "invalid_request", "`headers` must map non-empty header names to non-empty strings");
+        }
+        headers[k.trim()] = v.trim();
+      }
+    }
+  }
+  if (!apiKey && (!headers || Object.keys(headers).length === 0)) {
+    throw new ApiError(400, "invalid_request", "`apiKey` or non-empty `headers` is required");
   }
   const aliases = body.modelAliases;
   if (aliases !== undefined && (
     aliases === null || typeof aliases !== "object" || Array.isArray(aliases) ||
-    Object.entries(aliases).some(([model, deployment]) =>
+    Object.entries(aliases as Record<string, unknown>).some(([model, deployment]) =>
       !model.trim() || model !== model.trim() || typeof deployment !== "string" ||
       !deployment.trim() || deployment !== deployment.trim())
   )) {
     throw new ApiError(400, "invalid_request", "`modelAliases` must map model IDs to non-empty upstream model names");
   }
+  let apiStyle: "openai-chat" | "openai-responses" | "openai-codex" | "anthropic" | "gemini" | null | undefined = undefined;
+  if (body.apiStyle !== undefined) {
+    if (body.apiStyle === null || body.apiStyle === "") {
+      apiStyle = null;
+    } else if (typeof body.apiStyle === "string" && ALLOWED_API_STYLES.has(body.apiStyle)) {
+      apiStyle = body.apiStyle as "openai-chat" | "openai-responses" | "openai-codex" | "anthropic" | "gemini";
+    } else {
+      throw new ApiError(400, "invalid_request", "`apiStyle` must be one of openai-chat, openai-responses, openai-codex, anthropic, gemini");
+    }
+  }
+  return {
+    apiKey,
+    baseUrl: typeof body.baseUrl === "string" ? body.baseUrl.trim() || null : null,
+    modelAliases: aliases as Record<string, string> | undefined,
+    headers,
+    apiStyle,
+  };
+}
+
+app.put("/v2/providers/:provider", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const provider = c.req.param("provider").toLowerCase();
+  const parsed = parseProviderUpsertBody(await c.req.json());
   const out = await getTenantStub(c.env, auth.tenantId).setProviderSecret(
     provider,
-    body.apiKey.trim(),
-    body.baseUrl?.trim() || null,
-    aliases,
+    parsed.apiKey,
+    parsed.baseUrl,
+    parsed.modelAliases,
+    {
+      ...(parsed.headers !== undefined ? { headers: parsed.headers } : {}),
+      ...(parsed.apiStyle !== undefined ? { apiStyle: parsed.apiStyle } : {}),
+    },
   );
   return c.json(out);
 });
@@ -216,6 +272,54 @@ app.delete("/v2/providers/:provider", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   await getTenantStub(c.env, auth.tenantId).deleteProvider(c.req.param("provider"));
+  return c.json({ deleted: true });
+});
+
+app.put("/v2/key-scopes/:scope/providers/:provider", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const scope = c.req.param("scope").trim();
+  if (!scope || scope.length > 100) {
+    throw new ApiError(400, "invalid_request", "Key scope must be 1-100 characters");
+  }
+  const provider = c.req.param("provider").toLowerCase();
+  const parsed = parseProviderUpsertBody(await c.req.json());
+  const out = await getTenantStub(c.env, auth.tenantId).setProviderSecret(
+    provider,
+    parsed.apiKey,
+    parsed.baseUrl,
+    parsed.modelAliases,
+    {
+      scope,
+      ...(parsed.headers !== undefined ? { headers: parsed.headers } : {}),
+      ...(parsed.apiStyle !== undefined ? { apiStyle: parsed.apiStyle } : {}),
+    },
+  );
+  return c.json(out);
+});
+
+app.get("/v2/key-scopes/:scope/providers", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const scope = c.req.param("scope").trim();
+  if (!scope) throw new ApiError(400, "invalid_request", "Key scope is required");
+  const providers = await getTenantStub(c.env, auth.tenantId).listProviders(scope);
+  return c.json({ scope, providers });
+});
+
+app.delete("/v2/key-scopes/:scope/providers/:provider", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const scope = c.req.param("scope").trim();
+  await getTenantStub(c.env, auth.tenantId).deleteProvider(c.req.param("provider"), scope);
+  return c.json({ deleted: true });
+});
+
+app.delete("/v2/key-scopes/:scope", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const scope = c.req.param("scope").trim();
+  await getTenantStub(c.env, auth.tenantId).deleteKeyScope(scope);
   return c.json({ deleted: true });
 });
 
@@ -573,6 +677,7 @@ app.put("/v2/agents/:key", async (c) => {
         tenantId: prep.tenantId,
         key,
         model: input.model ?? defCfg?.model,
+        keyScope: input.keyScope !== undefined ? (input.keyScope?.trim() || null) : defCfg?.keyScope,
         initialModel: prep.model,
         instructions: input.instructions ?? defCfg?.instructions,
         definition: input.definition,
@@ -643,15 +748,22 @@ app.get("/v2/agents/:idOrKey", async (c) => {
 
 app.patch("/v2/agents/:idOrKey/model", async (c) => {
   const { stub, modelIndexUpdates } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
-  const body = await c.req.json().catch(() => null) as { model?: unknown; expectedModel?: unknown } | null;
+  const body = await c.req.json().catch(() => null) as { model?: unknown; expectedModel?: unknown; keyScope?: unknown } | null;
   if (typeof body?.model !== "string" || !body.model.trim() ||
       typeof body.expectedModel !== "string" || !body.expectedModel.trim()) {
     throw new ApiError(400, "invalid_request", "model and expectedModel are required");
   }
+  if (body.keyScope !== undefined && body.keyScope !== null && typeof body.keyScope !== "string") {
+    throw new ApiError(400, "invalid_request", "keyScope must be a string or null");
+  }
   if (!modelIndexUpdates) {
     throw new ApiError(503, "model_update_unavailable", "The tenant is still using an earlier runtime version");
   }
-  return c.json(await stub.updateModelIfIdle(body.model.trim(), body.expectedModel.trim()));
+  return c.json(await stub.updateModelIfIdle(
+    body.model.trim(),
+    body.expectedModel.trim(),
+    body.keyScope === undefined ? undefined : (body.keyScope?.trim() || null),
+  ));
 });
 
 app.patch("/v2/agents/:idOrKey/spend-limit", async (c) => {
@@ -698,6 +810,7 @@ async function startAgentRun(request: Request, env: Env, ctx: Pick<ExecutionCont
     agentIdFromToken: creds.kind === "agent" ? creds.agentId : undefined,
     idOrKey,
     defaultModel: env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
+    ...(body.keyScope !== undefined ? { keyScopeOverride: body.keyScope?.trim() || null } : {}),
     operation: "run",
     includeProviderCredentials: true,
     preacquireRunId,

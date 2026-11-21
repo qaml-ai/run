@@ -276,7 +276,12 @@ export class AgentDO extends DurableObject<Env> {
 
   private readConfigOrNull(): AgentConfig | null {
     if (this.cachedConfig) return this.cachedConfig;
-    this.ensureSql();
+    if (!this.sqlReady) {
+      const hasConfig = this.ctx.storage.sql
+        .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'config' LIMIT 1")
+        .toArray();
+      if (hasConfig.length === 0) return null;
+    }
     const rows = this.ctx.storage.sql
       .exec<{ config_json: string }>(`SELECT config_json FROM config WHERE id = 1`)
       .toArray();
@@ -1738,6 +1743,10 @@ export class AgentDO extends DurableObject<Env> {
         incoming.initialModel ??
         this.env.DEFAULT_MODEL ??
         DEFAULT_MODEL_ID,
+      keyScope:
+        incoming.keyScope !== undefined
+          ? (incoming.keyScope?.trim() || null)
+          : (existing?.keyScope ?? null),
       instructions: incoming.instructions ?? existing?.instructions ?? "",
       definition:
         incoming.definition !== undefined
@@ -1766,7 +1775,7 @@ export class AgentDO extends DurableObject<Env> {
       updatedAt: now,
     };
     this.writeConfig(merged);
-    const indexSync = existing && incoming.model !== undefined
+    const indexSync = existing && (incoming.model !== undefined || incoming.keyScope !== undefined)
       ? this.syncIndexedModel(merged)
       : undefined;
 
@@ -1789,15 +1798,16 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private async syncIndexedModel(config: AgentConfig): Promise<void> {
-    await getTenantStub(this.env, config.tenantId).updateAgentModel(config.id, config.model, config.updatedAt);
+    await getTenantStub(this.env, config.tenantId).updateAgentModel(config.id, config.model, config.updatedAt, config.keyScope ?? null);
   }
 
-  async updateModelIfIdle(model: string, expectedModel: string): Promise<{ model: string; changed: boolean }> {
+  async updateModelIfIdle(model: string, expectedModel: string, keyScope?: string | null): Promise<{ model: string; keyScope?: string | null; changed: boolean }> {
     this.ensureSql();
     const cfg = this.requireConfig();
-    if (cfg.model === model) {
+    const nextScope = keyScope !== undefined ? (keyScope?.trim() || null) : (cfg.keyScope ?? null);
+    if (cfg.model === model && (cfg.keyScope ?? null) === nextScope) {
       await this.syncIndexedModel(cfg);
-      return { model, changed: false };
+      return { model, ...(nextScope ? { keyScope: nextScope } : {}), changed: false };
     }
     if (cfg.model !== expectedModel) {
       throw new ApiError(409, "model_changed", "The agent model changed");
@@ -1808,10 +1818,10 @@ export class AgentDO extends DurableObject<Env> {
     if (this.activeRunId || pending) {
       throw new ApiError(409, "agent_busy", "The agent has work in progress");
     }
-    const updated = { ...cfg, model };
+    const updated = { ...cfg, model, keyScope: nextScope, updatedAt: Date.now() };
     this.writeConfig(updated);
     await this.syncIndexedModel(updated);
-    return { model, changed: true };
+    return { model, ...(nextScope ? { keyScope: nextScope } : {}), changed: true };
   }
 
   updateSpendLimitIfIdle(scope: { tenantId: string; agentId: string }, spendLimitUsd: number, expectedSpendLimitUsd: number) {
@@ -1909,6 +1919,7 @@ export class AgentDO extends DurableObject<Env> {
       key: cfg.key,
       tenantId: cfg.tenantId,
       model: cfg.model,
+      keyScope: cfg.keyScope ?? null,
       instructions: cfg.instructions,
       definition: cfg.definition,
       tools: cfg.tools,
