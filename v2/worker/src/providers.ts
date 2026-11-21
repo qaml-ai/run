@@ -842,7 +842,20 @@ async function* streamOpenAiResponses(
         };
       }
     } else if (type === "error" || type === "response.failed") {
-      throw new ApiError(502, "provider_error", "The Responses API failed after accepting the request");
+      const errObj = (
+        (ev.error && typeof ev.error === "object" ? ev.error : undefined) ??
+        (ev.response && typeof ev.response === "object" && "error" in ev.response && ev.response.error && typeof ev.response.error === "object"
+          ? ev.response.error
+          : undefined)
+      ) as { code?: unknown; message?: unknown } | undefined;
+      const codeStr = typeof errObj?.code === "string" ? errObj.code : "";
+      const msgStr = typeof errObj?.message === "string" ? errObj.message.slice(0, 300) : "";
+      const detail = [codeStr, msgStr].filter(Boolean).join(": ");
+      throw new ApiError(
+        502,
+        codeStr === "context_length_exceeded" ? "context_length_exceeded" : "provider_error",
+        detail ? `The Responses API failed after accepting the request (${detail})` : "The Responses API failed after accepting the request",
+      );
     } else if (type === "response.completed" && ev.response && typeof ev.response === "object") {
       const usage = (ev.response as { usage?: ResponsesUsage }).usage;
       if (usage) {

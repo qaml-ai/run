@@ -334,6 +334,49 @@ export class AgentDO extends DurableObject<Env> {
         );
         return { id, upToSeq, summary };
       },
+      measureMessagesAfter: (seq: number) => {
+        const row = this.ctx.storage.sql
+          .exec<{ cnt: number; total_tokens: number; last_tokens: number }>(
+            `SELECT COUNT(*) AS cnt,
+                    COALESCE(SUM(tokens_est), 0) AS total_tokens,
+                    COALESCE((SELECT tokens_est FROM messages WHERE seq > ?1 ORDER BY seq DESC LIMIT 1), 0) AS last_tokens
+             FROM messages WHERE seq > ?1`,
+            seq,
+          )
+          .one();
+        return {
+          count: Number(row.cnt ?? 0),
+          tokensEst: Number(row.total_tokens ?? 0),
+          lastTokensEst: Number(row.last_tokens ?? 0),
+        };
+      },
+      listRecentMessagesAfter: (seq: number, limit: number): StoredMessage[] => {
+        const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit) || 120));
+        const rows = this.ctx.storage.sql
+          .exec<{
+            seq: number;
+            run_id: string | null;
+            role: StoredMessage["role"];
+            content_json: string;
+            tokens_est: number;
+            created_at: number;
+          }>(
+            `SELECT * FROM (
+               SELECT * FROM messages WHERE seq > ?1 ORDER BY seq DESC LIMIT ?2
+             ) ORDER BY seq ASC`,
+            seq,
+            safeLimit,
+          )
+          .toArray();
+        return rows.map((r) => ({
+          seq: r.seq,
+          runId: r.run_id,
+          role: r.role,
+          content: JSON.parse(r.content_json) as StoredMessage["content"],
+          tokensEst: r.tokens_est,
+          createdAt: r.created_at,
+        }));
+      },
       listMessagesAfter: (seq: number): StoredMessage[] => {
         const rows = this.ctx.storage.sql
           .exec<{

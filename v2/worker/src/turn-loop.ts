@@ -59,6 +59,8 @@ export interface TurnStorageAdapter {
   getLatestCompaction(): { id: string; upToSeq: number; summary: string } | null;
   insertCompaction(upToSeq: number, summary: string): { id: string; upToSeq: number; summary: string };
   listMessagesAfter(seq: number): StoredMessage[];
+  measureMessagesAfter?(seq: number): { count: number; tokensEst: number; lastTokensEst: number };
+  listRecentMessagesAfter?(seq: number, limit: number): StoredMessage[];
   appendMessage(
     runId: string | null,
     role: StoredMessage["role"],
@@ -170,6 +172,88 @@ export function contextCutoff(messages: readonly Pick<StoredMessage, "role">[], 
   return cutoff;
 }
 
+function clampMessageForSummary(msg: StoredMessage, perMsgCap: number): StoredMessage {
+  const text = typeof msg.content.text === "string" && msg.content.text.length > perMsgCap
+    ? `${msg.content.text.slice(0, perMsgCap)}\n...[truncated ${msg.content.text.length - perMsgCap} chars]`
+    : msg.content.text;
+  const toolCalls = msg.content.toolCalls?.map((tc) => {
+    const rawArgs = JSON.stringify(tc.args ?? {});
+    if (rawArgs.length <= 1500) return tc;
+    return { ...tc, args: { _truncated: rawArgs.slice(0, 1500) } };
+  });
+  return {
+    ...msg,
+    content: {
+      ...msg.content,
+      ...(text !== undefined ? { text } : {}),
+      ...(toolCalls ? { toolCalls } : {}),
+      // Drop raw file/image attachments during compaction summarization to keep payload bounded.
+      files: undefined,
+    },
+  };
+}
+
+function buildBoundedSummaryMessages(
+  prev: { upToSeq: number; summary: string } | null,
+  messages: StoredMessage[],
+  opts: { maxChars?: number; maxMessages?: number; perMsgCap?: number; hadOlderOmitted?: boolean } = {},
+): ConversationMessage[] {
+  const maxChars = opts.maxChars ?? 240_000;
+  const maxMessages = opts.maxMessages ?? 120;
+  const perMsgCap = opts.perMsgCap ?? 4_000;
+
+  const picked: StoredMessage[] = [];
+  let chars = 0;
+  for (let i = messages.length - 1; i >= 0 && picked.length < maxMessages; i--) {
+    const clamped = clampMessageForSummary(messages[i]!, perMsgCap);
+    const size = (clamped.content.text?.length ?? 0) + (clamped.content.toolCalls ? JSON.stringify(clamped.content.toolCalls).length : 0) + 64;
+    if (picked.length > 0 && chars + size > maxChars) break;
+    picked.push(clamped);
+    chars += size;
+  }
+  picked.reverse();
+  let start = 0;
+  while (start < picked.length && picked[start]?.role === "tool") start++;
+  const windowMsgs = picked.slice(start);
+  const omitted = opts.hadOlderOmitted || windowMsgs.length < messages.length;
+  const conv = buildConversationMessages(prev, windowMsgs);
+  if (omitted) {
+    conv.unshift({
+      role: "system",
+      text: "Note: Earlier historical messages prior to this window were archived. Summarize the active context below, preserving key decisions, file paths, facts, and open tasks.",
+    });
+  }
+  return conv;
+}
+
+function buildFallbackDigestMessages(
+  prev: { upToSeq: number; summary: string } | null,
+  messages: StoredMessage[],
+): ConversationMessage[] {
+  const lines: string[] = [];
+  if (prev?.summary) lines.push(`Previous summary:\n${prev.summary.slice(0, 4000)}`);
+  let chars = lines.join("\n").length;
+  const recentLines: string[] = [];
+  for (let i = messages.length - 1; i >= 0 && recentLines.length < 30; i--) {
+    const m = messages[i]!;
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    const snippet = (m.content.text ?? "").trim().slice(0, 800);
+    if (!snippet) continue;
+    const entry = `[${m.role}]: ${snippet}`;
+    if (chars + entry.length > 32_000) break;
+    recentLines.push(entry);
+    chars += entry.length;
+  }
+  recentLines.reverse();
+  lines.push(...recentLines);
+  return [
+    {
+      role: "user",
+      text: `Summarize this conversation excerpt concisely, preserving key decisions, file paths, facts, and open tasks:\n\n${lines.join("\n\n") || "(No text messages to summarize.)"}`,
+    },
+  ];
+}
+
 export async function performCompaction(
   adapter: TurnStorageAdapter,
   options?: {
@@ -181,9 +265,15 @@ export async function performCompaction(
 ): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
   const config = adapter.getConfig();
   const prev = adapter.getLatestCompaction();
-  const allActive = adapter.listMessagesAfter(prev?.upToSeq ?? 0);
-
+  const prevSeq = prev?.upToSeq ?? 0;
   const keepLast = Math.max(0, options?.keepLast ?? 0);
+  const fetchLimit = keepLast + 160;
+  const totalCount = adapter.measureMessagesAfter ? adapter.measureMessagesAfter(prevSeq).count : undefined;
+  const allActive = adapter.listRecentMessagesAfter
+    ? adapter.listRecentMessagesAfter(prevSeq, fetchLimit)
+    : adapter.listMessagesAfter(prevSeq);
+  const hadOlderOmitted = totalCount !== undefined && totalCount > allActive.length;
+
   const toCompact = allActive.slice(0, contextCutoff(allActive, keepLast));
 
   if (toCompact.length === 0 && !options?.customSummary) {
@@ -195,45 +285,62 @@ export async function performCompaction(
   }
 
   const targetSeq = toCompact.at(-1)?.seq ?? prev?.upToSeq ?? 0;
+  const compactedCount = totalCount !== undefined
+    ? Math.max(toCompact.length, totalCount - (allActive.length - toCompact.length))
+    : toCompact.length;
 
   let summary = options?.customSummary?.trim() ?? "";
   if (!summary) {
-    const msgs = buildConversationMessages(prev, toCompact);
-    msgs.push({ role: "user", text: "Summarize the conversation above." });
-    let generated = "";
-    for await (const chunk of streamModelResponse({
-      env: adapter.env,
-      tenantId: config.tenantId,
-      model: config.model,
-      instructions:
-        "Summarize the conversation history concisely, preserving key decisions, file paths, facts, and open tasks.",
-      messages: msgs,
-      purpose: "compaction",
-      signal: options?.signal,
-    })) {
-      if (chunk.type === "text_delta") {
-        generated += chunk.delta;
-      } else if (chunk.type === "done" && options?.run) {
-        const { id, usage } = options.run;
-        addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens);
-        await adapter.recordModelUsage(id, "compaction", chunk.inputTokens, chunk.outputTokens, usage);
+    const runSummary = async (messages: ConversationMessage[]) => {
+      let generated = "";
+      for await (const chunk of streamModelResponse({
+        env: adapter.env,
+        tenantId: config.tenantId,
+        model: config.model,
+        instructions:
+          "Summarize the conversation history concisely, preserving key decisions, file paths, facts, and open tasks.",
+        messages,
+        purpose: "compaction",
+        signal: options?.signal,
+      })) {
+        if (chunk.type === "text_delta") {
+          generated += chunk.delta;
+        } else if (chunk.type === "done" && options?.run) {
+          const { id, usage } = options.run;
+          addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens);
+          await adapter.recordModelUsage(id, "compaction", chunk.inputTokens, chunk.outputTokens, usage);
+        }
       }
+      options?.signal?.throwIfAborted();
+      return generated.trim();
+    };
+
+    const msgs = buildBoundedSummaryMessages(prev, toCompact, { hadOlderOmitted });
+    msgs.push({ role: "user", text: "Summarize the conversation above." });
+    try {
+      summary = await runSummary(msgs);
+    } catch (err) {
+      if (options?.signal?.aborted) throw err;
+      const apiErr = extractApiError(err);
+      if (apiErr?.code === "insufficient_credits" || apiErr?.code === "run_spend_limit_exceeded" || apiErr?.code === "spend_limit_exceeded") {
+        throw err;
+      }
+      // Retry once with a compact plain-text digest so oversized or malformed legacy turns never permanently wedge an agent.
+      summary = await runSummary(buildFallbackDigestMessages(prev, toCompact));
     }
-    options?.signal?.throwIfAborted();
-    summary = generated.trim();
     if (!summary) throw new ApiError(502, "empty_compaction", "The model returned no conversation summary");
   }
 
   adapter.insertCompaction(targetSeq, summary);
   adapter.emitEvent(null, "context_compacted", {
     upToSeq: targetSeq,
-    compactedCount: toCompact.length,
+    compactedCount,
   });
 
   return {
     summary,
     upToSeq: targetSeq,
-    compactedCount: toCompact.length,
+    compactedCount,
   };
 }
 
@@ -242,8 +349,11 @@ export async function performDreamConsolidation(
 ): Promise<{ ok: boolean; path: string; commit: string; summary: string }> {
   const config = adapter.getConfig();
   const prev = adapter.getLatestCompaction();
-  const recent = adapter.listMessagesAfter(prev?.upToSeq ?? 0);
-  const conv = buildConversationMessages(prev, recent);
+  const prevSeq = prev?.upToSeq ?? 0;
+  const recent = adapter.listRecentMessagesAfter
+    ? adapter.listRecentMessagesAfter(prevSeq, 120)
+    : adapter.listMessagesAfter(prevSeq);
+  const conv = buildBoundedSummaryMessages(prev, recent, { maxChars: 160_000, maxMessages: 100, perMsgCap: 3_000 });
 
   // Read existing MEMORY.md if repo exists
   let existingMemory = "";
@@ -412,9 +522,18 @@ export async function runAgentTurn(
     Math.floor(getModelContextWindow(config.model) * 0.6),
   );
   const prevCompaction = adapter.getLatestCompaction();
-  const existingMsgs = adapter.listMessagesAfter(prevCompaction?.upToSeq ?? 0);
-  const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
-  if (estTotal > autoCompactThreshold && existingMsgs.length > 7) {
+  const prevSeq = prevCompaction?.upToSeq ?? 0;
+  let needsCompaction = false;
+  if (adapter.measureMessagesAfter) {
+    const measured = adapter.measureMessagesAfter(prevSeq);
+    const priorTokens = Math.max(0, measured.tokensEst - measured.lastTokensEst);
+    needsCompaction = measured.count > 7 && (priorTokens > autoCompactThreshold || measured.count > 200);
+  } else {
+    const existingMsgs = adapter.listMessagesAfter(prevSeq);
+    const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
+    needsCompaction = existingMsgs.length > 7 && estTotal > autoCompactThreshold;
+  }
+  if (needsCompaction) {
     try {
       await performCompaction(adapter, {
         keepLast: 5,
@@ -781,7 +900,9 @@ async function continueTurnLoop(
       }
 
       const compaction = adapter.getLatestCompaction();
-      const historyRows = adapter.listMessagesAfter(compaction?.upToSeq ?? 0);
+      const historyRows = adapter.listRecentMessagesAfter
+        ? adapter.listRecentMessagesAfter(compaction?.upToSeq ?? 0, 200)
+        : adapter.listMessagesAfter(compaction?.upToSeq ?? 0);
       const convMessages = buildConversationMessages(compaction, historyRows);
 
       let stepText = "";
