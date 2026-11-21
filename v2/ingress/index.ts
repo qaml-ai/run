@@ -1,4 +1,5 @@
 import { handleConsoleRequest, type ConsoleEnv } from "./console.ts";
+import { handleOpsRequest, type OpsEnv } from "./ops.ts";
 import { legacyBillingCallback, type BillingCallbackOrigin } from "./ingress-billing.ts";
 import { legacyVolumes, type LegacyVolumeOrigin } from "./legacy-volumes.ts";
 import { legacyDefinitionRead } from "../../src/v1-definition-reads.ts";
@@ -11,7 +12,7 @@ export interface LegacyOriginEnv extends LegacyVolumeOrigin {
   LEGACY_ECS_FALLBACK?: string;
 }
 
-interface Env extends LegacyOriginEnv, ConsoleEnv {
+interface Env extends LegacyOriginEnv, ConsoleEnv, OpsEnv {
   LEGACY_BILLING?: BillingCallbackOrigin;
   V2: { fetch(request: Request): Promise<Response> };
   V2_HOSTED_MCP?: string;
@@ -154,6 +155,8 @@ export default {
     }
 
     if (legacyApiHost(hostname)) {
+      const opsRes = await handleOpsRequest(request, env);
+      if (opsRes) return opsRes;
       const consoleRes = await handleConsoleRequest(request, env);
       if (consoleRes) return consoleRes;
     }

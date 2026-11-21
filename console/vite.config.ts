@@ -19,12 +19,14 @@ export default defineConfig({
   },
   css: { postcss: { plugins: [tailwind()] } },
   // Fonts stay files: inlined as data: URIs, the console's CSP (fonts from 'self') would block them.
+  // admin.html is the team's ops dashboard served at /ops/ by camelrun-v2-ingress.
   build: {
     outDir: "../dist",
     emptyOutDir: true,
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./web/index.html", import.meta.url)),
+        admin: fileURLToPath(new URL("./web/admin.html", import.meta.url)),
       },
     },
     assetsInlineLimit: file => /\.(woff2?|ttf|otf)$/.test(file) ? false : undefined,
@@ -33,6 +35,7 @@ export default defineConfig({
     proxy: {
       "/console/v2": "http://127.0.0.1:8787",
       "/console/auth": "http://127.0.0.1:8787",
+      "/ops/api": "http://127.0.0.1:8787",
       "/v2": "http://127.0.0.1:8787",
     },
   },

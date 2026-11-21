@@ -46,6 +46,7 @@ import {
   servePerAgentMcp,
 } from "./hosted-mcp.ts";
 import { listV2Models } from "./models.ts";
+import { recordOpsTenantRegistration, registerOpsRoutes } from "./ops-api.ts";
 import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
@@ -145,7 +146,7 @@ app.on(["GET", "OPTIONS"], "/v2/.well-known/oauth-protected-resource/agents/:idO
 
 // ---- 1. Tenants, Keys, Providers, Billing & Definitions (Per-Tenant TenantDO RPC) ----
 
-app.post("/v2/tenants", async (c) => {
+const createTenantHandler = async (c: { env: Env; req: { raw: Request; json: () => Promise<unknown> }; json: (data: unknown, status?: 201) => Response }) => {
   if (!verifyAdminHeader(c.env, c.req.raw)) {
     throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
   }
@@ -156,6 +157,7 @@ app.post("/v2/tenants", async (c) => {
     monthlyCapUsd?: number;
     concurrencyLimit?: number;
     rateLimitRpm?: number;
+    kind?: "self_serve" | "operator_made" | "operator";
   };
   const name = body.name?.trim();
   if (!name) {
@@ -177,6 +179,13 @@ app.post("/v2/tenants", async (c) => {
     keyHash: minted.keyHash,
   });
 
+  await recordOpsTenantRegistration(c.env, {
+    tenantId: profile.id,
+    name: profile.name,
+    kind: body.kind === "operator" || body.kind === "self_serve" ? body.kind : "operator_made",
+    createdAt: profile.createdAt,
+  });
+
   return c.json(
     {
       tenantId: profile.id,
@@ -186,7 +195,10 @@ app.post("/v2/tenants", async (c) => {
     },
     201,
   );
-});
+};
+
+app.post("/v2/tenants", createTenantHandler);
+app.post("/v2/admin/tenants", createTenantHandler);
 
 app.get("/v2/me", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
@@ -1622,6 +1634,14 @@ app.post("/v2/admin/console/oauth-login", async (c) => {
     name,
     sealedConsoleKey,
   });
+  await recordOpsTenantRegistration(c.env, {
+    tenantId: saved.tenantId,
+    name: saved.name ?? displayName,
+    kind: "self_serve",
+    signIn: provider,
+    email: saved.email,
+    login: saved.login,
+  });
   return c.json({
     tenantId: saved.tenantId,
     apiKey,
@@ -1670,6 +1690,14 @@ app.post("/v2/admin/console/password-signup", async (c) => {
     passwordSalt: salt,
     sealedConsoleKey,
     requireNewEmail: true,
+  });
+  await recordOpsTenantRegistration(c.env, {
+    tenantId: saved.tenantId,
+    name: saved.name ?? email,
+    kind: "self_serve",
+    signIn: "email",
+    email: saved.email,
+    login: saved.login,
   });
   return c.json(
     {
@@ -1773,8 +1801,18 @@ app.post("/v2/admin/console/link", async (c) => {
     name: name ?? targetProfile.name,
     sealedConsoleKey,
   });
+  await recordOpsTenantRegistration(c.env, {
+    tenantId,
+    name: name ?? targetProfile.name,
+    signIn: githubLogin || githubId ? "github" : googleSub ? "google" : email ? "email" : null,
+    email,
+    login: githubLogin ?? email,
+    createdAt: targetProfile.createdAt,
+  });
   return c.json({ ok: true, ...linked });
 });
+
+registerOpsRoutes(app);
 
 /** Private binding used by the v1 adapter after it authenticates and loads a published migration route or translates v1 calls to v2. */
 export class LegacyAgentRuns extends WorkerEntrypoint<Env> {

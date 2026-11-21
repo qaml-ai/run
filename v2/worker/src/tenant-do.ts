@@ -87,6 +87,68 @@ export interface ChannelInternalRecord extends ChannelView {
   sealedSecret: string | null;
 }
 
+export interface OpsRegisteredTenant {
+  tenantId: string;
+  name: string | null;
+  kind: "self_serve" | "operator_made" | "operator";
+  signIn: "github" | "google" | "email" | null;
+  email: string | null;
+  login: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TenantOpsSnapshot {
+  profile: TenantProfile;
+  busyAgents: number;
+  activeLeaseAgentIds: string[];
+  totalAgents: number;
+  agents: Array<{
+    id: string;
+    key: string;
+    model: string;
+    repoId: string | null;
+    branch: string;
+    definition: string | null;
+    running: boolean;
+    createdAt: number;
+    updatedAt: number;
+  }>;
+  usageDaily: Array<{
+    day: string;
+    model: string;
+    runsCount: number;
+    inputTokens: number;
+    outputTokens: number;
+    vmMs: number;
+    costUsd: number;
+  }>;
+  ledger: Array<{
+    id: string;
+    refId: string;
+    amountUsd: number;
+    kind: string;
+    note: string | null;
+    createdAt: number;
+  }>;
+  ledgerSummary: {
+    purchasedUsd: number;
+    grantedUsd: number;
+    refundedUsd: number;
+    usageUsd: number;
+    firstTopupAt: number | null;
+  };
+  providers: string[];
+  channels: Array<{ kind: string; name: string }>;
+  counts: {
+    apiKeys: number;
+    definitions: number;
+    repos: number;
+    webhooks: number;
+    channels: number;
+  };
+}
+
 type SealedProviderRow = {
   provider: string;
   sealed_api_key: string;
@@ -2447,6 +2509,16 @@ export class TenantDO extends DurableObject<Env> {
       );
       CREATE INDEX IF NOT EXISTS idx_console_identities_account
         ON console_identities(account_id);
+      CREATE TABLE IF NOT EXISTS ops_tenants (
+        tenant_id TEXT PRIMARY KEY,
+        name TEXT,
+        kind TEXT NOT NULL DEFAULT 'self_serve',
+        sign_in TEXT,
+        email TEXT,
+        login TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     this.consoleAccountsSchemaReady = true;
   }
@@ -2712,5 +2784,353 @@ export class TenantDO extends DurableObject<Env> {
       }
       return { id: accountId, tenantId: input.tenantId, linkedKeys: keys };
     });
+  }
+
+  // ---- 11. Ops Registry & Per-Tenant Ops Snapshot ----
+
+  async registerOpsTenant(input: {
+    tenantId: string;
+    name?: string | null;
+    kind?: "self_serve" | "operator_made" | "operator";
+    signIn?: "github" | "google" | "email" | null;
+    email?: string | null;
+    login?: string | null;
+    createdAt?: number;
+  }): Promise<OpsRegisteredTenant> {
+    this.ensureConsoleAccountTables();
+    const now = Date.now();
+    const tenantId = input.tenantId.trim();
+    if (!tenantId) {
+      throw new ApiError(400, "invalid_request", "`tenantId` is required");
+    }
+    const existing = this.ctx.storage.sql
+      .exec<{
+        tenant_id: string;
+        name: string | null;
+        kind: string;
+        sign_in: string | null;
+        email: string | null;
+        login: string | null;
+        created_at: number;
+      }>(`SELECT * FROM ops_tenants WHERE tenant_id = ?1 LIMIT 1`, tenantId)
+      .toArray()[0];
+
+    const kind: OpsRegisteredTenant["kind"] =
+      input.kind ??
+      (existing?.kind === "operator" || existing?.kind === "operator_made" || existing?.kind === "self_serve"
+        ? existing.kind
+        : input.signIn
+          ? "self_serve"
+          : "operator_made");
+    const name = input.name !== undefined ? input.name : (existing?.name ?? null);
+    const signIn = input.signIn !== undefined
+      ? input.signIn
+      : ((existing?.sign_in as OpsRegisteredTenant["signIn"]) ?? null);
+    const email = input.email !== undefined ? input.email : (existing?.email ?? null);
+    const login = input.login !== undefined ? input.login : (existing?.login ?? null);
+    const createdAt = existing
+      ? Math.min(Number(existing.created_at), input.createdAt ?? Number(existing.created_at))
+      : (input.createdAt ?? now);
+
+    this.ctx.storage.sql.exec(
+      `INSERT INTO ops_tenants (tenant_id, name, kind, sign_in, email, login, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+       ON CONFLICT(tenant_id) DO UPDATE SET
+         name = COALESCE(excluded.name, ops_tenants.name),
+         kind = excluded.kind,
+         sign_in = COALESCE(excluded.sign_in, ops_tenants.sign_in),
+         email = COALESCE(excluded.email, ops_tenants.email),
+         login = COALESCE(excluded.login, ops_tenants.login),
+         created_at = MIN(ops_tenants.created_at, excluded.created_at),
+         updated_at = excluded.updated_at`,
+      tenantId,
+      name,
+      kind,
+      signIn,
+      email,
+      login,
+      createdAt,
+      now,
+    );
+
+    return {
+      tenantId,
+      name,
+      kind,
+      signIn,
+      email,
+      login,
+      createdAt,
+      updatedAt: now,
+    };
+  }
+
+  async listOpsTenants(): Promise<OpsRegisteredTenant[]> {
+    this.ensureConsoleAccountTables();
+    const byId = new Map<string, OpsRegisteredTenant>();
+
+    const registered = this.ctx.storage.sql
+      .exec<{
+        tenant_id: string;
+        name: string | null;
+        kind: string;
+        sign_in: string | null;
+        email: string | null;
+        login: string | null;
+        created_at: number;
+        updated_at: number;
+      }>(`SELECT * FROM ops_tenants ORDER BY created_at DESC`)
+      .toArray();
+    for (const row of registered) {
+      const kind: OpsRegisteredTenant["kind"] =
+        row.kind === "operator" || row.kind === "operator_made" ? row.kind : "self_serve";
+      const signIn: OpsRegisteredTenant["signIn"] =
+        row.sign_in === "github" || row.sign_in === "google" || row.sign_in === "email" ? row.sign_in : null;
+      byId.set(row.tenant_id, {
+        tenantId: row.tenant_id,
+        name: row.name,
+        kind,
+        signIn,
+        email: row.email,
+        login: row.login,
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+      });
+    }
+
+    // Automatically include every console_accounts entry (including accounts created before ops_tenants existed)
+    const consoleAccounts = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        tenant_id: string;
+        email: string | null;
+        login: string | null;
+        name: string | null;
+        password_hash: string | null;
+        created_at: number;
+        updated_at: number;
+      }>(`SELECT id, tenant_id, email, login, name, password_hash, created_at, updated_at FROM console_accounts ORDER BY created_at DESC`)
+      .toArray();
+    const identRows = this.ctx.storage.sql
+      .exec<{ account_id: string; identity_key: string }>(`SELECT account_id, identity_key FROM console_identities`)
+      .toArray();
+    const identByAccount = new Map<string, string[]>();
+    for (const row of identRows) {
+      const list = identByAccount.get(row.account_id) ?? [];
+      list.push(row.identity_key);
+      identByAccount.set(row.account_id, list);
+    }
+
+    for (const acct of consoleAccounts) {
+      const keys = identByAccount.get(acct.id) ?? [];
+      let inferredSignIn: OpsRegisteredTenant["signIn"] = null;
+      if (keys.some((k) => k.startsWith("github:") || k.startsWith("github_login:"))) inferredSignIn = "github";
+      else if (keys.some((k) => k.startsWith("google:"))) inferredSignIn = "google";
+      else if (acct.password_hash || keys.some((k) => k.startsWith("email:"))) inferredSignIn = "email";
+
+      const prev = byId.get(acct.tenant_id);
+      if (prev) {
+        byId.set(acct.tenant_id, {
+          ...prev,
+          name: prev.name ?? acct.name,
+          signIn: prev.signIn ?? inferredSignIn,
+          email: prev.email ?? acct.email,
+          login: prev.login ?? acct.login,
+          createdAt: Math.min(prev.createdAt, Number(acct.created_at)),
+          updatedAt: Math.max(prev.updatedAt, Number(acct.updated_at)),
+        });
+      } else {
+        byId.set(acct.tenant_id, {
+          tenantId: acct.tenant_id,
+          name: acct.name,
+          kind: "self_serve",
+          signIn: inferredSignIn,
+          email: acct.email,
+          login: acct.login,
+          createdAt: Number(acct.created_at),
+          updatedAt: Number(acct.updated_at),
+        });
+      }
+    }
+
+    return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  async getOpsSnapshot(lookbackDays = 400): Promise<TenantOpsSnapshot | null> {
+    const profile = this.readProfileOrNull();
+    if (!profile) return null;
+    const now = Date.now();
+    this.pruneExpiredLeases(now);
+
+    const activeRows = this.ctx.storage.sql
+      .exec<{ agent_id: string }>(`SELECT DISTINCT agent_id FROM active_leases WHERE expires_at > ?1`, now)
+      .toArray();
+    const activeLeaseAgentIds = activeRows.map((r) => r.agent_id);
+    const activeSet = new Set(activeLeaseAgentIds);
+
+    const totalAgentsRow = this.ctx.storage.sql
+      .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM agents_index`)
+      .one();
+    const agentRows = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        agent_key: string;
+        model: string;
+        repo_id: string | null;
+        branch: string;
+        definition_slug: string | null;
+        created_at: number;
+        updated_at: number;
+      }>(`SELECT id, agent_key, model, repo_id, branch, definition_slug, created_at, updated_at FROM agents_index ORDER BY updated_at DESC LIMIT 200`)
+      .toArray();
+
+    const clampedDays = Math.min(730, Math.max(1, Math.floor(lookbackDays)));
+    const since = new Date(now - clampedDays * 86_400_000).toISOString().slice(0, 10);
+    const usageRows = this.ctx.storage.sql
+      .exec<{
+        day: string;
+        model: string;
+        runs_count: number;
+        input_tokens: number;
+        output_tokens: number;
+        vm_ms: number;
+        cost_usd: number;
+      }>(`SELECT day, model, runs_count, input_tokens, output_tokens, vm_ms, cost_usd FROM usage_daily WHERE day >= ?1 ORDER BY day DESC, model ASC`, since)
+      .toArray();
+
+    const ledgerRows = this.ctx.storage.sql
+      .exec<{
+        id: string;
+        ref_id: string;
+        amount_usd: number;
+        kind: string;
+        note: string | null;
+        created_at: number;
+      }>(`SELECT id, ref_id, amount_usd, kind, note, created_at FROM credit_ledger ORDER BY created_at DESC LIMIT 500`)
+      .toArray();
+
+    const ledgerAgg = this.ctx.storage.sql
+      .exec<{
+        kind: string;
+        total: number;
+        first_at: number | null;
+      }>(`SELECT kind, COALESCE(SUM(amount_usd), 0) AS total, MIN(created_at) AS first_at FROM credit_ledger GROUP BY kind`)
+      .toArray();
+
+    let purchasedUsd = 0;
+    let grantedUsd = 0;
+    let refundedUsd = 0;
+    let usageUsd = 0;
+    let firstTopupAt: number | null = null;
+    for (const row of ledgerAgg) {
+      if (row.kind === "topup" || row.kind === "purchase") {
+        if (Number(row.total) > 0) purchasedUsd += Number(row.total);
+        if (row.first_at !== null) {
+          firstTopupAt = firstTopupAt === null ? Number(row.first_at) : Math.min(firstTopupAt, Number(row.first_at));
+        }
+      } else if (row.kind === "grant") {
+        grantedUsd += Number(row.total);
+      } else if (row.kind === "refund") {
+        refundedUsd += Math.abs(Number(row.total));
+      } else if (row.kind === "usage") {
+        usageUsd += Math.abs(Number(row.total));
+      }
+    }
+
+    const providerRows = this.ctx.storage.sql
+      .exec<{ provider: string }>(`SELECT provider FROM provider_keys ORDER BY provider ASC`)
+      .toArray();
+    const channelRows = this.ctx.storage.sql
+      .exec<{ kind: string; name: string }>(`SELECT kind, name FROM channels ORDER BY created_at DESC`)
+      .toArray();
+
+    const apiKeyCount = Number(this.ctx.storage.sql.exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM api_keys`).one().cnt ?? 0);
+    const defCount = Number(this.ctx.storage.sql.exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM definitions`).one().cnt ?? 0);
+    const repoCount = Number(this.ctx.storage.sql.exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM repos`).one().cnt ?? 0);
+    const webhookCount = Number(this.ctx.storage.sql.exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM webhooks`).one().cnt ?? 0);
+
+    return {
+      profile,
+      busyAgents: activeLeaseAgentIds.length,
+      activeLeaseAgentIds,
+      totalAgents: Number(totalAgentsRow.cnt ?? 0),
+      agents: agentRows.map((r) => ({
+        id: r.id,
+        key: r.agent_key,
+        model: r.model,
+        repoId: r.repo_id,
+        branch: r.branch,
+        definition: r.definition_slug,
+        running: activeSet.has(r.id),
+        createdAt: Number(r.created_at),
+        updatedAt: Number(r.updated_at),
+      })),
+      usageDaily: usageRows.map((u) => ({
+        day: u.day,
+        model: u.model,
+        runsCount: Number(u.runs_count),
+        inputTokens: Number(u.input_tokens),
+        outputTokens: Number(u.output_tokens),
+        vmMs: Number(u.vm_ms),
+        costUsd: Number(u.cost_usd),
+      })),
+      ledger: ledgerRows.map((l) => ({
+        id: l.id,
+        refId: l.ref_id,
+        amountUsd: Number(l.amount_usd),
+        kind: l.kind,
+        note: l.note,
+        createdAt: Number(l.created_at),
+      })),
+      ledgerSummary: {
+        purchasedUsd,
+        grantedUsd,
+        refundedUsd,
+        usageUsd,
+        firstTopupAt,
+      },
+      providers: providerRows.map((p) => p.provider),
+      channels: channelRows.map((c) => ({ kind: c.kind, name: c.name })),
+      counts: {
+        apiKeys: apiKeyCount,
+        definitions: defCount,
+        repos: repoCount,
+        webhooks: webhookCount,
+        channels: channelRows.length,
+      },
+    };
+  }
+
+  async updateTenantLimits(input: {
+    tier?: string;
+    monthlyCapUsd?: number;
+    concurrencyLimit?: number;
+    rateLimitRpm?: number;
+    name?: string;
+  }): Promise<TenantProfile> {
+    const profile = this.requireProfile();
+    const nextTier = typeof input.tier === "string" && input.tier.trim() ? input.tier.trim().slice(0, 64) : profile.tier;
+    const nextCap = input.monthlyCapUsd !== undefined && Number.isFinite(input.monthlyCapUsd) && input.monthlyCapUsd >= 0
+      ? Number(input.monthlyCapUsd)
+      : profile.monthlyCapUsd;
+    const nextConcurrency = input.concurrencyLimit !== undefined && Number.isInteger(input.concurrencyLimit) && input.concurrencyLimit >= 1
+      ? input.concurrencyLimit
+      : profile.concurrencyLimit;
+    const nextRpm = input.rateLimitRpm !== undefined && Number.isInteger(input.rateLimitRpm) && input.rateLimitRpm >= 1
+      ? input.rateLimitRpm
+      : profile.rateLimitRpm;
+    const nextName = typeof input.name === "string" && input.name.trim() ? input.name.trim().slice(0, 120) : profile.name;
+
+    this.ctx.storage.sql.exec(
+      `UPDATE tenant_profile
+       SET name = ?1, tier = ?2, monthly_cap_usd = ?3, concurrency_limit = ?4, rate_limit_rpm = ?5
+       WHERE id = 1`,
+      nextName,
+      nextTier,
+      nextCap,
+      nextConcurrency,
+      nextRpm,
+    );
+    return this.requireProfile();
   }
 }

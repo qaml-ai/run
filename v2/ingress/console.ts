@@ -175,15 +175,24 @@ function isLocalHttp(url: URL): boolean {
   return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
 }
 
-function buildCookie(name: string, value: string, url: URL, maxAge: number, path = "/console"): string {
+function buildCookie(name: string, value: string, url: URL, maxAge: number, path = "/"): string {
   const parts = [`${name}=${value}`, `Path=${path}`, "HttpOnly", "SameSite=Lax", `Max-Age=${maxAge}`];
   if (!isLocalHttp(url)) parts.push("Secure");
   return parts.join("; ");
 }
 
+function clearSessionCookies(url: URL): string[] {
+  return [
+    buildCookie(COOKIE_NAME, "", url, 0, "/"),
+    buildCookie(COOKIE_NAME, "", url, 0, "/console"),
+  ];
+}
+
 function safeNextPath(raw: string | null | undefined): string | undefined {
   if (!raw) return undefined;
-  if (/^\/console\/[^\s]*$/.test(raw) && !raw.startsWith("/console//")) return raw;
+  if (/^\/(?:console|ops)(?:\/[^\s]*)?$/.test(raw) && !raw.startsWith("/console//") && !raw.startsWith("/ops//")) {
+    return raw;
+  }
   return undefined;
 }
 
@@ -431,7 +440,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
       );
       return redirectWithCookies(next ?? "/console/", [
         ...clear,
-        buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/console"),
+        buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/"),
       ]);
     } catch (caught) {
       return failAuthRedirect(caught instanceof Error ? caught.message : "GitHub sign-in failed", clear);
@@ -568,7 +577,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
       );
       return redirectWithCookies(next ?? "/console/", [
         ...clear,
-        buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/console"),
+        buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/"),
       ]);
     } catch (caught) {
       return failAuthRedirect(caught instanceof Error ? caught.message : "Google sign-in failed", clear);
@@ -609,7 +618,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
       {
         headers: {
           "Cache-Control": "no-store",
-          "Set-Cookie": buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/console"),
+          "Set-Cookie": buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/"),
         },
       },
     );
@@ -656,7 +665,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
         status: 201,
         headers: {
           "Cache-Control": "no-store",
-          "Set-Cookie": buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/console"),
+          "Set-Cookie": buildCookie(COOKIE_NAME, sealed, url, SESSION_TTL_SECONDS, "/"),
         },
       },
     );
@@ -667,15 +676,9 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
     if (!isSameOriginMutation(request, url)) {
       return jsonError(403, "forbidden", "Cross-origin console mutation rejected");
     }
-    return Response.json(
-      { ok: true },
-      {
-        headers: {
-          "Cache-Control": "no-store",
-          "Set-Cookie": buildCookie(COOKIE_NAME, "", url, 0, "/console"),
-        },
-      },
-    );
+    const headers = new Headers({ "Cache-Control": "no-store" });
+    for (const c of clearSessionCookies(url)) headers.append("Set-Cookie", c);
+    return Response.json({ ok: true }, { headers });
   }
 
   // ---- 2. Authenticated v2 API proxy (/console/v2/* -> env.V2 /v2/*) ----
@@ -698,9 +701,11 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
       if (match?.[1]) bearerToken = match[1].trim();
     }
     if (!bearerToken) {
-      const headers: Record<string, string> = {};
-      if (rawCookie) headers["Set-Cookie"] = buildCookie(COOKIE_NAME, "", url, 0, "/console");
-      return jsonError(401, "unauthorized", "Not signed in", headers);
+      const headers = new Headers({ "Cache-Control": "no-store" });
+      if (rawCookie) {
+        for (const c of clearSessionCookies(url)) headers.append("Set-Cookie", c);
+      }
+      return Response.json({ error: { code: "unauthorized", message: "Not signed in" } }, { status: 401, headers });
     }
 
     const targetPath = pathname.slice("/console".length);
