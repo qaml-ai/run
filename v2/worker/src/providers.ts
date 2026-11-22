@@ -895,6 +895,35 @@ function cachedResponsesTokens(usage?: ResponsesUsage): number {
   return Number.isSafeInteger(cached) && cached > 0 && cached <= (usage?.input_tokens ?? 0) ? cached : 0;
 }
 
+const RESPONSES_CALL_ID_MAX_LENGTH = 64;
+
+/**
+ * OpenAI and Azure Responses APIs enforce a 64-character max length on `call_id`.
+ * Histories migrated from other providers (e.g. OpenRouter) can contain longer IDs;
+ * shorten them deterministically so `function_call` and `function_call_output`
+ * always map to the same valid `call_id`.
+ */
+export function normalizeResponsesCallId(id?: string): string {
+  if (!id) return "call_0";
+  if (id.length <= RESPONSES_CALL_ID_MAX_LENGTH) return id;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < id.length; i++) {
+    const code = id.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193);
+    h2 = Math.imul(h2 ^ (code + i), 0x85ebca6b);
+  }
+  h2 ^= h2 >>> 13;
+  h2 = Math.imul(h2, 0xc2b2ae35);
+  h2 ^= h2 >>> 16;
+  const hash = (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0");
+  let prefixEnd = RESPONSES_CALL_ID_MAX_LENGTH - 1 - hash.length;
+  if (prefixEnd > 0 && id.charCodeAt(prefixEnd - 1) >= 0xd800 && id.charCodeAt(prefixEnd - 1) <= 0xdbff) {
+    prefixEnd -= 1;
+  }
+  return `${id.slice(0, prefixEnd)}_${hash}`;
+}
+
 async function* streamOpenAiResponses(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -910,7 +939,7 @@ async function* streamOpenAiResponses(
       for (const tc of m.toolCalls) {
         inputItems.push({
           type: "function_call",
-          call_id: tc.id,
+          call_id: normalizeResponsesCallId(tc.id),
           name: tc.name,
           arguments: tc.argumentsJson || JSON.stringify(tc.args ?? {}),
         });
@@ -918,7 +947,7 @@ async function* streamOpenAiResponses(
     } else if (m.role === "tool") {
       inputItems.push({
         type: "function_call_output",
-        call_id: m.toolCallId ?? "call_0",
+        call_id: normalizeResponsesCallId(m.toolCallId),
         output: m.images?.length ? [
           { type: "input_text", text: m.text ?? "" },
           ...m.images.map(image => ({ type: "input_image", image_url: imageDataUrl(image), detail: "auto" })),

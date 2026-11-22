@@ -5,6 +5,7 @@ import {
   getModelContextWindow,
   resolveModelEndpoint,
   streamModelResponse,
+  type ConversationMessage,
 } from "../../worker/src/providers.ts";
 import { toApiErrorResponse, type Env, type ProviderCredentials } from "../../worker/src/types.ts";
 
@@ -56,6 +57,7 @@ export default {
       if (url.pathname === "/_test/stream" && request.method === "POST") {
         const body = await request.json<{
           model: string;
+          messages?: ConversationMessage[];
           temperature?: number;
           maxOutputTokens?: number;
           promptCacheKey?: string;
@@ -67,7 +69,7 @@ export default {
           tenantId: "fixture-tenant",
           model: body.model,
           instructions: "You are concise.",
-          messages: [{ role: "user", text: "Hi" }],
+          messages: body.messages ?? [{ role: "user", text: "Hi" }],
           temperature: body.temperature,
           maxOutputTokens: body.maxOutputTokens,
           promptCacheKey: body.promptCacheKey,

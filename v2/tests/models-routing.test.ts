@@ -289,6 +289,76 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     assert.equal(solStream.body.temperature, undefined);
   });
 
+  await t.test("streamOpenAiResponses normalizes tool call_id > 64 chars deterministically while preserving <= 64-char IDs", async () => {
+    const stream = async (body: Record<string, unknown>) => {
+      const res = await worker.fetch(`${origin}/_test/stream`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 200, await res.clone().text());
+      return captured.at(-1)!;
+    };
+
+    const longIdA = `call_openrouter_composite_${"a".repeat(52)}00001`;
+    const longIdB = `call_openrouter_composite_${"a".repeat(52)}00002`;
+    const exact64Id = `call_${"x".repeat(59)}`;
+    const shortId = "call_short_123";
+    assert.equal(longIdA.length, 83);
+    assert.equal(longIdB.length, 83);
+    assert.equal(exact64Id.length, 64);
+
+    const messages = [
+      { role: "user", text: "Run tools" },
+      {
+        role: "assistant",
+        toolCalls: [
+          { id: longIdA, name: "tool_a", argumentsJson: "{}", args: {} },
+          { id: longIdB, name: "tool_b", argumentsJson: "{}", args: {} },
+          { id: exact64Id, name: "tool_64", argumentsJson: "{}", args: {} },
+          { id: shortId, name: "tool_short", argumentsJson: "{}", args: {} },
+          { id: "", name: "tool_empty", argumentsJson: "{}", args: {} },
+        ],
+      },
+      { role: "tool", toolCallId: longIdA, text: "out_a" },
+      { role: "tool", toolCallId: longIdB, text: "out_b" },
+      { role: "tool", toolCallId: exact64Id, text: "out_64" },
+      { role: "tool", toolCallId: shortId, text: "out_short" },
+      { role: "tool", toolCallId: "", text: "out_empty" },
+    ];
+
+    const first = await stream({ model: "azure/gpt-6.1-terra", messages });
+    const second = await stream({ model: "azure/gpt-6.1-terra", messages });
+    assert.equal(first.path, "/openai/v1/responses");
+
+    const input1 = first.body.input as Array<{ type?: string; call_id?: string; name?: string; output?: string }>;
+    const input2 = second.body.input as Array<{ type?: string; call_id?: string; name?: string; output?: string }>;
+    const calls1 = input1.filter((item) => item.type === "function_call");
+    const outputs1 = input1.filter((item) => item.type === "function_call_output");
+    const calls2 = input2.filter((item) => item.type === "function_call");
+    assert.equal(calls1.length, 5);
+    assert.equal(outputs1.length, 5);
+
+    // Every emitted call_id must be non-empty and <= 64 chars, and match between call & output.
+    for (let i = 0; i < calls1.length; i++) {
+      const callId = calls1[i]!.call_id!;
+      assert.ok(callId.length > 0 && callId.length <= 64, `invalid call_id length (${callId.length}): ${callId}`);
+      assert.equal(outputs1[i]!.call_id, callId, `mismatched function_call_output.call_id at index ${i}`);
+      assert.equal(calls2[i]!.call_id, callId, `non-deterministic call_id at index ${i}`);
+    }
+
+    // Long IDs sharing the same prefix normalize to distinct <= 64-char IDs.
+    assert.notEqual(calls1[0]!.call_id, longIdA);
+    assert.notEqual(calls1[1]!.call_id, longIdB);
+    assert.notEqual(calls1[0]!.call_id, calls1[1]!.call_id);
+    assert.equal(calls1[0]!.call_id!.length, 64);
+    assert.equal(calls1[1]!.call_id!.length, 64);
+
+    // Normal <= 64-char IDs are preserved verbatim; empty call_id falls back to "call_0".
+    assert.equal(calls1[2]!.call_id, exact64Id);
+    assert.equal(calls1[3]!.call_id, shortId);
+    assert.equal(calls1[4]!.call_id, "call_0");
+  });
+
   await t.test("calculateCostUsd and getModelContextWindow cover restored v1 catalog models and long-context tiers", async () => {
     const check = async (model: string, inputTokens: number, outputTokens: number, cacheReadTokens = 0) => {
       const res = await worker.fetch(`${origin}/_test/pricing`, {
