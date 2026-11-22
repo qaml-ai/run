@@ -153,6 +153,36 @@ test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects
   });
   assert.equal(agentRes.status, 201);
 
+  // Run a second turn on Ann's agent + a turn on operator camel-bots so per-agent responses > 1 and operator visibility are verified
+  const secondRunRes = await worker.fetch("https://ops-api.test/v2/agents/research-helper/runs", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ann.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt: "Second turn for response count check",
+      wait: true,
+    }),
+  });
+  assert.equal(secondRunRes.status, 200);
+
+  const botAgentRes = await worker.fetch("https://ops-api.test/v2/agents/bot-worker", {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${bot.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "mock/echo",
+      instructions: "Operator bot agent",
+      builtins: ["web_fetch"],
+      prompt: "Hello from camel-bots!",
+      wait: true,
+    }),
+  });
+  assert.equal(botAgentRes.status, 201);
+
   // 3. Check /v2/admin/ops/me
   const meRes = await adminReq("/v2/admin/ops/me");
   assert.equal(meRes.status, 200);
@@ -176,24 +206,40 @@ test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects
   const acq = (await acqRes.json()) as AdminAcquisition;
   assert.equal(acq.total.signups, 1);
   assert.equal(acq.total.activated, 1);
+  assert.equal(acq.sources[0]?.kind, "not_captured");
 
   // 6. Check /v2/admin/ops/usage
   const usageRes = await adminReq("/v2/admin/ops/usage?days=30");
   assert.equal(usageRes.status, 200);
   const usage = (await usageRes.json()) as AdminUsage;
   assert.equal(usage.tiles.active_accounts.current, 1);
-  assert.ok(usage.tiles.responses.current >= 1);
-  assert.equal(usage.tiles.live_agents, 1);
-  assert.ok(usage.accounts.some((a) => a.tenant === ann.tenantId && a.kind === "self_serve"));
-  assert.ok(usage.accounts.some((a) => a.tenant === bot.tenantId && a.kind === "operator"));
+  assert.equal(usage.tiles.all_active_accounts?.current, 2);
+  assert.ok(usage.tiles.responses.current >= 3);
+  assert.equal(usage.tiles.self_serve_responses.current, 2);
+  assert.equal(usage.tiles.live_agents, 2);
+  assert.equal(usage.tiles.self_serve_live_agents, 1);
+  assert.equal(usage.tiles.agents_ran.current, 2);
+  assert.equal(usage.tiles.self_serve_agents_ran.current, 1);
+  assert.ok(usage.attempts_since !== null, "attempts_since must be populated when runs exist");
+  assert.ok(usage.configured_models.some((m) => m.model === "mock/echo" && m.agents === 2 && m.self_serve_agents === 1));
+  assert.ok(usage.features.some((f) => f.key === "web_search" && f.agents === 1 && f.self_serve_agents === 1));
+  assert.ok(usage.features.some((f) => f.key === "web_fetch" && f.agents === 1 && f.self_serve_agents === 0));
+  assert.ok(usage.accounts.some((a) => a.tenant === ann.tenantId && a.kind === "self_serve" && a.responses === 2));
+  assert.ok(usage.accounts.some((a) => a.tenant === bot.tenantId && a.kind === "operator" && a.responses === 1));
+  const annTopAgent = usage.agents.find((a) => a.name === "research-helper");
+  assert.ok(annTopAgent, "expected research-helper in top agents");
+  assert.equal(annTopAgent.responses, 2, "per-agent responses must reflect actual settled runs, not 0");
 
-  // 7. Check /v2/admin/ops/revenue
+  // 7. Check /v2/admin/ops/revenue (including micros vs USD unit invariants!)
   const revRes = await adminReq("/v2/admin/ops/revenue?days=30");
   assert.equal(revRes.status, 200);
   const rev = (await revRes.json()) as AdminRevenue;
   assert.equal(rev.tiles.revenue.current, 25 * 1_000_000);
+  assert.equal(rev.tiles.buyers.current, 1);
   assert.equal(rev.tiles.paying_accounts, 1);
   assert.equal(rev.monthly.length, 12);
+  assert.equal(rev.spend.paying_charged, Math.round(rev.spend.paying_provider_cost * 1_000_000));
+  assert.equal(rev.spend.free_charged, Math.round(rev.spend.free_provider_cost * 1_000_000));
 
   // 8. Check /v2/admin/ops/health (including live camelfsd health probe!)
   const healthRes = await adminReq("/v2/admin/ops/health?days=30");
@@ -214,7 +260,7 @@ test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects
   assert.equal(mcp.funnel.length, 4);
   assert.ok(mcp.limitations.length > 0);
 
-  // 10. Check /v2/admin/ops/account detail + AgentDO hydration + secret masking + tier/cap update
+  // 10. Check /v2/admin/ops/account detail + AgentDO hydration + real per-agent run counts + secret masking + tier/cap update
   const acctRes = await adminReq(`/v2/admin/ops/account?tenant=${encodeURIComponent(ann.tenantId)}&days=30`);
   assert.equal(acctRes.status, 200);
   const acct = (await acctRes.json()) as AdminAccountDetail;
@@ -222,6 +268,7 @@ test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects
   assert.equal(acct.live_agents, 1);
   assert.equal(acct.agents.length, 1);
   assert.equal(acct.agents[0]?.name, "research-helper");
+  assert.equal(acct.agents[0]?.responses, 2, "AccountDialog agent responses must match actual run count");
   assert.ok(acct.agents[0]?.system_prompt.includes("sk-a…[hidden]"), "secret in system prompt must be masked");
   assert.ok(!acct.agents[0]?.system_prompt.includes("1234567890"));
 

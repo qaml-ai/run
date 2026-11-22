@@ -19,8 +19,9 @@ export function UsageTab({ days, refresh, everyone, onAccount }: { days: OpsRang
         <Ready state={usage.state}>
           {data && (
             <Stats columns={5}>
-              <Stat label="Active accounts" value={count(data.tiles.active_accounts.current)} compare={data.tiles.active_accounts} compareLabel={before}
-                hint="Self-serve accounts whose agents got at least one model answer in the range (always self-serve: the team and camelBot are not people signing up)." />
+              <Stat label="Active accounts" value={count((everyone ? (data.tiles.all_active_accounts ?? data.tiles.active_accounts) : data.tiles.active_accounts).current)}
+                compare={everyone ? (data.tiles.all_active_accounts ?? data.tiles.active_accounts) : data.tiles.active_accounts} compareLabel={before}
+                hint={everyone ? "All accounts (including camelBot and operators) whose agents got at least one model answer in the range." : "Self-serve accounts whose agents got at least one model answer in the range."} />
               <Stat label="Model responses" value={count((everyone ? data.tiles.responses : data.tiles.self_serve_responses).current)}
                 compare={everyone ? data.tiles.responses : data.tiles.self_serve_responses} compareLabel={before}
                 hint="Answers a model gave to agents' turns. Web searches, compactions, voice and images are not counted." />

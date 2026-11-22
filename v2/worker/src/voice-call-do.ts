@@ -202,6 +202,8 @@ export class VoiceCallDO extends DurableObject<Env> {
         vmMs: 0,
         costUsd: row.platform ? cost : 0,
         note: `voice:${call.id}`,
+        agentId: row.v2AgentId ?? undefined,
+        actor: call.subject ?? undefined,
       })
       .catch(() => {});
     await this.emitEvent(row, "usage.recorded", {

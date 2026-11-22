@@ -105,11 +105,60 @@ function classifyProvider(model: string): string {
 }
 
 function classifyUsageKind(model: string): AdminUsageKind {
-  if (model.startsWith("compaction:")) return "compaction";
-  if (model.startsWith("image:")) return "images";
-  if (model.startsWith("voice:") || model.startsWith("transcription:") || model.startsWith("speech:")) return "voice";
-  if (model.startsWith("web:")) return "web";
+  const lower = model.toLowerCase();
+  if (lower.startsWith("compaction:")) return "compaction";
+  if (lower.startsWith("image:")) return "images";
+  if (
+    lower.startsWith("voice:") ||
+    lower.startsWith("transcription:") ||
+    lower.startsWith("speech:") ||
+    lower.startsWith("elevenlabs/") ||
+    lower.includes("realtime")
+  ) {
+    return "voice";
+  }
+  if (lower.startsWith("web:")) return "web";
   return "models";
+}
+
+const FEATURE_LABELS: Record<string, string> = {
+  workspace: "Persistent workspace",
+  web_search: "Web search",
+  x_search: "X search",
+  web_fetch: "Reads web pages",
+  codemode: "Code mode",
+  files: "Workspace files",
+  human: "Human in the loop",
+  images: "Makes images",
+  generate_image: "Makes images",
+  mcp: "MCP servers",
+  app_tools: "App tools",
+  schedule: "Schedules",
+  delegate: "Sub-agents",
+  agents: "Sub-agents",
+  ask_user: "Asks a person",
+};
+
+function featureLabel(key: string): string {
+  return FEATURE_LABELS[key] ?? key.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
+}
+
+function dateInTimeZone(ms: number, timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(ms));
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: ADMIN_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(ms));
+  }
 }
 
 function hostOf(url: unknown): string {
@@ -173,6 +222,7 @@ async function mapWithConcurrency<T, R>(
 async function collectTenants(
   env: Env,
   lookbackDays: number,
+  snapshotOpts?: { currentFromMs?: number; currentUntilMs?: number; previousFromMs?: number },
 ): Promise<{ tenants: HydratedTenant[]; registeredCount: number; failedCount: number }> {
   const registry = await getTenantStub(env, CONSOLE_ACCOUNTS_DO_NAME).listOpsTenants();
   const staffDomains = getStaffDomains(env);
@@ -180,7 +230,7 @@ async function collectTenants(
 
   const settled = await mapWithConcurrency(registry, FANOUT_CONCURRENCY, async (reg) => {
     try {
-      const snapshot = await getTenantStub(env, reg.tenantId).getOpsSnapshot(lookbackDays);
+      const snapshot = await getTenantStub(env, reg.tenantId).getOpsSnapshot(lookbackDays, snapshotOpts);
       if (!snapshot) return null;
       const staff = isStaffEmail(reg.email, staffDomains);
       const kind: AdminAccountKind =
@@ -216,7 +266,8 @@ async function collectTenants(
 function tenantActiveDays(t: HydratedTenant): Set<string> {
   const days = new Set<string>();
   for (const row of t.snapshot.usageDaily) {
-    if (row.runsCount > 0 && classifyUsageKind(row.model) === "models") {
+    const kind = classifyUsageKind(row.model);
+    if (row.runsCount > 0 && (kind === "models" || kind === "voice")) {
       days.add(row.day);
     }
   }
@@ -419,8 +470,8 @@ function buildAcquisition(tenants: HydratedTenant[], rawDays: string, now = Date
   }
 
   const totalRow = {
-    source: "Direct",
-    kind: "direct" as const,
+    source: "Not captured",
+    kind: "not_captured" as const,
     signups: counted.length,
     made_agent: madeAgent,
     activated,
@@ -434,7 +485,7 @@ function buildAcquisition(tenants: HydratedTenant[], rawDays: string, now = Date
     range: win.range,
     generated_at: new Date(now).toISOString(),
     sources: counted.length > 0 ? [totalRow] : [],
-    total: { ...totalRow, source: "All" },
+    total: { ...totalRow, source: "All", kind: "direct" as const },
     daily: dates.map((date) => ({
       date,
       counts: counted.length > 0 ? [byDate.get(date) ?? 0] : [],
@@ -457,6 +508,8 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
 
   let activeAccountsCur = 0;
   let activeAccountsPrev = 0;
+  let allActiveAccountsCur = 0;
+  let allActiveAccountsPrev = 0;
   let responsesCur = 0;
   let responsesPrev = 0;
   let selfServeResponsesCur = 0;
@@ -464,7 +517,14 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
   let liveAgents = 0;
   let selfServeLiveAgents = 0;
   let agentsRanCur = 0;
+  let agentsRanPrev = 0;
   let selfServeAgentsRanCur = 0;
+  let selfServeAgentsRanPrev = 0;
+  let endUsersCur = 0;
+  let endUsersPrev = 0;
+  let selfServeEndUsersCur = 0;
+  let selfServeEndUsersPrev = 0;
+  let earliestUsageAt: number | null = null;
 
   const modelStats = new Map<
     string,
@@ -474,6 +534,7 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
     string,
     { agents: number; accounts: Set<string>; ssAgents: number; ssAccounts: Set<string> }
   >();
+  const featureStats = new Map<string, { label: string; agents: number; ssAgents: number }>();
   const integrationStats = new Map<string, { label: string; accounts: Set<string>; ssAccounts: Set<string> }>();
   const recordIntegration = (key: string, label: string, tenantId: string, isSelfServe: boolean) => {
     let entry = integrationStats.get(key);
@@ -493,35 +554,108 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
     liveAgents += t.snapshot.totalAgents;
     if (isCounted) selfServeLiveAgents += t.snapshot.totalAgents;
 
-    // Configured models from live agents
-    for (const agent of t.snapshot.agents) {
-      const m = agent.model || "unknown";
-      let entry = cfgModelStats.get(m);
-      if (!entry) {
-        entry = { agents: 0, accounts: new Set(), ssAgents: 0, ssAccounts: new Set() };
-        cfgModelStats.set(m, entry);
+    if (typeof t.snapshot.earliestUsageAt === "number" && t.snapshot.earliestUsageAt > 0) {
+      earliestUsageAt =
+        earliestUsageAt === null
+          ? t.snapshot.earliestUsageAt
+          : Math.min(earliestUsageAt, t.snapshot.earliestUsageAt);
+    }
+
+    // Configured models across ALL live agents (from SQL GROUP BY, with fallback for unrecycled DOs)
+    if (Array.isArray(t.snapshot.configuredModels)) {
+      for (const cm of t.snapshot.configuredModels) {
+        const m = cm.model || "unknown";
+        let entry = cfgModelStats.get(m);
+        if (!entry) {
+          entry = { agents: 0, accounts: new Set(), ssAgents: 0, ssAccounts: new Set() };
+          cfgModelStats.set(m, entry);
+        }
+        entry.agents += cm.count;
+        entry.accounts.add(t.reg.tenantId);
+        if (isCounted) {
+          entry.ssAgents += cm.count;
+          entry.ssAccounts.add(t.reg.tenantId);
+        }
       }
-      entry.agents++;
-      entry.accounts.add(t.reg.tenantId);
+    } else {
+      for (const agent of t.snapshot.agents) {
+        const m = agent.model || "unknown";
+        let entry = cfgModelStats.get(m);
+        if (!entry) {
+          entry = { agents: 0, accounts: new Set(), ssAgents: 0, ssAccounts: new Set() };
+          cfgModelStats.set(m, entry);
+        }
+        entry.agents++;
+        entry.accounts.add(t.reg.tenantId);
+        if (isCounted) {
+          entry.ssAgents++;
+          entry.ssAccounts.add(t.reg.tenantId);
+        }
+      }
+    }
+
+    // Agent features aggregated across all live agents
+    if (t.snapshot.featureCounts) {
+      for (const [key, cnt] of Object.entries(t.snapshot.featureCounts)) {
+        if (cnt <= 0) continue;
+        let entry = featureStats.get(key);
+        if (!entry) {
+          entry = { label: featureLabel(key), agents: 0, ssAgents: 0 };
+          featureStats.set(key, entry);
+        }
+        entry.agents += cnt;
+        if (isCounted) entry.ssAgents += cnt;
+      }
+    }
+
+    // Per-agent run stats (from credit_ledger aggregation, with fallback to agents_index if DO not yet recycled)
+    if (Array.isArray(t.snapshot.topAgentUsage)) {
+      const ranCur = t.snapshot.agentsRanCurrent ?? t.snapshot.topAgentUsage.length;
+      const ranPrev = t.snapshot.agentsRanPrevious ?? 0;
+      const euCur = t.snapshot.endUsersCurrent ?? 0;
+      const euPrev = t.snapshot.endUsersPrevious ?? 0;
+      agentsRanCur += ranCur;
+      agentsRanPrev += ranPrev;
+      endUsersCur += euCur;
+      endUsersPrev += euPrev;
       if (isCounted) {
-        entry.ssAgents++;
-        entry.ssAccounts.add(t.reg.tenantId);
+        selfServeAgentsRanCur += ranCur;
+        selfServeAgentsRanPrev += ranPrev;
+        selfServeEndUsersCur += euCur;
+        selfServeEndUsersPrev += euPrev;
       }
-      if (agent.updatedAt >= win.from && agent.updatedAt < win.until) {
-        agentsRanCur++;
-        if (isCounted) selfServeAgentsRanCur++;
+      for (const item of t.snapshot.topAgentUsage) {
         topAgents.push({
-          agent: agent.id,
-          name: agent.key || agent.id,
-          model: agent.model,
+          agent: item.agentId,
+          name: item.agentKey || item.agentId,
+          model: item.model,
           kind: "agent",
-          deleted: false,
+          deleted: item.deleted,
           account: { ...accountNameOf(t), staff: t.staff },
-          responses: 0,
-          end_users: 0,
-          active_days: 1,
-          last_at: new Date(agent.updatedAt).toISOString(),
+          responses: item.responses,
+          end_users: item.endUsers,
+          active_days: item.activeDays,
+          last_at: new Date(item.lastAt).toISOString(),
         });
+      }
+    } else {
+      for (const agent of t.snapshot.agents) {
+        if (agent.updatedAt >= win.from && agent.updatedAt < win.until) {
+          agentsRanCur++;
+          if (isCounted) selfServeAgentsRanCur++;
+          topAgents.push({
+            agent: agent.id,
+            name: agent.key || agent.id,
+            model: agent.model,
+            kind: "agent",
+            deleted: false,
+            account: { ...accountNameOf(t), staff: t.staff },
+            responses: 0,
+            end_users: 0,
+            active_days: 1,
+            last_at: new Date(agent.updatedAt).toISOString(),
+          });
+        }
       }
     }
 
@@ -580,6 +714,8 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
       }
     }
 
+    if (tResponsesCur > 0) allActiveAccountsCur++;
+    if (tResponsesPrev > 0) allActiveAccountsPrev++;
     if (isCounted && tResponsesCur > 0) activeAccountsCur++;
     if (isCounted && tResponsesPrev > 0) activeAccountsPrev++;
 
@@ -608,7 +744,7 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
   }
 
   accounts.sort((a, b) => b.responses - a.responses || b.agents - a.agents);
-  topAgents.sort((a, b) => Date.parse(b.last_at) - Date.parse(a.last_at));
+  topAgents.sort((a, b) => b.responses - a.responses || Date.parse(b.last_at) - Date.parse(a.last_at));
 
   return {
     schema_version: 1,
@@ -616,17 +752,18 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
     generated_at: new Date(now).toISOString(),
     tiles: {
       active_accounts: { current: activeAccountsCur, previous: activeAccountsPrev },
+      all_active_accounts: { current: allActiveAccountsCur, previous: allActiveAccountsPrev },
       responses: { current: responsesCur, previous: responsesPrev },
       self_serve_responses: { current: selfServeResponsesCur, previous: selfServeResponsesPrev },
-      agents_ran: { current: agentsRanCur, previous: 0 },
-      self_serve_agents_ran: { current: selfServeAgentsRanCur, previous: 0 },
-      end_users: { current: 0, previous: 0 },
-      self_serve_end_users: { current: 0, previous: 0 },
+      agents_ran: { current: agentsRanCur, previous: agentsRanPrev },
+      self_serve_agents_ran: { current: selfServeAgentsRanCur, previous: selfServeAgentsRanPrev },
+      end_users: { current: endUsersCur, previous: endUsersPrev },
+      self_serve_end_users: { current: selfServeEndUsersCur, previous: selfServeEndUsersPrev },
       live_agents: liveAgents,
       self_serve_live_agents: selfServeLiveAgents,
     },
     daily: dates.map((date) => dailyMap.get(date)!),
-    attempts_since: null,
+    attempts_since: earliestUsageAt !== null ? new Date(earliestUsageAt).toISOString() : null,
     models: [...modelStats.entries()]
       .map(([model, s]) => ({
         model,
@@ -646,7 +783,14 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
         self_serve_accounts: s.ssAccounts.size,
       }))
       .sort((a, b) => b.agents - a.agents),
-    features: [],
+    features: [...featureStats.entries()]
+      .map(([key, s]) => ({
+        key,
+        label: s.label,
+        agents: s.agents,
+        self_serve_agents: s.ssAgents,
+      }))
+      .sort((a, b) => b.agents - a.agents),
     integrations: [...integrationStats.entries()]
       .map(([key, s]) => ({
         key,
@@ -777,13 +921,13 @@ function buildRevenue(tenants: HydratedTenant[], rawDays: string, now = Date.now
     const activeDaySet = new Set<string>();
     let lastActive: string | null = null;
     for (const u of t.snapshot.usageDaily) {
+      if (u.runsCount > 0) {
+        activeDaySet.add(u.day);
+        if (lastActive === null || u.day > lastActive) lastActive = u.day;
+      }
+      totalResponses += u.runsCount;
       if (u.day >= startStr && u.day <= endStr) {
         winUsageUsd += u.costUsd;
-        totalResponses += u.runsCount;
-        if (u.runsCount > 0) {
-          activeDaySet.add(u.day);
-          if (lastActive === null || u.day > lastActive) lastActive = u.day;
-        }
       }
     }
 
@@ -791,11 +935,11 @@ function buildRevenue(tenants: HydratedTenant[], rawDays: string, now = Date.now
       payingCharged += winUsageUsd;
     } else {
       freeCharged += winUsageUsd;
-      freeProviderCostAllTime += t.snapshot.ledgerSummary.usageUsd;
     }
 
     if (t.counted) {
       if (grantedUsd > 0) {
+        freeProviderCostAllTime += Math.min(grantedUsd, t.snapshot.ledgerSummary.usageUsd);
         const givenMicros = toMicros(grantedUsd);
         const usedMicros = Math.min(givenMicros, toMicros(t.snapshot.ledgerSummary.usageUsd));
         const leftMicros = Math.max(0, givenMicros - usedMicros);
@@ -848,9 +992,9 @@ function buildRevenue(tenants: HydratedTenant[], rawDays: string, now = Date.now
     daily: dates.map((date) => dailyMap.get(date)!),
     monthly,
     spend: {
-      paying_charged: payingCharged,
+      paying_charged: toMicros(payingCharged),
       paying_provider_cost: payingCharged,
-      free_charged: freeCharged,
+      free_charged: toMicros(freeCharged),
       free_provider_cost: freeCharged,
     },
     free_credit: {
@@ -1074,7 +1218,7 @@ async function buildHealth(
       by_provider: [...byProvider.entries()]
         .map(([provider, s]) => ({ provider, cost: s.cost, responses: s.responses }))
         .sort((a, b) => b.cost - a.cost),
-      top_accounts: topAccounts.slice(0, 10),
+      top_accounts: topAccounts.slice(0, 50),
       own_key_responses: 0,
       platform_responses: platformResponses,
     },
@@ -1118,7 +1262,11 @@ async function buildAccountDetail(
   const endStr = utcDate(win.until - DAY_MS);
 
   const [snapshot, registry] = await Promise.all([
-    getTenantStub(env, tenantId).getOpsSnapshot(Math.max(win.days, 90)),
+    getTenantStub(env, tenantId).getOpsSnapshot(Math.max(win.days, 90), {
+      currentFromMs: win.from,
+      currentUntilMs: win.until,
+      previousFromMs: win.previousFrom,
+    }),
     getTenantStub(env, CONSOLE_ACCOUNTS_DO_NAME).listOpsTenants().catch(() => [] as OpsRegisteredTenant[]),
   ]);
   if (!snapshot) return null;
@@ -1156,20 +1304,61 @@ async function buildAccountDetail(
     modelMap.set(u.model, prev);
   }
 
-  // Hydrate up to ADMIN_ACCOUNT_AGENTS live agents from AgentDO in parallel (with graceful fallback)
+  // Hydrate up to ADMIN_ACCOUNT_AGENTS live agents from AgentDO in parallel (most used in window first)
   let totalSchedules = 0;
-  const targetAgents = snapshot.agents.slice(0, ADMIN_ACCOUNT_AGENTS);
-  const agents = await mapWithConcurrency(targetAgents, 10, async (entry): Promise<AdminAccountAgent> => {
+  const topUsageById = new Map((snapshot.topAgentUsage ?? []).map((u) => [u.agentId, u]));
+  const liveAgentById = new Map(snapshot.agents.map((a) => [a.id, a]));
+  const orderedTargetAgents: Array<{
+    id: string;
+    key: string;
+    model: string;
+    definition: string | null;
+    updatedAt: number;
+  }> = [];
+  const seenAgentIds = new Set<string>();
+  for (const top of snapshot.topAgentUsage ?? []) {
+    if (top.deleted || seenAgentIds.has(top.agentId)) continue;
+    const live = liveAgentById.get(top.agentId);
+    seenAgentIds.add(top.agentId);
+    orderedTargetAgents.push({
+      id: top.agentId,
+      key: live?.key ?? top.agentKey,
+      model: live?.model ?? top.model,
+      definition: live?.definition ?? null,
+      updatedAt: live?.updatedAt ?? top.lastAt,
+    });
+    if (orderedTargetAgents.length >= ADMIN_ACCOUNT_AGENTS) break;
+  }
+  for (const agent of snapshot.agents) {
+    if (orderedTargetAgents.length >= ADMIN_ACCOUNT_AGENTS) break;
+    if (seenAgentIds.has(agent.id)) continue;
+    seenAgentIds.add(agent.id);
+    orderedTargetAgents.push(agent);
+  }
+
+  const agents = await mapWithConcurrency(orderedTargetAgents, 10, async (entry): Promise<AdminAccountAgent> => {
+    const ledgerUsage = topUsageById.get(entry.id);
     try {
       const stub = getAgentStub(env, entry.id);
-      const [state, schedRes] = await Promise.all([
+      const [state, schedRes, runStats] = await Promise.all([
         stub.getState(),
         stub.listSchedules().catch(() => ({ schedules: [] })),
+        stub.getOpsRunStats(win.from, win.until).catch(() => null),
       ]);
       const schedCount = schedRes.schedules.length;
       totalSchedules += schedCount;
       const rawPrompt = state.instructions ?? "";
       const masked = maskSecrets(rawPrompt);
+      const responsesCount = runStats
+        ? Math.max(runStats.responses, ledgerUsage?.responses ?? 0)
+        : (ledgerUsage?.responses ?? (state.lastRun ? 1 : 0));
+      const endUsersCount = runStats
+        ? Math.max(runStats.endUsers, ledgerUsage?.endUsers ?? 0)
+        : (ledgerUsage?.endUsers ?? 0);
+      const lastAtMs =
+        runStats?.lastAt ??
+        ledgerUsage?.lastAt ??
+        (state.lastRun ? state.lastRun.startedAt : entry.updatedAt);
       return {
         agent: entry.id,
         name: entry.key || entry.id,
@@ -1183,9 +1372,9 @@ async function buildAccountDetail(
         code_mode: (state.builtins ?? []).includes("codemode"),
         schedules: schedCount,
         channel: null,
-        responses: state.lastRun ? 1 : 0,
-        end_users: 0,
-        last_at: state.lastRun ? new Date(state.lastRun.startedAt).toISOString() : new Date(entry.updatedAt).toISOString(),
+        responses: responsesCount,
+        end_users: endUsersCount,
+        last_at: lastAtMs ? new Date(lastAtMs).toISOString() : null,
         system_prompt: masked.slice(0, ADMIN_PROMPT_CHARS),
         system_prompt_length: masked.length,
       };
@@ -1203,14 +1392,15 @@ async function buildAccountDetail(
         code_mode: false,
         schedules: 0,
         channel: null,
-        responses: 0,
-        end_users: 0,
-        last_at: new Date(entry.updatedAt).toISOString(),
+        responses: ledgerUsage?.responses ?? 0,
+        end_users: ledgerUsage?.endUsers ?? 0,
+        last_at: new Date(ledgerUsage?.lastAt ?? entry.updatedAt).toISOString(),
         system_prompt: "",
         system_prompt_length: 0,
       };
     }
   });
+  agents.sort((a, b) => b.responses - a.responses || (b.last_at ? Date.parse(b.last_at) : 0) - (a.last_at ? Date.parse(a.last_at) : 0));
 
   const netPurchased = Math.max(0, snapshot.ledgerSummary.purchasedUsd - snapshot.ledgerSummary.refundedUsd);
 
@@ -1282,7 +1472,7 @@ function buildSignals(
 
   for (const t of tenants) {
     if (!t.counted) continue;
-    const signupDay = utcDate(t.createdAt);
+    const signupDay = dateInTimeZone(t.createdAt, timeZone);
     const sRow = dailyMap.get(signupDay);
     if (sRow) sRow.signups++;
 
@@ -1294,7 +1484,7 @@ function buildSignals(
 
     for (const l of t.snapshot.ledger) {
       if ((l.kind === "topup" || l.kind === "purchase") && l.amountUsd > 0) {
-        const lDay = utcDate(l.createdAt);
+        const lDay = dateInTimeZone(l.createdAt, timeZone);
         const lRow = dailyMap.get(lDay);
         if (lRow) {
           lRow.payments++;
@@ -1488,8 +1678,14 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/v2/admin/ops/usage", async (c) => {
     requireAdmin(c.env, c.req.raw);
     const days = parseDaysOrThrow(c.req.query("days"));
-    const { tenants } = await collectTenants(c.env, Number(days) * 2 + 2);
-    return c.json(buildUsage(tenants, days), 200, { "Cache-Control": "no-store" });
+    const now = Date.now();
+    const win = parseAdminWindow(days, now);
+    const { tenants } = await collectTenants(c.env, Number(days) * 2 + 2, {
+      currentFromMs: win.from,
+      currentUntilMs: win.until,
+      previousFromMs: win.previousFrom,
+    });
+    return c.json(buildUsage(tenants, days, now), 200, { "Cache-Control": "no-store" });
   });
 
   app.get("/v2/admin/ops/revenue", async (c) => {

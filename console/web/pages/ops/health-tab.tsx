@@ -142,7 +142,7 @@ function Checks({ checks }: { checks: AdminCheck[] }) {
 }
 
 function Nodes({ nodes }: { nodes: AdminNode[] }) {
-  if (!nodes.length) return <Empty>No runtime node holds a lease right now.</Empty>;
+  if (!nodes.length) return <Empty>Agents run serverlessly on Cloudflare Durable Objects (no leased runtime nodes).</Empty>;
   return (
     <div className="overflow-x-auto border-t">
       <Table>

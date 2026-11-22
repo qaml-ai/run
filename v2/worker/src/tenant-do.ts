@@ -103,6 +103,26 @@ export interface TenantOpsSnapshot {
   busyAgents: number;
   activeLeaseAgentIds: string[];
   totalAgents: number;
+  configuredModels?: Array<{
+    model: string;
+    count: number;
+  }>;
+  featureCounts?: Record<string, number>;
+  earliestUsageAt?: number | null;
+  agentsRanCurrent?: number;
+  agentsRanPrevious?: number;
+  endUsersCurrent?: number;
+  endUsersPrevious?: number;
+  topAgentUsage?: Array<{
+    agentId: string;
+    agentKey: string;
+    model: string;
+    deleted: boolean;
+    responses: number;
+    activeDays: number;
+    lastAt: number;
+    endUsers: number;
+  }>;
   agents: Array<{
     id: string;
     key: string;
@@ -158,6 +178,36 @@ type SealedProviderRow = {
   api_style?: string | null;
   scope?: string | null;
 };
+
+function extractAgentFeatureKeys(input: {
+  builtins?: unknown;
+  mcpServers?: unknown;
+  tools?: unknown;
+  repoId?: string | null;
+}): string[] {
+  const keys = new Set<string>();
+  if (Array.isArray(input.builtins)) {
+    for (const item of input.builtins) {
+      if (typeof item === "string" && item.trim()) keys.add(item.trim());
+    }
+  }
+  if (Array.isArray(input.mcpServers) && input.mcpServers.length > 0) {
+    keys.add("mcp");
+  }
+  if (Array.isArray(input.tools) && input.tools.length > 0) {
+    keys.add("app_tools");
+  }
+  if (input.repoId) {
+    keys.add("workspace");
+  }
+  return [...keys].sort();
+}
+
+function parseAgentUsageNote(note: string): { agentKey: string; agentId: string } | null {
+  const match = /^Agent (.+) \(([^()]+)\)$/.exec(note);
+  if (!match) return null;
+  return { agentKey: match[1]!, agentId: match[2]! };
+}
 
 export function platformCreditReserve(env: Env, tenantId: string) {
   if (tenantId === env.BUILDER_CUTOVER_CREDIT_TENANT_ID) {
@@ -221,6 +271,13 @@ export class TenantDO extends DurableObject<Env> {
         kind TEXT NOT NULL,
         note TEXT,
         created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_credit_ledger_kind_created ON credit_ledger(kind, created_at);
+      CREATE TABLE IF NOT EXISTS agent_actors_daily (
+        day TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        PRIMARY KEY (day, agent_id, actor)
       );
       CREATE TABLE IF NOT EXISTS usage_daily (
         day TEXT NOT NULL,
@@ -319,6 +376,9 @@ export class TenantDO extends DurableObject<Env> {
     }
     if (!agentColumns.some(({ name }) => name === "key_scope")) {
       this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN key_scope TEXT");
+    }
+    if (!agentColumns.some(({ name }) => name === "features_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN features_json TEXT");
     }
     const usageColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(usage_daily)").toArray();
     if (!usageColumns.some(({ name }) => name === "cache_read_tokens")) {
@@ -927,6 +987,8 @@ export class TenantDO extends DurableObject<Env> {
     vmMs: number;
     costUsd: number;
     note?: string;
+    agentId?: string;
+    actor?: string;
   }): Promise<{ settled: true }> {
     const profile = this.readProfileOrNull();
     if (!profile) return { settled: true };
@@ -968,6 +1030,21 @@ export class TenantDO extends DurableObject<Env> {
           input.vmMs,
           input.costUsd,
         );
+        if (input.agentId && input.actor && input.actor.trim()) {
+          this.ctx.storage.sql.exec(
+            `INSERT OR IGNORE INTO agent_actors_daily (day, agent_id, actor) VALUES (?1, ?2, ?3)`,
+            day,
+            input.agentId,
+            input.actor.trim(),
+          );
+        }
+        if (input.agentId) {
+          this.ctx.storage.sql.exec(
+            `UPDATE agents_index SET updated_at = MAX(updated_at, ?1) WHERE id = ?2`,
+            now,
+            input.agentId,
+          );
+        }
         const reserve = platformCreditReserve(this.env, profile.id);
         if (reserve && remaining < 15) {
           this.ctx.storage.sql.exec(
@@ -1436,15 +1513,33 @@ export class TenantDO extends DurableObject<Env> {
         lineage = repoRow.lineage;
       }
 
+      const hasExplicitFeatures =
+        params.input.builtins !== undefined ||
+        params.input.mcpServers !== undefined ||
+        params.input.tools !== undefined ||
+        defCfg !== null ||
+        created;
+      const featuresJson = hasExplicitFeatures
+        ? JSON.stringify(
+            extractAgentFeatureKeys({
+              builtins: params.input.builtins ?? defCfg?.builtins,
+              mcpServers: params.input.mcpServers ?? defCfg?.mcpServers,
+              tools: params.input.tools ?? defCfg?.tools,
+              repoId,
+            }),
+          )
+        : null;
+
       const now = Date.now();
       this.ctx.storage.sql.exec(
-        `INSERT INTO agents_index (id, agent_key, token_hash, sealed_token, model, key_scope, repo_id, branch, definition_slug, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+        `INSERT INTO agents_index (id, agent_key, token_hash, sealed_token, model, key_scope, repo_id, branch, definition_slug, features_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
          ON CONFLICT(id) DO UPDATE SET
            key_scope = excluded.key_scope,
            repo_id = excluded.repo_id,
            branch = excluded.branch,
            definition_slug = COALESCE(excluded.definition_slug, agents_index.definition_slug),
+           features_json = COALESCE(excluded.features_json, agents_index.features_json),
            updated_at = excluded.updated_at`,
         agentId,
         params.key,
@@ -1455,6 +1550,7 @@ export class TenantDO extends DurableObject<Env> {
         repoId,
         branch,
         definitionSlug,
+        featuresJson,
         now,
       );
 
@@ -2967,7 +3063,10 @@ export class TenantDO extends DurableObject<Env> {
     return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  async getOpsSnapshot(lookbackDays = 400): Promise<TenantOpsSnapshot | null> {
+  async getOpsSnapshot(
+    lookbackDays = 400,
+    opts?: { currentFromMs?: number; currentUntilMs?: number; previousFromMs?: number },
+  ): Promise<TenantOpsSnapshot | null> {
     const profile = this.readProfileOrNull();
     if (!profile) return null;
     const now = Date.now();
@@ -2982,6 +3081,68 @@ export class TenantDO extends DurableObject<Env> {
     const totalAgentsRow = this.ctx.storage.sql
       .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM agents_index`)
       .one();
+    const configuredModelRows = this.ctx.storage.sql
+      .exec<{ model: string; cnt: number }>(
+        `SELECT model, COUNT(*) AS cnt FROM agents_index GROUP BY model ORDER BY cnt DESC`,
+      )
+      .toArray();
+
+    // Aggregate agent features across all live agents via features_json, definitions, and repo_id
+    const defFeatureMap = new Map<string, string[]>();
+    const defRows = this.ctx.storage.sql
+      .exec<{ slug: string; config_json: string }>(`SELECT slug, config_json FROM definitions`)
+      .toArray();
+    for (const def of defRows) {
+      try {
+        const parsed = JSON.parse(def.config_json) as {
+          builtins?: unknown;
+          mcpServers?: unknown;
+          tools?: unknown;
+          repoId?: string | null;
+        };
+        defFeatureMap.set(def.slug, extractAgentFeatureKeys(parsed));
+      } catch {
+        // Ignore malformed definition JSON
+      }
+    }
+    const featureGroups = this.ctx.storage.sql
+      .exec<{
+        features_json: string | null;
+        definition_slug: string | null;
+        has_repo: number;
+        cnt: number;
+      }>(
+        `SELECT features_json, definition_slug, CASE WHEN repo_id IS NOT NULL THEN 1 ELSE 0 END AS has_repo, COUNT(*) AS cnt
+         FROM agents_index
+         GROUP BY features_json, definition_slug, has_repo`,
+      )
+      .toArray();
+    const featureCounts: Record<string, number> = {};
+    for (const group of featureGroups) {
+      const keys = new Set<string>();
+      if (group.features_json) {
+        try {
+          const parsed = JSON.parse(group.features_json) as unknown;
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (typeof item === "string" && item.trim()) keys.add(item.trim());
+            }
+          }
+        } catch {
+          // Ignore malformed features_json
+        }
+      } else if (group.definition_slug && defFeatureMap.has(group.definition_slug)) {
+        for (const key of defFeatureMap.get(group.definition_slug)!) {
+          keys.add(key);
+        }
+      }
+      if (group.has_repo) keys.add("workspace");
+      const cnt = Number(group.cnt ?? 0);
+      for (const key of keys) {
+        featureCounts[key] = (featureCounts[key] ?? 0) + cnt;
+      }
+    }
+
     const agentRows = this.ctx.storage.sql
       .exec<{
         id: string;
@@ -3009,6 +3170,7 @@ export class TenantDO extends DurableObject<Env> {
       }>(`SELECT day, model, runs_count, input_tokens, output_tokens, vm_ms, cost_usd FROM usage_daily WHERE day >= ?1 ORDER BY day DESC, model ASC`, since)
       .toArray();
 
+    // Filter to funding/refund ledger rows so high-volume `usage` and reserve `grant` rows never crowd out topups/purchases/refunds
     const ledgerRows = this.ctx.storage.sql
       .exec<{
         id: string;
@@ -3017,7 +3179,13 @@ export class TenantDO extends DurableObject<Env> {
         kind: string;
         note: string | null;
         created_at: number;
-      }>(`SELECT id, ref_id, amount_usd, kind, note, created_at FROM credit_ledger ORDER BY created_at DESC LIMIT 500`)
+      }>(
+        `SELECT id, ref_id, amount_usd, kind, note, created_at
+         FROM credit_ledger
+         WHERE kind IN ('topup', 'purchase', 'refund')
+         ORDER BY created_at DESC
+         LIMIT 500`,
+      )
       .toArray();
 
     const ledgerAgg = this.ctx.storage.sql
@@ -3033,6 +3201,7 @@ export class TenantDO extends DurableObject<Env> {
     let refundedUsd = 0;
     let usageUsd = 0;
     let firstTopupAt: number | null = null;
+    let earliestUsageAt: number | null = null;
     for (const row of ledgerAgg) {
       if (row.kind === "topup" || row.kind === "purchase") {
         if (Number(row.total) > 0) purchasedUsd += Number(row.total);
@@ -3045,8 +3214,141 @@ export class TenantDO extends DurableObject<Env> {
         refundedUsd += Math.abs(Number(row.total));
       } else if (row.kind === "usage") {
         usageUsd += Math.abs(Number(row.total));
+        if (row.first_at !== null) {
+          earliestUsageAt =
+            earliestUsageAt === null ? Number(row.first_at) : Math.min(earliestUsageAt, Number(row.first_at));
+        }
       }
     }
+
+    // Per-agent response counts, active days, and distinct agents ran from credit_ledger (authoritative for all settled runs)
+    const currentFromMs = opts?.currentFromMs ?? now - clampedDays * 86_400_000;
+    const currentUntilMs = opts?.currentUntilMs ?? now + 86_400_000;
+    const previousFromMs = opts?.previousFromMs ?? currentFromMs - (currentUntilMs - currentFromMs);
+
+    const agentsRanCurrent = Number(
+      this.ctx.storage.sql
+        .exec<{ cnt: number }>(
+          `SELECT COUNT(DISTINCT note) AS cnt
+           FROM credit_ledger
+           WHERE kind = 'usage' AND note LIKE 'Agent %(%)' AND created_at >= ?1 AND created_at < ?2`,
+          currentFromMs,
+          currentUntilMs,
+        )
+        .one().cnt ?? 0,
+    );
+    const agentsRanPrevious = Number(
+      this.ctx.storage.sql
+        .exec<{ cnt: number }>(
+          `SELECT COUNT(DISTINCT note) AS cnt
+           FROM credit_ledger
+           WHERE kind = 'usage' AND note LIKE 'Agent %(%)' AND created_at >= ?1 AND created_at < ?2`,
+          previousFromMs,
+          currentFromMs,
+        )
+        .one().cnt ?? 0,
+    );
+
+    const curFromDay = new Date(currentFromMs).toISOString().slice(0, 10);
+    const curUntilDay = new Date(Math.max(currentFromMs, currentUntilMs - 1)).toISOString().slice(0, 10);
+    const prevFromDay = new Date(previousFromMs).toISOString().slice(0, 10);
+    const endUsersCurrent = Number(
+      this.ctx.storage.sql
+        .exec<{ cnt: number }>(
+          `SELECT COUNT(DISTINCT actor) AS cnt FROM agent_actors_daily WHERE day >= ?1 AND day <= ?2`,
+          curFromDay,
+          curUntilDay,
+        )
+        .one().cnt ?? 0,
+    );
+    const endUsersPrevious = Number(
+      this.ctx.storage.sql
+        .exec<{ cnt: number }>(
+          `SELECT COUNT(DISTINCT actor) AS cnt FROM agent_actors_daily WHERE day >= ?1 AND day < ?2`,
+          prevFromDay,
+          curFromDay,
+        )
+        .one().cnt ?? 0,
+    );
+
+    const rawTopAgentUsage = this.ctx.storage.sql
+      .exec<{
+        note: string;
+        responses: number;
+        active_days: number;
+        last_at: number;
+      }>(
+        `SELECT note,
+                COUNT(*) AS responses,
+                COUNT(DISTINCT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch')) AS active_days,
+                MAX(created_at) AS last_at
+         FROM credit_ledger
+         WHERE kind = 'usage' AND note LIKE 'Agent %(%)' AND created_at >= ?1 AND created_at < ?2
+         GROUP BY note
+         ORDER BY responses DESC, last_at DESC
+         LIMIT 50`,
+        currentFromMs,
+        currentUntilMs,
+      )
+      .toArray();
+
+    const parsedTop = rawTopAgentUsage
+      .map((row) => {
+        const parsed = parseAgentUsageNote(row.note);
+        if (!parsed) return null;
+        return {
+          agentId: parsed.agentId,
+          agentKey: parsed.agentKey,
+          responses: Number(row.responses),
+          activeDays: Number(row.active_days),
+          lastAt: Number(row.last_at),
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+
+    const liveModelById = new Map<string, { model: string; key: string }>();
+    const actorsByAgentId = new Map<string, number>();
+    if (parsedTop.length > 0) {
+      const ids = parsedTop.map((item) => item.agentId);
+      const placeholders = ids.map((_, idx) => `?${idx + 1}`).join(", ");
+      const liveRows = this.ctx.storage.sql
+        .exec<{ id: string; agent_key: string; model: string }>(
+          `SELECT id, agent_key, model FROM agents_index WHERE id IN (${placeholders})`,
+          ...ids,
+        )
+        .toArray();
+      for (const r of liveRows) {
+        liveModelById.set(r.id, { model: r.model, key: r.agent_key });
+      }
+      const actorRows = this.ctx.storage.sql
+        .exec<{ agent_id: string; cnt: number }>(
+          `SELECT agent_id, COUNT(DISTINCT actor) AS cnt
+           FROM agent_actors_daily
+           WHERE day >= ?1 AND day <= ?2 AND agent_id IN (${ids.map((_, idx) => `?${idx + 3}`).join(", ")})
+           GROUP BY agent_id`,
+          curFromDay,
+          curUntilDay,
+          ...ids,
+        )
+        .toArray();
+      for (const r of actorRows) {
+        actorsByAgentId.set(r.agent_id, Number(r.cnt));
+      }
+    }
+
+    const topAgentUsage = parsedTop.map((item) => {
+      const live = liveModelById.get(item.agentId);
+      return {
+        agentId: item.agentId,
+        agentKey: live?.key ?? item.agentKey,
+        model: live?.model ?? "",
+        deleted: !live,
+        responses: item.responses,
+        activeDays: item.activeDays,
+        lastAt: item.lastAt,
+        endUsers: actorsByAgentId.get(item.agentId) ?? 0,
+      };
+    });
 
     const providerRows = this.ctx.storage.sql
       .exec<{ provider: string }>(`SELECT provider FROM provider_keys ORDER BY provider ASC`)
@@ -3065,6 +3367,14 @@ export class TenantDO extends DurableObject<Env> {
       busyAgents: activeLeaseAgentIds.length,
       activeLeaseAgentIds,
       totalAgents: Number(totalAgentsRow.cnt ?? 0),
+      configuredModels: configuredModelRows.map((r) => ({ model: r.model, count: Number(r.cnt) })),
+      featureCounts,
+      earliestUsageAt,
+      agentsRanCurrent,
+      agentsRanPrevious,
+      endUsersCurrent,
+      endUsersPrevious,
+      topAgentUsage,
       agents: agentRows.map((r) => ({
         id: r.id,
         key: r.agent_key,

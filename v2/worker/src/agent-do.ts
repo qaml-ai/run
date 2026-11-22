@@ -1405,6 +1405,8 @@ export class AgentDO extends DurableObject<Env> {
             vmMs: primaryRecord.usage.vmMs,
             costUsd: primaryRecord.usage.costUsd,
             note: `Agent ${cfg.key} (${cfg.id})`,
+            agentId: cfg.id,
+            actor: primaryRecord.actor ?? undefined,
           })
           .catch(() => {});
       }
@@ -1898,6 +1900,30 @@ export class AgentDO extends DurableObject<Env> {
       );
     }
     return { seeded: true };
+  }
+
+  async getOpsRunStats(fromMs: number, untilMs: number): Promise<{
+    responses: number;
+    endUsers: number;
+    lastAt: number | null;
+  }> {
+    this.ensureSql();
+    const row = this.ctx.storage.sql
+      .exec<{ responses: number; end_users: number; last_at: number | null }>(
+        `SELECT COUNT(*) AS responses,
+                COUNT(DISTINCT CASE WHEN actor IS NOT NULL AND actor != '' THEN actor END) AS end_users,
+                MAX(started_at) AS last_at
+         FROM runs
+         WHERE started_at >= ?1 AND started_at < ?2 AND status != 'cancelled'`,
+        fromMs,
+        untilMs,
+      )
+      .one();
+    return {
+      responses: Number(row.responses ?? 0),
+      endUsers: Number(row.end_users ?? 0),
+      lastAt: row.last_at !== null ? Number(row.last_at) : null,
+    };
   }
 
   async getState(): Promise<

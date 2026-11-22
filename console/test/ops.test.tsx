@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AdminAccountDetail, AdminAcquisition, AdminGrowth, AdminMcp, AdminRevenue, AdminUsage } from "../../shared/ops-types";
+import type { AdminAccountDetail, AdminAcquisition, AdminGrowth, AdminHealth, AdminMcp, AdminRevenue, AdminUsage } from "../../shared/ops-types";
 import { TooltipProvider } from "../web/components/ui/tooltip";
 import { resetOps } from "../web/lib/ops";
 import { OpsPage } from "../web/pages/ops/ops-page";
@@ -28,7 +28,7 @@ const acquisition = (days: number): AdminAcquisition => ({
 const usage = (days: number): AdminUsage => ({
   schema_version: 1, range: range(days), generated_at: NOW,
   tiles: {
-    active_accounts: { current: 12, previous: 9 }, responses: { current: 900, previous: 700 }, self_serve_responses: { current: 300, previous: 200 },
+    active_accounts: { current: 12, previous: 9 }, all_active_accounts: { current: 15, previous: 11 }, responses: { current: 900, previous: 700 }, self_serve_responses: { current: 300, previous: 200 },
     agents_ran: { current: 20, previous: 0 }, self_serve_agents_ran: { current: 8, previous: 0 }, end_users: { current: 40, previous: 0 }, self_serve_end_users: { current: 5, previous: 0 }, live_agents: 30, self_serve_live_agents: 14,
   },
   daily: DATES.map(date => ({ date, self_serve: 100, operator: 200, other: 0 })),
@@ -61,11 +61,24 @@ const revenue = (days: number): AdminRevenue => ({
   tiles: { revenue: { current: 0, previous: 0 }, refunds: { current: 0, previous: 0 }, buyers: { current: 0, previous: 0 }, first_purchases: { current: 0, previous: 0 }, paying_accounts: 0, auto_topup: 0, outstanding_purchased: 0, outstanding_free: 4.4 * USD },
   daily: DATES.map(date => ({ date, purchases: 0, amount: 0, refunds: 0 })),
   monthly: [{ month: "2026-10", amount: 0, refunds: 0, buyers: 0 }],
-  spend: { paying_charged: 0, paying_provider_cost: 0, free_charged: 0.6 * USD, free_provider_cost: 0.5 },
+  spend: { paying_charged: 5681 * USD, paying_provider_cost: 5681, free_charged: 0.6 * USD, free_provider_cost: 0.5 },
   free_credit: {
     accounts: 1, given: 5 * USD, used: 0.6 * USD, buckets: { untouched: 0, tried: 1, using: 0, nearly_out: 0, used_up: 0 }, used_any: 1, bought: 0, without: 0,
     decisions: { eligible: 1, ineligible: 0, disabled: 0, legacy: 0, card_unlocked: 0 }, provider_cost: 0.5, rows: [],
   },
+});
+const health = (days: number): AdminHealth => ({
+  schema_version: 1, range: range(days), generated_at: NOW,
+  spend: {
+    window: { current: 6181.85, previous: 0 }, month_to_date: 6181.85, month_projection: 13410.26, last_month: 0,
+    daily: DATES.map(date => ({ date, models: 100, compaction: 0, voice: 25, images: 0, web: 0, tool_search: 0, compute: 0 })),
+    by_payer: { paying: 0, free: 0.5, operator: 6181.35, unbilled: 0, staff: 0 },
+    by_provider: [{ provider: "azure", cost: 5869.72, responses: 21191 }, { provider: "openai", cost: 209.5, responses: 10321 }],
+    top_accounts: [{ tenant: "camelbot", name: "camel-bots", kind: "operator", sign_in: null, signed_up_at: null, payer: "operator", cost: 5840.78, responses: 30408 }],
+    own_key_responses: 0, platform_responses: 31777,
+  },
+  checks: [{ key: "camelfsd", label: "camelfsd storage", status: "ok", value: "11 ms", detail: "fs-v2.camelai.dev responded HTTP 200." }],
+  nodes: [],
 });
 
 let requests: string[] = [];
@@ -91,6 +104,7 @@ beforeEach(() => {
     } satisfies AdminMcp);
     if (pathname === "/api/usage") return Response.json(usage(days));
     if (pathname === "/api/revenue") return Response.json(revenue(days));
+    if (pathname === "/api/health") return Response.json(health(days));
     if (pathname === "/api/account" && searchParams.get("tenant") === "ann") return Response.json(ann);
     return Response.json({ error: "Not found" }, { status: 404 });
   }));
@@ -156,10 +170,12 @@ test("a chart's numbers can be read as a table", async () => {
 test("an account opens from Top accounts and shows its agents' setup and the start of their prompts", async () => {
   const user = userEvent.setup();
   page("?tab=usage");
-  // Self-serve only by default: camelBot is in the answer but not the table until the switch is on.
+  // Usage includes camelBot & operator accounts by default; toggling the switch off filters to self-serve only.
   const top = (await screen.findByRole("heading", { name: /^Top accounts/ })).closest("div.bg-card") as HTMLElement;
   await within(top).findByText("ann");
-  expect(within(top).queryByText("camelbot")).toBeNull();
+  expect(within(top).getByText("camelbot")).toBeTruthy();
+  const activeTile = screen.getByText("Active accounts", { selector: "dt" }).closest("div")!;
+  expect(within(activeTile).getByText("15")).toBeTruthy();
   // Per-agent figures began within the range: no change against a period that was not recorded.
   const ran = screen.getByText("Agents that ran", { selector: "dt" }).closest("div")!;
   expect(within(ran).getByText(/Nothing to compare with yet/)).toBeTruthy();
@@ -177,7 +193,22 @@ test("an account opens from Top accounts and shows its agents' setup and the sta
 
   await user.click(within(dialog).getByRole("button", { name: "Close" }));
   await user.click(screen.getByRole("switch"));
-  expect(within(top).getByText("camelbot")).toBeTruthy();
+  expect(within(top).queryByText("camelbot")).toBeNull();
+  expect(within(activeTile).getByText("12")).toBeTruthy();
+});
+
+test("revenue and health tabs format micros vs USD accurately and show serverless Durable Objects note", async () => {
+  const user = userEvent.setup();
+  page("?tab=revenue&days=7");
+  const margins = (await screen.findByRole("heading", { name: "Paying and free-credit accounts" })).closest("div.bg-card") as HTMLElement;
+  expect(within(margins).getAllByText("$5,681").length).toBeGreaterThanOrEqual(2);
+  expect(within(margins).getByText("$0.60")).toBeTruthy();
+  expect(within(margins).getByText("$0.50")).toBeTruthy();
+
+  await user.click(screen.getByRole("tab", { name: "Health" }));
+  expect(await screen.findByText("camelfsd storage")).toBeTruthy();
+  expect(screen.getAllByText("$6,182").length).toBeGreaterThanOrEqual(2);
+  expect(screen.getByText(/Agents run serverlessly on Cloudflare Durable Objects/)).toBeTruthy();
 });
 
 test("MCP plugins shows attribution and token activity with the shared range and refresh", async () => {

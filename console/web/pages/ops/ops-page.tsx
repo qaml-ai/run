@@ -28,8 +28,8 @@ const TAB_LABELS: Record<OpsTab, string> = { growth: "Growth", mcp: "MCP plugins
 export function OpsPage() {
   const [view, setView] = useState(() => readView(typeof location === "undefined" ? "" : location.search));
   const [refresh, setRefresh] = useState(0);
-  // Usage starts with self-serve accounts only; Health with everyone, since its totals are the platform's.
-  const [everyone, setEveryone] = useState({ usage: false, health: true });
+  // Usage and Health start with everyone included (camelBot, chiridion, operators, and self-serve) so live platform usage is visible immediately.
+  const [everyone, setEveryone] = useState({ usage: true, health: true });
   const [account, setAccount] = useState<string | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
   const me = useOps<{ viewer: string }>("/api/me");

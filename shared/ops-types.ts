@@ -310,6 +310,7 @@ export interface AdminUsage {
   generated_at: string;
   tiles: {
     active_accounts: AdminCompare;
+    all_active_accounts?: AdminCompare;
     responses: AdminCompare;
     self_serve_responses: AdminCompare;
     agents_ran: AdminCompare;
