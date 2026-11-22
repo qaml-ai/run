@@ -850,6 +850,7 @@ app.put("/v2/agents/:key", async (c) => {
               wait: input.wait,
               outputSchema: input.outputSchema,
               maxSteps: input.maxSteps,
+              supersedeInputs: input.supersedeInputs,
             },
             hints: {
               runId: preacquireRunId,
@@ -994,7 +995,7 @@ app.get("/v2/agents/:idOrKey/runs/:runId", async (c) => {
 
 app.post("/v2/agents/:idOrKey/abort", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "run");
-  const body = (await c.req.json().catch(() => ({}))) as { keepQueued?: boolean };
+  const body = (await c.req.json().catch(() => ({}))) as { keepQueued?: boolean; supersedeInputs?: boolean };
   return c.json(await stub.abortRuns(body));
 });
 

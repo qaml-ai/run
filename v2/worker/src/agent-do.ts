@@ -311,6 +311,36 @@ export class AgentDO extends DurableObject<Env> {
     this.cachedConfig = cfg;
   }
 
+  private appendStoredMessage(
+    runId: string | null,
+    role: StoredMessage["role"],
+    content: StoredMessageContent,
+  ): StoredMessage {
+    const contentJson = JSON.stringify(content);
+    const tokensEst = estimateTokens(content.text ?? contentJson);
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5)`,
+      runId,
+      role,
+      contentJson,
+      tokensEst,
+      now,
+    );
+    const seqRow = this.ctx.storage.sql
+      .exec<{ seq: number }>(`SELECT last_insert_rowid() AS seq`)
+      .one();
+    return {
+      seq: Number(seqRow.seq),
+      runId,
+      role,
+      content,
+      tokensEst,
+      createdAt: now,
+    };
+  }
+
   private buildAdapter(): TurnStorageAdapter {
     return {
       env: this.env,
@@ -402,31 +432,7 @@ export class AgentDO extends DurableObject<Env> {
           createdAt: r.created_at,
         }));
       },
-      appendMessage: (runId, role, content) => {
-        const contentJson = JSON.stringify(content);
-        const tokensEst = estimateTokens(content.text ?? contentJson);
-        const now = Date.now();
-        this.ctx.storage.sql.exec(
-          `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5)`,
-          runId,
-          role,
-          contentJson,
-          tokensEst,
-          now,
-        );
-        const seqRow = this.ctx.storage.sql
-          .exec<{ seq: number }>(`SELECT last_insert_rowid() AS seq`)
-          .one();
-        return {
-          seq: Number(seqRow.seq),
-          runId,
-          role,
-          content,
-          tokensEst,
-          createdAt: now,
-        };
-      },
+      appendMessage: (runId, role, content) => this.appendStoredMessage(runId, role, content),
       drainSteers: (runId: string) => {
         const rows = this.ctx.storage.sql
           .exec<{ id: string; text: string }>(
@@ -987,7 +993,7 @@ export class AgentDO extends DurableObject<Env> {
         tool_call_id: string;
         kind: "approval" | "question";
         prompt_json: string;
-        status: "pending" | "answered" | "denied" | "expired";
+        status: PendingInputView["status"];
         expires_at: number;
       }>(`SELECT id, run_id, tool_call_id, kind, prompt_json, status, expires_at FROM inputs WHERE run_id = ?1 ORDER BY rowid ASC`, runId)
       .toArray();
@@ -1059,6 +1065,174 @@ export class AgentDO extends DurableObject<Env> {
           .catch(() => {}),
       );
     }
+  }
+
+  private extractInputToolName(
+    pendingTurnJson: string | null,
+    promptJson: string | null,
+  ): string {
+    if (pendingTurnJson) {
+      try {
+        const parsed = JSON.parse(pendingTurnJson) as {
+          currentToolCall?: { name?: unknown };
+        };
+        if (typeof parsed.currentToolCall?.name === "string" && parsed.currentToolCall.name.trim()) {
+          return parsed.currentToolCall.name;
+        }
+      } catch {
+        // Fall back to prompt_json
+      }
+    }
+    if (promptJson) {
+      try {
+        const parsed = JSON.parse(promptJson) as { tool?: unknown };
+        if (typeof parsed.tool === "string" && parsed.tool.trim()) {
+          return parsed.tool;
+        }
+      } catch {
+        // Fall back to default
+      }
+    }
+    return "tool";
+  }
+
+  private closePendingInputRuns(opts: {
+    inputStatus: "superseded" | "cancelled";
+    toolText: string;
+    error: { code: string; message: string };
+    actor?: string;
+  }): string[] {
+    const pausedRuns = this.ctx.storage.sql
+      .exec<{ id: string; actor: string | null }>(
+        `SELECT id, actor FROM runs WHERE status = 'input_required' AND batched_into IS NULL ORDER BY started_at ASC, rowid ASC`,
+      )
+      .toArray();
+
+    const matching = pausedRuns.filter(
+      (r) => r.id !== this.activeRunId && (!opts.actor || !r.actor || r.actor === opts.actor),
+    );
+    if (matching.length === 0) return [];
+
+    const now = Date.now();
+    const closedRunIds: string[] = [];
+
+    for (const paused of matching) {
+      const pendingInputs = this.ctx.storage.sql
+        .exec<{
+          id: string;
+          tool_call_id: string;
+          prompt_json: string | null;
+          pending_turn_json: string | null;
+        }>(
+          `SELECT id, tool_call_id, prompt_json, pending_turn_json FROM inputs WHERE run_id = ?1 AND status = 'pending' ORDER BY rowid ASC`,
+          paused.id,
+        )
+        .toArray();
+
+      if (pendingInputs.length > 0) {
+        this.ctx.storage.sql.exec(
+          `UPDATE inputs SET status = ?1 WHERE run_id = ?2 AND status = 'pending'`,
+          opts.inputStatus,
+          paused.id,
+        );
+      }
+
+      for (const inp of pendingInputs) {
+        const toolName = this.extractInputToolName(inp.pending_turn_json, inp.prompt_json);
+        this.appendStoredMessage(paused.id, "tool", {
+          toolCallId: inp.tool_call_id,
+          toolName,
+          isError: true,
+          text: opts.toolText,
+        });
+        this.recordAndBroadcastEvent(paused.id, "tool_call_end", {
+          callId: inp.tool_call_id,
+          name: toolName,
+          ok: false,
+          error: opts.toolText,
+        });
+        this.recordAndBroadcastEvent(paused.id, "input_resolved", {
+          id: inp.id,
+          status: opts.inputStatus,
+        });
+      }
+
+      const updated = this.ctx.storage.sql.exec(
+        `UPDATE runs SET status = 'cancelled', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'input_required'`,
+        JSON.stringify(opts.error),
+        now,
+        paused.id,
+      );
+      if (!updated.rowsWritten) continue;
+
+      closedRunIds.push(paused.id);
+      this.recordAndBroadcastEvent(paused.id, "run_cancelled", {
+        runId: paused.id,
+        code: opts.error.code,
+      });
+      const followerIds = this.pausedFollowerIds(paused.id);
+      this.finalizeFollowers(this.materializeRunRecord(paused.id), followerIds);
+      this.notifyRunWaiters(paused.id);
+      for (const fid of followerIds) {
+        this.notifyRunWaiters(fid);
+      }
+    }
+
+    return closedRunIds;
+  }
+
+  private expirePendingInput(
+    inp: {
+      id: string;
+      run_id: string;
+      tool_call_id: string;
+      prompt_json: string | null;
+      pending_turn_json: string | null;
+    },
+    now: number,
+  ): boolean {
+    const updatedInput = this.ctx.storage.sql.exec(
+      `UPDATE inputs SET status = 'expired' WHERE id = ?1 AND status = 'pending'`,
+      inp.id,
+    );
+    if (!updatedInput.rowsWritten) return false;
+
+    const toolName = this.extractInputToolName(inp.pending_turn_json, inp.prompt_json);
+    const expiredText = "Not answered: the request for input expired.";
+    this.appendStoredMessage(inp.run_id, "tool", {
+      toolCallId: inp.tool_call_id,
+      toolName,
+      isError: true,
+      text: expiredText,
+    });
+    this.recordAndBroadcastEvent(inp.run_id, "tool_call_end", {
+      callId: inp.tool_call_id,
+      name: toolName,
+      ok: false,
+      error: expiredText,
+    });
+    this.recordAndBroadcastEvent(inp.run_id, "input_resolved", {
+      id: inp.id,
+      status: "expired",
+    });
+
+    const expired = this.ctx.storage.sql.exec(
+      `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'input_required'`,
+      JSON.stringify({ code: "input_expired", message: "Pending human input timed out" }),
+      now,
+      inp.run_id,
+    );
+    if (!expired.rowsWritten) return true;
+
+    this.recordAndBroadcastEvent(inp.run_id, "run_failed", {
+      runId: inp.run_id,
+      error: { code: "input_expired", message: "Pending human input timed out" },
+    });
+    this.notifyRunWaiters(inp.run_id);
+    const followerIds = this.pausedFollowerIds(inp.run_id);
+    this.finalizeFollowers(this.materializeRunRecord(inp.run_id), followerIds);
+    for (const id of followerIds) this.notifyRunWaiters(id);
+    return true;
   }
 
   private async enqueueOrRunInternal(
@@ -1159,6 +1333,15 @@ export class AgentDO extends DurableObject<Env> {
     }
 
     // Standard run creation (`queued`)
+    if (body.supersedeInputs !== false) {
+      this.closePendingInputRuns({
+        inputStatus: "superseded",
+        toolText: "Not answered: the user sent a new message instead (next).",
+        error: { code: "superseded", message: "Superseded by a new message" },
+        actor,
+      });
+    }
+
     const runId = hints?.runId ?? randomId("run", 8);
     if (
       hints &&
@@ -1562,28 +1745,19 @@ export class AgentDO extends DurableObject<Env> {
 
     // 1. Expire stale pending human inputs
     const expiredInputs = this.ctx.storage.sql
-      .exec<{ id: string; run_id: string }>(
-        `SELECT id, run_id FROM inputs WHERE status = 'pending' AND expires_at <= ?1`,
+      .exec<{
+        id: string;
+        run_id: string;
+        tool_call_id: string;
+        prompt_json: string | null;
+        pending_turn_json: string | null;
+      }>(
+        `SELECT id, run_id, tool_call_id, prompt_json, pending_turn_json FROM inputs WHERE status = 'pending' AND expires_at <= ?1 ORDER BY rowid ASC`,
         now,
       )
       .toArray();
     for (const inp of expiredInputs) {
-      this.ctx.storage.sql.exec(`UPDATE inputs SET status = 'expired' WHERE id = ?1`, inp.id);
-      const expired = this.ctx.storage.sql.exec(
-        `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'input_required'`,
-        JSON.stringify({ code: "input_expired", message: "Pending human input timed out" }),
-        now,
-        inp.run_id,
-      );
-      if (!expired.rowsWritten) continue;
-      this.recordAndBroadcastEvent(inp.run_id, "run_failed", {
-        runId: inp.run_id,
-        error: { code: "input_expired", message: "Pending human input timed out" },
-      });
-      this.notifyRunWaiters(inp.run_id);
-      const followerIds = this.pausedFollowerIds(inp.run_id);
-      this.finalizeFollowers(this.materializeRunRecord(inp.run_id), followerIds);
-      for (const id of followerIds) this.notifyRunWaiters(id);
+      this.expirePendingInput(inp, now);
     }
 
     this.reportStalledRuns(now);
@@ -1625,7 +1799,7 @@ export class AgentDO extends DurableObject<Env> {
         sch.id,
       );
       try {
-        await this.enqueueOrRunInternal({ prompt: sch.prompt, wait: false });
+        await this.enqueueOrRunInternal({ prompt: sch.prompt, wait: false, supersedeInputs: false });
       } catch (error) {
         if (!stopping()) throw error;
       }
@@ -2029,7 +2203,7 @@ export class AgentDO extends DurableObject<Env> {
     return rows.map(row => this.materializeRunRecord(row.run_id));
   }
 
-  async abortRuns(body?: { keepQueued?: boolean }): Promise<{
+  async abortRuns(body?: { keepQueued?: boolean; supersedeInputs?: boolean }): Promise<{
     aborted: true;
     cancelledRunIds: string[];
   }> {
@@ -2040,6 +2214,21 @@ export class AgentDO extends DurableObject<Env> {
       cancelledRunIds.push(this.activeRunId);
       this.activeAbortController.abort();
     }
+
+    const closedInputRunIds = this.closePendingInputRuns(
+      body?.supersedeInputs
+        ? {
+            inputStatus: "superseded",
+            toolText: "Not answered: the user sent a new message instead (next).",
+            error: { code: "superseded", message: "Superseded by a new message" },
+          }
+        : {
+            inputStatus: "cancelled",
+            toolText: "Cancelled by the application before anyone answered.",
+            error: { code: "cancelled", message: "Cancelled via abort" },
+          },
+    );
+    cancelledRunIds.push(...closedInputRunIds);
 
     if (!body?.keepQueued) {
       const queuedRows = this.ctx.storage.sql
@@ -2057,6 +2246,9 @@ export class AgentDO extends DurableObject<Env> {
         this.recordAndBroadcastEvent(qr.id, "run_cancelled", { runId: qr.id });
         this.notifyRunWaiters(qr.id);
       }
+    } else if (closedInputRunIds.length > 0 && !this.destroying) {
+      this.ctx.waitUntil(this.drainRunQueue());
+      void this.scheduleNextAlarm();
     }
 
     return { aborted: true, cancelledRunIds };
@@ -2428,12 +2620,14 @@ export class AgentDO extends DurableObject<Env> {
       .exec<{
         id: string;
         run_id: string;
+        tool_call_id: string;
         kind: "approval" | "question";
         status: string;
+        prompt_json: string | null;
         pending_turn_json: string | null;
         expires_at: number;
       }>(
-        `SELECT id, run_id, kind, status, pending_turn_json, expires_at FROM inputs WHERE id = ?1 LIMIT 1`,
+        `SELECT id, run_id, tool_call_id, kind, status, prompt_json, pending_turn_json, expires_at FROM inputs WHERE id = ?1 LIMIT 1`,
         inputId,
       )
       .toArray();
@@ -2454,7 +2648,11 @@ export class AgentDO extends DurableObject<Env> {
       );
     }
     if (inp.expires_at <= Date.now()) {
-      this.ctx.storage.sql.exec(`UPDATE inputs SET status = 'expired' WHERE id = ?1`, inputId);
+      this.expirePendingInput(inp, Date.now());
+      if (!this.destroying) {
+        void this.scheduleNextAlarm();
+        this.ctx.waitUntil(this.drainRunQueue());
+      }
       throw new ApiError(410, "input_expired", `Input '${inputId}' has expired`);
     }
     if (!inp.pending_turn_json) {

@@ -116,7 +116,7 @@ export class AgentHandle {
     const wait = options?.wait ?? true;
     let rec = await this.transport.requestJson<RunRecord<TOutput>>(
       "POST", `${this.basePath}/runs`,
-      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor, supersedeInputs: options?.supersedeInputs },
       { signal: options?.signal },
     );
     if (wait) {
@@ -138,7 +138,7 @@ export class AgentHandle {
   async submit<TOutput = unknown>(prompt: string, options?: Omit<RunOptions, "wait">): Promise<RunRecord<TOutput>> {
     await this.ensureToolSession();
     return this.transport.requestJson("POST", `${this.basePath}/runs`,
-      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor },
+      { prompt, files: options?.files, idempotencyKey: options?.idempotencyKey, whileRunning: options?.whileRunning, wait: false, outputSchema: options?.outputSchema, maxSteps: options?.maxSteps, spendLimitUsd: options?.spendLimitUsd, actor: options?.actor, supersedeInputs: options?.supersedeInputs },
       { signal: options?.signal });
   }
 
@@ -220,8 +220,8 @@ export class AgentHandle {
     return this.transport.requestJson("GET", `${this.basePath}/runs/${encodeURIComponent(idempotencyKey)}?by=idempotency-key`);
   }
 
-  abort(options?: { keepQueued?: boolean }): Promise<{ aborted: boolean; [key: string]: unknown }> {
-    return this.transport.requestJson("POST", `${this.basePath}/abort`, { keepQueued: options?.keepQueued });
+  abort(options?: { keepQueued?: boolean; supersedeInputs?: boolean }): Promise<{ aborted: boolean; [key: string]: unknown }> {
+    return this.transport.requestJson("POST", `${this.basePath}/abort`, { keepQueued: options?.keepQueued, supersedeInputs: options?.supersedeInputs });
   }
 
   async answerInput<TOutput = unknown>(inputId: string, payload: { approved?: boolean; answer?: unknown; wait?: boolean; actor?: string }): Promise<RunRecord<TOutput>> {

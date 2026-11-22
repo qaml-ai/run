@@ -1050,7 +1050,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal((await patchModel("mock/another")).body.error?.code, "model_changed");
     const paused = await agent.run('Pause [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
-    const queued = await agent.submit("Next old-model turn", { idempotencyKey: "before-switch" });
+    const queued = await agent.submit("Next old-model turn", { idempotencyKey: "before-switch", supersedeInputs: false });
     assert.equal(queued.status, "queued");
     const busy = await patchModel("mock/default");
     assert.equal(busy.status, 409);
@@ -1663,8 +1663,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.deepEqual(secondRepo, firstRepo);
     const paused = await agent.run('Pause the queue [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
-    const capped = await agent.submit("Wait with no spend left", { spendLimitUsd: 0, idempotencyKey: "capped" });
-    const attributed = await agent.submit("Wait with a sender", { actor: "returning-member", idempotencyKey: "attributed" });
+    const capped = await agent.submit("Wait with no spend left", { spendLimitUsd: 0, idempotencyKey: "capped", supersedeInputs: false });
+    const attributed = await agent.submit("Wait with a sender", { actor: "returning-member", idempotencyKey: "attributed", supersedeInputs: false });
     assert.equal(capped.status, "queued");
     assert.equal(attributed.status, "queued");
 
@@ -1687,7 +1687,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const agent = await camel.agents.upsert("expired-input-queue", { model: "mock/default", builtins: ["human"] });
     const paused = await agent.run('Pause [CALL:ask_human {"question":"Continue?"}]');
     assert.equal(paused.status, "input_required");
-    const queued = await agent.submit("This turn must survive without a new request", { idempotencyKey: "queued" });
+    const queued = await agent.submit("This turn must survive without a new request", { idempotencyKey: "queued", supersedeInputs: false });
     assert.equal(queued.status, "queued");
     const control = `${workerUrl}/test-alarm/${agent.id}`;
     assert.equal((await fetch(control, { method: "POST" })).status, 204);

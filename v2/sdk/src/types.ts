@@ -176,6 +176,7 @@ export interface RunOptions {
   outputSchema?: Record<string, unknown>;
   maxSteps?: number;
   spendLimitUsd?: number;
+  supersedeInputs?: boolean;
   throwOnError?: boolean;
   signal?: AbortSignal;
 }
@@ -195,7 +196,7 @@ export interface HumanInput {
   kind?: "approval" | "question" | (string & {});
   type?: "approval" | "question" | (string & {});
   prompt?: Record<string, unknown> | string;
-  status?: "pending" | "answered" | "denied" | "expired" | (string & {});
+  status?: "pending" | "answered" | "denied" | "expired" | "superseded" | "cancelled" | (string & {});
   expiresAt?: number;
   approved?: boolean;
   answer?: unknown;

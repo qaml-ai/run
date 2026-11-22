@@ -146,6 +146,7 @@ export interface AgentUpsertInput {
   wait?: boolean;
   outputSchema?: Record<string, unknown> | null;
   maxSteps?: number;
+  supersedeInputs?: boolean;
 }
 
 export type RunStatus =
@@ -176,7 +177,7 @@ export interface PendingInputView {
   toolCallId: string;
   kind: "approval" | "question";
   prompt: Record<string, unknown>;
-  status: "pending" | "answered" | "denied" | "expired";
+  status: "pending" | "answered" | "denied" | "expired" | "superseded" | "cancelled";
   expiresAt: number;
 }
 
@@ -226,6 +227,7 @@ export interface StartRunInput {
   outputSchema?: Record<string, unknown> | null;
   maxSteps?: number;
   spendLimitUsd?: number;
+  supersedeInputs?: boolean;
 }
 
 export interface StartRunHints {

@@ -9,7 +9,7 @@ function barrier() {
 export class TeardownTestAgent extends AgentDO {
   private afterAbort?: () => void;
 
-  override async abortRuns(body?: { keepQueued?: boolean }) {
+  override async abortRuns(body?: { keepQueued?: boolean; supersedeInputs?: boolean }) {
     const result = await super.abortRuns(body);
     this.afterAbort?.();
     return result;
