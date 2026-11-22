@@ -100,23 +100,42 @@ type OpsAuthResult =
   | { ok: true; viewer: string; method: "admin_key" | "cloudflare_access" | "console_session" }
   | { ok: false; reason: "unauthenticated" | "forbidden"; viewer?: string };
 
-async function verifyCloudflareAccess(request: Request, env: OpsEnv): Promise<OpsAuthResult | null> {
-  const team = env.AGENT_ADMIN_ACCESS_TEAM?.trim();
-  const audience = env.AGENT_ADMIN_ACCESS_AUD?.trim();
-  if (!team || !audience) return null;
+export function resolveCloudflareAccessIssuer(rawTeam: string | undefined): URL | null {
+  const team = rawTeam?.trim();
+  if (!team) return null;
 
-  const token = request.headers.get("cf-access-jwt-assertion")?.trim();
-  if (!token) return null;
+  let candidate: string;
+  if (team.includes("://")) {
+    candidate = team;
+  } else if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(team)) {
+    candidate = `https://${team.toLowerCase()}.cloudflareaccess.com`;
+  } else if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/i.test(team)) {
+    candidate = `https://${team.toLowerCase()}`;
+  } else {
+    return null;
+  }
 
   let issuer: URL;
   try {
-    issuer = new URL(team);
+    issuer = new URL(candidate);
   } catch {
     return null;
   }
   if (issuer.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(issuer.hostname)) {
     return null;
   }
+  return issuer;
+}
+
+async function verifyCloudflareAccess(request: Request, env: OpsEnv): Promise<OpsAuthResult | null> {
+  const issuer = resolveCloudflareAccessIssuer(env.AGENT_ADMIN_ACCESS_TEAM);
+  const audience = env.AGENT_ADMIN_ACCESS_AUD?.trim();
+  if (!issuer || !audience) return null;
+
+  const token =
+    request.headers.get("cf-access-jwt-assertion")?.trim() ||
+    parseCookies(request.headers.get("cookie"))["CF_Authorization"]?.trim();
+  if (!token) return null;
 
   let verifiedEmail: string | undefined;
   try {

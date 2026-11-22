@@ -306,6 +306,86 @@ test("verifies Cloudflare Access RS256 JWT when AGENT_ADMIN_ACCESS_TEAM and AUD 
   assert.equal(mismatch.status, 403);
 });
 
+test("normalizes bare Cloudflare Access team slug and accepts CF_Authorization cookie fallback", async (t) => {
+  const slug = "qaml-test";
+  const issuerOrigin = `https://${slug}.cloudflareaccess.com`;
+  const aud = "cf-access-aud-ops-slug";
+  const { privateKey, publicKey } = await generateKeyPair("RS256");
+  const jwk = await exportJWK(publicKey);
+  jwk.kid = "cf-kid-slug";
+  jwk.alg = "RS256";
+  jwk.use = "sig";
+
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url === `${issuerOrigin}/cdn-cgi/access/certs`) {
+      return Response.json({ keys: [jwk] });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  });
+
+  const validJwt = await new SignJWT({ email: "miguel@camelai.com" })
+    .setProtectedHeader({ alg: "RS256", kid: "cf-kid-slug" })
+    .setIssuer(issuerOrigin)
+    .setAudience(aud)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(privateKey);
+
+  // Even when a user also carries a non-admin cr_console cookie, a verified CF Access JWT must allow /ops
+  const outsiderConsoleCookie = await sealConsoleSession(
+    {
+      tenantId: "tnt_personal",
+      apiKey: "cr_live_tnt_personal.abc_secret",
+      email: "personal@example.com",
+      login: "personal@example.com",
+      provider: "google",
+      exp: Date.now() + 60_000,
+    },
+    SESSION_SECRET,
+  );
+
+  for (const configuredTeam of [slug, `${slug}.cloudflareaccess.com`, issuerOrigin]) {
+    const env = {
+      ASSETS: createAssetsStub(),
+      CONSOLE_SESSION_SECRET: SESSION_SECRET,
+      ADMIN_SECRET,
+      AGENT_ADMIN_ACCESS_TEAM: configuredTeam,
+      AGENT_ADMIN_ACCESS_AUD: aud,
+      V2: {
+        async fetch(request: Request): Promise<Response> {
+          return Response.json({ viewer: request.headers.get("x-ops-viewer") });
+        },
+      },
+    };
+
+    const pageRes = await worker.fetch(
+      new Request("https://run.camelai.com/ops/", {
+        headers: {
+          "Cf-Access-Authenticated-User-Email": "miguel@camelai.com",
+          "Cf-Access-Jwt-Assertion": validJwt,
+          Cookie: `cr_console=${outsiderConsoleCookie}`,
+        },
+      }),
+      env,
+    );
+    assert.equal(pageRes.status, 200, `expected 200 for team=${configuredTeam}`);
+    assert.match(await pageRes.text(), /<meta name="admin-base" content="\/ops" \/>/);
+
+    // CF_Authorization cookie fallback works when Cf-Access-Jwt-Assertion header is absent
+    const cookieRes = await worker.fetch(
+      new Request("https://run.camelai.com/ops/api/me", {
+        headers: {
+          Cookie: `CF_Authorization=${validJwt}; cr_console=${outsiderConsoleCookie}`,
+        },
+      }),
+      env,
+    );
+    assert.equal(cookieRes.status, 200, `expected 200 via CF_Authorization for team=${configuredTeam}`);
+    assert.deepEqual(await cookieRes.json(), { viewer: "miguel@camelai.com" });
+  }
+});
+
 test("console OAuth next parameter accepts /ops/ and rejects external redirects", async () => {
   const env = {
     ASSETS: createAssetsStub(),
