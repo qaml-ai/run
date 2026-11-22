@@ -60,6 +60,7 @@ type Row = {
   noteSeq?: number;
   lines: string[];
   noteAt?: number;
+  budgetExpiresAt?: number;
   ending?: Ending;
 };
 
@@ -251,7 +252,8 @@ export class VoiceCallDO extends DurableObject<Env> {
         ? eleven.voiceFor[requested] ?? requested
         : [requested, REALTIME_VOICE_FOR[requested]].find((value) => openai.voices.includes(value)) ?? openai.voices[0];
 
-      if (!voicePrice(this.env, `${provider}/${model}`)) {
+      const rate = voicePrice(this.env, `${provider}/${model}`);
+      if (!rate) {
         throw new ApiError(
           400,
           "realtime_unpriced",
@@ -259,6 +261,11 @@ export class VoiceCallDO extends DurableObject<Env> {
             ? `Realtime model elevenlabs/${model} has no price configured`
             : `No realtime price for openai/${model}`,
         );
+      }
+
+      const spendLimitUsd = options.spendLimitUsd;
+      if (spendLimitUsd !== undefined && (!Number.isFinite(spendLimitUsd) || spendLimitUsd <= 0)) {
+        throw new ApiError(402, "insufficient_credits", "Voice call spend limit is exhausted");
       }
 
       const key = await this.resolveProviderKey(tenant, provider, options.keyScope);
@@ -283,6 +290,16 @@ export class VoiceCallDO extends DurableObject<Env> {
         ? Math.min(options.maxMinutes ?? 30, 30)
         : options.maxMinutes ?? VOICE_LIMITS.maxMinutes.default;
       const now = Date.now();
+      let expiresAt = now + maxMinutes * 60_000;
+      let budgetExpiresAt: number | undefined;
+      if (spendLimitUsd !== undefined && "perMinute" in rate && rate.perMinute > 0) {
+        const perMinuteUsd = rate.perMinute / 1_000_000;
+        const budgetMs = Math.max(5_000, Math.floor((spendLimitUsd / perMinuteUsd) * 60_000));
+        if (now + budgetMs < expiresAt) {
+          budgetExpiresAt = now + budgetMs;
+          expiresAt = budgetExpiresAt;
+        }
+      }
       const call: Call = {
         id,
         agent,
@@ -291,10 +308,11 @@ export class VoiceCallDO extends DurableObject<Env> {
         voice,
         subject,
         maxMinutes,
+        spendLimitUsd: spendLimitUsd ?? null,
         state: "connecting",
         startedAt: null,
         endedAt: null,
-        expiresAt: now + maxMinutes * 60_000,
+        expiresAt,
         reason: null,
         turns: 0,
         asks: 0,
@@ -311,6 +329,7 @@ export class VoiceCallDO extends DurableObject<Env> {
         platform: key.platform,
         seq: 0,
         lines: [],
+        ...(budgetExpiresAt !== undefined ? { budgetExpiresAt } : {}),
       };
 
       const limit = Number(this.env.AGENT_VOICE_SESSIONS_PER_TENANT ?? VOICE_LIMITS.perTenant);
@@ -505,6 +524,14 @@ export class VoiceCallDO extends DurableObject<Env> {
       await this.ctx.storage.put({ call: row, [`response:${id}`]: true });
     }
     await this.ctx.storage.delete([`charge:${id}`, `response-start:${id}`]);
+    if (
+      row.call.state === "live" &&
+      row.call.spendLimitUsd != null &&
+      row.call.costUsd >= row.call.spendLimitUsd
+    ) {
+      await this.end(row, { reason: "budget", detail: "Voice call reached its spend limit" }, false).catch(() => {});
+      return;
+    }
     await this.arm(row);
   }
 
@@ -723,6 +750,15 @@ export class VoiceCallDO extends DurableObject<Env> {
       await this.reply(row, n, "empty", "");
       return;
     }
+    const remainingBudget =
+      row.call.spendLimitUsd != null ? Math.max(0, row.call.spendLimitUsd - row.call.costUsd) : undefined;
+    if (remainingBudget !== undefined && remainingBudget <= 0) {
+      await this.reply(row, n, "error", "");
+      if (row.call.state === "live") {
+        await this.end(row, { reason: "budget", detail: "Voice call reached its spend limit" }, false).catch(() => {});
+      }
+      return;
+    }
     const controller = new AbortController();
     this.running.set(n, controller);
     const recent = row.lines.length ? `[Recent voice transcript]\n${row.lines.join("\n")}\n\n` : "";
@@ -733,11 +769,28 @@ export class VoiceCallDO extends DurableObject<Env> {
     const keyScope = row.options.keyScope;
 
     this.ctx.waitUntil(
-      this.runAgentAsk({ v2AgentId, callId, n, prompt, actor: subject, keyScope }, controller.signal)
+      this.runAgentAsk(
+        { v2AgentId, callId, n, prompt, actor: subject, keyScope, spendLimitUsd: remainingBudget },
+        controller.signal,
+      )
         .then((result) =>
           this.serial(async () => {
             const current = await this.ctx.storage.get<Row>("call");
-            if (current) await this.reply(current, n, result.outcome, result.reply);
+            if (!current) return;
+            if (result.costUsd > 0) {
+              current.call.costUsd = Math.round((current.call.costUsd + result.costUsd) * 1_000_000) / 1_000_000;
+              await this.ctx.storage.put("call", current);
+            }
+            await this.reply(current, n, result.outcome, result.reply);
+            if (
+              current.call.state === "live" &&
+              current.call.spendLimitUsd != null &&
+              current.call.costUsd >= current.call.spendLimitUsd
+            ) {
+              await this.end(current, { reason: "budget", detail: "Voice call reached its spend limit" }, false).catch(
+                () => {},
+              );
+            }
           }),
         )
         .catch(() => console.error("voice_call_ask_failed")),
@@ -752,9 +805,10 @@ export class VoiceCallDO extends DurableObject<Env> {
       prompt: string;
       actor: string;
       keyScope?: string;
+      spendLimitUsd?: number;
     },
     signal: AbortSignal,
-  ): Promise<{ outcome: "ok" | "error" | "timeout"; reply: string }> {
+  ): Promise<{ outcome: "ok" | "error" | "timeout"; reply: string; costUsd: number }> {
     try {
       const stub = getAgentStub(this.env, input.v2AgentId);
       const started = await stub.startRun({
@@ -763,6 +817,7 @@ export class VoiceCallDO extends DurableObject<Env> {
         idempotencyKey: `voice-ask:${input.callId}:${input.n}`,
         whileRunning: "queue",
         wait: false,
+        ...(input.spendLimitUsd !== undefined ? { spendLimitUsd: input.spendLimitUsd } : {}),
         ...(input.keyScope ? { keyScope: input.keyScope } : {}),
       });
       const runId = started.id;
@@ -771,18 +826,18 @@ export class VoiceCallDO extends DurableObject<Env> {
       while (Date.now() < deadline && !signal.aborted) {
         if (current.status === "completed") {
           const text = (current.text ?? "").slice(0, 4000).trim();
-          return { outcome: "ok", reply: text };
+          return { outcome: "ok", reply: text, costUsd: Number(current.usage?.costUsd ?? 0) };
         }
         if (current.status === "failed" || current.status === "cancelled" || current.status === "input_required") {
-          return { outcome: "error", reply: "" };
+          return { outcome: "error", reply: "", costUsd: Number(current.usage?.costUsd ?? 0) };
         }
         await new Promise((resolve) => setTimeout(resolve, 400));
         if (signal.aborted) break;
         current = await stub.getRun(runId);
       }
-      return { outcome: signal.aborted ? "timeout" : "timeout", reply: "" };
+      return { outcome: "timeout", reply: "", costUsd: Number(current.usage?.costUsd ?? 0) };
     } catch {
-      return { outcome: signal.aborted ? "timeout" : "error", reply: "" };
+      return { outcome: signal.aborted ? "timeout" : "error", reply: "", costUsd: 0 };
     }
   }
 
@@ -889,7 +944,12 @@ export class VoiceCallDO extends DurableObject<Env> {
       await this.end(row, { reason: "error", detail: "The realtime connection closed" }, true);
     }
     if (row.call.state === "live" && row.call.expiresAt <= now) {
-      await this.end(row, { reason: "max_duration" }, true);
+      const budgetHit = row.budgetExpiresAt !== undefined && now >= row.budgetExpiresAt;
+      await this.end(
+        row,
+        budgetHit ? { reason: "budget", detail: "Voice call reached its spend limit" } : { reason: "max_duration" },
+        true,
+      );
     }
     if (row.call.state === "connecting" && row.call.expiresAt <= now) {
       await this.finish(row, { reason: "error", detail: "The call did not connect" });

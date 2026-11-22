@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const VOICE_LIMITS = {
-  maxMinutes: { default: 240, min: 1, max: 720 },
+  maxMinutes: { default: 30, min: 1, max: 720 },
   perTenant: 50,
   metadataBytes: 4096,
   speakers: 50,
@@ -31,6 +31,7 @@ export const VoiceCallInput = z
     context: z.record(z.string(), z.unknown()).optional(),
     keyScope: z.string().min(1).max(100).optional(),
     maxMinutes: z.number().int().min(VOICE_LIMITS.maxMinutes.min).max(VOICE_LIMITS.maxMinutes.max).optional(),
+    spendLimitUsd: z.number().finite().min(0).optional(),
     metadata: callMetadata.optional(),
     speakers: callSpeakers.optional(),
     interruptResponse: z.boolean().optional(),
@@ -59,6 +60,7 @@ export const VoiceCall = z.object({
   endedAt: z.number().nullable(),
   expiresAt: z.number(),
   maxMinutes: z.number(),
+  spendLimitUsd: z.number().nullable().optional(),
   reason: z.string().nullable(),
   turns: z.number(),
   asks: z.number(),
