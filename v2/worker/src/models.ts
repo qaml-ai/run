@@ -4,6 +4,7 @@ import {
   type ModelCostTier,
   type V2ModelCatalogEntry,
 } from "./model-catalog-data.ts";
+import { PLATFORM_AZURE_MODELS } from "./providers.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import type { Env } from "./types.ts";
 
@@ -31,7 +32,7 @@ export async function listV2Models(
 
   const platformHas = (provider: string, modelId: string): boolean => {
     if (keyScope) return false;
-    if (provider === "azure" && modelId === "gpt-6.2-sol") {
+    if (provider === "azure" && PLATFORM_AZURE_MODELS.has(modelId)) {
       return Boolean(env.AZURE_OPENAI_SOL_API_KEY && env.AZURE_OPENAI_SOL_ENDPOINT);
     }
     if (provider === "openai") return Boolean(env.OPENAI_API_KEY);

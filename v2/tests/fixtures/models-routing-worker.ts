@@ -1,5 +1,6 @@
 import runtime, { AgentDO, TenantDO } from "../../worker/src/index.ts";
 import {
+  DEFAULT_MODEL_ID,
   calculateCostUsd,
   getModelContextWindow,
   resolveModelEndpoint,
@@ -13,6 +14,9 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/_test/default-model" && request.method === "GET") {
+        return Response.json({ defaultModelId: DEFAULT_MODEL_ID });
+      }
       if (url.pathname === "/_test/resolve" && request.method === "POST") {
         const body = await request.json<{
           model: string;

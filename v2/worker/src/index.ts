@@ -1183,7 +1183,7 @@ app.post("/v2/runs/text", async (c) => {
     acquired = true;
     signal.throwIfAborted();
     const reply = await executeStatelessRun(c.env, auth.tenantId, {
-      input, instructions, outputSchema, model: "azure/gpt-6.2-sol", maxSteps: 1,
+      input, instructions, outputSchema, model: DEFAULT_MODEL_ID, maxSteps: 1,
     }, signal, true);
     signal.throwIfAborted();
     return c.json(reply);

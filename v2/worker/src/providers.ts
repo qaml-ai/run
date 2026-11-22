@@ -60,10 +60,12 @@ interface ResolvedEndpoint {
   headers?: Record<string, string>;
 }
 
+const AZURE_TERRA = "azure/gpt-6.1-terra";
 const AZURE_SOL = "azure/gpt-6.2-sol";
+export const PLATFORM_AZURE_MODELS = new Set(["gpt-6.1-terra", "gpt-6.2-sol"]);
 const MUSE_EMBER = "openrouter/meta/muse-ember";
 const GEMINI_CARBON = "openrouter/google/gemini-4-carbon";
-export const DEFAULT_MODEL_ID = AZURE_SOL;
+export const DEFAULT_MODEL_ID = AZURE_TERRA;
 
 const VIRTUAL_MODEL_ALIASES: Record<string, string> = {
   "camelrun/default": DEFAULT_MODEL_ID,
@@ -219,7 +221,7 @@ export function getProviderLookupCandidates(
     modelId = model.slice(slashIdx + 1);
   }
 
-  if (model === AZURE_SOL) {
+  if (explicitProvider === "azure" && PLATFORM_AZURE_MODELS.has(modelId)) {
     return { isMock: false, modelId, explicitProvider, candidates: keyScope?.trim() ? ["azure"] : [] };
   }
   // An Azure deployment uses its own endpoint and key.
@@ -307,10 +309,10 @@ export async function resolveModelEndpoint(
     }
   }
 
-  if (explicitProvider === "azure" && canonicalModelId === "gpt-6.2-sol" && !stored) {
+  if (explicitProvider === "azure" && PLATFORM_AZURE_MODELS.has(canonicalModelId) && !stored) {
     const { AZURE_OPENAI_SOL_ENDPOINT: endpoint, AZURE_OPENAI_SOL_API_KEY: apiKey } = env;
     if (!endpoint || !apiKey) {
-      throw new ApiError(503, "missing_provider_key", "The platform Azure deployment for GPT-6.2 Sol is not configured");
+      throw new ApiError(503, "missing_provider_key", `The platform Azure deployment for ${canonicalModelId} is not configured`);
     }
     return {
       protocol: "openai-responses",

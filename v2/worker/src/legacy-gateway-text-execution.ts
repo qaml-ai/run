@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { executeStatelessRun } from "./stateless-run.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { extractApiError, type Env } from "./types.ts";
@@ -15,7 +16,7 @@ type Billing = { state: "settled" } | {
   state: "due"; startedAt: number; input: number; output: number; cacheRead: number; cacheWrite: number; serviceTier?: string;
 };
 
-const MODEL = "azure/gpt-6.2-sol";
+const MODEL = DEFAULT_MODEL_ID;
 const RETENTION_MS = 60_000;
 const jsonHeaders = { "Cache-Control": "no-store", "Content-Type": "application/json" };
 

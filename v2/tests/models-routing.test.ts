@@ -54,7 +54,7 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
       vars: {
         ADMIN_SECRET: adminKey,
         VAULT_SECRET: "fixture-models-vault-32-bytes-min",
-        DEFAULT_MODEL: "azure/gpt-6.2-sol",
+        DEFAULT_MODEL: "azure/gpt-6.1-terra",
         OPENAI_API_KEY: "sk-platform-openai-test",
         AZURE_OPENAI_SOL_ENDPOINT: mockUrl,
         AZURE_OPENAI_SOL_API_KEY: "fixture-azure-sol-key",
@@ -242,6 +242,53 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     assert.equal(rOpenRouter.body.temperature, 0.5);
   });
 
+  await t.test("DEFAULT_MODEL_ID is azure/gpt-6.1-terra and both platform Azure models route to Responses with reasoning low", async () => {
+    const defRes = await worker.fetch(`${origin}/_test/default-model`);
+    assert.equal(defRes.status, 200);
+    assert.deepEqual(await defRes.json(), { defaultModelId: "azure/gpt-6.1-terra" });
+
+    for (const model of ["azure/gpt-6.1-terra", "camelrun/default", ""]) {
+      const resolved = await resolveEndpoint({ model, credentials: null });
+      assert.equal(resolved.status, 200, `${model}: ${JSON.stringify(resolved.json)}`);
+      assert.equal(resolved.json.protocol, "openai-responses");
+      assert.equal(resolved.json.providerName, "azure");
+      assert.equal(resolved.json.modelId, "gpt-6.1-terra");
+      assert.equal(resolved.json.baseUrl, `${mockUrl}/openai/v1`);
+      assert.equal(resolved.json.apiKey, "fixture-azure-sol-key");
+    }
+
+    const solResolved = await resolveEndpoint({ model: "azure/gpt-6.2-sol", credentials: null });
+    assert.equal(solResolved.status, 200, JSON.stringify(solResolved.json));
+    assert.equal(solResolved.json.protocol, "openai-responses");
+    assert.equal(solResolved.json.providerName, "azure");
+    assert.equal(solResolved.json.modelId, "gpt-6.2-sol");
+    assert.equal(solResolved.json.baseUrl, `${mockUrl}/openai/v1`);
+    assert.equal(solResolved.json.apiKey, "fixture-azure-sol-key");
+
+    const stream = async (body: Record<string, unknown>) => {
+      const res = await worker.fetch(`${origin}/_test/stream`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 200, await res.clone().text());
+      return captured.at(-1)!;
+    };
+
+    const terraStream = await stream({ model: "azure/gpt-6.1-terra", temperature: 0.4 });
+    assert.equal(terraStream.path, "/openai/v1/responses");
+    assert.equal(terraStream.body.model, "gpt-6.1-terra");
+    assert.deepEqual(terraStream.body.reasoning, { effort: "low" });
+    assert.equal(terraStream.body.store, false);
+    assert.equal(terraStream.body.temperature, undefined);
+
+    const solStream = await stream({ model: "azure/gpt-6.2-sol", temperature: 0.4 });
+    assert.equal(solStream.path, "/openai/v1/responses");
+    assert.equal(solStream.body.model, "gpt-6.2-sol");
+    assert.deepEqual(solStream.body.reasoning, { effort: "low" });
+    assert.equal(solStream.body.store, false);
+    assert.equal(solStream.body.temperature, undefined);
+  });
+
   await t.test("calculateCostUsd and getModelContextWindow cover restored v1 catalog models and long-context tiers", async () => {
     const check = async (model: string, inputTokens: number, outputTokens: number, cacheReadTokens = 0) => {
       const res = await worker.fetch(`${origin}/_test/pricing`, {
@@ -278,6 +325,16 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     // 20k*2 + 80k*0.1 + 10k*10 = 0.04 + 0.008 + 0.1 = 0.148
     assert.equal(s55.costUsd, 0.148);
 
+    // azure/gpt-6.1-terra: $1 in, $5 out, $0.05 cacheRead, ctx 272_000; >272k tier $2 in, $7.50 out, $0.10 cacheRead
+    const terraShort = await check("azure/gpt-6.1-terra", 100_000, 10_000, 80_000);
+    assert.equal(terraShort.contextWindow, 272_000);
+    // 20k*1 + 80k*0.05 + 10k*5 = 0.02 + 0.004 + 0.05 = 0.074
+    assert.equal(terraShort.costUsd, 0.074);
+
+    const terraLong = await check("azure/gpt-6.1-terra", 300_000, 10_000, 200_000);
+    // 100k*2 + 200k*0.10 + 10k*7.5 = 0.20 + 0.02 + 0.075 = 0.295
+    assert.equal(terraLong.costUsd, 0.295);
+
     // gemini/gemini-3.5-flash and google/gemini-3.5-flash: $1.50 in, $9 out, ctx 1_048_576
     const gem35 = await check("gemini/gemini-3.5-flash", 100_000, 10_000, 0);
     const goog35 = await check("google/gemini-3.5-flash", 100_000, 10_000, 0);
@@ -312,12 +369,12 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     assert.equal(googleModels.length, 23);
     assert.ok(googleModels.some((m) => m.id === "gemini/gemini-3.5-flash"));
 
-    // Azure: only platform-deployed azure/gpt-6.2-sol is available without BYOK azure key
+    // Azure: platform-deployed azure/gpt-6.1-terra and azure/gpt-6.2-sol are available without BYOK azure key
     const azureRes = await worker.fetch(`${origin}/v2/models?provider=azure`, { headers });
     assert.equal(azureRes.status, 200);
     const azureModels = (await azureRes.json()) as Array<{ id: string; available: boolean }>;
-    const availAzure = azureModels.filter((m) => m.available).map((m) => m.id);
-    assert.deepEqual(availAzure, ["azure/gpt-6.2-sol"]);
+    const availAzure = azureModels.filter((m) => m.available).map((m) => m.id).sort();
+    assert.deepEqual(availAzure, ["azure/gpt-6.1-terra", "azure/gpt-6.2-sol"]);
 
     // Full catalog includes xai, anthropic, openrouter, etc.
     const allRes = await worker.fetch(`${origin}/v2/models`, { headers });

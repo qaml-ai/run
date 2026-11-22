@@ -9,7 +9,7 @@
   ],
   "vars": {
     "CAMELFS_URL": "https://fs-v2.camelai.dev",
-    "DEFAULT_MODEL": "azure/gpt-6.2-sol",
+    "DEFAULT_MODEL": "azure/gpt-6.1-terra",
     "TOOL_IDENTITY_ISSUER": "https://run.camelai.com/v2",
     "VOICE_PUBLIC_URL": "https://run.camelai.com",
     "AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD": "0.08",

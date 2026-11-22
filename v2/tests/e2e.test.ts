@@ -366,10 +366,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(response.status, 200, await response.clone().text());
     const result = await response.json() as { text: string; usage: { costUsd: number } };
     assert.equal(result.text, "read the result");
-    assert.equal(result.usage.costUsd, 0.64014, "short-context pricing applies to each request");
+    assert.equal(result.usage.costUsd, 0.32007, "short-context pricing applies to each request");
     assert.equal(azureRequests.length, 2);
     for (const { body, key, authorization } of azureRequests) {
-      assert.equal(body.model, "gpt-6.2-sol");
+      assert.equal(body.model, "gpt-6.1-terra");
       assert.deepEqual(body.reasoning, { effort: "low" });
       assert.equal(body.store, false);
       assert.equal(Object.hasOwn(body, "instructions"), false);
@@ -450,11 +450,11 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const result = await response.json() as { text: string; output: unknown; usage: { costUsd: number } };
     assert.equal(result.text, '{"ok":1}');
     assert.deepEqual(result.output, { ok: 1 });
-    assert.equal(result.usage.costUsd, 0.32007);
+    assert.equal(result.usage.costUsd, 0.160035);
     const { body, key, authorization } = azureRequests[before]!;
     assert.equal(key, "fixture-azure-key");
     assert.equal(authorization, undefined);
-    assert.equal(body.model, "gpt-6.2-sol");
+    assert.equal(body.model, "gpt-6.1-terra");
     assert.deepEqual(body.reasoning, { effort: "low" });
     assert.equal(body.store, false);
     assert.equal(Object.hasOwn(body, "instructions"), false);

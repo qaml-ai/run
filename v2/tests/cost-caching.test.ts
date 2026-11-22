@@ -195,6 +195,18 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
   };
 
   await t.test("calculateCostUsd discounts cacheReadTokens accurately across models and tiers", async () => {
+    // azure/gpt-6.1-terra <= 272k: uncached $1/1M, cacheRead $0.05/1M, output $5/1M
+    const terraShort = await calcCost("azure/gpt-6.1-terra", 100_000, 1_000, 90_000);
+    // 10k * 1 + 90k * 0.05 + 1k * 5 = 0.01 + 0.0045 + 0.005 = 0.0195
+    assert.equal(terraShort.costUsd, 0.0195);
+    assert.equal(terraShort.usage.cacheReadTokens, 90_000);
+    assert.equal(terraShort.usage.costUsd, 0.0195);
+
+    // azure/gpt-6.1-terra > 272k: uncached $2/1M, cacheRead $0.10/1M, output $7.50/1M
+    const terraLong = await calcCost("azure/gpt-6.1-terra", 300_000, 1_000, 250_000);
+    // 50k * 2 + 250k * 0.1 + 1k * 7.5 = 0.10 + 0.025 + 0.0075 = 0.1325
+    assert.equal(terraLong.costUsd, 0.1325);
+
     // azure/gpt-6.2-sol <= 272k: uncached $2/1M, cacheRead $0.10/1M, output $10/1M
     const solShort = await calcCost("azure/gpt-6.2-sol", 100_000, 1_000, 90_000);
     // 10k * 2 + 90k * 0.1 + 1k * 10 = 0.02 + 0.009 + 0.01 = 0.039
@@ -241,6 +253,7 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { threshold: expected });
     };
+    await check("azure/gpt-6.1-terra", 96_000);
     await check("azure/gpt-6.2-sol", 96_000);
     await check("openai/gpt-4.1", 96_000);
     await check("anthropic/claude-sonnet-4-0", 96_000);
