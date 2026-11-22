@@ -5,6 +5,7 @@ import {
   streamModelResponse,
   type ConversationMessage,
 } from "./providers.ts";
+import type { ModelImage } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
@@ -16,10 +17,65 @@ import {
   type ToolCallSummary,
 } from "./types.ts";
 
+export interface StatelessRunImage {
+  mediaType: string;
+  data: string;
+}
+
+export const MAX_STATELESS_RUN_IMAGES = 8;
+export const MAX_STATELESS_RUN_IMAGES_BASE64_BYTES = 20 * 1024 * 1024;
+const IMAGE_MEDIA_TYPE_RE = /^image\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+
+export function parseStatelessRunImages(raw: unknown): ModelImage[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new ApiError(400, "invalid_request", "`images` must be an array of { mediaType, data } objects");
+  }
+  if (raw.length === 0) return undefined;
+  if (raw.length > MAX_STATELESS_RUN_IMAGES) {
+    throw new ApiError(400, "invalid_request", `At most ${MAX_STATELESS_RUN_IMAGES} images may be attached`);
+  }
+
+  let totalBase64Bytes = 0;
+  const parsed: ModelImage[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new ApiError(400, "invalid_request", "Each image must be an object with `mediaType` and `data`");
+    }
+    const { mediaType: rawMediaType, data: rawData } = item as { mediaType?: unknown; data?: unknown };
+    const mediaType = typeof rawMediaType === "string" ? rawMediaType.trim().toLowerCase() : "";
+    if (!IMAGE_MEDIA_TYPE_RE.test(mediaType)) {
+      throw new ApiError(400, "invalid_request", "Each image must have a valid `image/*` mediaType");
+    }
+    if (typeof rawData !== "string") {
+      throw new ApiError(400, "invalid_request", "Each image must have non-empty base64 `data`");
+    }
+    const data = rawData.trim();
+    if (!data) {
+      throw new ApiError(400, "invalid_request", "Each image must have non-empty base64 `data`");
+    }
+    totalBase64Bytes += data.length;
+    if (totalBase64Bytes > MAX_STATELESS_RUN_IMAGES_BASE64_BYTES) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        `Total image payload exceeds ${MAX_STATELESS_RUN_IMAGES_BASE64_BYTES} base64 bytes`,
+      );
+    }
+    if (data.length % 4 !== 0 || !BASE64_RE.test(data)) {
+      throw new ApiError(400, "invalid_request", "Each image `data` must be valid base64");
+    }
+    parsed.push({ contentType: mediaType, base64: data });
+  }
+  return parsed;
+}
+
 export interface StatelessRunInput {
   model?: string;
   instructions?: string;
   input: string;
+  images?: StatelessRunImage[];
   outputSchema?: Record<string, unknown> | null;
   tools?: CustomToolSpec[];
   maxSteps?: number;
@@ -36,6 +92,7 @@ export async function executeStatelessRun(
   if (typeof body.input !== "string") {
     throw new ApiError(400, "invalid_request", "`input` must be a string");
   }
+  const parsedImages = parseStatelessRunImages(body.images);
 
   const runId = randomId("run", 8);
   const model = (body.model || env.DEFAULT_MODEL || DEFAULT_MODEL_ID).trim();
@@ -49,7 +106,9 @@ export async function executeStatelessRun(
   }));
   const toolByName = new Map(customTools.map((t) => [t.name, t]));
 
-  const messages: ConversationMessage[] = [{ role: "user", text: body.input }];
+  const messages: ConversationMessage[] = [
+    parsedImages ? { role: "user", text: body.input, images: parsedImages } : { role: "user", text: body.input },
+  ];
   const usage = emptyUsage();
   const toolCallsSummary: ToolCallSummary[] = [];
   let finalText = "";

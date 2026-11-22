@@ -47,7 +47,7 @@ import {
 } from "./hosted-mcp.ts";
 import { listV2Models } from "./models.ts";
 import { recordOpsTenantRegistration, registerOpsRoutes } from "./ops-api.ts";
-import { executeStatelessRun, type StatelessRunInput } from "./stateless-run.ts";
+import { executeStatelessRun, parseStatelessRunImages, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
@@ -1161,14 +1161,24 @@ app.post("/v2/runs/text", async (c) => {
   if (!key || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(key)) {
     throw new ApiError(400, "invalid_request", "Text runs require a UUID v4 Idempotency-Key");
   }
-  const body = await c.req.json().catch(() => null) as { input?: string; instructions?: string; outputSchema?: Record<string, unknown>; timeoutMs?: number } | null;
-  const { input, instructions, outputSchema, timeoutMs } = body ?? {};
+  const body = await c.req.json().catch(() => null) as {
+    input?: string;
+    instructions?: string;
+    outputSchema?: Record<string, unknown>;
+    timeoutMs?: number;
+    model?: string;
+    images?: unknown;
+  } | null;
+  const { input, instructions, outputSchema, timeoutMs, model, images } = body ?? {};
+  const trimmedModel = model === undefined ? undefined : (typeof model === "string" ? model.trim() : null);
   if (typeof input !== "string" || !input.trim() || (instructions !== undefined && typeof instructions !== "string") ||
+      (trimmedModel !== undefined && !trimmedModel) ||
       typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000 ||
       (outputSchema !== undefined && (outputSchema?.type !== "object" || outputSchema.additionalProperties !== true ||
         Object.keys(outputSchema).length !== 2))) {
     throw new ApiError(400, "invalid_request", "Text runs need text, a deadline of at most 60000 ms, and optionally JSON object output");
   }
+  const validatedImages = parseStatelessRunImages(images);
   const deadline = AbortSignal.timeout(timeoutMs);
   const signal = AbortSignal.any([c.req.raw.signal, deadline]);
   const tenant = getTenantStub(c.env, auth.tenantId);
@@ -1183,7 +1193,14 @@ app.post("/v2/runs/text", async (c) => {
     acquired = true;
     signal.throwIfAborted();
     const reply = await executeStatelessRun(c.env, auth.tenantId, {
-      input, instructions, outputSchema, model: DEFAULT_MODEL_ID, maxSteps: 1,
+      input,
+      instructions,
+      outputSchema,
+      model: trimmedModel ?? DEFAULT_MODEL_ID,
+      ...(validatedImages
+        ? { images: validatedImages.map(({ contentType, base64 }) => ({ mediaType: contentType, data: base64 })) }
+        : {}),
+      maxSteps: 1,
     }, signal, true);
     signal.throwIfAborted();
     return c.json(reply);
