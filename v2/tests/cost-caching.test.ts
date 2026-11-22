@@ -259,11 +259,12 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       return chunks.find((c) => c.type === "done")!;
     };
 
-    // OpenAI Chat
+    // OpenAI Chat (explicit apiStyle override)
     const chatDone = await runStream("openai/gpt-4.1", {
       provider: "openai",
       apiKey: "test-key",
       baseUrl: `${mockUrl}/v1`,
+      apiStyle: "openai-chat",
     });
     assert.equal(chatDone.inputTokens, 50_000);
     assert.equal(chatDone.outputTokens, 200);

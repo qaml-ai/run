@@ -11,8 +11,31 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ConfirmButton, CopyButton, ErrorAlert, PageHeader } from "@/components/common";
 import { api, formatNumber, formatTime, useApi, type Model, type ProviderEntry } from "@/lib/api";
 
-const KNOWN_PROVIDERS = ["azure", "openai", "anthropic", "gemini", "openrouter", "openai-responses", "openai-codex", "custom"];
+const KNOWN_PROVIDERS = [
+  "azure",
+  "openai",
+  "anthropic",
+  "gemini",
+  "xai",
+  "openrouter",
+  "openai-responses",
+  "openai-codex",
+  "deepseek",
+  "groq",
+  "mistral",
+  "together",
+  "fireworks",
+  "cerebras",
+  "moonshotai",
+  "minimax",
+  "zai",
+  "baseten",
+  "nvidia",
+  "huggingface",
+  "custom",
+];
 const API_STYLES = ["openai-chat", "openai-responses", "openai-codex", "anthropic", "gemini"] as const;
+const DEFAULT_VISIBLE_MODELS = 100;
 
 interface DisplayProvider {
   id: string;
@@ -293,23 +316,33 @@ function ModelCatalog({ models, loading }: { models?: Model[]; loading: boolean 
   const [provider, setProvider] = useState("all");
   const [query, setQuery] = useState("");
   const [onlyAvailable, setOnlyAvailable] = useState(false);
+  const [showAll, setShowAll] = useState(false);
 
   const providers = useMemo(
     () => Array.from(new Set((models ?? []).map(m => m.provider))).sort(),
     [models],
   );
-  const shown = (models ?? []).filter(
-    model =>
-      (provider === "all" || model.provider === provider) &&
-      (!onlyAvailable || model.available) &&
-      `${model.id} ${model.provider} ${model.modelId}`.toLowerCase().includes(query.toLowerCase()),
+  const shown = useMemo(
+    () =>
+      (models ?? []).filter(
+        model =>
+          (provider === "all" || model.provider === provider) &&
+          (!onlyAvailable || model.available) &&
+          `${model.id} ${model.provider} ${model.modelId}`.toLowerCase().includes(query.toLowerCase()),
+      ),
+    [models, provider, onlyAvailable, query],
   );
+  const isFiltered = provider !== "all" || onlyAvailable || query.trim().length > 0;
+  const visible = isFiltered || showAll ? shown : shown.slice(0, DEFAULT_VISIBLE_MODELS);
+  const hiddenCount = shown.length - visible.length;
 
   return (
     <section>
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold">Models</h2>
+          <h2 className="text-sm font-semibold">
+            Models{models ? <span className="text-muted-foreground ml-1.5 font-normal">({shown.length})</span> : null}
+          </h2>
           <p className="text-muted-foreground text-xs">
             Pass the ID as <code className="font-mono">model</code> when creating or configuring an agent.
           </p>
@@ -346,7 +379,7 @@ function ModelCatalog({ models, loading }: { models?: Model[]; loading: boolean 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {shown.map(model => (
+              {visible.map(model => (
                 <TableRow key={model.id}>
                   <TableCell>
                     <div className="flex items-center gap-1">
@@ -369,13 +402,20 @@ function ModelCatalog({ models, loading }: { models?: Model[]; loading: boolean 
                   </TableCell>
                 </TableRow>
               ))}
-              {shown.length === 0 && (
+              {visible.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={5} className="text-muted-foreground py-8 text-center">No matching models.</TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
+          {hiddenCount > 0 && (
+            <div className="border-t p-3 text-center">
+              <Button variant="outline" size="sm" onClick={() => setShowAll(true)}>
+                Show all {shown.length} models ({hiddenCount} more)
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </section>

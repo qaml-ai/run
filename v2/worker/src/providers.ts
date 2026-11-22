@@ -3,6 +3,7 @@ import { randomId } from "./crypto.ts";
 import { loadConversationImages, type ModelImage } from "./run-files.ts";
 import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
 import { FILE_LIMITS } from "./lib/limits.ts";
+import { lookupCatalogModel, type ModelCostSpec } from "./model-catalog-data.ts";
 import type { ToolImageRef } from "./tool-images.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
@@ -61,11 +62,13 @@ interface ResolvedEndpoint {
 
 const AZURE_SOL = "azure/gpt-6.2-sol";
 const MUSE_EMBER = "openrouter/meta/muse-ember";
+const GEMINI_CARBON = "openrouter/google/gemini-4-carbon";
 export const DEFAULT_MODEL_ID = AZURE_SOL;
 
 const VIRTUAL_MODEL_ALIASES: Record<string, string> = {
   "camelrun/default": DEFAULT_MODEL_ID,
   "camelrun/fast": MUSE_EMBER,
+  "camelrun/strong": GEMINI_CARBON,
   "muse-ember": MUSE_EMBER,
   "meta/muse-ember": MUSE_EMBER,
 };
@@ -77,39 +80,63 @@ interface ModelPricing {
   cacheWrite?: number;
 }
 
-const MODEL_PRICING_PER_1M: Record<string, ModelPricing> = {
-  "muse-ember": { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
-  "meta/muse-ember": { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
-  "openrouter/meta/muse-ember": { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
-  "deepseek-v4.1-flash-1017": { input: 0.08, output: 0.35, cacheRead: 0.003 },
-  "openrouter/deepseek/deepseek-v4.1-flash": { input: 0.3, output: 1.2, cacheRead: 0.006 },
-  "azure/deepseek-v4.1-flash": { input: 0.3, output: 1.2, cacheRead: 0.006 },
-  "openrouter/openai/gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
-  [AZURE_SOL]: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
-  "gpt-4.1": { input: 2.0, output: 8.0, cacheRead: 0.5 },
-  "gpt-4.1-mini": { input: 0.4, output: 1.6, cacheRead: 0.1 },
-  "gpt-4.1-nano": { input: 0.1, output: 0.4, cacheRead: 0.025 },
-  "gpt-4o": { input: 2.5, output: 10.0, cacheRead: 1.25 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6, cacheRead: 0.075 },
-  "gpt-5": { input: 2.5, output: 10.0, cacheRead: 0.25 },
-  "o3-mini": { input: 1.1, output: 4.4, cacheRead: 0.55 },
-  "claude-sonnet-4-0": { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
-  "claude-3-5-haiku-latest": { input: 0.8, output: 4.0, cacheRead: 0.08, cacheWrite: 1.0 },
-  "gemini-2.5-flash": { input: 0.15, output: 0.6, cacheRead: 0.015 },
-  "gemini-2.5-pro": { input: 1.25, output: 10.0, cacheRead: 0.125 },
+const PROVIDER_DEFAULTS: Record<string, { protocol: ResolvedEndpoint["protocol"]; baseUrl: string }> = {
+  openai: { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+  "openai-responses": { protocol: "openai-responses", baseUrl: "https://api.openai.com/v1" },
+  "openai-codex": { protocol: "openai-codex", baseUrl: "https://chatgpt.com/backend-api" },
+  anthropic: { protocol: "anthropic", baseUrl: "https://api.anthropic.com" },
+  gemini: { protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.com" },
+  google: { protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.com" },
+  openrouter: { protocol: "openai-chat", baseUrl: "https://openrouter.ai/api/v1" },
+  xai: { protocol: "openai-responses", baseUrl: "https://api.x.ai/v1" },
+  meta: { protocol: "openai-responses", baseUrl: "https://api.meta.ai/v1" },
+  deepseek: { protocol: "openai-chat", baseUrl: "https://api.deepseek.com" },
+  groq: { protocol: "openai-chat", baseUrl: "https://api.groq.com/openai/v1" },
+  mistral: { protocol: "openai-chat", baseUrl: "https://api.mistral.ai/v1" },
+  together: { protocol: "openai-chat", baseUrl: "https://api.together.ai/v1" },
+  fireworks: { protocol: "openai-chat", baseUrl: "https://api.fireworks.ai/inference/v1" },
+  cerebras: { protocol: "openai-chat", baseUrl: "https://api.cerebras.ai/v1" },
+  moonshotai: { protocol: "openai-chat", baseUrl: "https://api.moonshot.ai/v1" },
+  "moonshotai-cn": { protocol: "openai-chat", baseUrl: "https://api.moonshot.cn/v1" },
+  minimax: { protocol: "anthropic", baseUrl: "https://api.minimax.io/anthropic" },
+  "minimax-cn": { protocol: "anthropic", baseUrl: "https://api.minimaxi.com/anthropic" },
+  zai: { protocol: "openai-chat", baseUrl: "https://api.z.ai/api/coding/paas/v4" },
+  "zai-coding-cn": { protocol: "openai-chat", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
+  baseten: { protocol: "openai-chat", baseUrl: "https://inference.baseten.co/v1" },
+  nvidia: { protocol: "openai-chat", baseUrl: "https://integrate.api.nvidia.com/v1" },
+  huggingface: { protocol: "openai-chat", baseUrl: "https://router.huggingface.co/v1" },
+  "kimi-coding": { protocol: "openai-chat", baseUrl: "https://api.kimi.com/coding/v1" },
 };
 
+function resolveActivePricing(cost: ModelCostSpec, inputTokens: number): ModelPricing {
+  if (cost.tiers && cost.tiers.length > 0) {
+    let active: ModelPricing = cost;
+    for (const tier of cost.tiers) {
+      if (inputTokens > tier.inputTokensAbove) {
+        active = tier;
+      }
+    }
+    return active;
+  }
+  return cost;
+}
+
 export function getModelContextWindow(rawModel: string): number {
-  const m = (VIRTUAL_MODEL_ALIASES[rawModel] ?? rawModel).toLowerCase();
+  const resolved = VIRTUAL_MODEL_ALIASES[rawModel] ?? rawModel;
+  const catalogEntry = lookupCatalogModel(resolved);
+  if (catalogEntry) return catalogEntry.contextWindow;
+  const m = resolved.toLowerCase();
   if (m === AZURE_SOL) return 1_050_000;
   if (
     m.includes("muse-ember") ||
     m.includes("gemini-2.5") ||
+    m.includes("gemini-3") ||
+    m.includes("gemini-4") ||
     m.includes("gpt-4.1")
   ) {
     return 1_048_576;
   }
-  if (m.includes("claude-") || m.includes("o3") || m.includes("gpt-5")) {
+  if (m.includes("claude-") || m.includes("o1") || m.includes("o3") || m.includes("o4") || m.includes("gpt-5") || m.includes("gpt-6")) {
     return 200_000;
   }
   return 128_000;
@@ -127,10 +154,12 @@ export function calculateCostUsd(
   if (resolved.startsWith("mock/") || resolved === "mock") {
     return Number(vmCost.toFixed(8));
   }
-  const normalized = resolved.includes("/") ? resolved.split("/").pop()! : resolved;
+  const catalogEntry = lookupCatalogModel(resolved);
   const pricing: ModelPricing = resolved === AZURE_SOL && inputTokens > 272_000
     ? { input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }
-    : MODEL_PRICING_PER_1M[resolved] ?? MODEL_PRICING_PER_1M[normalized] ?? { input: 0.5, output: 2.0 };
+    : catalogEntry
+      ? resolveActivePricing(catalogEntry.cost, inputTokens)
+      : { input: 0.5, output: 2.0 };
   const clampedCacheRead = Math.max(0, Math.min(inputTokens, cacheReadTokens));
   const uncachedInput = Math.max(0, inputTokens - clampedCacheRead);
   const cacheReadRate = pricing.cacheRead ?? pricing.input * 0.1;
@@ -201,22 +230,27 @@ export function getProviderLookupCandidates(
   }
 
   const candidates: string[] = [];
-  if (explicitProvider) {
-    candidates.push(explicitProvider);
-  }
-  if (modelId.startsWith("claude-") || explicitProvider === "anthropic") {
+  if (explicitProvider === "anthropic" || (!explicitProvider && modelId.startsWith("claude-"))) {
     candidates.push("anthropic");
-  } else if (modelId.startsWith("gemini-") || explicitProvider === "google" || explicitProvider === "gemini") {
+  } else if (explicitProvider === "google") {
+    candidates.push("google", "gemini");
+  } else if (
+    explicitProvider === "gemini" ||
+    (!explicitProvider && (modelId.startsWith("gemini-") || modelId.startsWith("gemma-")))
+  ) {
     candidates.push("gemini", "google");
   } else if (explicitProvider === "openrouter") {
     candidates.push("openrouter");
   } else if (explicitProvider === "openai-responses") {
     candidates.push("openai-responses", "openai");
+  } else if (explicitProvider === "openai") {
+    candidates.push("openai", "openai-responses");
+  } else if (explicitProvider) {
+    candidates.push(explicitProvider);
+  } else if (modelId.startsWith("grok-")) {
+    candidates.push("xai");
   } else {
-    if (/^(o3|gpt-5|gpt-6)/.test(modelId)) {
-      candidates.push("openai-responses");
-    }
-    candidates.push("openai");
+    candidates.push("openai", "openai-responses");
   }
 
   return { isMock: false, modelId, explicitProvider, candidates: [...new Set(candidates)] };
@@ -298,11 +332,13 @@ export async function resolveModelEndpoint(
     if (!apiKey && !hasHeaders) {
       throw new ApiError(400, "missing_provider_key", `No API key or auth headers configured for provider '${providerName}'`);
     }
+    const providerDefault = PROVIDER_DEFAULTS[providerName];
     const defaultBase =
-      stored.apiStyle === "anthropic" ? "https://api.anthropic.com"
-      : stored.apiStyle === "gemini" ? "https://generativelanguage.googleapis.com"
-      : stored.apiStyle === "openai-codex" ? "https://chatgpt.com/backend-api"
-      : "https://api.openai.com/v1";
+      providerDefault?.baseUrl ??
+      (stored.apiStyle === "anthropic" ? "https://api.anthropic.com"
+        : stored.apiStyle === "gemini" ? "https://generativelanguage.googleapis.com"
+        : stored.apiStyle === "openai-codex" ? "https://chatgpt.com/backend-api"
+        : "https://api.openai.com/v1");
     return {
       protocol: stored.apiStyle,
       providerName,
@@ -346,7 +382,7 @@ export async function resolveModelEndpoint(
   if (
     providerName === "gemini" ||
     providerName === "google" ||
-    (!explicitProvider && canonicalModelId.startsWith("gemini-"))
+    (!explicitProvider && (canonicalModelId.startsWith("gemini-") || canonicalModelId.startsWith("gemma-")))
   ) {
     const apiKey = stored?.apiKey || (normScope ? "" : env.GEMINI_API_KEY || "");
     if (!apiKey && !hasHeaders) {
@@ -362,8 +398,13 @@ export async function resolveModelEndpoint(
     };
   }
 
-  if (providerName === "openai-responses" || providerName.startsWith("bedrock-openai-")) {
-    const apiKey = stored?.apiKey || (normScope || providerName.startsWith("bedrock-openai-") ? "" : env.OPENAI_API_KEY || "");
+  if (
+    providerName === "openai" ||
+    providerName === "openai-responses" ||
+    providerName.startsWith("bedrock-openai-")
+  ) {
+    const isBedrockOpenAi = providerName.startsWith("bedrock-openai-");
+    const apiKey = stored?.apiKey || (normScope || isBedrockOpenAi ? "" : env.OPENAI_API_KEY || "");
     if (!apiKey && !hasHeaders) {
       throw new ApiError(
         400,
@@ -396,7 +437,27 @@ export async function resolveModelEndpoint(
     };
   }
 
-  const apiKey = stored?.apiKey || (normScope || providerName === "azure" || providerName === "custom" ? "" : env.OPENAI_API_KEY || "");
+  const providerDefault = PROVIDER_DEFAULTS[providerName];
+  if (providerDefault) {
+    const apiKey = stored?.apiKey || "";
+    if (!apiKey && !hasHeaders) {
+      throw new ApiError(
+        400,
+        "missing_provider_key",
+        `No API key configured for provider '${providerName}'`,
+      );
+    }
+    return {
+      protocol: providerDefault.protocol,
+      providerName,
+      modelId,
+      apiKey,
+      baseUrl: (stored?.baseUrl || providerDefault.baseUrl).replace(/\/+$/, ""),
+      ...(hasHeaders ? { headers } : {}),
+    };
+  }
+
+  const apiKey = stored?.apiKey || "";
   if (!apiKey && !hasHeaders) {
     throw new ApiError(
       400,
@@ -404,7 +465,7 @@ export async function resolveModelEndpoint(
       `No API key configured for provider '${providerName}'`,
     );
   }
-  if ((providerName === "azure" || providerName === "custom") && !stored?.baseUrl) {
+  if (!stored?.baseUrl) {
     throw new ApiError(400, "missing_provider_url", `Provider '${providerName}' requires a base URL`);
   }
   return {
@@ -412,7 +473,7 @@ export async function resolveModelEndpoint(
     providerName,
     modelId,
     apiKey,
-    baseUrl: (stored?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, ""),
+    baseUrl: stored.baseUrl.replace(/\/+$/, ""),
     ...(hasHeaders ? { headers } : {}),
   };
 }
@@ -645,8 +706,19 @@ async function* streamOpenAiChat(
     stream_options: { include_usage: true },
   };
   if (endpoint.providerName === "openrouter") payload.provider = { data_collection: "deny" };
-  if (req.temperature !== undefined) payload.temperature = req.temperature;
-  if (req.maxOutputTokens !== undefined) payload.max_tokens = req.maxOutputTokens;
+  const isOpenAiReasoningChatModel =
+    (endpoint.providerName === "openai" || /^https?:\/\/api\.openai\.com(\/|$)/i.test(endpoint.baseUrl)) &&
+    /^(o1|o3|o4|gpt-5|gpt-6)/i.test(endpoint.modelId);
+  if (req.temperature !== undefined && !isOpenAiReasoningChatModel) {
+    payload.temperature = req.temperature;
+  }
+  if (req.maxOutputTokens !== undefined) {
+    if (isOpenAiReasoningChatModel) {
+      payload.max_completion_tokens = req.maxOutputTokens;
+    } else {
+      payload.max_tokens = req.maxOutputTokens;
+    }
+  }
 
   if (req.tools && req.tools.length > 0) {
     payload.tools = req.tools.map((t) => ({
@@ -866,19 +938,36 @@ async function* streamOpenAiResponses(
   };
   const azure = endpoint.providerName === "azure";
   const codex = endpoint.protocol === "openai-codex";
+  const isDirectResponsesProvider =
+    azure ||
+    codex ||
+    endpoint.providerName === "openai" ||
+    endpoint.providerName === "openai-responses" ||
+    endpoint.providerName === "xai";
+  const catalogEntry = lookupCatalogModel(`${endpoint.providerName}/${endpoint.modelId}`);
+  const isReasoningModel = catalogEntry
+    ? catalogEntry.reasoning
+    : /^(o1|o3|o4|gpt-5(?!-chat)|gpt-6|chat-latest|grok-4)/i.test(endpoint.modelId);
+
   const promptCacheKey = clampOpenAiPromptCacheKey(req.promptCacheKey);
   if (promptCacheKey && !endpoint.providerName.startsWith("bedrock-openai-")) {
     payload.prompt_cache_key = promptCacheKey;
   }
+  if (isDirectResponsesProvider) {
+    payload.store = false;
+  }
   if (azure) {
     payload.reasoning = { effort: "low" };
-    payload.store = false;
   }
   if (codex) {
-    payload.store = false;
     if (!payload.instructions) payload.instructions = "You are a helpful coding assistant.";
   }
-  if (req.maxOutputTokens && !codex) payload.max_output_tokens = req.maxOutputTokens;
+  if (req.temperature !== undefined && !codex && !isReasoningModel) {
+    payload.temperature = req.temperature;
+  }
+  if (req.maxOutputTokens && !codex) {
+    payload.max_output_tokens = Math.max(16, req.maxOutputTokens);
+  }
   if (req.tools && req.tools.length > 0) {
     payload.tools = req.tools.map((t) => ({
       type: "function",
@@ -894,7 +983,7 @@ async function* streamOpenAiResponses(
         type: "json_schema",
         name: "structured_output",
         schema: req.outputSchema,
-        ...(azure ? { strict: false } : {}),
+        strict: false,
       },
     };
   }

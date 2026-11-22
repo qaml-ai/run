@@ -107,11 +107,13 @@ function CreateAgentDialog({ onClose, onCreated }: { onClose: () => void; onCrea
                 onChange={event => setModel(event.target.value)}
               />
               <datalist id="agent-model-options">
-                {models.data?.map(entry => (
-                  <option key={entry.id} value={entry.id}>
-                    {entry.available ? entry.id : `${entry.id} — needs key`}
-                  </option>
-                ))}
+                {[...(models.data ?? [])]
+                  .sort((a, b) => Number(b.available) - Number(a.available))
+                  .map(entry => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.available ? entry.id : `${entry.id} — needs key`}
+                    </option>
+                  ))}
               </datalist>
             </div>
             <div className="flex flex-col gap-2">

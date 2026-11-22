@@ -40,7 +40,7 @@ export default {
       if (!models[provider] || !baseUrl.startsWith("http://127.0.0.1:")) return new Response(null, { status: 400 });
       const messages = buildConversationMessages(null, await stub.fixtureMessages());
       for await (const _ of streamModelResponse({ env, tenantId: "fixture", model: models[provider]!, messages,
-        prefetchedProvider: { credentials: { provider, apiKey: "fixture-no-provider-key", baseUrl } } })) { /* consume exact adapter */ }
+        prefetchedProvider: { credentials: { provider, apiKey: "fixture-no-provider-key", baseUrl, ...(provider === "openai" ? { apiStyle: "openai-chat" as const } : {}) } } })) { /* consume exact adapter */ }
       return Response.json({ projected: messages.length });
     } catch (error) { return toApiErrorResponse(error); }
   },
