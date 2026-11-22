@@ -105,6 +105,7 @@ export async function runDecisionClassifier(
   let scores: Record<string, number>;
   let inputTokens = estimateTokens(req.input) + estimateTokens(req.instructions ?? "");
   let outputTokens = 16;
+  let cacheReadTokens = 0;
 
   if (model === "mock" || model.startsWith("mock/")) {
     scores = computeDeterministicScores(req.input, choices, req.instructions);
@@ -145,6 +146,7 @@ export async function runDecisionClassifier(
       } else if (chunk.type === "done") {
         inputTokens = chunk.inputTokens;
         outputTokens = chunk.outputTokens;
+        cacheReadTokens = chunk.cacheReadTokens ?? 0;
       }
     }
 
@@ -177,7 +179,7 @@ export async function runDecisionClassifier(
     }
   }
 
-  const costUsd = calculateCostUsd(model, inputTokens, outputTokens, 0);
+  const costUsd = calculateCostUsd(model, inputTokens, outputTokens, 0, cacheReadTokens);
   if (costUsd > 0 || inputTokens > 0) {
     await getTenantStub(env, tenantId)
       .settleUsage({
@@ -185,6 +187,7 @@ export async function runDecisionClassifier(
         model,
         inputTokens,
         outputTokens,
+        cacheReadTokens,
         vmMs: 0,
         costUsd,
         note: "POST /v2/decisions",

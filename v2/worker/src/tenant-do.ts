@@ -228,6 +228,7 @@ export class TenantDO extends DurableObject<Env> {
         runs_count INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
         output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read_tokens INTEGER NOT NULL DEFAULT 0,
         vm_ms INTEGER NOT NULL DEFAULT 0,
         cost_usd REAL NOT NULL DEFAULT 0,
         PRIMARY KEY (day, model)
@@ -318,6 +319,10 @@ export class TenantDO extends DurableObject<Env> {
     }
     if (!agentColumns.some(({ name }) => name === "key_scope")) {
       this.ctx.storage.sql.exec("ALTER TABLE agents_index ADD COLUMN key_scope TEXT");
+    }
+    const usageColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(usage_daily)").toArray();
+    if (!usageColumns.some(({ name }) => name === "cache_read_tokens")) {
+      this.ctx.storage.sql.exec("ALTER TABLE usage_daily ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0");
     }
     this.schemaReady = true;
   }
@@ -768,6 +773,7 @@ export class TenantDO extends DurableObject<Env> {
       runsCount: number;
       inputTokens: number;
       outputTokens: number;
+      cacheReadTokens: number;
       vmMs: number;
       costUsd: number;
     }>;
@@ -793,6 +799,7 @@ export class TenantDO extends DurableObject<Env> {
         runs_count: number;
         input_tokens: number;
         output_tokens: number;
+        cache_read_tokens: number;
         vm_ms: number;
         cost_usd: number;
       }>(`SELECT * FROM usage_daily ORDER BY day DESC, model ASC LIMIT 90`)
@@ -822,6 +829,7 @@ export class TenantDO extends DurableObject<Env> {
         runsCount: u.runs_count,
         inputTokens: u.input_tokens,
         outputTokens: u.output_tokens,
+        cacheReadTokens: Number(u.cache_read_tokens ?? 0),
         vmMs: u.vm_ms,
         costUsd: u.cost_usd,
       })),
@@ -915,6 +923,7 @@ export class TenantDO extends DurableObject<Env> {
     model: string;
     inputTokens: number;
     outputTokens: number;
+    cacheReadTokens?: number;
     vmMs: number;
     costUsd: number;
     note?: string;
@@ -942,18 +951,20 @@ export class TenantDO extends DurableObject<Env> {
           now,
         );
         this.ctx.storage.sql.exec(
-          `INSERT INTO usage_daily (day, model, runs_count, input_tokens, output_tokens, vm_ms, cost_usd)
-           VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)
+          `INSERT INTO usage_daily (day, model, runs_count, input_tokens, output_tokens, cache_read_tokens, vm_ms, cost_usd)
+           VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)
            ON CONFLICT(day, model) DO UPDATE SET
              runs_count = usage_daily.runs_count + 1,
              input_tokens = usage_daily.input_tokens + excluded.input_tokens,
              output_tokens = usage_daily.output_tokens + excluded.output_tokens,
+             cache_read_tokens = usage_daily.cache_read_tokens + excluded.cache_read_tokens,
              vm_ms = usage_daily.vm_ms + excluded.vm_ms,
              cost_usd = usage_daily.cost_usd + excluded.cost_usd`,
           day,
           input.model,
           input.inputTokens,
           input.outputTokens,
+          input.cacheReadTokens ?? 0,
           input.vmMs,
           input.costUsd,
         );

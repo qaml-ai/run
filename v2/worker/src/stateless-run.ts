@@ -81,8 +81,9 @@ export async function executeStatelessRun(
           args: chunk.args,
         });
       } else if (chunk.type === "done") {
-        addModelUsage(usage, model, chunk.inputTokens, chunk.outputTokens);
-        if (chunk.cacheReadTokens) onCacheRead?.(chunk.cacheReadTokens);
+        const cacheRead = chunk.cacheReadTokens ?? 0;
+        addModelUsage(usage, model, chunk.inputTokens, chunk.outputTokens, cacheRead);
+        if (cacheRead) onCacheRead?.(cacheRead);
       }
     }
 
@@ -170,6 +171,7 @@ export async function executeStatelessRun(
         model,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens ?? 0,
         vmMs: 0,
         costUsd: usage.costUsd,
         note: "POST /v2/runs",

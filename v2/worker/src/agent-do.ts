@@ -509,7 +509,7 @@ export class AgentDO extends DurableObject<Env> {
       },
       getRunRecord: (runId) => this.materializeRunRecord(runId),
       getRunSpendLimit: (runId) => this.runSpendLimit(runId),
-      recordModelUsage: async (runId, kind, input, output, usage) => {
+      recordModelUsage: async (runId, kind, input, output, usage, cacheRead = 0) => {
         const actor = this.runActor(runId);
         if (!actor) return;
         const cfg = this.requireConfig();
@@ -524,7 +524,8 @@ export class AgentDO extends DurableObject<Env> {
             kind,
             input,
             output,
-            cost: { usd: calculateCostUsd(cfg.model, input, output), source: "catalog" },
+            cacheRead,
+            cost: { usd: calculateCostUsd(cfg.model, input, output, 0, cacheRead), source: "catalog" },
           });
         });
         await this.scheduleNextAlarm();
@@ -1400,6 +1401,7 @@ export class AgentDO extends DurableObject<Env> {
             model: cfg.model,
             inputTokens: primaryRecord.usage.inputTokens,
             outputTokens: primaryRecord.usage.outputTokens,
+            cacheReadTokens: primaryRecord.usage.cacheReadTokens ?? 0,
             vmMs: primaryRecord.usage.vmMs,
             costUsd: primaryRecord.usage.costUsd,
             note: `Agent ${cfg.key} (${cfg.id})`,

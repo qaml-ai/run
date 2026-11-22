@@ -159,6 +159,7 @@ export type RunStatus =
 export interface RunUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
   costUsd: number;
   vmMs: number;
 }

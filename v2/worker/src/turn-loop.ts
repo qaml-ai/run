@@ -98,6 +98,7 @@ export interface TurnStorageAdapter {
     input: number,
     output: number,
     cumulative: RunUsage,
+    cacheRead?: number,
   ): Promise<void>;
   makeToolContext(
     runId: string,
@@ -308,8 +309,9 @@ export async function performCompaction(
           generated += chunk.delta;
         } else if (chunk.type === "done" && options?.run) {
           const { id, usage } = options.run;
-          addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens);
-          await adapter.recordModelUsage(id, "compaction", chunk.inputTokens, chunk.outputTokens, usage);
+          const cacheRead = chunk.cacheReadTokens ?? 0;
+          addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens, cacheRead);
+          await adapter.recordModelUsage(id, "compaction", chunk.inputTokens, chunk.outputTokens, usage, cacheRead);
         }
       }
       options?.signal?.throwIfAborted();
@@ -473,6 +475,10 @@ function validateAgainstJsonSchema(
   return null;
 }
 
+export function getAutoCompactThreshold(model: string): number {
+  return Math.min(96_000, Math.floor(getModelContextWindow(model) * 0.6));
+}
+
 export async function runAgentTurn(
   adapter: TurnStorageAdapter,
   params: {
@@ -522,10 +528,7 @@ export async function runAgentTurn(
   adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt, ...(params.actor ? { actor: params.actor } : {}) });
 
   // Count only prior messages and keep the new prompt along with the recent history.
-  const autoCompactThreshold = Math.min(
-    256_000,
-    Math.floor(getModelContextWindow(config.model) * 0.6),
-  );
+  const autoCompactThreshold = getAutoCompactThreshold(config.model);
   const prevCompaction = adapter.getLatestCompaction();
   const prevSeq = prevCompaction?.upToSeq ?? 0;
   let needsCompaction = false;
@@ -930,6 +933,7 @@ async function continueTurnLoop(
         outputSchema,
         signal: state.signal,
         purpose: "turn",
+        promptCacheKey: config.id,
         prefetchedProvider: state.prefetchedProvider?.model === config.model && (state.prefetchedProvider.keyScope ?? null) === effectiveScope
           ? state.prefetchedProvider
           : undefined,
@@ -948,8 +952,9 @@ async function continueTurnLoop(
             args: chunk.args,
           });
         } else if (chunk.type === "done") {
-          addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens);
-          await adapter.recordModelUsage(runId, "response", chunk.inputTokens, chunk.outputTokens, usage);
+          const cacheRead = chunk.cacheReadTokens ?? 0;
+          addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens, cacheRead);
+          await adapter.recordModelUsage(runId, "response", chunk.inputTokens, chunk.outputTokens, usage, cacheRead);
         }
       }
       state.signal.throwIfAborted();

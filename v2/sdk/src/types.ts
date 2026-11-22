@@ -201,7 +201,7 @@ export interface HumanInput {
   answer?: unknown;
 }
 export interface RunToolCall { id: string; name: string; ok: boolean; }
-export interface RunUsage { inputTokens: number; outputTokens: number; costUsd: number; vmMs: number; }
+export interface RunUsage { inputTokens: number; outputTokens: number; cacheReadTokens?: number; costUsd: number; vmMs: number; }
 
 export interface RunRecord<TOutput = unknown> {
   actor?: string;

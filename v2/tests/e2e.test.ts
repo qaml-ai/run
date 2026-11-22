@@ -713,6 +713,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       kind: "response",
       input: capped.usage.inputTokens,
       output: capped.usage.outputTokens,
+      cacheRead: 0,
       cost: { usd: capped.usage.costUsd, source: "catalog" },
     });
     const failures = () => receivedWebhooks.filter(({ headers, body }) =>

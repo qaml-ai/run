@@ -8,7 +8,7 @@ export interface V2ModelCatalogEntry {
   reasoning?: boolean;
   maxTokens?: number;
   input: string[];
-  cost: { input: number; output: number };
+  cost: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
 }
 
 export interface V2ModelView extends V2ModelCatalogEntry {
@@ -16,20 +16,20 @@ export interface V2ModelView extends V2ModelCatalogEntry {
 }
 
 export const V2_MODEL_CATALOG: V2ModelCatalogEntry[] = [
-  { id: "azure/gpt-6.2-sol", provider: "azure", modelId: "gpt-6.2-sol", reasoning: true, maxTokens: 128_000, input: ["text", "image"], cost: { input: 2, output: 10 } },
-  { id: "openrouter/meta/muse-ember", provider: "openrouter", modelId: "meta/muse-ember", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.1, output: 0.5 } },
-  { id: "openrouter/deepseek/deepseek-v4.1-flash", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash", reasoning: true, maxTokens: 65_536, input: ["text"], cost: { input: 0.3, output: 1.2 } },
-  { id: "openrouter/openai/gpt-6-luna", provider: "openrouter", modelId: "openai/gpt-6-luna", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 0.1, output: 0.5 } },
-  { id: "openai/gpt-5", provider: "openai", modelId: "gpt-5", reasoning: true, maxTokens: 128_000, input: ["text", "image"], cost: { input: 2.5, output: 10 } },
-  { id: "openai/gpt-4.1", provider: "openai", modelId: "gpt-4.1", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 2, output: 8 } },
-  { id: "openai/gpt-4.1-mini", provider: "openai", modelId: "gpt-4.1-mini", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.4, output: 1.6 } },
-  { id: "openai/gpt-4.1-nano", provider: "openai", modelId: "gpt-4.1-nano", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.1, output: 0.4 } },
-  { id: "openai/gpt-4o", provider: "openai", modelId: "gpt-4o", reasoning: false, maxTokens: 16_384, input: ["text", "image"], cost: { input: 2.5, output: 10 } },
-  { id: "openai/gpt-4o-mini", provider: "openai", modelId: "gpt-4o-mini", reasoning: false, maxTokens: 16_384, input: ["text", "image"], cost: { input: 0.15, output: 0.6 } },
-  { id: "anthropic/claude-sonnet-4-0", provider: "anthropic", modelId: "claude-sonnet-4-0", reasoning: true, maxTokens: 64_000, input: ["text", "image"], cost: { input: 3, output: 15 } },
-  { id: "anthropic/claude-3-5-haiku-latest", provider: "anthropic", modelId: "claude-3-5-haiku-latest", reasoning: false, maxTokens: 8_192, input: ["text", "image"], cost: { input: 0.8, output: 4 } },
-  { id: "gemini/gemini-2.5-pro", provider: "gemini", modelId: "gemini-2.5-pro", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 1.25, output: 10 } },
-  { id: "gemini/gemini-2.5-flash", provider: "gemini", modelId: "gemini-2.5-flash", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 0.15, output: 0.6 } },
+  { id: "azure/gpt-6.2-sol", provider: "azure", modelId: "gpt-6.2-sol", reasoning: true, maxTokens: 128_000, input: ["text", "image"], cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 } },
+  { id: "openrouter/meta/muse-ember", provider: "openrouter", modelId: "meta/muse-ember", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 } },
+  { id: "openrouter/deepseek/deepseek-v4.1-flash", provider: "openrouter", modelId: "deepseek/deepseek-v4.1-flash", reasoning: true, maxTokens: 65_536, input: ["text"], cost: { input: 0.3, output: 1.2, cacheRead: 0.006 } },
+  { id: "openrouter/openai/gpt-6-luna", provider: "openrouter", modelId: "openai/gpt-6-luna", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 } },
+  { id: "openai/gpt-5", provider: "openai", modelId: "gpt-5", reasoning: true, maxTokens: 128_000, input: ["text", "image"], cost: { input: 2.5, output: 10, cacheRead: 0.25 } },
+  { id: "openai/gpt-4.1", provider: "openai", modelId: "gpt-4.1", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 2, output: 8, cacheRead: 0.5 } },
+  { id: "openai/gpt-4.1-mini", provider: "openai", modelId: "gpt-4.1-mini", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.4, output: 1.6, cacheRead: 0.1 } },
+  { id: "openai/gpt-4.1-nano", provider: "openai", modelId: "gpt-4.1-nano", reasoning: false, maxTokens: 32_768, input: ["text", "image"], cost: { input: 0.1, output: 0.4, cacheRead: 0.025 } },
+  { id: "openai/gpt-4o", provider: "openai", modelId: "gpt-4o", reasoning: false, maxTokens: 16_384, input: ["text", "image"], cost: { input: 2.5, output: 10, cacheRead: 1.25 } },
+  { id: "openai/gpt-4o-mini", provider: "openai", modelId: "gpt-4o-mini", reasoning: false, maxTokens: 16_384, input: ["text", "image"], cost: { input: 0.15, output: 0.6, cacheRead: 0.075 } },
+  { id: "anthropic/claude-sonnet-4-0", provider: "anthropic", modelId: "claude-sonnet-4-0", reasoning: true, maxTokens: 64_000, input: ["text", "image"], cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } },
+  { id: "anthropic/claude-3-5-haiku-latest", provider: "anthropic", modelId: "claude-3-5-haiku-latest", reasoning: false, maxTokens: 8_192, input: ["text", "image"], cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1.0 } },
+  { id: "gemini/gemini-2.5-pro", provider: "gemini", modelId: "gemini-2.5-pro", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 1.25, output: 10, cacheRead: 0.125 } },
+  { id: "gemini/gemini-2.5-flash", provider: "gemini", modelId: "gemini-2.5-flash", reasoning: true, maxTokens: 65_536, input: ["text", "image"], cost: { input: 0.15, output: 0.6, cacheRead: 0.015 } },
 ];
 
 export async function listV2Models(

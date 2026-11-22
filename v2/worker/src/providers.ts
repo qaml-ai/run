@@ -44,6 +44,8 @@ export interface StreamModelRequest {
   maxOutputTokens?: number;
   signal?: AbortSignal;
   purpose?: "turn" | "compaction" | "dreaming" | "decision";
+  /** Optional stable key for prompt-cache routing (OpenAI/Azure Responses `prompt_cache_key`). */
+  promptCacheKey?: string;
   /** Pre-resolved tenant provider secret lookup (`undefined` = not prefetched; `{ credentials: null }` = verified none stored). */
   prefetchedProvider?: { credentials: ProviderCredentials | null };
 }
@@ -68,26 +70,33 @@ const VIRTUAL_MODEL_ALIASES: Record<string, string> = {
   "meta/muse-ember": MUSE_EMBER,
 };
 
-const MODEL_PRICING_PER_1M: Record<string, { input: number; output: number }> = {
-  "muse-ember": { input: 0.1, output: 0.5 },
-  "meta/muse-ember": { input: 0.1, output: 0.5 },
-  "openrouter/meta/muse-ember": { input: 0.1, output: 0.5 },
-  "deepseek-v4.1-flash-1017": { input: 0.08, output: 0.35 },
-  "openrouter/deepseek/deepseek-v4.1-flash": { input: 0.3, output: 1.2 },
-  "azure/deepseek-v4.1-flash": { input: 0.3, output: 1.2 },
-  "openrouter/openai/gpt-6-luna": { input: 0.1, output: 0.5 },
-  [AZURE_SOL]: { input: 2, output: 10 },
-  "gpt-4.1": { input: 2.0, output: 8.0 },
-  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
-  "gpt-4.1-nano": { input: 0.1, output: 0.4 },
-  "gpt-4o": { input: 2.5, output: 10.0 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
-  "gpt-5": { input: 2.5, output: 10.0 },
-  "o3-mini": { input: 1.1, output: 4.4 },
-  "claude-sonnet-4-0": { input: 3.0, output: 15.0 },
-  "claude-3-5-haiku-latest": { input: 0.8, output: 4.0 },
-  "gemini-2.5-flash": { input: 0.15, output: 0.6 },
-  "gemini-2.5-pro": { input: 1.25, output: 10.0 },
+interface ModelPricing {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+const MODEL_PRICING_PER_1M: Record<string, ModelPricing> = {
+  "muse-ember": { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
+  "meta/muse-ember": { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
+  "openrouter/meta/muse-ember": { input: 0.1, output: 0.5, cacheRead: 0.004, cacheWrite: 0.125 },
+  "deepseek-v4.1-flash-1017": { input: 0.08, output: 0.35, cacheRead: 0.003 },
+  "openrouter/deepseek/deepseek-v4.1-flash": { input: 0.3, output: 1.2, cacheRead: 0.006 },
+  "azure/deepseek-v4.1-flash": { input: 0.3, output: 1.2, cacheRead: 0.006 },
+  "openrouter/openai/gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+  [AZURE_SOL]: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+  "gpt-4.1": { input: 2.0, output: 8.0, cacheRead: 0.5 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6, cacheRead: 0.1 },
+  "gpt-4.1-nano": { input: 0.1, output: 0.4, cacheRead: 0.025 },
+  "gpt-4o": { input: 2.5, output: 10.0, cacheRead: 1.25 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6, cacheRead: 0.075 },
+  "gpt-5": { input: 2.5, output: 10.0, cacheRead: 0.25 },
+  "o3-mini": { input: 1.1, output: 4.4, cacheRead: 0.55 },
+  "claude-sonnet-4-0": { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-3-5-haiku-latest": { input: 0.8, output: 4.0, cacheRead: 0.08, cacheWrite: 1.0 },
+  "gemini-2.5-flash": { input: 0.15, output: 0.6, cacheRead: 0.015 },
+  "gemini-2.5-pro": { input: 1.25, output: 10.0, cacheRead: 0.125 },
 };
 
 export function getModelContextWindow(rawModel: string): number {
@@ -111,6 +120,7 @@ export function calculateCostUsd(
   inputTokens: number,
   outputTokens: number,
   vmMs = 0,
+  cacheReadTokens = 0,
 ): number {
   const vmCost = (vmMs / 1000) * 0.00005; // $0.05 per 1,000 VM seconds
   const resolved = VIRTUAL_MODEL_ALIASES[model] ?? model;
@@ -118,17 +128,36 @@ export function calculateCostUsd(
     return Number(vmCost.toFixed(8));
   }
   const normalized = resolved.includes("/") ? resolved.split("/").pop()! : resolved;
-  const pricing = resolved === AZURE_SOL && inputTokens > 272_000
-    ? { input: 4, output: 15 }
+  const pricing: ModelPricing = resolved === AZURE_SOL && inputTokens > 272_000
+    ? { input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }
     : MODEL_PRICING_PER_1M[resolved] ?? MODEL_PRICING_PER_1M[normalized] ?? { input: 0.5, output: 2.0 };
-  const tokenCost = (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
+  const clampedCacheRead = Math.max(0, Math.min(inputTokens, cacheReadTokens));
+  const uncachedInput = Math.max(0, inputTokens - clampedCacheRead);
+  const cacheReadRate = pricing.cacheRead ?? pricing.input * 0.1;
+  const tokenCost = (
+    uncachedInput * pricing.input +
+    clampedCacheRead * cacheReadRate +
+    outputTokens * pricing.output
+  ) / 1_000_000;
   return Number((tokenCost + vmCost).toFixed(8));
 }
 
-export function addModelUsage(usage: RunUsage, model: string, input: number, output: number) {
+export function addModelUsage(
+  usage: RunUsage,
+  model: string,
+  input: number,
+  output: number,
+  cacheRead = 0,
+) {
+  const clampedCacheRead = Math.max(0, Math.min(input, cacheRead));
   usage.inputTokens += input;
   usage.outputTokens += output;
-  usage.costUsd = Number((usage.costUsd + calculateCostUsd(model, input, output)).toFixed(8));
+  if (clampedCacheRead > 0) {
+    usage.cacheReadTokens = (usage.cacheReadTokens ?? 0) + clampedCacheRead;
+  }
+  usage.costUsd = Number(
+    (usage.costUsd + calculateCostUsd(model, input, output, 0, clampedCacheRead)).toFixed(8),
+  );
 }
 
 export function addVmUsage(usage: RunUsage, model: string, vmMs: number) {
@@ -540,6 +569,28 @@ export function modelContentParts(
   return undefined;
 }
 
+type ChatUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_cache_hit_tokens?: number;
+};
+
+function cachedChatTokens(usage?: ChatUsage): number {
+  const cached = usage?.prompt_tokens_details?.cached_tokens ?? usage?.prompt_cache_hit_tokens ?? 0;
+  return Number.isSafeInteger(cached) && cached > 0 && cached <= (usage?.prompt_tokens ?? 0) ? cached : 0;
+}
+
+const OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH = 64;
+function clampOpenAiPromptCacheKey(key?: string): string | undefined {
+  const trimmed = key?.trim();
+  if (!trimmed) return undefined;
+  const chars = Array.from(trimmed);
+  return chars.length <= OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH
+    ? trimmed
+    : chars.slice(0, OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH).join("");
+}
+
 async function* streamOpenAiChat(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -649,7 +700,7 @@ async function* streamOpenAiChat(
           }>;
         };
       }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      usage?: ChatUsage;
     };
     const choice = json.choices?.[0];
     const content = choice?.message?.content ?? "";
@@ -672,6 +723,7 @@ async function* streamOpenAiChat(
       type: "done",
       inputTokens: json.usage?.prompt_tokens ?? estimateInputFromMessages(req),
       outputTokens: json.usage?.completion_tokens ?? estimateTokens(content),
+      cacheReadTokens: cachedChatTokens(json.usage),
       stopReason: choice?.finish_reason ?? "stop",
     };
     return;
@@ -680,6 +732,7 @@ async function* streamOpenAiChat(
   const toolBuffers = new Map<number, { id: string; name: string; args: string }>();
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
   let emittedTextLen = 0;
   let stopReason = "stop";
 
@@ -697,7 +750,7 @@ async function* streamOpenAiChat(
           }>;
         };
       }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
+      usage?: ChatUsage;
     };
     try {
       chunk = JSON.parse(frame.data);
@@ -708,6 +761,7 @@ async function* streamOpenAiChat(
     if (chunk.usage) {
       inputTokens = chunk.usage.prompt_tokens ?? inputTokens;
       outputTokens = chunk.usage.completion_tokens ?? outputTokens;
+      cacheReadTokens = cachedChatTokens(chunk.usage);
     }
 
     const choice = chunk.choices?.[0];
@@ -751,6 +805,7 @@ async function* streamOpenAiChat(
     type: "done",
     inputTokens: inputTokens || estimateInputFromMessages(req),
     outputTokens: outputTokens || Math.max(1, Math.ceil(emittedTextLen / 4)),
+    cacheReadTokens,
     stopReason,
   };
 }
@@ -811,6 +866,10 @@ async function* streamOpenAiResponses(
   };
   const azure = endpoint.providerName === "azure";
   const codex = endpoint.protocol === "openai-codex";
+  const promptCacheKey = clampOpenAiPromptCacheKey(req.promptCacheKey);
+  if (promptCacheKey && !endpoint.providerName.startsWith("bedrock-openai-")) {
+    payload.prompt_cache_key = promptCacheKey;
+  }
   if (azure) {
     payload.reasoning = { effort: "low" };
     payload.store = false;
@@ -1067,6 +1126,13 @@ async function* streamAnthropicMessages(
     throw new ApiError(res.status, "provider_error", `Anthropic HTTP ${res.status}: ${errText}`);
   }
 
+  type AnthropicUsage = {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+
   if (!res.body || (res.headers.get("content-type") ?? "").includes("application/json")) {
     const json = (await res.json()) as {
       stop_reason?: string;
@@ -1077,7 +1143,7 @@ async function* streamAnthropicMessages(
         name?: string;
         input?: Record<string, unknown>;
       }>;
-      usage?: { input_tokens?: number; output_tokens?: number };
+      usage?: AnthropicUsage;
     };
     for (const block of json.content ?? []) {
       if (block.type === "text" && block.text) {
@@ -1093,17 +1159,24 @@ async function* streamAnthropicMessages(
         };
       }
     }
+    const rawInput = json.usage?.input_tokens ?? 0;
+    const cacheRead = Math.max(0, json.usage?.cache_read_input_tokens ?? 0);
+    const cacheWrite = Math.max(0, json.usage?.cache_creation_input_tokens ?? 0);
+    const totalInput = rawInput + cacheRead + cacheWrite;
     yield {
       type: "done",
-      inputTokens: json.usage?.input_tokens ?? estimateInputFromMessages(req),
+      inputTokens: totalInput || estimateInputFromMessages(req),
       outputTokens: json.usage?.output_tokens ?? 16,
+      cacheReadTokens: cacheRead,
       stopReason: json.stop_reason ?? "end_turn",
     };
     return;
   }
 
   const toolBlocks = new Map<number, { id: string; name: string; json: string }>();
-  let inputTokens = 0;
+  let rawInputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
   let outputTokens = 0;
   let stopReason = "end_turn";
 
@@ -1116,9 +1189,11 @@ async function* streamAnthropicMessages(
     }
     const type = String(ev.type ?? frame.event);
     if (type === "message_start" && ev.message && typeof ev.message === "object") {
-      const usage = (ev.message as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+      const usage = (ev.message as { usage?: AnthropicUsage }).usage;
       if (usage) {
-        inputTokens = usage.input_tokens ?? inputTokens;
+        rawInputTokens = usage.input_tokens ?? rawInputTokens;
+        cacheReadTokens = Math.max(0, usage.cache_read_input_tokens ?? cacheReadTokens);
+        cacheWriteTokens = Math.max(0, usage.cache_creation_input_tokens ?? cacheWriteTokens);
         outputTokens = usage.output_tokens ?? outputTokens;
       }
     } else if (type === "content_block_start" && ev.content_block && typeof ev.content_block === "object") {
@@ -1143,7 +1218,10 @@ async function* streamAnthropicMessages(
     } else if (type === "message_delta") {
       const d = ev.delta as { stop_reason?: string } | undefined;
       if (d?.stop_reason) stopReason = d.stop_reason;
-      const u = ev.usage as { output_tokens?: number } | undefined;
+      const u = ev.usage as AnthropicUsage | undefined;
+      if (u?.input_tokens !== undefined) rawInputTokens = u.input_tokens;
+      if (u?.cache_read_input_tokens !== undefined) cacheReadTokens = Math.max(0, u.cache_read_input_tokens);
+      if (u?.cache_creation_input_tokens !== undefined) cacheWriteTokens = Math.max(0, u.cache_creation_input_tokens);
       if (u?.output_tokens !== undefined) outputTokens = u.output_tokens;
     }
   }
@@ -1159,10 +1237,12 @@ async function* streamAnthropicMessages(
     };
   }
 
+  const totalInputTokens = rawInputTokens + cacheReadTokens + cacheWriteTokens;
   yield {
     type: "done",
-    inputTokens: inputTokens || estimateInputFromMessages(req),
+    inputTokens: totalInputTokens || estimateInputFromMessages(req),
     outputTokens: outputTokens || 1,
+    cacheReadTokens,
     stopReason,
   };
 }
@@ -1249,16 +1329,29 @@ async function* streamGeminiContent(
     throw new ApiError(res.status, "provider_error", `Gemini HTTP ${res.status}: ${errText}`);
   }
 
+  type GeminiUsageMetadata = {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    cachedContentTokenCount?: number;
+  };
+  const cachedGeminiTokens = (usageMeta?: GeminiUsageMetadata): number => {
+    const cached = usageMeta?.cachedContentTokenCount ?? 0;
+    return Number.isSafeInteger(cached) && cached > 0 && cached <= (usageMeta?.promptTokenCount ?? 0) ? cached : 0;
+  };
+
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens = 0;
 
   if (!res.body || (res.headers.get("content-type") ?? "").includes("application/json")) {
     const json = (await res.json()) as Record<string, unknown>;
+    const usageMeta = json.usageMetadata as GeminiUsageMetadata | undefined;
     yield* emitGeminiChunk(json);
     yield {
       type: "done",
-      inputTokens: estimateInputFromMessages(req),
-      outputTokens: 16,
+      inputTokens: usageMeta?.promptTokenCount ?? estimateInputFromMessages(req),
+      outputTokens: usageMeta?.candidatesTokenCount ?? 16,
+      cacheReadTokens: cachedGeminiTokens(usageMeta),
       stopReason: "STOP",
     };
     return;
@@ -1271,12 +1364,11 @@ async function* streamGeminiContent(
     } catch {
       continue;
     }
-    const usageMeta = chunk.usageMetadata as
-      | { promptTokenCount?: number; candidatesTokenCount?: number }
-      | undefined;
+    const usageMeta = chunk.usageMetadata as GeminiUsageMetadata | undefined;
     if (usageMeta) {
       inputTokens = usageMeta.promptTokenCount ?? inputTokens;
       outputTokens = usageMeta.candidatesTokenCount ?? outputTokens;
+      cacheReadTokens = cachedGeminiTokens(usageMeta);
     }
     yield* emitGeminiChunk(chunk);
   }
@@ -1285,6 +1377,7 @@ async function* streamGeminiContent(
     type: "done",
     inputTokens: inputTokens || estimateInputFromMessages(req),
     outputTokens: outputTokens || 1,
+    cacheReadTokens,
     stopReason: "STOP",
   };
 }
