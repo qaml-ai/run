@@ -250,21 +250,27 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     assert.equal(noCache.usage.cacheReadTokens, undefined);
   });
 
-  await t.test("getAutoCompactThreshold caps at 64_000 tokens", async () => {
-    const check = async (model: string, expected: number) => {
+  await t.test("getAutoCompactThreshold caps at 40_000 tokens and honors clamped compactThresholdTokens overrides", async () => {
+    const check = async (model: string, expected: number, override?: number | null) => {
       const res = await worker.fetch(`${origin}/_test/compact-threshold`, {
         method: "POST",
-        body: JSON.stringify({ model }),
+        body: JSON.stringify({ model, ...(override !== undefined ? { override } : {}) }),
       });
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { threshold: expected });
     };
-    await check("azure/gpt-6.1-terra", 64_000);
-    await check("azure/gpt-6.2-sol", 64_000);
-    await check("openai/gpt-4.1", 64_000);
-    await check("anthropic/claude-sonnet-4-0", 64_000);
-    await check("gemini/gemini-2.5-pro", 64_000);
-    await check("openai/gpt-4o", 64_000);
+    await check("azure/gpt-6.1-terra", 40_000);
+    await check("azure/gpt-6.2-sol", 40_000);
+    await check("openai/gpt-4.1", 40_000);
+    await check("anthropic/claude-sonnet-4-0", 40_000);
+    await check("gemini/gemini-2.5-pro", 40_000);
+    await check("openai/gpt-4o", 40_000);
+
+    // Custom per-agent compactThresholdTokens override (clamped to [8_000, Math.floor(ctx * 0.8)])
+    await check("azure/gpt-6.2-sol", 24_000, 24_000);
+    await check("azure/gpt-6.2-sol", 8_000, 2_500);
+    await check("openai/gpt-4o", Math.floor(128_000 * 0.8), 500_000);
+    await check("azure/gpt-6.2-sol", 40_000, null);
 
     const checkNeeds = async (payload: Record<string, unknown>, expected: boolean) => {
       const res = await worker.fetch(`${origin}/_test/needs-compact`, {
@@ -274,11 +280,11 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { needed: expected });
     };
-    await checkNeeds({ count: 7, tokensEst: 90_000, lastTokensEst: 1_000, threshold: 64_000, observedInputTokens: 120_000 }, false);
-    await checkNeeds({ count: 10, tokensEst: 70_000, lastTokensEst: 10_000, threshold: 64_000, excludeLast: true }, false);
-    await checkNeeds({ count: 10, tokensEst: 70_000, lastTokensEst: 10_000, threshold: 64_000 }, true);
-    await checkNeeds({ count: 10, tokensEst: 40_000, lastTokensEst: 2_000, threshold: 64_000, observedInputTokens: 63_000 }, false);
-    await checkNeeds({ count: 10, tokensEst: 40_000, lastTokensEst: 2_000, threshold: 64_000, observedInputTokens: 65_000 }, true);
+    await checkNeeds({ count: 7, tokensEst: 90_000, lastTokensEst: 1_000, threshold: 40_000, observedInputTokens: 120_000 }, false);
+    await checkNeeds({ count: 10, tokensEst: 45_000, lastTokensEst: 10_000, threshold: 40_000, excludeLast: true }, false);
+    await checkNeeds({ count: 10, tokensEst: 45_000, lastTokensEst: 10_000, threshold: 40_000 }, true);
+    await checkNeeds({ count: 10, tokensEst: 25_000, lastTokensEst: 2_000, threshold: 40_000, observedInputTokens: 39_000 }, false);
+    await checkNeeds({ count: 10, tokensEst: 25_000, lastTokensEst: 2_000, threshold: 40_000, observedInputTokens: 41_000 }, true);
   });
 
   await t.test("protocol stream parsers extract cacheReadTokens accurately without double-counting", async () => {
@@ -355,7 +361,10 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       builtins: [],
       tools: [{ name: "echo", description: "Echo", parameters: { type: "object", properties: {} }, url: `${mockUrl}/tool-echo` }],
       spendLimitUsd: 0.1,
+      compactThresholdTokens: 28_000,
     });
+    const agentState = await camel.agents.get("cached-sol-agent");
+    assert.equal(agentState.summary.compactThresholdTokens, 28_000);
 
     // Two model steps, each with 100k input (90k cached) + 500 output:
     // Without cache discount each step would cost $0.205 (tripping $0.10 spendLimitUsd after step 1!).

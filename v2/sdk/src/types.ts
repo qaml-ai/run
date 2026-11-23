@@ -122,6 +122,7 @@ export interface AgentConfig {
   branch?: string;
   spendLimitUsd?: number;
   idleTtlSeconds?: number;
+  compactThresholdTokens?: number;
   dreaming?: DreamingConfig;
 }
 export type UpsertAgentInput = AgentConfig;
@@ -178,6 +179,7 @@ export interface AgentSummary {
   instructions?: string;
   definition?: string | null;
   skills?: string[];
+  compactThresholdTokens?: number;
   status?: "idle" | "running" | (string & {});
   activeRunId?: string | null;
   messageCount?: number;

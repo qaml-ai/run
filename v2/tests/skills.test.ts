@@ -314,7 +314,10 @@ test("Skills API CRUD, tenant isolation, and end-to-end agent turn with read_ski
   });
 
   await new Promise<void>((resolve) => mockLlmServer.listen(0, "127.0.0.1", () => resolve()));
-  t.after(() => new Promise<void>((resolve) => mockLlmServer.close(() => resolve())));
+  t.after(() => {
+    mockLlmServer.closeAllConnections();
+    mockLlmServer.close();
+  });
   const addr = mockLlmServer.address();
   assert.ok(addr && typeof addr === "object");
   const mockLlmUrl = `http://127.0.0.1:${addr.port}/v1`;
@@ -332,6 +335,9 @@ test("Skills API CRUD, tenant isolation, and end-to-end agent turn with read_ski
         VAULT_SECRET: vaultSecret,
         DEFAULT_MODEL: "mock/default",
       },
+      r2_buckets: [
+        { binding: "MEDIA_BUCKET", bucket_name: "skills-test-media" },
+      ],
       durable_objects: {
         bindings: [
           { name: "TENANT_DO", class_name: "TenantDO" },

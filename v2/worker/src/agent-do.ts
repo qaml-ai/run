@@ -1947,6 +1947,15 @@ export class AgentDO extends DurableObject<Env> {
       branch: incoming.branch ?? existing?.branch ?? "refs/heads/main",
       spendLimitUsd: incoming.spendLimitUsd ?? existing?.spendLimitUsd ?? 10,
       idleTtlSeconds: incoming.idleTtlSeconds ?? existing?.idleTtlSeconds ?? 86400,
+      ...(incoming.compactThresholdTokens !== undefined
+        ? typeof incoming.compactThresholdTokens === "number" &&
+          Number.isFinite(incoming.compactThresholdTokens) &&
+          incoming.compactThresholdTokens > 0
+          ? { compactThresholdTokens: Math.floor(incoming.compactThresholdTokens) }
+          : {}
+        : existing?.compactThresholdTokens !== undefined
+          ? { compactThresholdTokens: existing.compactThresholdTokens }
+          : {}),
       dreaming: {
         enabled: incoming.dreaming?.enabled ?? existing?.dreaming.enabled ?? false,
         idleSeconds: incoming.dreaming?.idleSeconds ?? existing?.dreaming.idleSeconds ?? 3600,
@@ -2137,6 +2146,7 @@ export class AgentDO extends DurableObject<Env> {
       branch: cfg.branch,
       spendLimitUsd: cfg.spendLimitUsd,
       idleTtlSeconds: cfg.idleTtlSeconds,
+      ...(cfg.compactThresholdTokens !== undefined ? { compactThresholdTokens: cfg.compactThresholdTokens } : {}),
       dreaming: cfg.dreaming,
       status: this.activeRunId ? "running" : "idle",
       activeRunId: this.activeRunId,

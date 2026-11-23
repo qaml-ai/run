@@ -13,8 +13,9 @@ import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import { discoverMcpTools, invokeMcpTool, McpInputRequired, type DiscoveredMcpTool, type McpInputResponse } from "./mcp.ts";
+import { executePiReadFile } from "./pi-fs-env.ts";
 import { runCodemodeScript } from "./sandbox.ts";
-import { readSkillFile, searchSkills, type SkillRecord } from "./skills.ts";
+import { getSkillStore, readSkillFile, searchSkills, type SkillRecord } from "./skills.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import type { ToolApproval } from "./tool-identity.ts";
 import {
@@ -123,14 +124,18 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
   files: [
     {
       name: "read_file",
-      description: "Read file contents from the agent repository, optionally at an attachment’s commit.",
+      description:
+        "Read file contents from the agent repository (optionally at an attachment's commit) or virtual skill files under /.skills/<slug>/SKILL.md. Supports text files (bounded to 2000 lines / 50KB with 1-indexed offset & limit continuation) and images.",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "Relative file path in the repo" },
+          path: {
+            type: "string",
+            description: "Relative repo file path, /workspace/... path, or virtual skill path (/.skills/<slug>/SKILL.md)",
+          },
           at: { type: "string", description: "Ref or commit of the file version to read" },
-          offset: { type: "number" },
-          limit: { type: "number" },
+          offset: { type: "number", description: "Line number to start reading from (1-indexed)" },
+          limit: { type: "number", description: "Maximum number of lines to read" },
         },
         required: ["path"],
       },
@@ -619,7 +624,7 @@ export async function executeToolCall(
     const skills = ctx.getResolvedSkills
       ? await ctx.getResolvedSkills()
       : (ctx.config.skills?.length ?? 0) > 0
-        ? await getTenantStub(ctx.env, ctx.config.tenantId).resolveSkills(ctx.config.skills!)
+        ? await getSkillStore(ctx.env).resolveSkills(ctx.config.tenantId, ctx.config.skills!)
         : [];
     if (toolName === "read_skill") {
       return readSkillFile(skills, {
@@ -633,6 +638,23 @@ export async function executeToolCall(
       query: String(args.query ?? ""),
       skill: typeof args.skill === "string" ? args.skill : undefined,
       max_results: typeof args.max_results === "number" ? args.max_results : undefined,
+    });
+  }
+
+  // 3c. Bounded file reader powered by `@earendil-works/pi-durable` (`createReadTool`)
+  // Handles both CamelFS repository files (including `at` commit refs) and virtual `/.skills/...` paths
+  // without forcing repo provisioning when reading virtual skills.
+  if (toolName === "read_file") {
+    return executePiReadFile({
+      env: ctx.env,
+      tenantId: ctx.config.tenantId,
+      path: String(args.path ?? ""),
+      at: typeof args.at === "string" ? args.at : undefined,
+      offset: typeof args.offset === "number" ? args.offset : undefined,
+      limit: typeof args.limit === "number" ? args.limit : undefined,
+      signal: ctx.signal,
+      ensureRepo: () => ctx.ensureAgentRepo(),
+      getResolvedSkills: ctx.getResolvedSkills,
     });
   }
 
@@ -681,7 +703,6 @@ export async function executeToolCall(
 
   // 4. Built-in Repo File tools
   if (
-    toolName === "read_file" ||
     toolName === "view_image" ||
     toolName === "write_file" ||
     toolName === "edit_file" ||
@@ -706,16 +727,6 @@ export async function executeToolCall(
         { type: "text", text: `Repository image ${path} at commit ${file.commit}` },
         { type: "image", mimeType: header.mimeType, data: file.base64 },
       ] };
-    }
-
-    if (toolName === "read_file") {
-      const path = normalizeRepoPath(String(args.path ?? ""));
-      return cfs.read(lineage, {
-        at: typeof args.at === "string" ? args.at : branch,
-        path,
-        offset: typeof args.offset === "number" ? args.offset : undefined,
-        limit: typeof args.limit === "number" ? args.limit : undefined,
-      });
     }
 
     if (toolName === "write_file") {
@@ -956,6 +967,7 @@ export async function executeToolCall(
       instructions,
       builtins: childBuiltins,
       skills: defCfg?.skills ?? ctx.config.skills,
+      compactThresholdTokens: defCfg?.compactThresholdTokens ?? ctx.config.compactThresholdTokens,
       tools: defCfg?.tools,
       mcpServers: defCfg?.mcpServers,
       definitionSlug: defEntry?.slug ?? null,
@@ -1170,6 +1182,7 @@ async function upsertChildAgentInCluster(
     instructions: string;
     builtins: BuiltinSuite[];
     skills?: string[];
+    compactThresholdTokens?: number;
     tools?: AgentUpsertInput["tools"];
     mcpServers?: AgentUpsertInput["mcpServers"];
     definitionSlug?: string | null;
@@ -1206,6 +1219,7 @@ async function upsertChildAgentInCluster(
     definition: opts.definitionSlug ?? undefined,
     builtins: opts.builtins,
     skills: opts.skills,
+    compactThresholdTokens: opts.compactThresholdTokens,
     tools: opts.tools,
     mcpServers: opts.mcpServers,
     repoId: opts.repoId,

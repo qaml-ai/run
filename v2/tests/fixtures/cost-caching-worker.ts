@@ -32,8 +32,8 @@ export default {
       return Response.json({ costUsd, usage });
     }
     if (url.pathname === "/_test/compact-threshold" && request.method === "POST") {
-      const { model } = await request.json<{ model: string }>();
-      return Response.json({ threshold: getAutoCompactThreshold(model) });
+      const { model, override } = await request.json<{ model: string; override?: number | null }>();
+      return Response.json({ threshold: getAutoCompactThreshold(model, override) });
     }
     if (url.pathname === "/_test/needs-compact" && request.method === "POST") {
       const body = await request.json<{

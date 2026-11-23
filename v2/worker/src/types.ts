@@ -123,6 +123,7 @@ export interface AgentConfig {
   branch: string;
   spendLimitUsd: number;
   idleTtlSeconds: number;
+  compactThresholdTokens?: number;
   dreaming: DreamingConfig;
   createdAt: number;
   updatedAt: number;
@@ -143,6 +144,7 @@ export interface AgentUpsertInput {
   branch?: string;
   spendLimitUsd?: number;
   idleTtlSeconds?: number;
+  compactThresholdTokens?: number;
   dreaming?: Partial<DreamingConfig>;
   /** Optional first run prompt to create + start an agent in a single HTTP request. */
   prompt?: string;

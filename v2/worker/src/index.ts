@@ -57,7 +57,7 @@ import { recordOpsTenantRegistration, registerOpsRoutes } from "./ops-api.ts";
 import { executeStatelessRun, parseStatelessRunImages, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
-import { normalizeSkillSelectors, type SkillUpsertInput } from "./skills.ts";
+import { getSkillStore, normalizeSkillSelectors, type SkillUpsertInput } from "./skills.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
 import { VoiceCallDO } from "./voice-call-do.ts";
 import {
@@ -519,7 +519,7 @@ function extractSkillSlugParam(raw: string): string {
 app.get("/v2/skills", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
-  const skills = await getTenantStub(c.env, auth.tenantId).listSkills({
+  const skills = await getSkillStore(c.env).listSkills(auth.tenantId, {
     prefix: c.req.query("prefix") || undefined,
     tag: c.req.query("tag") || undefined,
   });
@@ -534,7 +534,7 @@ app.put("/v2/skills/:slug{.+}", async (c) => {
   if (!body || typeof body !== "object") {
     throw new ApiError(400, "invalid_request", "JSON request body is required");
   }
-  const out = await getTenantStub(c.env, auth.tenantId).upsertSkill(slug, body);
+  const out = await getSkillStore(c.env).upsertSkill(auth.tenantId, slug, body);
   return c.json(out);
 });
 
@@ -542,7 +542,7 @@ app.get("/v2/skills/:slug{.+}", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   const slug = extractSkillSlugParam(c.req.param("slug"));
-  const skill = await getTenantStub(c.env, auth.tenantId).getSkill(slug);
+  const skill = await getSkillStore(c.env).getSkill(auth.tenantId, slug);
   if (!skill) {
     throw new ApiError(404, "skill_not_found", `Skill '${slug}' not found`);
   }
@@ -553,7 +553,7 @@ app.delete("/v2/skills/:slug{.+}", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
   const slug = extractSkillSlugParam(c.req.param("slug"));
-  const res = await getTenantStub(c.env, auth.tenantId).deleteSkill(slug);
+  const res = await getSkillStore(c.env).deleteSkill(auth.tenantId, slug);
   return c.json({ ok: true, deleted: res.deleted });
 });
 
@@ -830,6 +830,16 @@ app.put("/v2/agents/:key", async (c) => {
   if (input.skills !== undefined) {
     input.skills = normalizeSkillSelectors(input.skills);
   }
+  if (input.compactThresholdTokens !== undefined) {
+    if (
+      typeof input.compactThresholdTokens !== "number" ||
+      !Number.isFinite(input.compactThresholdTokens) ||
+      input.compactThresholdTokens <= 0
+    ) {
+      throw new ApiError(400, "invalid_request", "`compactThresholdTokens` must be a positive number");
+    }
+    input.compactThresholdTokens = Math.floor(input.compactThresholdTokens);
+  }
   const identity = input.toolIdentity;
   if (identity !== undefined && (!identity || typeof identity.subject !== "string" || !identity.subject.trim() ||
     (identity.context !== undefined && (!identity.context || typeof identity.context !== "object" || Array.isArray(identity.context))))) {
@@ -902,6 +912,10 @@ app.put("/v2/agents/:key", async (c) => {
         branch: prep.branch,
         spendLimitUsd: input.spendLimitUsd ?? defCfg?.spendLimitUsd,
         idleTtlSeconds: input.idleTtlSeconds ?? defCfg?.idleTtlSeconds,
+        compactThresholdTokens:
+          input.compactThresholdTokens !== undefined
+            ? input.compactThresholdTokens
+            : defCfg?.compactThresholdTokens,
         dreaming: dreamingCfg,
       },
       hasInitialPrompt
@@ -2098,6 +2112,9 @@ export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
         mcpServers: defCfg?.mcpServers ?? [],
         builtins: defCfg?.builtins ?? [],
         skills: defCfg?.skills ?? [],
+        ...(defCfg?.compactThresholdTokens !== undefined
+          ? { compactThresholdTokens: defCfg.compactThresholdTokens }
+          : {}),
       });
 
       const replyUrl = row.sealedReplyUrl ? await openSecret(row.sealedReplyUrl, this.env.VAULT_SECRET) : null;

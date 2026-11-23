@@ -1,5 +1,5 @@
 import { sha256Hex } from "./crypto.ts";
-import { ApiError } from "./types.ts";
+import { ApiError, type Env } from "./types.ts";
 
 export const SKILL_SLUG_REGEX = /^[a-z0-9][a-z0-9/_-]{0,127}$/;
 export const SKILL_MAX_BYTES = 512 * 1024; // 512 KiB total per skill
@@ -837,4 +837,304 @@ export function searchSkills(
     truncated: results.length < rawHits.length,
     results,
   };
+}
+
+// ---- R2-Backed Tenant Skill Store (`MEDIA_BUCKET`) ----
+
+const R2_SKILLS_PREFIX = "skills/";
+const R2_CUSTOM_META_BUDGET_BYTES = 1800; // R2 enforces a 2048-byte limit across all customMetadata keys + values
+const fallbackMemorySkills = new Map<string, Map<string, SkillRecord>>();
+
+function skillObjectKey(tenantId: string, slug: string): string {
+  return `${R2_SKILLS_PREFIX}${tenantId}/${slug}.json`;
+}
+
+function tenantSkillsPrefix(tenantId: string): string {
+  return `${R2_SKILLS_PREFIX}${tenantId}/`;
+}
+
+export function toSkillSummary(record: SkillRecord): SkillSummary {
+  return {
+    slug: record.slug,
+    name: record.name,
+    description: record.description,
+    tags: [...record.tags],
+    version: record.version,
+    contentHash: record.contentHash,
+    files: Object.keys(record.files).sort(compareSlug),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function customMetadataByteLength(meta: Record<string, string>): number {
+  let total = 0;
+  for (const [k, v] of Object.entries(meta)) {
+    total += utf8ByteLength(k) + utf8ByteLength(v);
+  }
+  return total;
+}
+
+function buildSkillCustomMetadata(record: SkillRecord): Record<string, string> {
+  const fileNames = Object.keys(record.files).sort(compareSlug);
+  const full: Record<string, string> = {
+    slug: record.slug,
+    name: record.name,
+    description: record.description,
+    tags: JSON.stringify(record.tags),
+    version: String(record.version),
+    contentHash: record.contentHash,
+    files: JSON.stringify(fileNames),
+    createdAt: String(record.createdAt),
+    updatedAt: String(record.updatedAt),
+  };
+  if (customMetadataByteLength(full) <= R2_CUSTOM_META_BUDGET_BYTES) {
+    return full;
+  }
+  // Stay safely under R2's 2 KiB customMetadata cap; listSkills will read the JSON body when metaTruncated is set.
+  return {
+    slug: record.slug,
+    name: record.name.slice(0, 160),
+    description: record.description.slice(0, 240),
+    version: String(record.version),
+    contentHash: record.contentHash,
+    createdAt: String(record.createdAt),
+    updatedAt: String(record.updatedAt),
+    metaTruncated: "1",
+  };
+}
+
+function parseSkillSummaryFromCustomMetadata(
+  meta: Record<string, string> | undefined,
+): SkillSummary | null {
+  if (!meta || meta.metaTruncated === "1") return null;
+  const { slug, name, description, tags, version, contentHash, files, createdAt, updatedAt } = meta;
+  if (!slug || !name || !description || !version || !contentHash || !createdAt || !updatedAt) {
+    return null;
+  }
+  const parsedVersion = Number(version);
+  const parsedCreatedAt = Number(createdAt);
+  const parsedUpdatedAt = Number(updatedAt);
+  if (
+    !Number.isFinite(parsedVersion) ||
+    !Number.isFinite(parsedCreatedAt) ||
+    !Number.isFinite(parsedUpdatedAt)
+  ) {
+    return null;
+  }
+  try {
+    const parsedTags = tags ? (JSON.parse(tags) as unknown) : [];
+    const parsedFiles = files ? (JSON.parse(files) as unknown) : [];
+    if (!Array.isArray(parsedTags) || !Array.isArray(parsedFiles)) return null;
+    return {
+      slug,
+      name,
+      description,
+      tags: parsedTags.filter((t): t is string => typeof t === "string"),
+      version: parsedVersion,
+      contentHash,
+      files: parsedFiles.filter((f): f is string => typeof f === "string").sort(compareSlug),
+      createdAt: parsedCreatedAt,
+      updatedAt: parsedUpdatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSkillRecordJson(raw: string): SkillRecord | null {
+  try {
+    const obj = JSON.parse(raw) as Partial<SkillRecord> | null;
+    if (!obj || typeof obj !== "object" || typeof obj.slug !== "string" || typeof obj.markdown !== "string") {
+      return null;
+    }
+    return {
+      slug: obj.slug,
+      name: typeof obj.name === "string" ? obj.name : obj.slug,
+      description: typeof obj.description === "string" ? obj.description : "",
+      tags: Array.isArray(obj.tags) ? obj.tags.filter((t): t is string => typeof t === "string") : [],
+      version: typeof obj.version === "number" && Number.isFinite(obj.version) ? obj.version : 1,
+      contentHash: typeof obj.contentHash === "string" ? obj.contentHash : "",
+      markdown: obj.markdown,
+      files:
+        obj.files && typeof obj.files === "object" && !Array.isArray(obj.files)
+          ? (obj.files as Record<string, string>)
+          : {},
+      createdAt: typeof obj.createdAt === "number" && Number.isFinite(obj.createdAt) ? obj.createdAt : 0,
+      updatedAt: typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt) ? obj.updatedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tenant-isolated R2 skill storage backed by `env.MEDIA_BUCKET` under `skills/${tenantId}/${slug}.json`.
+ * Falls back to an in-memory map ONLY when `MEDIA_BUCKET` is absent in minimal unit test harnesses.
+ */
+export class R2SkillStore {
+  private readonly bucket: R2Bucket | undefined;
+
+  constructor(bucket?: R2Bucket) {
+    this.bucket = bucket;
+  }
+
+  private memoryMap(tenantId: string): Map<string, SkillRecord> {
+    let map = fallbackMemorySkills.get(tenantId);
+    if (!map) {
+      map = new Map<string, SkillRecord>();
+      fallbackMemorySkills.set(tenantId, map);
+    }
+    return map;
+  }
+
+  async upsertSkill(tenantId: string, slug: string, input: SkillUpsertInput): Promise<SkillSummary> {
+    const normalized = await normalizeAndValidateSkill(slug, input);
+    const existing = await this.getSkill(tenantId, normalized.slug);
+
+    if (existing && existing.contentHash === normalized.contentHash) {
+      return toSkillSummary(existing);
+    }
+
+    const now = Date.now();
+    const record: SkillRecord = {
+      slug: normalized.slug,
+      name: normalized.name,
+      description: normalized.description,
+      tags: normalized.tags,
+      version: (existing?.version ?? 0) + 1,
+      contentHash: normalized.contentHash,
+      markdown: normalized.markdown,
+      files: normalized.files,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    if (!this.bucket) {
+      this.memoryMap(tenantId).set(record.slug, record);
+      return toSkillSummary(record);
+    }
+
+    await this.bucket.put(skillObjectKey(tenantId, record.slug), JSON.stringify(record), {
+      httpMetadata: { contentType: "application/json; charset=utf-8" },
+      customMetadata: buildSkillCustomMetadata(record),
+    });
+
+    return toSkillSummary(record);
+  }
+
+  async getSkill(tenantId: string, slug: string): Promise<SkillRecord | null> {
+    const clean = validateSkillSlug(slug);
+    if (!this.bucket) {
+      return this.memoryMap(tenantId).get(clean) ?? null;
+    }
+    const obj = await this.bucket.get(skillObjectKey(tenantId, clean));
+    if (!obj) return null;
+    return parseSkillRecordJson(await obj.text());
+  }
+
+  async listSkills(
+    tenantId: string,
+    opts?: { prefix?: string; tag?: string },
+  ): Promise<SkillSummary[]> {
+    const prefixFilter = opts?.prefix?.trim() || "";
+    const tagFilter = opts?.tag?.trim() || "";
+
+    if (!this.bucket) {
+      const out: SkillSummary[] = [];
+      for (const rec of this.memoryMap(tenantId).values()) {
+        if (prefixFilter && !rec.slug.startsWith(prefixFilter)) continue;
+        if (tagFilter && !rec.tags.includes(tagFilter)) continue;
+        out.push(toSkillSummary(rec));
+      }
+      out.sort((a, b) => compareSlug(a.slug, b.slug));
+      return out;
+    }
+
+    const basePrefix = tenantSkillsPrefix(tenantId);
+    const listPrefix = prefixFilter && !prefixFilter.includes("..")
+      ? `${basePrefix}${prefixFilter.replace(/^\/+/, "")}`
+      : basePrefix;
+
+    const objects: R2Object[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.bucket.list({
+        prefix: listPrefix,
+        cursor,
+        limit: 1000,
+        include: ["customMetadata"],
+      });
+      objects.push(...page.objects);
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+
+    const jsonObjects = objects.filter((obj) => obj.key.startsWith(basePrefix) && obj.key.endsWith(".json"));
+    const summaries = await Promise.all(
+      jsonObjects.map(async (obj): Promise<SkillSummary | null> => {
+        const fromMeta = parseSkillSummaryFromCustomMetadata(obj.customMetadata);
+        if (fromMeta) return fromMeta;
+        const bodyObj = await this.bucket!.get(obj.key);
+        if (!bodyObj) return null;
+        const rec = parseSkillRecordJson(await bodyObj.text());
+        return rec ? toSkillSummary(rec) : null;
+      }),
+    );
+
+    const out: SkillSummary[] = [];
+    for (const s of summaries) {
+      if (!s) continue;
+      if (prefixFilter && !s.slug.startsWith(prefixFilter)) continue;
+      if (tagFilter && !s.tags.includes(tagFilter)) continue;
+      out.push(s);
+    }
+    out.sort((a, b) => compareSlug(a.slug, b.slug));
+    return out;
+  }
+
+  async deleteSkill(tenantId: string, slug: string): Promise<{ deleted: boolean }> {
+    const clean = validateSkillSlug(slug);
+    if (!this.bucket) {
+      return { deleted: this.memoryMap(tenantId).delete(clean) };
+    }
+    const key = skillObjectKey(tenantId, clean);
+    const existing = await this.bucket.head(key);
+    if (!existing) {
+      return { deleted: false };
+    }
+    await this.bucket.delete(key);
+    return { deleted: true };
+  }
+
+  async resolveSkills(tenantId: string, selectors: string[]): Promise<SkillRecord[]> {
+    const cleaned = selectors.map((s) => s.trim()).filter(Boolean);
+    if (cleaned.length === 0) return [];
+
+    const hasGlob = cleaned.some((s) => s.includes("*"));
+    if (!hasGlob) {
+      const uniqueSlugs = [...new Set(cleaned)];
+      const records = await Promise.all(
+        uniqueSlugs.map(async (slug) => {
+          if (!SKILL_SLUG_REGEX.test(slug)) return null;
+          return this.getSkill(tenantId, slug);
+        }),
+      );
+      return records
+        .filter((r): r is SkillRecord => r !== null)
+        .sort((a, b) => compareSlug(a.slug, b.slug));
+    }
+
+    const summaries = await this.listSkills(tenantId);
+    const matched = selectSkillsBySelectors(summaries, cleaned);
+    if (matched.length === 0) return [];
+
+    const records = await Promise.all(matched.map((m) => this.getSkill(tenantId, m.slug)));
+    return records
+      .filter((r): r is SkillRecord => r !== null)
+      .sort((a, b) => compareSlug(a.slug, b.slug));
+  }
+}
+
+export function getSkillStore(env: Pick<Env, "MEDIA_BUCKET">): R2SkillStore {
+  return new R2SkillStore(env.MEDIA_BUCKET);
 }

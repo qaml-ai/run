@@ -14,6 +14,7 @@ import { readLegacyInlineContent } from "./legacy-inline-images.ts";
 import {
   buildSkillsPromptBlock,
   compareSlug,
+  getSkillStore,
   parseSkillFrontmatter,
   SKILL_MAX_BYTES,
   SKILL_MAX_FILES,
@@ -485,8 +486,14 @@ function validateAgainstJsonSchema(
   return null;
 }
 
-export function getAutoCompactThreshold(model: string): number {
-  return Math.min(64_000, Math.floor(getModelContextWindow(model) * 0.6));
+export function getAutoCompactThreshold(model: string, override?: number | null): number {
+  const ctxWindow = getModelContextWindow(model);
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    const minThreshold = 8_000;
+    const maxThreshold = Math.max(minThreshold, Math.floor(ctxWindow * 0.8));
+    return Math.min(maxThreshold, Math.max(minThreshold, Math.floor(override)));
+  }
+  return Math.min(40_000, Math.floor(ctxWindow * 0.6));
 }
 
 /** Check whether active history after `prevSeq` exceeds the auto-compaction threshold. */
@@ -561,7 +568,7 @@ export async function runAgentTurn(
   adapter.emitEvent(params.runId, "run_started", { runId: params.runId, prompt: params.prompt, ...(params.actor ? { actor: params.actor } : {}) });
 
   // Count only prior messages and keep the new prompt along with the recent history.
-  const autoCompactThreshold = getAutoCompactThreshold(config.model);
+  const autoCompactThreshold = getAutoCompactThreshold(config.model, config.compactThresholdTokens);
   const prevCompaction = adapter.getLatestCompaction();
   const prevSeq = prevCompaction?.upToSeq ?? 0;
   if (needsAutoCompaction(adapter, prevSeq, autoCompactThreshold, { excludeLast: true })) {
@@ -693,7 +700,7 @@ async function resolveTurnSkills(env: Env, config: AgentConfig): Promise<SkillRe
   const selectors = config.skills ?? [];
   const [tenantSkills, workspaceSkills] = await Promise.all([
     selectors.length > 0
-      ? getTenantStub(env, config.tenantId).resolveSkills(selectors)
+      ? getSkillStore(env).resolveSkills(config.tenantId, selectors)
       : Promise.resolve<SkillRecord[]>([]),
     discoverWorkspaceSkills(env, config),
   ]);
@@ -1031,7 +1038,7 @@ async function continueTurnLoop(
     }
 
     const legacyEvents = adapter.getRunRecord(runId).idempotencyKey?.startsWith(V1_COMPAT_REQUEST_PREFIX);
-    const autoCompactThreshold = getAutoCompactThreshold(config.model);
+    const autoCompactThreshold = getAutoCompactThreshold(config.model, config.compactThresholdTokens);
     let lastStepInputTokens = 0;
     let lastMidRunCompactStep = -100;
     for (let step = state.startStep; step < maxSteps; step++) {
