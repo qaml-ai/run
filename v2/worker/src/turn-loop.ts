@@ -477,7 +477,30 @@ function validateAgainstJsonSchema(
 }
 
 export function getAutoCompactThreshold(model: string): number {
-  return Math.min(96_000, Math.floor(getModelContextWindow(model) * 0.6));
+  return Math.min(64_000, Math.floor(getModelContextWindow(model) * 0.6));
+}
+
+/** Check whether active history after `prevSeq` exceeds the auto-compaction threshold. */
+export function needsAutoCompaction(
+  adapter: Pick<TurnStorageAdapter, "measureMessagesAfter" | "listMessagesAfter">,
+  prevSeq: number,
+  threshold: number,
+  opts: { excludeLast?: boolean; observedInputTokens?: number } = {},
+): boolean {
+  const observed = opts.observedInputTokens ?? 0;
+  if (adapter.measureMessagesAfter) {
+    const measured = adapter.measureMessagesAfter(prevSeq);
+    if (measured.count <= 7) return false;
+    const estTokens = opts.excludeLast
+      ? Math.max(0, measured.tokensEst - measured.lastTokensEst)
+      : measured.tokensEst;
+    return estTokens > threshold || observed > threshold || measured.count > 200;
+  }
+  const existingMsgs = adapter.listMessagesAfter(prevSeq);
+  if (existingMsgs.length <= 7) return false;
+  const slice = opts.excludeLast ? existingMsgs.slice(0, -1) : existingMsgs;
+  const estTotal = slice.reduce((acc, m) => acc + m.tokensEst, 0);
+  return estTotal > threshold || observed > threshold;
 }
 
 export async function runAgentTurn(
@@ -532,17 +555,7 @@ export async function runAgentTurn(
   const autoCompactThreshold = getAutoCompactThreshold(config.model);
   const prevCompaction = adapter.getLatestCompaction();
   const prevSeq = prevCompaction?.upToSeq ?? 0;
-  let needsCompaction = false;
-  if (adapter.measureMessagesAfter) {
-    const measured = adapter.measureMessagesAfter(prevSeq);
-    const priorTokens = Math.max(0, measured.tokensEst - measured.lastTokensEst);
-    needsCompaction = measured.count > 7 && (priorTokens > autoCompactThreshold || measured.count > 200);
-  } else {
-    const existingMsgs = adapter.listMessagesAfter(prevSeq);
-    const estTotal = existingMsgs.slice(0, -1).reduce((acc, m) => acc + m.tokensEst, 0);
-    needsCompaction = existingMsgs.length > 7 && estTotal > autoCompactThreshold;
-  }
-  if (needsCompaction) {
+  if (needsAutoCompaction(adapter, prevSeq, autoCompactThreshold, { excludeLast: true })) {
     try {
       await performCompaction(adapter, {
         keepLast: 5,
@@ -880,6 +893,9 @@ async function continueTurnLoop(
     }
 
     const legacyEvents = adapter.getRunRecord(runId).idempotencyKey?.startsWith(V1_COMPAT_REQUEST_PREFIX);
+    const autoCompactThreshold = getAutoCompactThreshold(config.model);
+    let lastStepInputTokens = 0;
+    let lastMidRunCompactStep = -100;
     for (let step = state.startStep; step < maxSteps; step++) {
       if (state.signal.aborted) {
         throw new ApiError(499, "cancelled", "Run aborted");
@@ -906,6 +922,44 @@ async function continueTurnLoop(
           steerId: st.id,
           text: st.text,
         });
+      }
+
+      // Mid-run compaction: prevent long tool-call chains from accumulating unbounded context
+      // while guarding with a 4-step cooldown so prompt caching never thrashes on a single large recent result.
+      if (step > state.startStep && step - lastMidRunCompactStep >= 4) {
+        const currentCompaction = adapter.getLatestCompaction();
+        const currentPrevSeq = currentCompaction?.upToSeq ?? 0;
+        if (
+          needsAutoCompaction(adapter, currentPrevSeq, autoCompactThreshold, {
+            observedInputTokens: lastStepInputTokens,
+          })
+        ) {
+          try {
+            const compacted = await performCompaction(adapter, {
+              keepLast: 4,
+              signal: state.signal,
+              run: { id: runId, usage },
+            });
+            if (compacted.compactedCount > 0) {
+              lastStepInputTokens = 0;
+              lastMidRunCompactStep = step;
+            }
+          } catch (err) {
+            if (state.signal.aborted) throw err;
+            const apiErr = extractApiError(err);
+            if (
+              apiErr?.code === "insufficient_credits" ||
+              apiErr?.code === "run_spend_limit_exceeded" ||
+              apiErr?.code === "spend_limit_exceeded"
+            ) {
+              throw err;
+            }
+            // Non-fatal compaction failure mid-run: avoid retrying immediately and continue the turn.
+            lastMidRunCompactStep = step;
+          } finally {
+            checkRunSpend();
+          }
+        }
       }
 
       const compaction = adapter.getLatestCompaction();
@@ -953,6 +1007,7 @@ async function continueTurnLoop(
             args: chunk.args,
           });
         } else if (chunk.type === "done") {
+          lastStepInputTokens = chunk.inputTokens;
           const cacheRead = chunk.cacheReadTokens ?? 0;
           addModelUsage(usage, config.model, chunk.inputTokens, chunk.outputTokens, cacheRead);
           await adapter.recordModelUsage(runId, "response", chunk.inputTokens, chunk.outputTokens, usage, cacheRead);

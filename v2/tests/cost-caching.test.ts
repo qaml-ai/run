@@ -244,7 +244,7 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     assert.equal(noCache.usage.cacheReadTokens, undefined);
   });
 
-  await t.test("getAutoCompactThreshold caps at 96_000 tokens", async () => {
+  await t.test("getAutoCompactThreshold caps at 64_000 tokens", async () => {
     const check = async (model: string, expected: number) => {
       const res = await worker.fetch(`${origin}/_test/compact-threshold`, {
         method: "POST",
@@ -253,12 +253,26 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { threshold: expected });
     };
-    await check("azure/gpt-6.1-terra", 96_000);
-    await check("azure/gpt-6.2-sol", 96_000);
-    await check("openai/gpt-4.1", 96_000);
-    await check("anthropic/claude-sonnet-4-0", 96_000);
-    await check("gemini/gemini-2.5-pro", 96_000);
-    await check("openai/gpt-4o", 76_800); // 128_000 * 0.6
+    await check("azure/gpt-6.1-terra", 64_000);
+    await check("azure/gpt-6.2-sol", 64_000);
+    await check("openai/gpt-4.1", 64_000);
+    await check("anthropic/claude-sonnet-4-0", 64_000);
+    await check("gemini/gemini-2.5-pro", 64_000);
+    await check("openai/gpt-4o", 64_000);
+
+    const checkNeeds = async (payload: Record<string, unknown>, expected: boolean) => {
+      const res = await worker.fetch(`${origin}/_test/needs-compact`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { needed: expected });
+    };
+    await checkNeeds({ count: 7, tokensEst: 90_000, lastTokensEst: 1_000, threshold: 64_000, observedInputTokens: 120_000 }, false);
+    await checkNeeds({ count: 10, tokensEst: 70_000, lastTokensEst: 10_000, threshold: 64_000, excludeLast: true }, false);
+    await checkNeeds({ count: 10, tokensEst: 70_000, lastTokensEst: 10_000, threshold: 64_000 }, true);
+    await checkNeeds({ count: 10, tokensEst: 40_000, lastTokensEst: 2_000, threshold: 64_000, observedInputTokens: 63_000 }, false);
+    await checkNeeds({ count: 10, tokensEst: 40_000, lastTokensEst: 2_000, threshold: 64_000, observedInputTokens: 65_000 }, true);
   });
 
   await t.test("protocol stream parsers extract cacheReadTokens accurately without double-counting", async () => {

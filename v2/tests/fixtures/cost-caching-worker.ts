@@ -4,7 +4,7 @@ import {
   calculateCostUsd,
   streamModelResponse,
 } from "../../worker/src/providers.ts";
-import { getAutoCompactThreshold } from "../../worker/src/turn-loop.ts";
+import { getAutoCompactThreshold, needsAutoCompaction } from "../../worker/src/turn-loop.ts";
 import { emptyUsage, type Env, type ProviderCredentials } from "../../worker/src/types.ts";
 
 export { AgentDO, TenantDO };
@@ -34,6 +34,33 @@ export default {
     if (url.pathname === "/_test/compact-threshold" && request.method === "POST") {
       const { model } = await request.json<{ model: string }>();
       return Response.json({ threshold: getAutoCompactThreshold(model) });
+    }
+    if (url.pathname === "/_test/needs-compact" && request.method === "POST") {
+      const body = await request.json<{
+        count: number;
+        tokensEst: number;
+        lastTokensEst: number;
+        threshold: number;
+        excludeLast?: boolean;
+        observedInputTokens?: number;
+      }>();
+      const needed = needsAutoCompaction(
+        {
+          measureMessagesAfter: () => ({
+            count: body.count,
+            tokensEst: body.tokensEst,
+            lastTokensEst: body.lastTokensEst,
+          }),
+          listMessagesAfter: () => [],
+        },
+        0,
+        body.threshold,
+        {
+          excludeLast: body.excludeLast,
+          observedInputTokens: body.observedInputTokens,
+        },
+      );
+      return Response.json({ needed });
     }
     if (url.pathname === "/_test/stream" && request.method === "POST") {
       const body = await request.json<{
