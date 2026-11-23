@@ -158,8 +158,8 @@ test("completes GitHub OAuth flow, seals HttpOnly cookie, and augments /console/
     },
   };
 
-  // 1. Start GitHub OAuth
-  const start = await worker.fetch(new Request("https://run.camelai.com/console/auth/github"), env);
+  // 1. Start GitHub OAuth with ?ref= and ?from=
+  const start = await worker.fetch(new Request("https://run.camelai.com/console/auth/github?ref=run-slack&from=www.example.org"), env);
   assert.equal(start.status, 302);
   const authLocation = new URL(start.headers.get("location")!);
   assert.equal(authLocation.origin, "https://github.com");
@@ -167,17 +167,24 @@ test("completes GitHub OAuth flow, seals HttpOnly cookie, and augments /console/
   assert.equal(authLocation.searchParams.get("redirect_uri"), "https://run.camelai.com/console/auth/callback");
   const state = authLocation.searchParams.get("state")!;
   assert.ok(state.length > 10);
-  const stateCookie = cookiePair(getSetCookies(start), "cr_oauth_state");
+  const startCookies = getSetCookies(start);
+  const stateCookie = cookiePair(startCookies, "cr_oauth_state");
+  const sourceCookie = cookiePair(startCookies, "cr_oauth_source");
 
-  // 2. Callback exchanges code and mints encrypted session cookie
+  // 2. Callback exchanges code, forwards signupSource, and mints encrypted session cookie
   const cb = await worker.fetch(
     new Request(`https://run.camelai.com/console/auth/callback?code=gh_code_1&state=${encodeURIComponent(state)}`, {
-      headers: { Cookie: stateCookie },
+      headers: { Cookie: `${stateCookie}; ${sourceCookie}` },
     }),
     env,
   );
   assert.equal(cb.status, 302);
   assert.equal(cb.headers.get("location"), "/console/");
+  const oauthCall = v2Calls.find((c) => c.path === "/v2/admin/console/oauth-login");
+  assert.deepEqual((oauthCall?.body as Record<string, unknown>)?.signupSource, {
+    ref: "run-slack",
+    referrer: "example.org",
+  });
   const sessionCookie = cookiePair(getSetCookies(cb), "cr_console");
 
   const opened = await openConsoleSession(sessionCookie.slice("cr_console=".length), SESSION_SECRET);

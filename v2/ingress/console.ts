@@ -29,6 +29,7 @@ const COOKIE_NAME = "cr_console";
 const GITHUB_STATE_COOKIE = "cr_oauth_state";
 const GOOGLE_STATE_COOKIE = "cr_google_oauth";
 const NEXT_COOKIE = "cr_oauth_next";
+const SOURCE_COOKIE = "cr_oauth_source";
 const CONSOLE_HEADER = "x-agent-runtime-console";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 const OAUTH_STATE_TTL_SECONDS = 600;
@@ -198,6 +199,44 @@ function clearSessionCookies(url: URL): string[] {
   ];
 }
 
+const SIGNUP_REF_RE = /^[a-z0-9][a-z0-9._/-]{0,63}$/;
+const SIGNUP_HOST_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+interface KeptSignupSource {
+  ref?: string;
+  referrer?: string;
+}
+
+function browserRefusedMeasurement(request: Request): boolean {
+  return request.headers.get("sec-gpc") === "1";
+}
+
+function parseSignupSource(input: { ref?: unknown; from?: unknown; referrer?: unknown }, refused = false): KeptSignupSource {
+  const ref = typeof input.ref === "string" ? input.ref.trim().toLowerCase() : "";
+  const rawHost =
+    typeof input.referrer === "string"
+      ? input.referrer.trim().toLowerCase().replace(/^www\./, "")
+      : typeof input.from === "string"
+        ? input.from.trim().toLowerCase().replace(/^www\./, "")
+        : "";
+  return {
+    ...(SIGNUP_REF_RE.test(ref) ? { ref } : {}),
+    ...(!refused && SIGNUP_HOST_RE.test(rawHost) ? { referrer: rawHost } : {}),
+  };
+}
+
+function decodeSourceCookie(raw: string | undefined): KeptSignupSource | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(raw)) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    const obj = parsed as { ref?: unknown; referrer?: unknown; from?: unknown };
+    return parseSignupSource({ ref: obj.ref, referrer: obj.referrer ?? obj.from }, false);
+  } catch {
+    return undefined;
+  }
+}
+
 function safeNextPath(raw: string | null | undefined): string | undefined {
   if (!raw) return undefined;
   if (/^\/(?:console|ops)(?:\/[^\s]*)?$/.test(raw) && !raw.startsWith("/console//") && !raw.startsWith("/ops//")) {
@@ -360,7 +399,14 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
     authorize.searchParams.set("allow_signup", "true");
 
     const next = safeNextPath(url.searchParams.get("next"));
-    const cookiesToSet = [buildCookie(GITHUB_STATE_COOKIE, state, url, OAUTH_STATE_TTL_SECONDS, "/console/auth")];
+    const source = parseSignupSource(
+      { ref: url.searchParams.get("ref") ?? undefined, from: url.searchParams.get("from") ?? undefined },
+      browserRefusedMeasurement(request),
+    );
+    const cookiesToSet = [
+      buildCookie(GITHUB_STATE_COOKIE, state, url, OAUTH_STATE_TTL_SECONDS, "/console/auth"),
+      buildCookie(SOURCE_COOKIE, encodeURIComponent(JSON.stringify(source)), url, OAUTH_STATE_TTL_SECONDS, "/console/auth"),
+    ];
     if (next) {
       cookiesToSet.push(buildCookie(NEXT_COOKIE, encodeURIComponent(next), url, OAUTH_STATE_TTL_SECONDS, "/console/auth"));
     }
@@ -372,6 +418,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
     const clear = [
       buildCookie(GITHUB_STATE_COOKIE, "", url, 0, "/console/auth"),
       buildCookie(NEXT_COOKIE, "", url, 0, "/console/auth"),
+      buildCookie(SOURCE_COOKIE, "", url, 0, "/console/auth"),
     ];
     if (!hasAuthBackend || !env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) {
       return failAuthRedirect("GitHub sign-in is not configured", clear);
@@ -381,6 +428,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
     const state = url.searchParams.get("state") ?? "";
     const code = url.searchParams.get("code") ?? "";
     const next = safeNextPath(decodeURIComponent(reqCookies[NEXT_COOKIE] ?? ""));
+    const signupSource = decodeSourceCookie(reqCookies[SOURCE_COOKIE]);
 
     if (!state || !expected || !constantTimeEqual(state, expected)) {
       return failAuthRedirect("Sign-in expired or was tampered with; try again", clear);
@@ -436,6 +484,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
         email: verifiedEmail,
         login: user.login,
         name: user.name ?? user.login,
+        ...(signupSource !== undefined ? { signupSource } : {}),
       });
       if (!acct.ok) throw new Error(acct.message);
 
@@ -485,8 +534,13 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
       authorize.searchParams.set("prompt", "select_account");
 
       const next = safeNextPath(url.searchParams.get("next"));
+      const source = parseSignupSource(
+        { ref: url.searchParams.get("ref") ?? undefined, from: url.searchParams.get("from") ?? undefined },
+        browserRefusedMeasurement(request),
+      );
       const cookiesToSet = [
         buildCookie(GOOGLE_STATE_COOKIE, `${state}.${nonce}.${verifier}`, url, OAUTH_STATE_TTL_SECONDS, "/console/auth"),
+        buildCookie(SOURCE_COOKIE, encodeURIComponent(JSON.stringify(source)), url, OAUTH_STATE_TTL_SECONDS, "/console/auth"),
       ];
       if (next) {
         cookiesToSet.push(buildCookie(NEXT_COOKIE, encodeURIComponent(next), url, OAUTH_STATE_TTL_SECONDS, "/console/auth"));
@@ -502,6 +556,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
     const clear = [
       buildCookie(GOOGLE_STATE_COOKIE, "", url, 0, "/console/auth"),
       buildCookie(NEXT_COOKIE, "", url, 0, "/console/auth"),
+      buildCookie(SOURCE_COOKIE, "", url, 0, "/console/auth"),
     ];
     if (!hasAuthBackend || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
       return failAuthRedirect("Google sign-in is not configured", clear);
@@ -511,6 +566,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
     const state = url.searchParams.get("state") ?? "";
     const code = url.searchParams.get("code") ?? "";
     const next = safeNextPath(decodeURIComponent(reqCookies[NEXT_COOKIE] ?? ""));
+    const signupSource = decodeSourceCookie(reqCookies[SOURCE_COOKIE]);
 
     if (!state || !expected || !nonce || !verifier || !constantTimeEqual(state, expected)) {
       return failAuthRedirect("Sign-in expired or was tampered with; try again", clear);
@@ -573,6 +629,7 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
         email: claims.email,
         login: claims.email,
         name: typeof claims.name === "string" ? claims.name : claims.email,
+        ...(signupSource !== undefined ? { signupSource } : {}),
       });
       if (!acct.ok) throw new Error(acct.message);
 
@@ -650,11 +707,18 @@ export async function handleConsoleRequest(request: Request, env: ConsoleEnv): P
       password?: unknown;
       name?: unknown;
       next?: unknown;
+      ref?: unknown;
+      from?: unknown;
     } | null;
+    const signupSource = parseSignupSource(
+      { ref: body?.ref, from: body?.from },
+      browserRefusedMeasurement(request),
+    );
     const acct = await callV2AdminAccount<AdminAccountResult>(env, url.origin, "/v2/admin/console/password-signup", {
       email: body?.email,
       password: body?.password,
       name: body?.name,
+      signupSource,
     });
     if (!acct.ok) {
       return jsonError(acct.status, acct.code, acct.message);

@@ -3,6 +3,7 @@ import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
 import { DEFAULT_MODEL_ID, calculateCostUsd } from "./providers.ts";
+import { consumeInfraCredit } from "./ops-metadata.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   buildToolCatalog,
@@ -1579,18 +1580,47 @@ export class AgentDO extends DurableObject<Env> {
         primaryRecord.usage.vmMs > 0 ||
         primaryRecord.usage.costUsd > 0
       ) {
-        await getTenantStub(this.env, cfg.tenantId)
+        const tenantStub = getTenantStub(this.env, cfg.tenantId);
+        const refId = `run:${primaryRecord.id}`;
+        const isByok = primaryRecord.usage.byok === true;
+        let platformCostUsd = primaryRecord.usage.costUsd;
+
+        if (isByok) {
+          // BYOK runs NEVER debit platform balance for LLM tokens.
+          // Infra charges (e.g. VM seconds) draw from infra-only free credit first.
+          const vmCostUsd = calculateCostUsd("mock", 0, 0, primaryRecord.usage.vmMs, 0);
+          let uncoveredInfraUsd = vmCostUsd;
+          if (vmCostUsd > 0) {
+            const infra = await consumeInfraCredit(this.env, cfg.tenantId, vmCostUsd, refId).catch(() => ({
+              coveredUsd: 0,
+              uncoveredUsd: vmCostUsd,
+              remainingUsd: 0,
+            }));
+            uncoveredInfraUsd = infra.uncoveredUsd;
+          }
+          if (uncoveredInfraUsd > 0) {
+            // Never allow a BYOK run to drive platform balanceUsd negative (even against a warm TenantDO).
+            const profile = await tenantStub.getProfile().catch(() => null);
+            const availableBalance = Math.max(0, profile?.balanceUsd ?? 0);
+            platformCostUsd = Number(Math.min(availableBalance, uncoveredInfraUsd).toFixed(8));
+          } else {
+            platformCostUsd = 0;
+          }
+        }
+
+        await tenantStub
           .settleUsage({
-            refId: `run:${primaryRecord.id}`,
+            refId,
             model: cfg.model,
             inputTokens: primaryRecord.usage.inputTokens,
             outputTokens: primaryRecord.usage.outputTokens,
             cacheReadTokens: primaryRecord.usage.cacheReadTokens ?? 0,
             vmMs: primaryRecord.usage.vmMs,
-            costUsd: primaryRecord.usage.costUsd,
+            costUsd: platformCostUsd,
             note: `Agent ${cfg.key} (${cfg.id})`,
             agentId: cfg.id,
             actor: primaryRecord.actor ?? undefined,
+            ...(isByok ? { byok: true } : {}),
           })
           .catch(() => {});
       }
@@ -2103,7 +2133,18 @@ export class AgentDO extends DurableObject<Env> {
                 COUNT(DISTINCT CASE WHEN actor IS NOT NULL AND actor != '' THEN actor END) AS end_users,
                 MAX(started_at) AS last_at
          FROM runs
-         WHERE started_at >= ?1 AND started_at < ?2 AND status != 'cancelled'`,
+         WHERE started_at >= ?1
+           AND started_at < ?2
+           AND (
+             status IN ('completed', 'input_required')
+             OR (
+               status != 'cancelled'
+               AND (
+                 COALESCE(CAST(json_extract(usage_json, '$.inputTokens') AS INTEGER), 0) > 0
+                 OR COALESCE(CAST(json_extract(usage_json, '$.outputTokens') AS INTEGER), 0) > 0
+               )
+             )
+           )`,
         fromMs,
         untilMs,
       )

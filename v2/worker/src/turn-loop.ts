@@ -5,6 +5,7 @@ import {
   addModelUsage,
   addVmUsage,
   getModelContextWindow,
+  resolveTenantByokProvider,
   streamModelResponse,
   type ConversationMessage,
 } from "./providers.ts";
@@ -538,8 +539,26 @@ export async function runAgentTurn(
   const usage = spendLimit === null ? emptyUsage() : adapter.getRunRecord(params.runId).usage;
   if (spendLimit !== null && usage.costUsd >= spendLimit) throw runSpendLimitError(spendLimit);
 
+  // Resolve whether this run uses a tenant-configured BYOK provider key.
+  // BYOK runs never consume platform LLM credits and are never blocked on $0 platform balance.
+  const effectiveScope =
+    params.prefetchedProvider?.keyScope !== undefined
+      ? (params.prefetchedProvider.keyScope ?? null)
+      : (config.keyScope ?? null);
+  const { isByok, prefetchedProvider: resolvedProvider } = await resolveTenantByokProvider(
+    adapter.env,
+    config.tenantId,
+    config.model,
+    params.prefetchedProvider,
+    effectiveScope,
+  );
+  if (isByok) {
+    usage.byok = true;
+  }
+
   // Platform apps authorize each caller themselves. Their shared reserve meters usage.
-  if (!config.model.startsWith("mock") && !platformCreditReserve(adapter.env, config.tenantId)) {
+  // Platform LLM runs require positive balanceUsd; infra-only credits cannot fund platform LLMs.
+  if (!config.model.startsWith("mock") && !isByok && !platformCreditReserve(adapter.env, config.tenantId)) {
     const balanceUsd =
       params.prefetchedBalanceUsd !== undefined
         ? params.prefetchedBalanceUsd
@@ -595,7 +614,7 @@ export async function runAgentTurn(
     filesChangedSet: new Set<string>(),
     usage,
     signal: params.signal,
-    prefetchedProvider: params.prefetchedProvider,
+    prefetchedProvider: resolvedProvider,
   });
 }
 

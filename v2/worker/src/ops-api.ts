@@ -36,6 +36,8 @@ import {
   type AdminRevenue,
   type AdminRevenueDay,
   type AdminRevenueMonth,
+  type AdminSource,
+  type AdminSourceKind,
   type AdminSignals,
   type AdminSpendAccount,
   type AdminSpendDay,
@@ -49,6 +51,14 @@ import {
 import { getAgentStub } from "./agent-do.ts";
 import { verifyAdminHeader } from "./auth.ts";
 import { listAllOAuthGrants, listTenantOAuthGrants, type OAuthGrantRecord } from "./oauth.ts";
+import {
+  getInfraCredit,
+  grantInfraCredit,
+  loadAllSignupSources,
+  normalizeSignupSource,
+  type SignupSource,
+  type StoredSignupSource,
+} from "./ops-metadata.ts";
 import { getTenantStub, type OpsRegisteredTenant, type TenantOpsSnapshot } from "./tenant-do.ts";
 import { ApiError, type Env } from "./types.ts";
 
@@ -193,11 +203,52 @@ function accountNameOf(t: HydratedTenant): AdminAccountName {
   };
 }
 
+function isStarterGrantLedgerEntry(entry: { kind: string; refId: string }): boolean {
+  return entry.kind === "grant" || entry.refId.startsWith("starter_grant:");
+}
+
+function effectiveLedgerTotals(snapshot: TenantOpsSnapshot): {
+  purchasedUsd: number;
+  grantedUsd: number;
+  refundedUsd: number;
+  usageUsd: number;
+  firstTopupAt: number | null;
+} {
+  let reclassifiedGrantUsd = 0;
+  let earliestPaidTopupAt: number | null = null;
+  let sawAnyPaidEntry = false;
+  for (const entry of snapshot.ledger) {
+    if ((entry.kind === "topup" || entry.kind === "purchase") && entry.amountUsd > 0) {
+      if (isStarterGrantLedgerEntry(entry)) {
+        reclassifiedGrantUsd += entry.amountUsd;
+      } else {
+        sawAnyPaidEntry = true;
+        earliestPaidTopupAt =
+          earliestPaidTopupAt === null ? entry.createdAt : Math.min(earliestPaidTopupAt, entry.createdAt);
+      }
+    }
+  }
+  const purchasedUsd = Math.max(0, Number((snapshot.ledgerSummary.purchasedUsd - reclassifiedGrantUsd).toFixed(8)));
+  const grantedUsd = Math.max(0, Number((snapshot.ledgerSummary.grantedUsd + reclassifiedGrantUsd).toFixed(8)));
+  const firstTopupAt =
+    reclassifiedGrantUsd > 0
+      ? (sawAnyPaidEntry ? earliestPaidTopupAt : null)
+      : snapshot.ledgerSummary.firstTopupAt;
+  return {
+    purchasedUsd,
+    grantedUsd,
+    refundedUsd: snapshot.ledgerSummary.refundedUsd,
+    usageUsd: snapshot.ledgerSummary.usageUsd,
+    firstTopupAt,
+  };
+}
+
 function payerOf(t: HydratedTenant): AdminPayer {
   if (t.kind === "operator") return "operator";
   if (t.staff) return "staff";
-  if (t.snapshot.ledgerSummary.purchasedUsd - t.snapshot.ledgerSummary.refundedUsd > 0) return "paying";
-  if (t.snapshot.ledgerSummary.grantedUsd > 0 || t.snapshot.profile.balanceUsd > 0) return "free";
+  const ledger = effectiveLedgerTotals(t.snapshot);
+  if (ledger.purchasedUsd - ledger.refundedUsd > 0) return "paying";
+  if (ledger.grantedUsd > 0 || t.snapshot.profile.balanceUsd > 0) return "free";
   return "unbilled";
 }
 
@@ -475,19 +526,19 @@ function mcpSignupAttributionMap(
   return out;
 }
 
-function buildAcquisition(
-  tenants: HydratedTenant[],
-  grants: OAuthGrantRecord[],
-  rawDays: string,
-  now = Date.now(),
-): AdminAcquisition {
-  const win = parseAdminWindow(rawDays, now);
-  const dates = windowDates(win.from, win.days);
-  const counted = tenants.filter((t) => t.counted && t.createdAt >= win.from && t.createdAt < win.until);
-  const plugins = mcpSignupAttributionMap(tenants, grants, win.from, win.until);
+function classifyAcquisitionSource(
+  stored: SignupSource | null | undefined,
+): [string, AdminSourceKind] {
+  if (!stored) return ["Not captured", "not_captured"];
+  const normalized = normalizeSignupSource(stored);
+  if (!normalized) return ["Not captured", "not_captured"];
+  if (normalized.ref) return [normalized.ref, "ref"];
+  if (normalized.referrer) return [normalized.referrer, "referrer"];
+  return ["Direct", "direct"];
+}
 
-  type SourceRow = AdminAcquisition["sources"][number];
-  const blank = (source: string, kind: SourceRow["kind"]): SourceRow => ({
+function blankAcquisitionRow(source: string, kind: AdminSourceKind): AdminSource {
+  return {
     source,
     kind,
     signups: 0,
@@ -496,51 +547,77 @@ function buildAcquisition(
     active_two_days: 0,
     paying: 0,
     median_days_to_first_run: null,
-  });
+  };
+}
 
-  const sources = new Map<string, SourceRow>();
-  const waits = new Map<SourceRow, number[]>();
-  const daily = new Map<string, Map<string, number>>(dates.map((d) => [d, new Map()]));
-  const total = blank("All", "direct");
+function buildAcquisition(
+  tenants: HydratedTenant[],
+  grants: OAuthGrantRecord[],
+  rawDays: string,
+  r2Sources: Map<string, StoredSignupSource> = new Map(),
+  now = Date.now(),
+): AdminAcquisition {
+  const win = parseAdminWindow(rawDays, now);
+  const dates = windowDates(win.from, win.days);
+  const counted = tenants.filter((t) => t.counted && t.createdAt >= win.from && t.createdAt < win.until);
+  const plugins = mcpSignupAttributionMap(tenants, grants, win.from, win.until);
+
+  let recordedSinceMs: number | null = null;
+  for (const t of tenants) {
+    if (!t.counted) continue;
+    const stored = r2Sources.get(t.reg.tenantId);
+    const hasSource = Boolean(stored || t.reg.signupSource);
+    if (hasSource) {
+      const ts = stored ? Math.min(t.createdAt, stored.recordedAt) : t.createdAt;
+      recordedSinceMs = recordedSinceMs === null ? ts : Math.min(recordedSinceMs, ts);
+    }
+  }
+
+  const sources = new Map<string, AdminSource>();
+  const daily = new Map<string, Map<string, number>>(dates.map((date) => [date, new Map()]));
+  const waits = new Map<AdminSource, number[]>();
+  const total = blankAcquisitionRow("All", "direct");
 
   for (const t of counted) {
-    const plugin = plugins.get(t.reg.tenantId);
-    const label = plugin ? MCP_CLIENT_LABELS[plugin.kind] : "Not captured";
-    const kind: SourceRow["kind"] = plugin ? "plugin" : "not_captured";
-    const key = `${kind}:${label}`;
-    let row = sources.get(key);
-    if (!row) {
-      row = blank(label, kind);
-      sources.set(key, row);
-    }
-
+    const signupDay = utcDate(t.createdAt);
     const activeDays = tenantActiveDays(t);
     const sorted = [...activeDays].sort();
     const madeAgent = t.snapshot.totalAgents > 0 || sorted.length > 0;
     const isActivated = sorted.length > 0;
-    const isTwoDays = activeDays.size >= 2;
-    const isPaying = t.snapshot.ledgerSummary.purchasedUsd - t.snapshot.ledgerSummary.refundedUsd > 0;
-    const firstDelta = isActivated
+    const ledger = effectiveLedgerTotals(t.snapshot);
+    const isPaying = ledger.purchasedUsd - ledger.refundedUsd > 0;
+    const deltaDays = isActivated
       ? Math.max(0, Math.round((Date.parse(`${sorted[0]!}T00:00:00Z`) - startOfUtcDay(t.createdAt)) / DAY_MS))
       : null;
+
+    const plugin = plugins.get(t.reg.tenantId);
+    const stored = r2Sources.get(t.reg.tenantId)?.source ?? t.reg.signupSource ?? null;
+    const [label, kind]: [string, AdminSourceKind] = plugin
+      ? [MCP_CLIENT_LABELS[plugin.kind], "plugin"]
+      : classifyAcquisitionSource(stored);
+    const key = `${kind}:${label}`;
+    let row = sources.get(key);
+    if (!row) {
+      row = blankAcquisitionRow(label, kind);
+      sources.set(key, row);
+    }
 
     for (const target of [row, total]) {
       target.signups++;
       if (madeAgent) target.made_agent++;
       if (isActivated) target.activated++;
-      if (isTwoDays) target.active_two_days++;
+      if (activeDays.size >= 2) target.active_two_days++;
       if (isPaying) target.paying++;
-      if (firstDelta !== null) {
+      if (deltaDays !== null) {
         const list = waits.get(target) ?? [];
-        list.push(firstDelta);
+        list.push(deltaDays);
         waits.set(target, list);
       }
     }
 
-    const signupDay = utcDate(t.createdAt);
-    const dayCounts = daily.get(signupDay);
-    if (dayCounts) {
-      dayCounts.set(key, (dayCounts.get(key) ?? 0) + 1);
+    const dayMap = daily.get(signupDay);
+    if (dayMap) {
+      dayMap.set(key, (dayMap.get(key) ?? 0) + 1);
     }
   }
 
@@ -557,13 +634,13 @@ function buildAcquisition(
     sources: ranked.map(([, row]) => row),
     total,
     daily: dates.map((date) => {
-      const counts = daily.get(date);
+      const countsMap = daily.get(date)!;
       return {
         date,
-        counts: ranked.map(([key]) => counts?.get(key) ?? 0),
+        counts: ranked.map(([key]) => countsMap.get(key) ?? 0),
       };
     }),
-    recorded_since: null,
+    recorded_since: recordedSinceMs !== null ? new Date(recordedSinceMs).toISOString() : null,
   };
 }
 
@@ -831,7 +908,7 @@ function buildUsage(
         last_active: lastActive,
         models: topModels,
         balance: toMicros(t.snapshot.profile.balanceUsd),
-        purchased: toMicros(Math.max(0, t.snapshot.ledgerSummary.purchasedUsd - t.snapshot.ledgerSummary.refundedUsd)),
+        purchased: toMicros(Math.max(0, effectiveLedgerTotals(t.snapshot).purchasedUsd - effectiveLedgerTotals(t.snapshot).refundedUsd)),
       });
     }
   }
@@ -954,23 +1031,24 @@ function buildRevenue(tenants: HydratedTenant[], rawDays: string, now = Date.now
   const freeRows: AdminFreeCreditAccount[] = [];
 
   for (const t of tenants) {
-    if (t.staff) continue;
-    const netPurchasedUsd = Math.max(0, t.snapshot.ledgerSummary.purchasedUsd - t.snapshot.ledgerSummary.refundedUsd);
-    const grantedUsd = Math.max(0, t.snapshot.ledgerSummary.grantedUsd);
+    if (t.staff || t.kind === "operator" || t.kind === "operator_made") continue;
+    const ledgerTotals = effectiveLedgerTotals(t.snapshot);
+    const netPurchasedUsd = Math.max(0, ledgerTotals.purchasedUsd - ledgerTotals.refundedUsd);
+    const grantedUsd = Math.max(0, ledgerTotals.grantedUsd);
     const balanceUsd = Math.max(0, t.snapshot.profile.balanceUsd);
     const isPaying = netPurchasedUsd > 0;
     if (isPaying) payingAccounts++;
 
     // Free credit is spent first; remaining balance up to netPurchasedUsd is purchased, rest is free.
-    const freeLeftUsd = Math.max(0, Math.min(grantedUsd, grantedUsd - t.snapshot.ledgerSummary.usageUsd, balanceUsd));
+    const freeLeftUsd = Math.max(0, Math.min(grantedUsd, grantedUsd - ledgerTotals.usageUsd, balanceUsd));
     const purchasedLeftUsd = Math.max(0, balanceUsd - freeLeftUsd);
     outstandingPurchased += toMicros(purchasedLeftUsd);
     outstandingFree += toMicros(freeLeftUsd);
 
-    if (t.snapshot.ledgerSummary.firstTopupAt !== null) {
-      if (t.snapshot.ledgerSummary.firstTopupAt >= win.from && t.snapshot.ledgerSummary.firstTopupAt < win.until) {
+    if (ledgerTotals.firstTopupAt !== null) {
+      if (ledgerTotals.firstTopupAt >= win.from && ledgerTotals.firstTopupAt < win.until) {
         firstPurchasesCur++;
-      } else if (t.snapshot.ledgerSummary.firstTopupAt >= win.previousFrom && t.snapshot.ledgerSummary.firstTopupAt < win.from) {
+      } else if (ledgerTotals.firstTopupAt >= win.previousFrom && ledgerTotals.firstTopupAt < win.from) {
         firstPurchasesPrev++;
       }
     }
@@ -980,7 +1058,7 @@ function buildRevenue(tenants: HydratedTenant[], rawDays: string, now = Date.now
       const entryMonth = entryDate.slice(0, 7);
       const amtMicros = toMicros(Math.abs(entry.amountUsd));
 
-      if ((entry.kind === "topup" || entry.kind === "purchase") && entry.amountUsd > 0) {
+      if ((entry.kind === "topup" || entry.kind === "purchase") && entry.amountUsd > 0 && !isStarterGrantLedgerEntry(entry)) {
         if (entry.createdAt >= win.from && entry.createdAt < win.until) {
           revCur += amtMicros;
           buyersCur.add(t.reg.tenantId);
@@ -1196,6 +1274,7 @@ async function buildHealth(
   let monthBeforeToday = 0;
   let lastMonth = 0;
   let last7Whole = 0;
+  let ownKeyResponses = 0;
   let platformResponses = 0;
 
   const byPayer: Record<AdminPayer, number> = { paying: 0, free: 0, operator: 0, unbilled: 0, staff: 0 };
@@ -1219,7 +1298,15 @@ async function buildHealth(
         windowCur += u.costUsd;
         tCostCur += u.costUsd;
         tResponsesCur += u.runsCount;
-        platformResponses += u.runsCount;
+        const ownKeyRuns =
+          typeof u.ownKeyRuns === "number"
+            ? Math.min(u.runsCount, Math.max(0, u.ownKeyRuns))
+            : (u.costUsd === 0 && !u.model.startsWith("mock") && u.runsCount > 0 && t.snapshot.providers.length > 0
+                ? u.runsCount
+                : 0);
+        const platformRuns = Math.max(0, u.runsCount - ownKeyRuns);
+        ownKeyResponses += ownKeyRuns;
+        platformResponses += platformRuns;
         byPayer[payer] += u.costUsd;
 
         const dRow = dailyMap.get(u.day);
@@ -1314,7 +1401,7 @@ async function buildHealth(
         .map(([provider, s]) => ({ provider, cost: s.cost, responses: s.responses }))
         .sort((a, b) => b.cost - a.cost),
       top_accounts: topAccounts.slice(0, 50),
-      own_key_responses: 0,
+      own_key_responses: ownKeyResponses,
       platform_responses: platformResponses,
     },
     checks,
@@ -1445,7 +1532,7 @@ async function buildAccountDetail(
   const startStr = utcDate(win.from);
   const endStr = utcDate(win.until - DAY_MS);
 
-  const [snapshot, registry, tenantGrants] = await Promise.all([
+  const [snapshot, registry, tenantGrants, infraCredit] = await Promise.all([
     getTenantStub(env, tenantId).getOpsSnapshot(Math.max(win.days, 90), {
       currentFromMs: win.from,
       currentUntilMs: win.until,
@@ -1453,6 +1540,7 @@ async function buildAccountDetail(
     }),
     getTenantStub(env, CONSOLE_ACCOUNTS_DO_NAME).listOpsTenants().catch(() => [] as OpsRegisteredTenant[]),
     listTenantOAuthGrants(env, tenantId).catch(() => [] as OAuthGrantRecord[]),
+    getInfraCredit(env, tenantId).catch(() => null),
   ]);
   if (!snapshot) return null;
 
@@ -1587,7 +1675,8 @@ async function buildAccountDetail(
   });
   agents.sort((a, b) => b.responses - a.responses || (b.last_at ? Date.parse(b.last_at) : 0) - (a.last_at ? Date.parse(a.last_at) : 0));
 
-  const netPurchased = Math.max(0, snapshot.ledgerSummary.purchasedUsd - snapshot.ledgerSummary.refundedUsd);
+  const ledgerTotals = effectiveLedgerTotals(snapshot);
+  const netPurchased = Math.max(0, ledgerTotals.purchasedUsd - ledgerTotals.refundedUsd);
 
   return {
     schema_version: 1,
@@ -1604,7 +1693,8 @@ async function buildAccountDetail(
       billing: "prepaid",
       balance: toMicros(snapshot.profile.balanceUsd),
       purchased: toMicros(netPurchased),
-      granted: toMicros(Math.max(0, snapshot.ledgerSummary.grantedUsd)),
+      granted: toMicros(Math.max(0, ledgerTotals.grantedUsd)),
+      ...(infraCredit ? { infra_credit: toMicros(infraCredit.remainingUsd) } : {}),
       tier: snapshot.profile.tier,
       monthly_cap_usd: snapshot.profile.monthlyCapUsd,
       concurrency_limit: snapshot.profile.concurrencyLimit,
@@ -1668,7 +1758,7 @@ function buildSignals(
     }
 
     for (const l of t.snapshot.ledger) {
-      if ((l.kind === "topup" || l.kind === "purchase") && l.amountUsd > 0) {
+      if ((l.kind === "topup" || l.kind === "purchase") && l.amountUsd > 0 && !isStarterGrantLedgerEntry(l)) {
         const lDay = dateInTimeZone(l.createdAt, timeZone);
         const lRow = dailyMap.get(lDay);
         if (lRow) {
@@ -1763,6 +1853,7 @@ export async function recordOpsTenantRegistration(
     signIn?: "github" | "google" | "email" | null;
     email?: string | null;
     login?: string | null;
+    signupSource?: SignupSource | null;
     createdAt?: number;
   },
 ): Promise<void> {
@@ -1856,11 +1947,12 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/v2/admin/ops/acquisition", async (c) => {
     requireAdmin(c.env, c.req.raw);
     const days = parseDaysOrThrow(c.req.query("days"));
-    const [{ tenants }, grants] = await Promise.all([
+    const [{ tenants }, grants, r2Sources] = await Promise.all([
       collectTenants(c.env, Math.max(Number(days), 90)),
       listAllOAuthGrants(c.env).catch(() => [] as OAuthGrantRecord[]),
+      loadAllSignupSources(c.env),
     ]);
-    return c.json(buildAcquisition(tenants, grants, days), 200, { "Cache-Control": "no-store" });
+    return c.json(buildAcquisition(tenants, grants, days, r2Sources), 200, { "Cache-Control": "no-store" });
   });
 
   app.get("/v2/admin/ops/usage", async (c) => {
@@ -1925,6 +2017,8 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
       amountUsd?: unknown;
       note?: unknown;
       refId?: unknown;
+      kind?: unknown;
+      creditType?: unknown;
     };
     const tenantId = typeof body.tenantId === "string" ? body.tenantId.trim() : "";
     if (!tenantId || !/^[A-Za-z0-9_.:@-]{1,200}$/.test(tenantId)) {
@@ -1934,6 +2028,8 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
     if (!Number.isFinite(amountUsd) || amountUsd === 0) {
       throw new ApiError(400, "invalid_request", "`amountUsd` must be a non-zero number");
     }
+    const creditType = body.creditType === "infra" ? "infra" : "platform";
+    const kind = body.kind === "grant" ? "grant" : "topup";
     const viewer = c.req.header("x-ops-viewer")?.trim() || "operator";
     const refId =
       typeof body.refId === "string" && body.refId.trim()
@@ -1944,10 +2040,27 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
         ? `${body.note.trim()} (by ${viewer})`
         : `Operator adjustment by ${viewer}`;
 
+    if (creditType === "infra") {
+      const rec = await grantInfraCredit(c.env, tenantId, amountUsd, { refId, note });
+      return c.json(
+        {
+          ok: true,
+          tenantId,
+          creditType: "infra",
+          infraCreditUsd: rec.remainingUsd,
+          grantedUsd: rec.grantedUsd,
+          refId,
+        },
+        200,
+        { "Cache-Control": "no-store" },
+      );
+    }
+
     const out = await getTenantStub(c.env, tenantId).addCredits({
       amountUsd,
       refId,
       note,
+      kind,
     });
     return c.json({ ok: true, tenantId, balanceUsd: out.balanceUsd, refId }, 200, { "Cache-Control": "no-store" });
   });

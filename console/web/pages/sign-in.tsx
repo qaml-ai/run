@@ -6,6 +6,7 @@ import { AuthLayout } from "@/components/auth-layout";
 import { ErrorAlert } from "@/components/common";
 import { useApi } from "@/lib/api";
 import { startNext } from "@/lib/onboarding";
+import { consoleLoginUrl, signupSource } from "@/lib/signup-source";
 import { PasswordForm, SignUpForm } from "@/pages/password-sign-in";
 
 /** Google's "G", in the button's color: the console is monochrome. */
@@ -20,17 +21,11 @@ function GoogleMark({ className }: { className?: string }) {
 type Mode = "signin" | "signup";
 const MODE_PATHS: Record<Mode, string> = { signin: "/console/", signup: "/console/signup" };
 
-function oauthUrl(provider: "github" | "google", next?: string): string {
-  const params = new URLSearchParams();
-  if (next) params.set("next", next);
-  const qs = params.toString();
-  return `/console/auth/${provider}${qs ? `?${qs}` : ""}`;
-}
-
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const next =
     startNext(location.pathname, location.search) ??
     (new URLSearchParams(location.search).get("next") || undefined);
+  const source = signupSource(location.search, document.referrer, location.origin);
   const methods = useApi<{
     github?: boolean;
     google?: boolean;
@@ -67,13 +62,13 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         {providers && (
           <div className="flex flex-col gap-3">
             {methods.data?.github && (
-              <PixelButton size="hero" href={oauthUrl("github", next)} className="w-full">
+              <PixelButton size="hero" href={consoleLoginUrl("github", next, source)} className="w-full">
                 <Github className="size-3.5" aria-hidden="true" />
                 Continue with GitHub
               </PixelButton>
             )}
             {methods.data?.google && (
-              <PixelButton size="hero" href={oauthUrl("google", next)} className="w-full">
+              <PixelButton size="hero" href={consoleLoginUrl("google", next, source)} className="w-full">
                 <GoogleMark className="size-3.5" />
                 Continue with Google
               </PixelButton>
@@ -94,7 +89,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
               </div>
             )}
             {shown === "signup" ? (
-              <SignUpForm onSignedIn={onSignedIn} next={next} />
+              <SignUpForm onSignedIn={onSignedIn} next={next} source={source} />
             ) : (
               <PasswordForm onSignedIn={onSignedIn} next={next} secondary={providers} />
             )}

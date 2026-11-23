@@ -130,12 +130,13 @@ test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects
   assert.equal(regRes.status, 200);
 
   // 2. Grant Ann credits and create an agent + run a mock turn so usage_daily has live data
+  //    (Ann signed up via GitHub OAuth so she starts with $5 starter grant + $25 topup = $30)
   const topupRes = await adminReq("/v2/admin/ops/account/credits", {
     method: "POST",
     body: JSON.stringify({ tenantId: ann.tenantId, amountUsd: 25, note: "Welcome topup" }),
   });
   assert.equal(topupRes.status, 200);
-  assert.equal(((await topupRes.json()) as { balanceUsd: number }).balanceUsd, 25);
+  assert.equal(((await topupRes.json()) as { balanceUsd: number }).balanceUsd, 30);
 
   const agentRes = await worker.fetch("https://ops-api.test/v2/agents/research-helper", {
     method: "PUT",
@@ -230,13 +231,15 @@ test("v2-native /v2/admin/ops/* aggregates DO tenants, probes camelfsd, inspects
   assert.ok(annTopAgent, "expected research-helper in top agents");
   assert.equal(annTopAgent.responses, 2, "per-agent responses must reflect actual settled runs, not 0");
 
-  // 7. Check /v2/admin/ops/revenue (including micros vs USD unit invariants!)
+  // 7. Check /v2/admin/ops/revenue (including micros vs USD unit invariants and operator exclusion!)
   const revRes = await adminReq("/v2/admin/ops/revenue?days=30");
   assert.equal(revRes.status, 200);
   const rev = (await revRes.json()) as AdminRevenue;
   assert.equal(rev.tiles.revenue.current, 25 * 1_000_000);
   assert.equal(rev.tiles.buyers.current, 1);
   assert.equal(rev.tiles.paying_accounts, 1);
+  assert.equal(rev.free_credit.accounts, 1);
+  assert.equal(rev.free_credit.given, 5 * 1_000_000);
   assert.equal(rev.monthly.length, 12);
   assert.equal(rev.spend.paying_charged, Math.round(rev.spend.paying_provider_cost * 1_000_000));
   assert.equal(rev.spend.free_charged, Math.round(rev.spend.free_provider_cost * 1_000_000));

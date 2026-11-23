@@ -55,6 +55,14 @@ import {
 import { listV2Models } from "./models.ts";
 import { registerOAuthRoutes } from "./oauth.ts";
 import { recordOpsTenantRegistration, registerOpsRoutes } from "./ops-api.ts";
+import {
+  GITHUB_STARTER_PLATFORM_CREDIT_USD,
+  SELF_SERVE_INFRA_CREDIT_USD,
+  getInfraCredit,
+  grantInfraCredit,
+  normalizeSignupSource,
+  recordSignupSourceOnce,
+} from "./ops-metadata.ts";
 import { executeStatelessRun, parseStatelessRunImages, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
@@ -443,8 +451,14 @@ app.get("/v2/usage", async (c) => {
 app.get("/v2/billing", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
-  const summary = await getTenantStub(c.env, auth.tenantId).getBillingSummary();
-  return c.json(summary);
+  const [summary, infra] = await Promise.all([
+    getTenantStub(c.env, auth.tenantId).getBillingSummary(),
+    getInfraCredit(c.env, auth.tenantId),
+  ]);
+  return c.json({
+    ...summary,
+    ...(infra ? { infraCreditUsd: infra.remainingUsd } : {}),
+  });
 });
 
 app.post("/v2/billing/credits", async (c) => {
@@ -1683,6 +1697,7 @@ async function ensureTenantConsoleKey(
   tenantId: string,
   displayName: string,
   existingSealedKey: string | null,
+  initialCreditsUsd = 0,
 ): Promise<{ apiKey: string; sealedConsoleKey: string }> {
   if (existingSealedKey) {
     return {
@@ -1698,7 +1713,7 @@ async function ensureTenantConsoleKey(
       tenantId,
       name: displayName,
       tier: "pro",
-      initialCreditsUsd: 0,
+      initialCreditsUsd,
       keyId: minted.id,
       keyPrefix: minted.prefix,
       keyHash: minted.keyHash,
@@ -1726,6 +1741,9 @@ app.post("/v2/admin/console/oauth-login", async (c) => {
     email?: unknown;
     login?: unknown;
     name?: unknown;
+    signupSource?: unknown;
+    ref?: unknown;
+    from?: unknown;
   };
   const provider = body.provider === "github" || body.provider === "google" ? body.provider : null;
   const externalId = typeof body.externalId === "string" ? body.externalId.trim() : "";
@@ -1735,6 +1753,13 @@ app.post("/v2/admin/console/oauth-login", async (c) => {
   const email = normalizeConsoleEmail(body.email);
   const login = typeof body.login === "string" && body.login.trim() ? body.login.trim() : email;
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : null;
+  const rawSource =
+    body.signupSource && typeof body.signupSource === "object" && !Array.isArray(body.signupSource)
+      ? (body.signupSource as { ref?: unknown; from?: unknown; referrer?: unknown })
+      : body.ref !== undefined || body.from !== undefined
+        ? { ref: body.ref, from: body.from }
+        : null;
+  const signupSource = rawSource ? normalizeSignupSource(rawSource) : null;
 
   const identityKeys = [`${provider}:${externalId}`];
   if (provider === "github" && login) identityKeys.push(`github_login:${login.toLowerCase()}`);
@@ -1744,11 +1769,15 @@ app.post("/v2/admin/console/oauth-login", async (c) => {
   const existing = await accountsStub.lookupConsoleAccount({ identityKeys, email });
   const tenantId = existing?.tenantId ?? randomId("tnt", 8);
   const displayName = name || login || email || `${provider}-${externalId}`;
+  // Platform LLM starter credit is GitHub-only (anti-abuse parity with v1).
+  // Google signups start at $0 platform LLM credit and receive $5 BYOK infra-only credit below.
+  const initialCreditsUsd = !existing && provider === "github" ? GITHUB_STARTER_PLATFORM_CREDIT_USD : 0;
   const { apiKey, sealedConsoleKey } = await ensureTenantConsoleKey(
     c.env,
     tenantId,
     displayName,
     existing?.sealedConsoleKey ?? null,
+    initialCreditsUsd,
   );
   const saved = await accountsStub.saveConsoleAccount({
     accountId: existing?.id,
@@ -1759,6 +1788,15 @@ app.post("/v2/admin/console/oauth-login", async (c) => {
     name,
     sealedConsoleKey,
   });
+  if (saved.created) {
+    await grantInfraCredit(c.env, saved.tenantId, SELF_SERVE_INFRA_CREDIT_USD, {
+      refId: "initial_infra_grant",
+      note: "Initial BYOK infra credit",
+    }).catch(() => {});
+    if (signupSource) {
+      await recordSignupSourceOnce(c.env, saved.tenantId, signupSource).catch(() => {});
+    }
+  }
   await recordOpsTenantRegistration(c.env, {
     tenantId: saved.tenantId,
     name: saved.name ?? displayName,
@@ -1766,6 +1804,7 @@ app.post("/v2/admin/console/oauth-login", async (c) => {
     signIn: provider,
     email: saved.email,
     login: saved.login,
+    ...(saved.created && signupSource ? { signupSource } : {}),
   });
   return c.json({
     tenantId: saved.tenantId,
@@ -1785,6 +1824,9 @@ app.post("/v2/admin/console/password-signup", async (c) => {
     email?: unknown;
     password?: unknown;
     name?: unknown;
+    signupSource?: unknown;
+    ref?: unknown;
+    from?: unknown;
   };
   const email = normalizeConsoleEmail(body.email);
   if (!email) {
@@ -1795,6 +1837,13 @@ app.post("/v2/admin/console/password-signup", async (c) => {
     throw new ApiError(400, "invalid_password", "Password must be between 8 and 256 characters");
   }
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 120) : null;
+  const rawSource =
+    body.signupSource && typeof body.signupSource === "object" && !Array.isArray(body.signupSource)
+      ? (body.signupSource as { ref?: unknown; from?: unknown; referrer?: unknown })
+      : body.ref !== undefined || body.from !== undefined
+        ? { ref: body.ref, from: body.from }
+        : null;
+  const signupSource = rawSource ? normalizeSignupSource(rawSource) : null;
 
   const accountsStub = getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME);
   const existing = await accountsStub.lookupConsoleAccount({ identityKeys: [`email:${email}`], email });
@@ -1804,7 +1853,8 @@ app.post("/v2/admin/console/password-signup", async (c) => {
 
   const { hash, salt } = await hashPassword(password);
   const tenantId = randomId("tnt", 8);
-  const { apiKey, sealedConsoleKey } = await ensureTenantConsoleKey(c.env, tenantId, name || email, null);
+  // Email signups start at $0 platform LLM credit (anti-abuse) and get $5 BYOK infra-only credit.
+  const { apiKey, sealedConsoleKey } = await ensureTenantConsoleKey(c.env, tenantId, name || email, null, 0);
   const saved = await accountsStub.saveConsoleAccount({
     tenantId,
     identityKeys: [`email:${email}`],
@@ -1816,6 +1866,13 @@ app.post("/v2/admin/console/password-signup", async (c) => {
     sealedConsoleKey,
     requireNewEmail: true,
   });
+  await grantInfraCredit(c.env, saved.tenantId, SELF_SERVE_INFRA_CREDIT_USD, {
+    refId: "initial_infra_grant",
+    note: "Initial BYOK infra credit",
+  }).catch(() => {});
+  if (signupSource) {
+    await recordSignupSourceOnce(c.env, saved.tenantId, signupSource).catch(() => {});
+  }
   await recordOpsTenantRegistration(c.env, {
     tenantId: saved.tenantId,
     name: saved.name ?? email,
@@ -1823,6 +1880,7 @@ app.post("/v2/admin/console/password-signup", async (c) => {
     signIn: "email",
     email: saved.email,
     login: saved.login,
+    ...(signupSource ? { signupSource } : {}),
   });
   return c.json(
     {

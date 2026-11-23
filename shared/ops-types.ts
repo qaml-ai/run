@@ -362,6 +362,7 @@ export interface AdminAccountDetail {
     balance: number;
     purchased: number;
     granted: number;
+    infra_credit?: number;
     tier?: string;
     monthly_cap_usd?: number;
     concurrency_limit?: number;

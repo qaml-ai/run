@@ -102,6 +102,7 @@ export interface OpsRegisteredTenant {
   signIn: "github" | "google" | "email" | null;
   email: string | null;
   login: string | null;
+  signupSource?: { ref?: string; referrer?: string } | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -146,6 +147,7 @@ export interface TenantOpsSnapshot {
     day: string;
     model: string;
     runsCount: number;
+    ownKeyRuns?: number;
     inputTokens: number;
     outputTokens: number;
     vmMs: number;
@@ -407,6 +409,9 @@ export class TenantDO extends DurableObject<Env> {
     const usageColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(usage_daily)").toArray();
     if (!usageColumns.some(({ name }) => name === "cache_read_tokens")) {
       this.ctx.storage.sql.exec("ALTER TABLE usage_daily ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!usageColumns.some(({ name }) => name === "own_key_runs")) {
+      this.ctx.storage.sql.exec("ALTER TABLE usage_daily ADD COLUMN own_key_runs INTEGER NOT NULL DEFAULT 0");
     }
     this.schemaReady = true;
   }
@@ -969,9 +974,11 @@ export class TenantDO extends DurableObject<Env> {
     amountUsd: number;
     refId: string;
     note?: string;
+    kind?: "topup" | "grant";
   }): Promise<{ balanceUsd: number }> {
     const profile = this.requireProfile();
     const refId = input.refId.trim();
+    const kind = input.kind === "grant" ? "grant" : "topup";
     const reserve = platformCreditReserve(this.env, profile.id);
     if (reserve && refId.startsWith(reserve.prefix)) {
       throw new ApiError(400, "invalid_credit_ref", "The credit reserve reference is reserved");
@@ -986,10 +993,11 @@ export class TenantDO extends DurableObject<Env> {
         }
         this.ctx.storage.sql.exec(
           `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
-           VALUES (?1, ?2, ?3, 'topup', ?4, ?5)`,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
           randomId("led", 8),
           refId,
           input.amountUsd,
+          kind,
           input.note ?? null,
           Date.now(),
         );
@@ -1013,11 +1021,13 @@ export class TenantDO extends DurableObject<Env> {
     note?: string;
     agentId?: string;
     actor?: string;
+    byok?: boolean;
   }): Promise<{ settled: true }> {
     const profile = this.readProfileOrNull();
     if (!profile) return { settled: true };
     const now = Date.now();
     const day = new Date(now).toISOString().slice(0, 10);
+    const isByok = input.byok === true;
 
     this.ctx.storage.transactionSync(() => {
       const existing = this.ctx.storage.sql
@@ -1025,7 +1035,11 @@ export class TenantDO extends DurableObject<Env> {
         .toArray();
       if (existing.length === 0) {
         // MONEY: Record both the full usage charge and any internal reserve grant atomically.
-        const charge = Math.abs(input.costUsd);
+        // BYOK runs never drive platform balanceUsd negative.
+        const rawCharge = Math.abs(input.costUsd);
+        const charge = isByok
+          ? Number(Math.min(Math.max(0, profile.balanceUsd), rawCharge).toFixed(8))
+          : rawCharge;
         const remaining = profile.balanceUsd - charge;
         this.ctx.storage.sql.exec(
           `INSERT INTO credit_ledger (id, ref_id, amount_usd, kind, note, created_at)
@@ -1037,10 +1051,11 @@ export class TenantDO extends DurableObject<Env> {
           now,
         );
         this.ctx.storage.sql.exec(
-          `INSERT INTO usage_daily (day, model, runs_count, input_tokens, output_tokens, cache_read_tokens, vm_ms, cost_usd)
-           VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)
+          `INSERT INTO usage_daily (day, model, runs_count, own_key_runs, input_tokens, output_tokens, cache_read_tokens, vm_ms, cost_usd)
+           VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8)
            ON CONFLICT(day, model) DO UPDATE SET
              runs_count = usage_daily.runs_count + 1,
+             own_key_runs = usage_daily.own_key_runs + excluded.own_key_runs,
              input_tokens = usage_daily.input_tokens + excluded.input_tokens,
              output_tokens = usage_daily.output_tokens + excluded.output_tokens,
              cache_read_tokens = usage_daily.cache_read_tokens + excluded.cache_read_tokens,
@@ -1048,11 +1063,12 @@ export class TenantDO extends DurableObject<Env> {
              cost_usd = usage_daily.cost_usd + excluded.cost_usd`,
           day,
           input.model,
+          isByok ? 1 : 0,
           input.inputTokens,
           input.outputTokens,
           input.cacheReadTokens ?? 0,
           input.vmMs,
-          input.costUsd,
+          charge,
         );
         if (input.agentId && input.actor && input.actor.trim()) {
           this.ctx.storage.sql.exec(
@@ -1081,7 +1097,7 @@ export class TenantDO extends DurableObject<Env> {
             now,
           );
           this.ctx.storage.sql.exec(`UPDATE tenant_profile SET balance_usd = 25 WHERE id = 1`);
-        } else {
+        } else if (charge > 0) {
           this.ctx.storage.sql.exec(`UPDATE tenant_profile SET balance_usd = balance_usd - ?1 WHERE id = 1`, charge);
         }
       }
@@ -3016,10 +3032,15 @@ export class TenantDO extends DurableObject<Env> {
         sign_in TEXT,
         email TEXT,
         login TEXT,
+        signup_source_json TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
     `);
+    const opsCols = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(ops_tenants)").toArray();
+    if (!opsCols.some(({ name }) => name === "signup_source_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE ops_tenants ADD COLUMN signup_source_json TEXT");
+    }
     this.consoleAccountsSchemaReady = true;
   }
 
@@ -3295,6 +3316,7 @@ export class TenantDO extends DurableObject<Env> {
     signIn?: "github" | "google" | "email" | null;
     email?: string | null;
     login?: string | null;
+    signupSource?: { ref?: string; referrer?: string } | null;
     createdAt?: number;
   }): Promise<OpsRegisteredTenant> {
     this.ensureConsoleAccountTables();
@@ -3311,6 +3333,7 @@ export class TenantDO extends DurableObject<Env> {
         sign_in: string | null;
         email: string | null;
         login: string | null;
+        signup_source_json: string | null;
         created_at: number;
       }>(`SELECT * FROM ops_tenants WHERE tenant_id = ?1 LIMIT 1`, tenantId)
       .toArray()[0];
@@ -3328,19 +3351,23 @@ export class TenantDO extends DurableObject<Env> {
       : ((existing?.sign_in as OpsRegisteredTenant["signIn"]) ?? null);
     const email = input.email !== undefined ? input.email : (existing?.email ?? null);
     const login = input.login !== undefined ? input.login : (existing?.login ?? null);
+    const signupSourceJson =
+      existing?.signup_source_json ??
+      (input.signupSource !== undefined && input.signupSource !== null ? JSON.stringify(input.signupSource) : null);
     const createdAt = existing
       ? Math.min(Number(existing.created_at), input.createdAt ?? Number(existing.created_at))
       : (input.createdAt ?? now);
 
     this.ctx.storage.sql.exec(
-      `INSERT INTO ops_tenants (tenant_id, name, kind, sign_in, email, login, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+      `INSERT INTO ops_tenants (tenant_id, name, kind, sign_in, email, login, signup_source_json, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
        ON CONFLICT(tenant_id) DO UPDATE SET
          name = COALESCE(excluded.name, ops_tenants.name),
          kind = excluded.kind,
          sign_in = COALESCE(excluded.sign_in, ops_tenants.sign_in),
          email = COALESCE(excluded.email, ops_tenants.email),
          login = COALESCE(excluded.login, ops_tenants.login),
+         signup_source_json = COALESCE(ops_tenants.signup_source_json, excluded.signup_source_json),
          created_at = MIN(ops_tenants.created_at, excluded.created_at),
          updated_at = excluded.updated_at`,
       tenantId,
@@ -3349,9 +3376,19 @@ export class TenantDO extends DurableObject<Env> {
       signIn,
       email,
       login,
+      signupSourceJson,
       createdAt,
       now,
     );
+
+    let parsedSource: { ref?: string; referrer?: string } | null = null;
+    if (signupSourceJson) {
+      try {
+        parsedSource = JSON.parse(signupSourceJson) as { ref?: string; referrer?: string };
+      } catch {
+        parsedSource = null;
+      }
+    }
 
     return {
       tenantId,
@@ -3360,6 +3397,7 @@ export class TenantDO extends DurableObject<Env> {
       signIn,
       email,
       login,
+      ...(parsedSource !== null ? { signupSource: parsedSource } : {}),
       createdAt,
       updatedAt: now,
     };
@@ -3377,6 +3415,7 @@ export class TenantDO extends DurableObject<Env> {
         sign_in: string | null;
         email: string | null;
         login: string | null;
+        signup_source_json: string | null;
         created_at: number;
         updated_at: number;
       }>(`SELECT * FROM ops_tenants ORDER BY created_at DESC`)
@@ -3386,6 +3425,14 @@ export class TenantDO extends DurableObject<Env> {
         row.kind === "operator" || row.kind === "operator_made" ? row.kind : "self_serve";
       const signIn: OpsRegisteredTenant["signIn"] =
         row.sign_in === "github" || row.sign_in === "google" || row.sign_in === "email" ? row.sign_in : null;
+      let signupSource: { ref?: string; referrer?: string } | null | undefined;
+      if (row.signup_source_json) {
+        try {
+          signupSource = JSON.parse(row.signup_source_json) as { ref?: string; referrer?: string };
+        } catch {
+          signupSource = null;
+        }
+      }
       byId.set(row.tenant_id, {
         tenantId: row.tenant_id,
         name: row.name,
@@ -3393,6 +3440,7 @@ export class TenantDO extends DurableObject<Env> {
         signIn,
         email: row.email,
         login: row.login,
+        ...(signupSource !== undefined ? { signupSource } : {}),
         createdAt: Number(row.created_at),
         updatedAt: Number(row.updated_at),
       });
@@ -3556,11 +3604,12 @@ export class TenantDO extends DurableObject<Env> {
         day: string;
         model: string;
         runs_count: number;
+        own_key_runs: number;
         input_tokens: number;
         output_tokens: number;
         vm_ms: number;
         cost_usd: number;
-      }>(`SELECT day, model, runs_count, input_tokens, output_tokens, vm_ms, cost_usd FROM usage_daily WHERE day >= ?1 ORDER BY day DESC, model ASC`, since)
+      }>(`SELECT day, model, runs_count, own_key_runs, input_tokens, output_tokens, vm_ms, cost_usd FROM usage_daily WHERE day >= ?1 ORDER BY day DESC, model ASC`, since)
       .toArray();
 
     // Filter to funding/refund ledger rows so high-volume `usage` and reserve `grant` rows never crowd out topups/purchases/refunds
@@ -3783,6 +3832,7 @@ export class TenantDO extends DurableObject<Env> {
         day: u.day,
         model: u.model,
         runsCount: Number(u.runs_count),
+        ownKeyRuns: Number(u.own_key_runs ?? 0),
         inputTokens: Number(u.input_tokens),
         outputTokens: Number(u.output_tokens),
         vmMs: Number(u.vm_ms),

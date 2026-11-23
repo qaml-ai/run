@@ -263,6 +263,55 @@ function hasCustomAuthHeaders(headers?: Record<string, string>): boolean {
   return Boolean(headers && Object.keys(headers).length > 0);
 }
 
+export function hasByokCredentials(
+  creds: ProviderCredentials | null | undefined,
+): creds is ProviderCredentials {
+  return Boolean(creds && (creds.apiKey || hasCustomAuthHeaders(creds.headers)));
+}
+
+export async function resolveTenantByokProvider(
+  env: Env,
+  tenantId: string,
+  rawModel: string,
+  prefetchedProvider?: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null },
+  keyScope?: string | null,
+): Promise<{
+  isByok: boolean;
+  prefetchedProvider: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null } | undefined;
+}> {
+  const normScope = keyScope?.trim() || null;
+  const { isMock, candidates } = getProviderLookupCandidates(env, rawModel, normScope);
+  if (isMock) {
+    return { isByok: false, prefetchedProvider };
+  }
+  if (
+    prefetchedProvider !== undefined &&
+    prefetchedProvider.model === rawModel &&
+    (prefetchedProvider.keyScope ?? null) === normScope
+  ) {
+    return {
+      isByok: hasByokCredentials(prefetchedProvider.credentials),
+      prefetchedProvider,
+    };
+  }
+  if (candidates.length === 0) {
+    return {
+      isByok: false,
+      prefetchedProvider: { model: rawModel, keyScope: normScope, credentials: null },
+    };
+  }
+  const tenantStub = getTenantStub(env, tenantId);
+  let stored: ProviderCredentials | null = null;
+  for (const candidate of candidates) {
+    stored = await tenantStub.getProviderSecret(candidate, normScope);
+    if (stored) break;
+  }
+  return {
+    isByok: hasByokCredentials(stored),
+    prefetchedProvider: { model: rawModel, keyScope: normScope, credentials: stored },
+  };
+}
+
 function decodeCodexAccountId(accessToken: string): string | null {
   try {
     const [, payload] = accessToken.split(".");

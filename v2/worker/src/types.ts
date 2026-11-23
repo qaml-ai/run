@@ -170,6 +170,7 @@ export interface RunUsage {
   cacheReadTokens?: number;
   costUsd: number;
   vmMs: number;
+  byok?: boolean;
 }
 
 export interface ToolCallSummary {

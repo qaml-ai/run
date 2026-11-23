@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PixelButton } from "@/components/ui/pixel-button";
 import { api } from "@/lib/api";
+import type { SignupSource } from "@/lib/signup-source";
 
 export const MIN_PASSWORD = 8;
 
@@ -89,9 +90,11 @@ export function PasswordForm({
 export function SignUpForm({
   onSignedIn,
   next,
+  source,
 }: {
   onSignedIn: () => void;
   next?: string;
+  source?: SignupSource;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -111,6 +114,8 @@ export function SignUpForm({
           password,
           ...(name.trim() ? { name: name.trim() } : {}),
           ...(next ? { next } : {}),
+          ...(source?.ref ? { ref: source.ref } : {}),
+          ...(source?.from ? { from: source.from } : {}),
         },
       });
       finishSignIn(result.next && result.next === next ? result.next : undefined, onSignedIn);

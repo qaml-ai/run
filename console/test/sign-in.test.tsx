@@ -105,4 +105,44 @@ describe("v2 console sign-in (GitHub, Google, Email/Password)", () => {
 
     expect(await screen.findByText("Wrong email or password")).toBeTruthy();
   });
+
+  it("propagates ?ref= and external document.referrer to OAuth links and email sign-up", async () => {
+    history.replaceState(null, "", "/console/?ref=run-slack");
+    const origReferrer = Object.getOwnPropertyDescriptor(document, "referrer");
+    Object.defineProperty(document, "referrer", { value: "https://www.example.org/blog/agents", configurable: true });
+    try {
+      const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
+        if (path === "/console/auth/methods") return json({ github: true, google: true, password: true, signup: true });
+        if (path === "/console/auth/signup") return json({ ok: true, tenant: "tnt_ref" }, 201);
+        return json({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const onSignedIn = vi.fn();
+
+      render(<SignIn onSignedIn={onSignedIn} />);
+
+      const gh = await screen.findByRole("link", { name: /Continue with GitHub/ });
+      const google = screen.getByRole("link", { name: /Continue with Google/ });
+      expect(gh.getAttribute("href")).toBe("/console/auth/github?ref=run-slack&from=www.example.org");
+      expect(google.getAttribute("href")).toBe("/console/auth/google?ref=run-slack&from=www.example.org");
+
+      fireEvent.click(screen.getByRole("button", { name: "Sign up with email" }));
+      fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ref@example.com" } });
+      fireEvent.change(screen.getByLabelText("Password"), { target: { value: "supersecret123" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+      await waitFor(() => expect(onSignedIn).toHaveBeenCalledTimes(1));
+      const call = fetchMock.mock.calls.find(([p]) => p === "/console/auth/signup");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
+        email: "ref@example.com",
+        password: "supersecret123",
+        ref: "run-slack",
+        from: "www.example.org",
+      });
+    } finally {
+      if (origReferrer) Object.defineProperty(document, "referrer", origReferrer);
+      else Object.defineProperty(document, "referrer", { value: "", configurable: true });
+    }
+  });
 });
