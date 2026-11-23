@@ -11,6 +11,7 @@ import mono from "./fonts/NotoSansMono-Regular.ttf";
 import monoBold from "./fonts/NotoSansMono-Bold.ttf";
 import math from "./fonts/NotoSansMath-Regular.ttf";
 import symbols from "./fonts/NotoSansSymbols-Regular.ttf";
+import symbols2 from "./fonts/NotoSansSymbols2-Regular.ttf";
 import emoji from "./fonts/NotoEmoji.ttf";
 import { prepareSvg } from "./source.ts";
 import { SVG_RENDER_LIMITS } from "./limits.ts";
@@ -18,7 +19,7 @@ import { escapeXml } from "./textbox.ts";
 
 let initialization: Promise<void> | undefined;
 const fontBuffers = [sans, bold, italic, boldItalic, serif, serifBold, serifItalic,
-  mono, monoBold, math, symbols, emoji].map(value => new Uint8Array(value));
+  mono, monoBold, math, symbols, symbols2, emoji].map(value => new Uint8Array(value));
 const options = { font: {
   fontBuffers, loadSystemFonts: false, defaultFontFamily: "Noto Sans",
   sansSerifFamily: "Noto Sans", serifFamily: "Noto Serif", monospaceFamily: "Noto Sans Mono",
@@ -35,10 +36,10 @@ export default {
     let input;
     try {
       const { svg, files } = await request.json() as { svg?: unknown; files?: unknown };
-      input = prepareSvg(svg, files, (text, font) => {
+      input = prepareSvg(svg, files, (text, font, fontSize = 100) => {
         if (++measurements > SVG_RENDER_LIMITS.textMeasurements) throw new Error("SVG textbox layout exceeds the measurement budget");
         const sample = new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">' +
-          `<text${font} font-size="100" xml:space="preserve">${escapeXml(text)}</text></svg>`, options);
+          `<text${font} font-size="${fontSize}" xml:space="preserve">${escapeXml(text)}</text></svg>`, options);
         try {
           const box = sample.getBBox();
           if (!box) return;

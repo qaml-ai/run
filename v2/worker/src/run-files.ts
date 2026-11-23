@@ -173,15 +173,36 @@ export async function loadConversationImages(
     // Walk newest messages first, while keeping each tool's original image order.
     const toolImages = messages[index]?.toolImages ?? [];
     const selected: ModelImage[] = [];
+    let toolBudgetExhausted = false;
     for (const ref of toolImages) {
-      remaining -= imageBase64Size(ref.size);
-      if (remaining < 0 || ++count > imageLimit) break;
-      const image = media && await media.bucket?.get(toolImageKey(media.tenantId, ref));
-      if (!image || image.size !== ref.size) throw new ApiError(502, "tool_image_unavailable", "A tool image could not be read");
+      const refBase64Size = imageBase64Size(ref.size);
+      remaining -= refBase64Size;
+      if (remaining < 0 || ++count > imageLimit) {
+        toolBudgetExhausted = true;
+        break;
+      }
+      const key = media ? toolImageKey(media.tenantId, ref) : undefined;
+      const image = media && key ? await media.bucket?.get(key) : undefined;
+      if (!image || image.size !== ref.size) {
+        // Restore budget and continue gracefully so a missing/deleted R2 object never bricks future turns.
+        // The tool message text already carries the [image W×H] summary placeholder.
+        remaining += refBase64Size;
+        count--;
+        console.warn(JSON.stringify({
+          event: "tool_image_missing",
+          tenantId: media?.tenantId ?? null,
+          key: key ?? null,
+          expectedSize: ref.size,
+          actualSize: image?.size ?? null,
+          width: ref.width,
+          height: ref.height,
+        }));
+        continue;
+      }
       selected.push({ contentType: ref.contentType, base64: Buffer.from(await image.arrayBuffer()).toString("base64") });
     }
     if (selected.length) images.set(index, [...(images.get(index) ?? []), ...selected]);
-    if (selected.length < toolImages.length) return images;
+    if (toolBudgetExhausted) return images;
     for (const file of messages[index]?.files ?? []) {
       if (!isImageAttachment(file)) continue;
       if (file.resized) {

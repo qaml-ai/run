@@ -7,7 +7,7 @@ import {
   executeBrowserTool,
   isBrowserToolName,
 } from "./browser.ts";
-import { renderSvg } from "./svg-render.ts";
+import { normalizeSvgRasterInput, recordSvgRenderUsage, renderSvg } from "./svg-render.ts";
 import { FILE_LIMITS } from "./lib/limits.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
@@ -568,10 +568,20 @@ export async function executeToolCall(
       const limit = Math.min(Math.floor(remaining / 4) * 3, SVG_RENDER_LIMITS.imageBytes);
       const file = await cfs.read(lineage, { at: branch, path: filePath, limit: limit + 1 });
       if (!file.base64 || file.size > limit) throw new Error("SVG file exceeds the image byte budget or is empty");
-      remaining -= file.base64.length;
-      files[name] = { data: file.base64 };
+      let data = file.base64;
+      const rawBytes = Buffer.from(data, "base64");
+      const header = imageHeader(rawBytes);
+      if (header && (header.mimeType === "image/webp" || header.mimeType === "image/gif")) {
+        const converted = await normalizeSvgRasterInput(ctx.env, rawBytes);
+        data = converted.bytes.toString("base64");
+        if (data.length > remaining) throw new Error("SVG file exceeds the image byte budget after PNG conversion");
+      }
+      remaining -= data.length;
+      files[name] = { data };
     }
+    const startedAt = Date.now();
     const image = await renderSvg(ctx.env, args.svg, files);
+    void recordSvgRenderUsage(getTenantStub(ctx.env, ctx.config.tenantId), Date.now() - startedAt, "tool:render_image");
     const out = await cfs.write(lineage, {
       ref: branch, holder: ctx.config.id, author: `agent:${ctx.config.id}`, message: `render ${path}`,
       puts: [{ path, base64: image.data, mode: 0o644 }],

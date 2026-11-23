@@ -3,18 +3,143 @@ import { SaxesParser } from "saxes";
 import { imageHeader, imageIntact } from "../worker/src/lib/image-header.ts";
 import { SVG_RENDER_LIMITS as LIMITS } from "./limits.ts";
 import { normalizeMissingGlyphs } from "./fonts/coverage.ts";
-import { escapeXml as escape, renderTextbox, type MeasureText } from "./textbox.ts";
+import {
+  escapeXml as escape,
+  extractInheritedFromDeclarations,
+  parseStyleDeclarations,
+  renderTextbox,
+  type InheritedStyle,
+  type MeasureText,
+} from "./textbox.ts";
 
 const families = new Map([["Sans", "Noto Sans"], ["Serif", "Noto Serif"], ["Mono", "Noto Sans Mono"]]);
 const svgNamespace = "http://www.w3.org/2000/svg";
 const familyList = (css: string) => css.replace(/(^|,)(\s*)(["']?)(Sans|Serif|Mono)\3(?=\s*(?:,|!important\b|$))/g,
   (_match, start: string, space: string, quote: string, name: string) =>
     start + space + quote + families.get(name) + quote);
-const fontCss = (css: string) => css.replace(/(^|[;{])(\s*font-family\s*:\s*)([^;}]+)/gi,
-  (_match, start: string, property: string, value: string) => start + property + familyList(value));
+
+const fontShorthandCss = (value: string) => value.replace(
+  /((?:^|\s)(?:(?:\d+(?:\.\d+)?|\.\d+)(?:px|pt|em|rem|ex|ch|vw|vh|vmin|vmax|%|cm|mm|in|pc)|xx-small|x-small|small|medium|large|x-large|xx-large|smaller|larger)(?:\s*\/\s*(?:normal|(?:\d+(?:\.\d+)?|\.\d+)(?:px|pt|em|rem|%|cm|mm|in|pc)?))?\s+)(.+)$/i,
+  (_match, prefix: string, list: string) => prefix + familyList(list),
+);
+
+export const fontCss = (css: string) => css
+  .replace(/(^|[;{])(\s*font-family\s*:\s*)([^;}]+)/gi,
+    (_match, start: string, property: string, value: string) => start + property + familyList(value))
+  .replace(/(^|[;{])(\s*font\s*:\s*)([^;}]+)/gi,
+    (_match, start: string, property: string, value: string) => start + property + fontShorthandCss(value));
 
 function dimension(value: string | undefined): number {
   return value && /^(?:\d+(?:\.\d+)?|\.\d+)(?:px)?$/.test(value) ? Number.parseFloat(value) : 0;
+}
+
+interface CssRule {
+  selector: string;
+  style: InheritedStyle;
+}
+
+function parseSimpleCssRules(css: string): CssRule[] {
+  const rules: CssRule[] = [];
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const blockRe = /([^{}]+)\{([^{}]*)\}/g;
+  for (const match of stripped.matchAll(blockRe)) {
+    const selectorList = match[1]!.trim();
+    const body = match[2]!.trim();
+    if (!selectorList || !body || selectorList.startsWith("@")) continue;
+    const style = extractInheritedFromDeclarations(parseStyleDeclarations(body));
+    if (Object.keys(style).length === 0) continue;
+    for (const rawSelector of selectorList.split(",")) {
+      const selector = rawSelector.trim();
+      if (selector) rules.push({ selector, style });
+    }
+  }
+  return rules;
+}
+
+interface ElementNode {
+  tag: string;
+  classes: Set<string>;
+  id: string | undefined;
+}
+
+function matchesCompoundSelector(
+  compound: string,
+  tags: string[],
+  classes: Set<string>,
+  id: string | undefined,
+): boolean {
+  if (!compound) return false;
+  if (compound === "*") return true;
+  if (/[>+~[:*]/.test(compound)) return false;
+  const tagMatch = compound.match(/^[a-zA-Z][a-zA-Z0-9_-]*/);
+  if (tagMatch) {
+    const selTag = tagMatch[0].toLowerCase();
+    if (!tags.includes(selTag)) return false;
+  }
+  for (const idMatch of compound.matchAll(/#([a-zA-Z0-9_-]+)/g)) {
+    if (id !== idMatch[1]) return false;
+  }
+  for (const classMatch of compound.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+    if (!classes.has(classMatch[1]!)) return false;
+  }
+  return true;
+}
+
+function matchesSimpleSelector(
+  selector: string,
+  tags: string[],
+  classes: Set<string>,
+  id: string | undefined,
+  ancestors: ElementNode[],
+): boolean {
+  const parts = selector.trim().split(/\s+/);
+  if (parts.length === 0) return false;
+  if (!matchesCompoundSelector(parts[parts.length - 1]!, tags, classes, id)) return false;
+  if (parts.length === 1) return true;
+  // Walk ancestors backwards matching remaining descendant selector parts.
+  let ancIdx = ancestors.length - 1;
+  for (let p = parts.length - 2; p >= 0; p--) {
+    let matched = false;
+    while (ancIdx >= 0) {
+      const anc = ancestors[ancIdx]!;
+      ancIdx--;
+      if (matchesCompoundSelector(parts[p]!, [anc.tag], anc.classes, anc.id)) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+  return true;
+}
+
+function resolveCssForElement(
+  rules: CssRule[],
+  tags: string[],
+  attributes: Record<string, string>,
+  ancestors: ElementNode[],
+): InheritedStyle {
+  if (rules.length === 0) return {};
+  const classes = new Set((attributes.class ?? "").trim().split(/\s+/).filter(Boolean));
+  const id = attributes.id;
+  const resolved: InheritedStyle = {};
+  for (const rule of rules) {
+    if (matchesSimpleSelector(rule.selector, tags, classes, id, ancestors)) {
+      Object.assign(resolved, rule.style);
+    }
+  }
+  return resolved;
+}
+
+function ownPresentationInherited(attributes: Record<string, string>): InheritedStyle {
+  const out: InheritedStyle = {};
+  if (attributes["font-family"] !== undefined) out["font-family"] = attributes["font-family"];
+  if (attributes["font-weight"] !== undefined) out["font-weight"] = attributes["font-weight"];
+  if (attributes["font-style"] !== undefined) out["font-style"] = attributes["font-style"];
+  if (attributes["letter-spacing"] !== undefined) out["letter-spacing"] = attributes["letter-spacing"];
+  if (attributes.fill !== undefined) out.fill = attributes.fill;
+  Object.assign(out, extractInheritedFromDeclarations(parseStyleDeclarations(attributes.style)));
+  return out;
 }
 
 export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) {
@@ -47,7 +172,11 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
   let width = 0, height = 0, decodedPixels = 0, elements = 0;
   const parts: string[] = [];
   const stack: string[] = [];
-  let textbox: { attributes: Record<string, string>; text: string } | undefined;
+  const elementStack: ElementNode[] = [];
+  const styleStack: InheritedStyle[] = [];
+  const cssRules: CssRule[] = [];
+  let styleBuffer: string | undefined;
+  let textbox: { attributes: Record<string, string>; text: string; inherited: InheritedStyle } | undefined;
   const parser = new SaxesParser({ xmlns: false });
   const reject = () => { throw new Error("SVG contains a document declaration or external resource"); };
   parser.on("doctype", reject);
@@ -88,17 +217,46 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
     if (element === "image" && !Object.keys(attributes).some(key => /(^|:)href$/.test(key))) {
       throw new Error("SVG image references must name an image in files");
     }
+
+    const parentInherited = styleStack.at(-1) ?? {};
+    const node: ElementNode = {
+      tag: element,
+      classes: new Set((attributes.class ?? "").trim().split(/\s+/).filter(Boolean)),
+      id: attributes.id,
+    };
     if (name === "textbox") {
-      textbox = { attributes, text: "" };
+      // Textbox expands to <text>, so rules targeting `text` or `textbox` (or its class/id) apply on top of inherited parent styles.
+      const inherited: InheritedStyle = {
+        ...parentInherited,
+        ...resolveCssForElement(cssRules, ["text", "textbox"], attributes, elementStack),
+      };
+      elementStack.push(node);
+      styleStack.push(inherited);
+      textbox = { attributes, text: "", inherited };
       return;
     }
+
+    const nextInherited: InheritedStyle = {
+      ...parentInherited,
+      ...resolveCssForElement(cssRules, [element], attributes, elementStack),
+      ...ownPresentationInherited(attributes),
+    };
+    elementStack.push(node);
+    styleStack.push(nextInherited);
+    if (element === "style") styleBuffer = "";
     parts.push(`<${name}${Object.entries(attributes).map(([key, value]) => ` ${key}="${escape(value)}"`).join("")}>`);
   });
   parser.on("closetag", ({ name }) => {
-    stack.pop();
+    const element = stack.pop();
+    elementStack.pop();
+    styleStack.pop();
+    if (element === "style" && styleBuffer !== undefined) {
+      cssRules.push(...parseSimpleCssRules(styleBuffer));
+      styleBuffer = undefined;
+    }
     if (textbox) {
       if (!measure) throw new Error("Textbox layout requires the SVG renderer");
-      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text), measure));
+      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text), measure, textbox.inherited));
       textbox = undefined;
       return;
     }
@@ -106,8 +264,11 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
   });
   const text = (value: string) => {
     if (textbox) textbox.text += value;
-    else if (stack.at(-1) === "style") parts.push(escape(fontCss(value)));
-    else parts.push(escape(stack.some(element => element === "text") ? normalizeMissingGlyphs(value) : value));
+    else if (stack.at(-1) === "style") {
+      const normalized = fontCss(value);
+      if (styleBuffer !== undefined) styleBuffer += normalized;
+      parts.push(escape(normalized));
+    } else parts.push(escape(stack.some(element => element === "text") ? normalizeMissingGlyphs(value) : value));
   };
   parser.on("text", text);
   parser.on("cdata", text);

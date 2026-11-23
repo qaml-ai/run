@@ -72,9 +72,9 @@ an image with an alpha channel in that image's format and size.
 
 ## Rendering SVG cards in v2
 
-Send an SVG to `POST /v2/images/render` to get PNG bytes in base64. Use the SVG's dimensions to size the output.
-Point `<image href="photo.png">` at an entry in `files`. Each entry is an image ID from your tenant or
-`{ data: "<base64>" }`.
+Send an SVG to `POST /v2/images/render` to get PNG bytes in base64. Use the SVG's `width`/`height` or `viewBox` to size the output.
+Point `<image href="photo.png">` at an entry in `files`. Each entry is either an `img_...` media ID belonging to your tenant
+(uploaded once via `POST /v2/media` or created by `POST /v2/images`) or inline `{ data: "<base64>" }`.
 
 ```ts
 const card = await client.images.render(
@@ -84,19 +84,55 @@ const card = await client.images.render(
 await writeFile("card.png", Buffer.from(card.data, "base64"));
 ```
 
-A `<textbox>` accepts plain text, `x`, `y`, `width`, `height`, `fill`, and standard font family, weight, and style.
-Set `font-size` for the largest size and optionally `min-font-size` for the one-line and wrapping threshold, which
-defaults to 60%. The renderer tries one line first, then wraps at spaces and after hyphens, commas, and slashes.
-It can shrink further to 8 px and split long words at grapheme boundaries to fit. It returns an error when the
-box is too small for the full text. Options include `align="start|middle|end"` (default `start`),
-`valign="top|middle|bottom"` (default `middle`), and `line-height` (default `1.2`).
+### Upload-once media (`POST /v2/media` & `DELETE /v2/media/:id`)
 
-Output is limited to 4,194,304 pixels. Supply up to 16 PNG or JPEG inputs, with a maximum of 10 MiB each and
-14 MiB across the base64 data.
+To avoid resending static template images with every render, upload them once:
 
-In v2, enable the `images` builtin suite to let an agent call `render_image`. It takes the SVG, an optional
-map of image names to repository paths, and the output PNG path. The `files` suite's `view_image` tool lets
-the model inspect an existing PNG, JPEG, GIF, or WebP in its repository.
+- `POST /v2/media`: accepts either raw image bytes (`Content-Type: image/png`, `image/jpeg`, `image/webp`, or `image/gif`) or JSON `{ "data": "<base64>", "contentType"?: "..." }`. WebP and GIF (first frame) are automatically converted to PNG. Returns `{ id, url, contentType, width, height, sizeBytes }`. Pass `id` (`img_...`) directly in `files` on `POST /v2/images/render`.
+- `DELETE /v2/media/:id`: deletes a tenant-owned media object and returns `{ ok: true, id, deleted: true }`.
+- `POST /v2/moderations/images`: accepts raw `image/jpeg` or `image/png` up to 5 MiB, runs OpenAI `omni-moderation-latest` fail-closed, and returns `{ id, model, flagged, categories, category_scores, category_applied_input_types }`.
+
+### `<textbox>` layout, inheritance, and attributes
+
+A `<textbox>` expands to plain `<text>` / `<tspan>` before rendering:
+
+- **Layout rules**: starts at `font-size` (default `16`) and shrinks toward `min-font-size` (default `60%` of `font-size`) on a single line. If it still does not fit, it wraps at spaces and after `-`, `/`, and `,`, choosing the largest size that fits within `height`. If a single word is wider than `width` at `min-font-size`, it shrinks down to `8 px` and splits at grapheme boundaries only below that floor. Characters are never truncated or ellipsized; if the box is still too small, rendering returns `400` naming the textbox position, dimensions, and a text preview.
+- **Alignment & vertical centering**: `align="start|middle|end"` (default `start`), `valign="top|middle|bottom"` (default `middle`), `line-height` (default `1.2`). Vertical alignment uses consistent font ascent/descent metrics (clamped so glyphs never overflow the box), keeping baselines aligned across a row of fields regardless of accents or descenders.
+- **Inherited styles**: `<textbox>` inherits `font-family`, `font-weight`, `font-style`, `letter-spacing`, and `fill` from ancestor `<svg>`/`<g>` attributes, inline `style="..."`, and simple `<style>` CSS rules (including `font:` shorthand). Resolved layout properties (`font-size`, `font-family`, `font-weight`, `font-style`, `letter-spacing`, `text-anchor:start`) are emitted explicitly and locked in inline `style="..."` on the generated `<text>` so parent `text-anchor` or stylesheet rules like `text { font-size: 40px }` cannot break the measured layout.
+- **Visual pass-through attributes**: `id`, `class`, `stroke`, `stroke-width`, `stroke-linejoin`, `stroke-linecap`, `stroke-miterlimit`, `stroke-dasharray`, `stroke-dashoffset`, `opacity`, `fill-opacity`, `stroke-opacity`, `transform`, `filter`, `text-decoration`, `paint-order`, `clip-path`, `mask`, `visibility`, `word-spacing`, `writing-mode`, plus non-layout declarations from `style="..."` are forwarded to the generated `<text>`.
+
+### Bundled fonts and script coverage
+
+| Alias | Resolved Family | Bundled Styles |
+| --- | --- | --- |
+| `Sans` (default) | `Noto Sans` | Regular, Bold, Italic, Bold Italic |
+| `Serif` | `Noto Serif` | Regular, Bold, Italic |
+| `Mono` | `Noto Sans Mono` | Regular, Bold |
+
+Aliases work in `font-family` attributes, CSS `font-family:` lists, CSS `font:` shorthand, and `<style>` blocks. Fallback fonts loaded automatically across all styles: `Noto Sans Math`, `Noto Sans Symbols`, `Noto Sans Symbols 2` (covers `★ ☆ ♡ ♛ ✓ ✗ ✿ ❀` and enclosed alphanumerics), and monochrome `Noto Emoji`.
+
+- **Covered scripts**: Latin (extended/diacritics), Greek, Cyrillic, Mathematical Alphanumerics (`𝑱𝒐𝒌𝒆𝒓`), Enclosed Alphanumerics (`Ⓡⓘⓣⓐ`), Symbols/dingbats, and monochrome Emoji.
+- **Unsupported scripts**: characters not in any bundled font (e.g. CJK, Arabic, Hebrew, Devanagari, Thai) are normalized via Unicode NFKC (so e.g. `Ｗｉｄｅ` renders as `Wide`) or substituted with `?` so trailing symbols and emoji on the same line continue to render cleanly.
+
+### Limits and usage
+
+| Limit | Value |
+| --- | --- |
+| SVG source size | 1 MiB (`1,048,576` bytes), max 10,000 elements |
+| Output dimensions | Up to `4,194,304` pixels (e.g. `2048×2048`), max `4096 px` on either side |
+| Input raster images | Up to `16` images, `10 MiB` each, `4096×4096 px` max side, `14 MiB` total base64, `4 MP` decoded total |
+| Input raster formats | PNG, JPEG, WebP, and GIF (WebP and GIF first frame auto-converted to PNG) |
+| `<textbox>` measurement budget | `4,000` measurements per render |
+| Request body | `16 MiB` max |
+
+Each render records a zero-cost usage row (`model: "resvg"`, count and elapsed `vmMs`) in `GET /v2/billing`.
+
+### Agent builtins (`render_image` & `view_image`)
+
+In v2, enable the `images` builtin suite to let an agent call `render_image` (`{ svg, files?: Record<string, repoPath>, path }`).
+It reads referenced repo images (auto-converting WebP/GIF to PNG), renders and writes the PNG to `path`, and returns the PNG
+as an image content block so the model can inspect its own output. The `files` suite's `view_image` tool lets the model
+inspect an existing PNG, JPEG, GIF, or WebP in its repository.
 
 ## Saving images to files
 

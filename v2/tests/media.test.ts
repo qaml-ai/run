@@ -610,4 +610,96 @@ test("POST /v2/transcriptions and POST /v2/images harden OpenAI media handling",
     assert.equal(noKeyData.costUsd, 0);
     assert.equal(captured.length, before, "mock fallbacks must not call upstream");
   });
+
+  await t.test("POST /v2/media and DELETE /v2/media/:id upload once, enforce tenant isolation, and delete cleanly", async () => {
+    // 1. Raw image/png upload
+    const rawRes = await worker.fetch(`${origin}/v2/media`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${withKey.apiKey}`,
+        "content-type": "image/png",
+      },
+      body: PNG_1X1_BYTES,
+    });
+    assert.equal(rawRes.status, 200, await rawRes.clone().text());
+    const rawMedia = (await rawRes.json()) as {
+      id: string;
+      url: string;
+      contentType: string;
+      width: number;
+      height: number;
+      sizeBytes: number;
+    };
+    assert.match(rawMedia.id, /^img_/);
+    assert.equal(rawMedia.url, `/v2/images/${rawMedia.id}`);
+    assert.equal(rawMedia.contentType, "image/png");
+    assert.equal(rawMedia.width, 1);
+    assert.equal(rawMedia.height, 1);
+    assert.equal(rawMedia.sizeBytes, PNG_1X1_BYTES.byteLength);
+
+    // Retrievable via GET /v2/images/:id
+    const fetched = await worker.fetch(`${origin}${rawMedia.url}`, {
+      headers: { authorization: `Bearer ${withKey.apiKey}` },
+    });
+    assert.equal(fetched.status, 200);
+    assert.deepEqual(new Uint8Array(await fetched.arrayBuffer()), PNG_1X1_BYTES);
+
+    // 2. JSON base64 upload
+    const jsonRes = await worker.fetch(`${origin}/v2/media`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${withKey.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ data: PNG_1X1_B64, contentType: "image/png" }),
+    });
+    assert.equal(jsonRes.status, 200, await jsonRes.clone().text());
+    const jsonMedia = (await jsonRes.json()) as { id: string; width: number; height: number };
+    assert.match(jsonMedia.id, /^img_/);
+    assert.equal(jsonMedia.width, 1);
+    assert.equal(jsonMedia.height, 1);
+
+    // 3. Invalid content-type / corrupted bytes rejected with 400
+    const badCt = await worker.fetch(`${origin}/v2/media`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${withKey.apiKey}`, "content-type": "text/plain" },
+      body: "not an image",
+    });
+    assert.equal(badCt.status, 400);
+
+    const badImg = await worker.fetch(`${origin}/v2/media`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${withKey.apiKey}`, "content-type": "image/png" },
+      body: new Uint8Array([1, 2, 3, 4]),
+    });
+    assert.equal(badImg.status, 400);
+
+    // 4. Cross-tenant DELETE returns 404 media_not_found
+    const crossDel = await worker.fetch(`${origin}/v2/media/${rawMedia.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${noKey.apiKey}` },
+    });
+    assert.equal(crossDel.status, 404);
+    const crossBody = (await crossDel.json()) as { error: { code: string } };
+    assert.equal(crossBody.error.code, "media_not_found");
+
+    // 5. Owner DELETE succeeds and removes object from R2
+    const delRes = await worker.fetch(`${origin}/v2/media/${rawMedia.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${withKey.apiKey}` },
+    });
+    assert.equal(delRes.status, 200, await delRes.clone().text());
+    assert.deepEqual(await delRes.json(), { ok: true, id: rawMedia.id, deleted: true });
+
+    const delAgain = await worker.fetch(`${origin}/v2/media/${rawMedia.id}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${withKey.apiKey}` },
+    });
+    assert.equal(delAgain.status, 404);
+
+    const getAfterDel = await worker.fetch(`${origin}${rawMedia.url}`, {
+      headers: { authorization: `Bearer ${withKey.apiKey}` },
+    });
+    assert.equal(getAfterDel.status, 404);
+  });
 });

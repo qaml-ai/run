@@ -1,4 +1,11 @@
-import { readSvgRequest, renderSvg, resolveRenderFiles } from "./svg-render.ts";
+import {
+  handleMediaDeleteRequest,
+  handleMediaUploadRequest,
+  readSvgRequest,
+  recordSvgRenderUsage,
+  renderSvg,
+  resolveRenderFiles,
+} from "./svg-render.ts";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -1394,6 +1401,18 @@ app.post("/v2/images", async (c) => {
   return handleImageGenerateRequest(c.env, auth.tenantId, c.req.raw);
 });
 
+app.post("/v2/media", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  return handleMediaUploadRequest(c.env, auth.tenantId, c.req.raw);
+});
+
+app.delete("/v2/media/:id", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  return handleMediaDeleteRequest(c.env, auth.tenantId, c.req.param("id"));
+});
+
 app.post("/v2/images/render", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
@@ -1402,7 +1421,10 @@ app.post("/v2/images/render", async (c) => {
     throw new ApiError(400, "invalid_svg", "Supply an SVG and select PNG output");
   }
   const files = await resolveRenderFiles(c.env, auth.tenantId, body.files);
-  return c.json(await renderSvg(c.env, body.svg, files));
+  const startedAt = Date.now();
+  const rendered = await renderSvg(c.env, body.svg, files);
+  await recordSvgRenderUsage(getTenantStub(c.env, auth.tenantId), Date.now() - startedAt, "POST /v2/images/render");
+  return c.json(rendered);
 });
 
 app.get("/v2/images/:id", async (c) => {
