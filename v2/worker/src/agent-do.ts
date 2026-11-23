@@ -87,6 +87,7 @@ const RUN_LIFECYCLE_EVENTS = new Set([
 ]);
 const EXPECTED_RUN_FAILURES = new Set([
   "insufficient_credits", "run_spend_limit_exceeded", "spend_limit_exceeded", "input_expired",
+  "attachment_invalid", "attachment_size",
 ]);
 
 export class AgentDO extends DurableObject<Env> {

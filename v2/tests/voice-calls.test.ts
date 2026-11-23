@@ -415,9 +415,305 @@ test("v2 VoiceCallDO: OpenAI WebRTC sideband + ask_agent + hangup AND ElevenLabs
   assert.equal(elAfter.audioSeconds, 43);
   assert.ok(elAfter.costUsd > 0);
 
+  // Pending voice transcript notes are flushed immediately on call end without waiting for the alarm
+  const historyRes = await worker.fetch(`${origin}/v2/agents/${agentId}/history`, { headers });
+  assert.equal(historyRes.status, 200);
+  const history = (await historyRes.json()) as { messages: Array<{ content?: { text?: string } }> };
+  assert.ok(
+    history.messages.some((m) => m.content?.text?.includes("Hey bot, check the weather")),
+    "Expected voice transcript note to be flushed immediately when call finished",
+  );
+
   // List calls
   const listRes = await worker.fetch(`${origin}/v2/voice/calls?state=ended`, { headers });
   assert.equal(listRes.status, 200);
   const list = (await listRes.json()) as { calls: Array<{ id: string }> };
   assert.equal(list.calls.length, 2);
+});
+
+test("VoiceCallDO alarm cadence stays <= 6/min, flushes notes on end, and bounds ended note retries", async (t) => {
+  const elevenWebhookSecret = "whsec_alarm_cadence_test";
+  let convSeq = 0;
+  const mockUpstream = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (req.method === "POST" && url.pathname === "/v1/workspace/webhooks") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ webhook_id: "wh_el_alarm", webhook_secret: elevenWebhookSecret }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/convai/tools") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ id: "tool_alarm" }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/convai/agents/create") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ agent_id: "el_agt_alarm" }));
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/v1/convai/conversation/get-signed-url") {
+        const convId = `conv_el_alarm_${++convSeq}`;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ signed_url: `wss://api.elevenlabs.io/v1/convai/conversation?conversation_id=${convId}`, conversation_id: convId }));
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
+    });
+  });
+  await new Promise<void>((resolve) => mockUpstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    mockUpstream.closeAllConnections();
+    mockUpstream.close();
+  });
+  const port = (mockUpstream.address() as { port: number }).port;
+  const mockOrigin = `http://127.0.0.1:${port}`;
+
+  const dir = mkdtempSync(join(tmpdir(), "v2-voice-alarm-cadence-"));
+  const indexEntry = fileURLToPath(new URL("../worker/src/index.ts", import.meta.url));
+  const voiceDoEntry = fileURLToPath(new URL("../worker/src/voice-call-do.ts", import.meta.url));
+  const wrapperPath = join(dir, "wrapper.ts");
+  writeFileSync(
+    wrapperPath,
+    `
+import app, { TenantDO, AgentDO as BaseAgentDO, VoiceCallDO as BaseVoiceCallDO } from ${JSON.stringify(indexEntry)};
+import { NOTE_MS, NOTE_RETRY_MS, ENDING_RETRY_MS, CHARGE_RETRY_MS, ALARM_ERROR_RETRY_MS } from ${JSON.stringify(voiceDoEntry)};
+export { TenantDO };
+
+export class AgentDO extends BaseAgentDO {
+  private failNotes = false;
+  setFailNotes(fail: boolean): void { this.failNotes = fail; }
+  override async appendPassiveNote(text: string, meta?: Record<string, unknown>): Promise<{ ok: true }> {
+    if (this.failNotes) throw new Error("synthetic note failure");
+    return super.appendPassiveNote(text, meta);
+  }
+}
+
+export class VoiceCallDO extends BaseVoiceCallDO {
+  async inspectAlarm(): Promise<{ alarm: number | null; noteKeys: number; noteAt?: number; noteFailures?: number; state?: string }> {
+    const row = await this.ctx.storage.get<{ noteAt?: number; noteFailures?: number; call?: { state?: string } }>("call");
+    const notes = await this.ctx.storage.list({ prefix: "note:" });
+    return {
+      alarm: await this.ctx.storage.getAlarm(),
+      noteKeys: notes.size,
+      noteAt: row?.noteAt,
+      noteFailures: row?.noteFailures,
+      state: row?.call?.state,
+    };
+  }
+  async forceFlushAlarmNow(): Promise<void> {
+    const row = await this.ctx.storage.get<Record<string, unknown>>("call");
+    if (row && typeof row.noteAt === "number") {
+      row.noteAt = Date.now() - 1;
+      await this.ctx.storage.put("call", row);
+    }
+    await this.alarm();
+  }
+}
+
+export default {
+  ...app,
+  async fetch(request: Request, env: Record<string, any>, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/_test/constants") {
+      return Response.json({ NOTE_MS, NOTE_RETRY_MS, ENDING_RETRY_MS, CHARGE_RETRY_MS, ALARM_ERROR_RETRY_MS });
+    }
+    if (url.pathname === "/_test/fail-notes") {
+      const agentId = url.searchParams.get("agentId")!;
+      const fail = url.searchParams.get("fail") === "1";
+      const stub = env.AGENT_DO.get(env.AGENT_DO.idFromName(agentId));
+      await stub.setFailNotes(fail);
+      return Response.json({ ok: true });
+    }
+    if (url.pathname === "/_test/inspect-voice") {
+      const callId = url.searchParams.get("callId")!;
+      const stub = env.VOICE_CALL_DO.get(env.VOICE_CALL_DO.idFromName(callId));
+      return Response.json(await stub.inspectAlarm());
+    }
+    if (url.pathname === "/_test/trigger-voice-alarm") {
+      const callId = url.searchParams.get("callId")!;
+      const stub = env.VOICE_CALL_DO.get(env.VOICE_CALL_DO.idFromName(callId));
+      await stub.forceFlushAlarmNow();
+      return Response.json(await stub.inspectAlarm());
+    }
+    return app.fetch(request, env, ctx);
+  },
+};
+`,
+  );
+
+  const config = join(dir, "wrangler.json");
+  const admin = "fixture-voice-alarm-admin";
+  writeFileSync(
+    config,
+    JSON.stringify({
+      name: "v2-voice-alarm-test",
+      main: wrapperPath,
+      compatibility_date: "2026-03-01",
+      compatibility_flags: ["nodejs_compat", "enhanced_error_serialization"],
+      vars: {
+        ADMIN_SECRET: admin,
+        VAULT_SECRET: "fixture-voice-vault-32-bytes-minimum",
+        DEFAULT_MODEL: "mock/default",
+        ELEVENLABS_API_KEY: "sk-test-elevenlabs-platform",
+        VOICE_ELEVENLABS_BASE_URL: mockOrigin,
+        VOICE_PUBLIC_URL: "https://voice-alarm.test",
+        AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "0.08",
+        AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD: "0.001",
+        AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD: "0.012",
+        AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD: "0.003",
+      },
+      durable_objects: {
+        bindings: [
+          { name: "TENANT_DO", class_name: "TenantDO" },
+          { name: "AGENT_DO", class_name: "AgentDO" },
+          { name: "VOICE_CALL_DO", class_name: "VoiceCallDO" },
+        ],
+      },
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["TenantDO", "AgentDO"] },
+        { tag: "v2", new_sqlite_classes: ["VoiceCallDO"] },
+      ],
+    }),
+  );
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const worker = await unstable_startWorker({ config, dev: { persist: false, logLevel: "none" } });
+  t.after(() => worker.dispose());
+  const origin = "https://voice-alarm.test";
+
+  const constantsRes = await worker.fetch(`${origin}/_test/constants`);
+  const constants = (await constantsRes.json()) as Record<string, number>;
+  assert.ok(constants.NOTE_MS! >= 10_000);
+  assert.ok(constants.NOTE_RETRY_MS! >= 15_000);
+  assert.ok(constants.ENDING_RETRY_MS! >= 10_000);
+  assert.ok(constants.CHARGE_RETRY_MS! >= 10_000);
+  assert.ok(constants.ALARM_ERROR_RETRY_MS! >= 15_000);
+
+  const tenantRes = await worker.fetch(`${origin}/v2/tenants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Admin-Key": admin },
+    body: JSON.stringify({ name: "voice-alarm-test", initialCreditsUsd: 50 }),
+  });
+  assert.equal(tenantRes.status, 201);
+  const { apiKey } = (await tenantRes.json()) as { apiKey: string };
+  const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+
+  const agtRes = await worker.fetch(`${origin}/v2/agents/alarm-bot`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ model: "mock/default", instructions: "Voice alarm test bot." }),
+  });
+  assert.equal(agtRes.status, 201);
+  const { id: agentId } = (await agtRes.json()) as { id: string };
+
+  // 1. Live speech batches notes on a 10s cadence and flushes immediately on /end
+  const createRes = await worker.fetch(`${origin}/v2/voice/calls`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: agentId, provider: "elevenlabs", subject: "user:1" }),
+  });
+  assert.equal(createRes.status, 201, await createRes.clone().text());
+  const call1 = (await createRes.json()) as { id: string };
+
+  const beforeUtterance = Date.now();
+  for (let i = 1; i <= 5; i++) {
+    const tr = await worker.fetch(`${origin}/v2/voice/calls/${call1.id}/transcript`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ speaker: "u1", text: `Line ${i}`, seconds: 1 }),
+    });
+    assert.equal(tr.status, 202);
+  }
+  const liveInspect = (await (await worker.fetch(`${origin}/_test/inspect-voice?callId=${call1.id}`)).json()) as {
+    alarm: number | null;
+    noteKeys: number;
+    noteAt?: number;
+  };
+  assert.equal(liveInspect.noteKeys, 5);
+  assert.ok(liveInspect.alarm !== null && liveInspect.alarm >= beforeUtterance + 9_000, `Expected >=10s note alarm, got ${liveInspect.alarm! - beforeUtterance}ms`);
+  assert.equal(liveInspect.alarm, liveInspect.noteAt);
+
+  // Ending the call flushes all 5 notes immediately and schedules only the 15-min grace deadline
+  const endRes = await worker.fetch(`${origin}/v2/voice/calls/${call1.id}/end`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ reason: "requested" }),
+  });
+  assert.equal(endRes.status, 200);
+  const endingInspect = (await (await worker.fetch(`${origin}/_test/inspect-voice?callId=${call1.id}`)).json()) as {
+    alarm: number | null;
+    noteKeys: number;
+    noteAt?: number;
+    state?: string;
+  };
+  assert.equal(endingInspect.state, "ending");
+  assert.equal(endingInspect.noteKeys, 0);
+  assert.equal(endingInspect.noteAt, undefined);
+  assert.ok(endingInspect.alarm !== null && endingInspect.alarm > Date.now() + 600_000, "Expected 15-minute grace alarm, not a short poll");
+
+  const histRes = await worker.fetch(`${origin}/v2/agents/${agentId}/history`, { headers });
+  const hist = (await histRes.json()) as { messages: Array<{ content?: { text?: string } }> };
+  assert.ok(hist.messages.some((m) => m.content?.text?.includes("Line 5")), "Expected all queued notes flushed on /end");
+
+  // 2. Transient note flush failures back off >= 15s and stop retrying on ended calls
+  const createRes2 = await worker.fetch(`${origin}/v2/voice/calls`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: agentId, provider: "elevenlabs", subject: "user:2" }),
+  });
+  assert.equal(createRes2.status, 201);
+  const call2 = (await createRes2.json()) as { id: string; connect: { conversationId: string } };
+
+  await worker.fetch(`${origin}/_test/fail-notes?agentId=${agentId}&fail=1`);
+  const tr2 = await worker.fetch(`${origin}/v2/voice/calls/${call2.id}/transcript`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ speaker: "u2", text: "Will fail flush", seconds: 1 }),
+  });
+  assert.equal(tr2.status, 202);
+
+  // First flush failure while live backs off by >= 15s
+  const beforeFail = Date.now();
+  const afterFail1 = (await (await worker.fetch(`${origin}/_test/trigger-voice-alarm?callId=${call2.id}`)).json()) as {
+    alarm: number | null;
+    noteKeys: number;
+    noteFailures?: number;
+  };
+  assert.equal(afterFail1.noteKeys, 1);
+  assert.equal(afterFail1.noteFailures, 1);
+  assert.ok(afterFail1.alarm !== null && afterFail1.alarm >= beforeFail + 14_000, `Expected >=15s retry backoff, got ${afterFail1.alarm! - beforeFail}ms`);
+
+  // Settle call via post-call -> finish() attempts flush (failure #2) and arms 15s retry
+  const postPayload = JSON.stringify({
+    type: "post_call_transcription",
+    data: {
+      agent_id: "el_agt_alarm",
+      conversation_id: call2.connect.conversationId,
+      metadata: { call_duration_secs: 10, termination_reason: "Client disconnected" },
+    },
+  });
+  const ts = Math.floor(Date.now() / 1000);
+  const sig = createHmac("sha256", elevenWebhookSecret).update(`${ts}.`).update(postPayload).digest("hex");
+  const postRes = await worker.fetch(`${origin}/v2/voice/providers/elevenlabs/post-call`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "ElevenLabs-Signature": `t=${ts},v0=${sig}` },
+    body: postPayload,
+  });
+  assert.equal(postRes.status, 200);
+
+  // Trigger final retry (#3) on ended call -> drops pending note and clears alarm completely
+  const afterEndedCap = (await (await worker.fetch(`${origin}/_test/trigger-voice-alarm?callId=${call2.id}`)).json()) as {
+    alarm: number | null;
+    noteKeys: number;
+    noteAt?: number;
+    state?: string;
+  };
+  assert.equal(afterEndedCap.state, "ended");
+  assert.equal(afterEndedCap.noteKeys, 0);
+  assert.equal(afterEndedCap.noteAt, undefined);
+  assert.equal(afterEndedCap.alarm, null);
 });

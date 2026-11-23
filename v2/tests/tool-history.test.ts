@@ -28,7 +28,18 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
     requests.push(input);
     const pending = new Set<string>();
     let unpaired = false;
-    for (const item of input) {
+    for (let idx = 0; idx < input.length; idx++) {
+      const item = input[idx]!;
+      if (item.type === "function_call" && typeof item.arguments === "string" && item.arguments.length > 1_048_576) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          error: {
+            code: "string_above_max_length",
+            message: `Invalid 'input[${idx}].arguments': string too long. Expected a string with maximum length 1048576, but got a string with length ${item.arguments.length} instead.`,
+          },
+        }));
+        return;
+      }
       if (item.type === "function_call" && item.call_id) pending.add(item.call_id);
       else if (item.type === "function_call_output" && item.call_id) unpaired ||= !pending.delete(item.call_id);
       else unpaired ||= pending.size > 0;
@@ -134,5 +145,39 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
       outputItem("call_surr", "coins 🪙\n\ufffd\nend"),
       { role: "user", content: "hi \ufffd ok" },
     ]);
+  });
+
+  await t.test("oversized historical function_call arguments (> 1 MiB) are truncated to valid JSON without lone surrogates", async () => {
+    // Place a surrogate-pair emoji across index 4000 so naive .slice(0, 4000) would split it.
+    const prefix = '{"content":"' + "a".repeat(3987) + "🪙";
+    assert.equal(prefix.length, 4001);
+    const hugeArgsJson = prefix + "b".repeat(1_403_016) + '"}';
+    assert.equal(hugeArgsJson.length, 1_407_019);
+    const hugeCall = { id: "call_huge", name: "write_file", args: {}, argumentsJson: hugeArgsJson };
+
+    const response = await worker.fetch("https://tool-history.test/", {
+      method: "POST",
+      body: JSON.stringify([
+        { seq: 1, runId: "h1", role: "assistant", content: { text: "", toolCalls: [hugeCall] }, tokensEst: 1, createdAt: 1 },
+        { seq: 2, runId: "h1", role: "tool", content: result("call_huge", "written"), tokensEst: 1, createdAt: 2 },
+        { seq: 3, runId: "h2", role: "user", content: { text: "continue" }, tokensEst: 1, createdAt: 3 },
+      ]),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const payload = await response.json() as { chunks: Array<{ type: string; delta?: string }>; storedUnchanged: boolean };
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    assert.equal(payload.storedUnchanged, true);
+    assert.deepEqual(payload.chunks[0], { type: "text_delta", delta: "ok" });
+
+    const sent = requests.at(-1)!;
+    const sentCall = sent.find((item) => item.type === "function_call" && item.call_id === "call_huge");
+    assert.ok(sentCall && typeof sentCall.arguments === "string");
+    assert.ok(sentCall.arguments.length < 1_048_576, `Expected truncated arguments, got ${sentCall.arguments.length}`);
+    const parsed = JSON.parse(sentCall.arguments) as { _truncated: boolean; originalLength: number; preview: string };
+    assert.equal(parsed._truncated, true);
+    assert.equal(parsed.originalLength, hugeArgsJson.length);
+    assert.equal(parsed.preview.length, 4_000);
+    assert.ok(parsed.preview.endsWith("\ufffd"), "Split high surrogate at slice boundary should be sanitized to U+FFFD");
+    assert.doesNotMatch(parsed.preview, /[\uD800-\uDFFF]/);
   });
 });

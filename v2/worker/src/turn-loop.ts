@@ -178,9 +178,10 @@ function clampMessageForSummary(msg: StoredMessage, perMsgCap: number): StoredMe
     ? `${msg.content.text.slice(0, perMsgCap)}\n...[truncated ${msg.content.text.length - perMsgCap} chars]`
     : msg.content.text;
   const toolCalls = msg.content.toolCalls?.map((tc) => {
-    const rawArgs = JSON.stringify(tc.args ?? {});
+    const rawArgs = tc.argumentsJson || JSON.stringify(tc.args ?? {});
     if (rawArgs.length <= 1500) return tc;
-    return { ...tc, args: { _truncated: rawArgs.slice(0, 1500) } };
+    const truncated = { _truncated: rawArgs.slice(0, 1500) };
+    return { ...tc, args: truncated, argumentsJson: JSON.stringify(truncated) };
   });
   return {
     ...msg,

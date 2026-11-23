@@ -665,6 +665,42 @@ function safeJsonStringify(value: unknown): string {
   return JSON.stringify(value, (_key, val) => (typeof val === "string" ? sanitizeLoneSurrogates(val) : val));
 }
 
+const MAX_TOOL_ARGS_CHARS = 900_000;
+const MAX_TOOL_ARGS_BYTES = 900_000;
+const TOOL_ARGS_PREVIEW_CHARS = 4_000;
+const utf8Encoder = new TextEncoder();
+
+function isOversizedToolArgs(raw: string): boolean {
+  if (raw.length > MAX_TOOL_ARGS_CHARS) return true;
+  // Each UTF-16 code unit encodes to at most 3 UTF-8 bytes, so <= 300k units cannot exceed 900k bytes.
+  return raw.length > MAX_TOOL_ARGS_BYTES / 3 && utf8Encoder.encode(raw).byteLength > MAX_TOOL_ARGS_BYTES;
+}
+
+function buildTruncatedToolArgs(raw: string): Record<string, unknown> {
+  return {
+    _truncated: true,
+    originalLength: raw.length,
+    preview: sanitizeLoneSurrogates(raw.slice(0, TOOL_ARGS_PREVIEW_CHARS)),
+  };
+}
+
+/**
+ * OpenAI and Azure Responses APIs reject `function_call.arguments` longer than 1,048,576 chars
+ * with HTTP 400, permanently bricking subsequent turns on that agent. Replace oversized
+ * historical arguments with a bounded, valid JSON summary while leaving stored history intact.
+ */
+export function normalizeToolCallArgumentsJson(tc: ToolCallInvocation): string {
+  const raw = tc.argumentsJson || safeJsonStringify(tc.args ?? {});
+  if (!isOversizedToolArgs(raw)) return raw;
+  return safeJsonStringify(buildTruncatedToolArgs(raw));
+}
+
+function normalizeToolCallArgumentsObject(tc: ToolCallInvocation): Record<string, unknown> {
+  const raw = tc.argumentsJson || safeJsonStringify(tc.args ?? {});
+  if (isOversizedToolArgs(raw)) return buildTruncatedToolArgs(raw);
+  return tc.args ?? safeParseArgs(tc.argumentsJson);
+}
+
 async function* streamOpenAiChat(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -688,7 +724,7 @@ async function* streamOpenAiChat(
           type: "function",
           function: {
             name: tc.name,
-            arguments: tc.argumentsJson || JSON.stringify(tc.args ?? {}),
+            arguments: normalizeToolCallArgumentsJson(tc),
           },
         })),
       });
@@ -952,7 +988,7 @@ async function* streamOpenAiResponses(
           type: "function_call",
           call_id: normalizeResponsesCallId(tc.id),
           name: tc.name,
-          arguments: tc.argumentsJson || JSON.stringify(tc.args ?? {}),
+          arguments: normalizeToolCallArgumentsJson(tc),
         });
       }
     } else if (m.role === "tool") {
@@ -1185,7 +1221,7 @@ async function* streamAnthropicMessages(
           type: "tool_use",
           id: tc.id,
           name: tc.name,
-          input: tc.args ?? safeParseArgs(tc.argumentsJson),
+          input: normalizeToolCallArgumentsObject(tc),
         });
       }
       if (blocks.length > 0) {
@@ -1392,7 +1428,7 @@ async function* streamGeminiContent(
         parts.push({
           functionCall: {
             name: tc.name,
-            args: tc.args ?? safeParseArgs(tc.argumentsJson),
+            args: normalizeToolCallArgumentsObject(tc),
           },
         });
       }

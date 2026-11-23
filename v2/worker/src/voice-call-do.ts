@@ -60,6 +60,7 @@ type Row = {
   noteSeq?: number;
   lines: string[];
   noteAt?: number;
+  noteFailures?: number;
   budgetExpiresAt?: number;
   ending?: Ending;
 };
@@ -67,7 +68,12 @@ type Row = {
 const PENDING_MS = 45_000;
 const LATE_MS = 300_000;
 const GRACE_MS = 900_000;
-const NOTE_MS = 2_000;
+export const NOTE_MS = 10_000;
+export const NOTE_RETRY_MS = 15_000;
+export const ENDING_RETRY_MS = 10_000;
+export const CHARGE_RETRY_MS = 10_000;
+export const ALARM_ERROR_RETRY_MS = 15_000;
+const MAX_ENDED_NOTE_RETRIES = 3;
 
 export function getVoiceCallStub(env: Env, callId: string): RpcStub<VoiceCallDO> {
   if (!env.VOICE_CALL_DO) {
@@ -650,6 +656,7 @@ export class VoiceCallDO extends DurableObject<Env> {
         row.call.reason = by.reason;
         row.call.endedAt = by.reason === "max_duration" ? row.call.expiresAt : Date.now();
       }
+      await this.flushNotes(row);
       await this.save(row);
       await this.syncIndex(row);
     }
@@ -679,6 +686,7 @@ export class VoiceCallDO extends DurableObject<Env> {
     row.call.reason = by.reason;
     row.call.endedAt ??= Date.now();
     row.lines = [];
+    await this.flushNotes(row);
     const { startedAt, endedAt, turns, asks, audioSeconds, costUsd } = row.call;
     await this.emitEvent(row, "voice.session.ended", {
       ...by,
@@ -721,7 +729,10 @@ export class VoiceCallDO extends DurableObject<Env> {
   private async flushNotes(row: Row): Promise<void> {
     const notes = await this.ctx.storage.list<string>({ prefix: "note:" });
     row.noteAt = undefined;
-    if (!notes.size) return;
+    if (!notes.size) {
+      row.noteFailures = 0;
+      return;
+    }
     const keys = [...notes.keys()];
     const text = [...notes.values()].join("\n");
     try {
@@ -730,8 +741,15 @@ export class VoiceCallDO extends DurableObject<Env> {
         via: "voice_note",
       });
       await this.ctx.storage.delete(keys);
+      row.noteFailures = 0;
     } catch {
-      row.noteAt = Date.now() + 5_000;
+      row.noteFailures = (row.noteFailures ?? 0) + 1;
+      if (row.call.state === "ended" && row.noteFailures >= MAX_ENDED_NOTE_RETRIES) {
+        await this.ctx.storage.delete(keys);
+        row.noteAt = undefined;
+      } else {
+        row.noteAt = Date.now() + NOTE_RETRY_MS;
+      }
     }
   }
 
@@ -892,7 +910,7 @@ export class VoiceCallDO extends DurableObject<Env> {
     const next = [row.noteAt ?? Infinity];
     if (state === "live" || state === "connecting") next.push(expiresAt);
     if (state === "ending") {
-      next.push(row.call.provider === "elevenlabs" ? (endedAt ?? expiresAt) + GRACE_MS : Date.now() + 1000);
+      next.push(row.call.provider === "elevenlabs" ? (endedAt ?? expiresAt) + GRACE_MS : Date.now() + ENDING_RETRY_MS);
     }
     for (const ask of (await this.ctx.storage.list<Ask>({ prefix: "ask:" })).values()) {
       next.push(ask.started + (ask.pending ? LATE_MS : PENDING_MS));
@@ -901,11 +919,15 @@ export class VoiceCallDO extends DurableObject<Env> {
       (await this.ctx.storage.list({ prefix: "charge:", limit: 1 })).size ||
       (await this.ctx.storage.get("eleven-charge"))
     ) {
-      next.push(Date.now() + 1000);
+      next.push(Date.now() + CHARGE_RETRY_MS);
     }
     const at = Math.min(...next);
-    if (Number.isFinite(at)) await this.ctx.storage.setAlarm(at);
-    else await this.ctx.storage.deleteAlarm();
+    const current = await this.ctx.storage.getAlarm();
+    if (Number.isFinite(at)) {
+      if (current !== at) await this.ctx.storage.setAlarm(at);
+    } else if (current !== null) {
+      await this.ctx.storage.deleteAlarm();
+    }
   }
 
   override alarm(): Promise<void> {
@@ -913,7 +935,7 @@ export class VoiceCallDO extends DurableObject<Env> {
       try {
         await this.sweep();
       } catch (error) {
-        await this.ctx.storage.setAlarm(Date.now() + 5_000);
+        await this.ctx.storage.setAlarm(Date.now() + ALARM_ERROR_RETRY_MS);
         throw error;
       }
     });
@@ -925,7 +947,7 @@ export class VoiceCallDO extends DurableObject<Env> {
     const now = Date.now();
     if (row.noteAt !== undefined && row.noteAt <= now) {
       await this.flushNotes(row);
-      await this.save(row);
+      await this.ctx.storage.put("call", row);
     }
     for (const [key, ask] of await this.ctx.storage.list<Ask>({ prefix: "ask:" })) {
       if (now >= ask.started + LATE_MS || row.call.state === "ended") {
