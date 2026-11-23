@@ -3,6 +3,14 @@ import { CamelFsClient } from "./camelfs.ts";
 import { mintChannelId, openSecret, randomId, sealSecret } from "./crypto.ts";
 import { DEFAULT_MODEL_ID, getProviderLookupCandidates } from "./providers.ts";
 import {
+  compareSlug,
+  normalizeAndValidateSkill,
+  selectSkillsBySelectors,
+  type SkillRecord,
+  type SkillSummary,
+  type SkillUpsertInput,
+} from "./skills.ts";
+import {
   ApiError,
   extractApiError,
   type AgentUpsertInput,
@@ -181,6 +189,7 @@ type SealedProviderRow = {
 
 function extractAgentFeatureKeys(input: {
   builtins?: unknown;
+  skills?: unknown;
   mcpServers?: unknown;
   tools?: unknown;
   repoId?: string | null;
@@ -190,6 +199,9 @@ function extractAgentFeatureKeys(input: {
     for (const item of input.builtins) {
       if (typeof item === "string" && item.trim()) keys.add(item.trim());
     }
+  }
+  if (Array.isArray(input.skills) && input.skills.length > 0) {
+    keys.add("skills");
   }
   if (Array.isArray(input.mcpServers) && input.mcpServers.length > 0) {
     keys.add("mcp");
@@ -293,6 +305,18 @@ export class TenantDO extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS definitions (
         slug TEXT PRIMARY KEY,
         config_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS skills (
+        slug TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        version INTEGER NOT NULL DEFAULT 1,
+        content_hash TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        files_json TEXT NOT NULL DEFAULT '{}',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -1331,6 +1355,216 @@ export class TenantDO extends DurableObject<Env> {
     return true;
   }
 
+  // ---- 4b. Tenant-Scoped Skills ----
+
+  async upsertSkill(slug: string, input: SkillUpsertInput): Promise<SkillSummary> {
+    this.requireProfile();
+    const normalized = await normalizeAndValidateSkill(slug, input);
+    const now = Date.now();
+    const tagsJson = JSON.stringify(normalized.tags);
+    const filesJson = JSON.stringify(normalized.files);
+    const fileList = Object.keys(normalized.files).sort(compareSlug);
+
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.ctx.storage.sql
+        .exec<{
+          version: number;
+          content_hash: string;
+          created_at: number;
+          updated_at: number;
+        }>(
+          `SELECT version, content_hash, created_at, updated_at FROM skills WHERE slug = ?1 LIMIT 1`,
+          normalized.slug,
+        )
+        .toArray()[0];
+
+      if (existing && existing.content_hash === normalized.contentHash) {
+        return {
+          slug: normalized.slug,
+          name: normalized.name,
+          description: normalized.description,
+          tags: normalized.tags,
+          version: Number(existing.version),
+          contentHash: existing.content_hash,
+          files: fileList,
+          createdAt: Number(existing.created_at),
+          updatedAt: Number(existing.updated_at),
+        };
+      }
+
+      const version = existing ? Number(existing.version) + 1 : 1;
+      const createdAt = existing ? Number(existing.created_at) : now;
+      const updatedAt = now;
+
+      this.ctx.storage.sql.exec(
+        `INSERT INTO skills (slug, name, description, tags_json, version, content_hash, markdown, files_json, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(slug) DO UPDATE SET
+           name = excluded.name,
+           description = excluded.description,
+           tags_json = excluded.tags_json,
+           version = excluded.version,
+           content_hash = excluded.content_hash,
+           markdown = excluded.markdown,
+           files_json = excluded.files_json,
+           updated_at = excluded.updated_at`,
+        normalized.slug,
+        normalized.name,
+        normalized.description,
+        tagsJson,
+        version,
+        normalized.contentHash,
+        normalized.markdown,
+        filesJson,
+        createdAt,
+        updatedAt,
+      );
+
+      return {
+        slug: normalized.slug,
+        name: normalized.name,
+        description: normalized.description,
+        tags: normalized.tags,
+        version,
+        contentHash: normalized.contentHash,
+        files: fileList,
+        createdAt,
+        updatedAt,
+      };
+    });
+  }
+
+  async listSkills(opts?: { prefix?: string; tag?: string }): Promise<SkillSummary[]> {
+    this.requireProfile();
+    const rows = this.ctx.storage.sql
+      .exec<{
+        slug: string;
+        name: string;
+        description: string;
+        tags_json: string;
+        version: number;
+        content_hash: string;
+        files_json: string;
+        created_at: number;
+        updated_at: number;
+      }>(
+        `SELECT slug, name, description, tags_json, version, content_hash, files_json, created_at, updated_at
+         FROM skills ORDER BY slug ASC`,
+      )
+      .toArray();
+
+    const prefix = opts?.prefix?.trim() || "";
+    const tagLower = opts?.tag?.trim().toLowerCase() || "";
+
+    const out: SkillSummary[] = [];
+    for (const r of rows) {
+      if (prefix && !r.slug.startsWith(prefix)) continue;
+      const tags = JSON.parse(r.tags_json) as string[];
+      if (tagLower && !tags.some((t) => t.toLowerCase() === tagLower)) continue;
+      const filesMap = JSON.parse(r.files_json) as Record<string, string>;
+      out.push({
+        slug: r.slug,
+        name: r.name,
+        description: r.description,
+        tags,
+        version: Number(r.version),
+        contentHash: r.content_hash,
+        files: Object.keys(filesMap).sort(compareSlug),
+        createdAt: Number(r.created_at),
+        updatedAt: Number(r.updated_at),
+      });
+    }
+    return out;
+  }
+
+  async getSkill(slug: string): Promise<SkillRecord | null> {
+    if (!this.readProfileOrNull()) return null;
+    const clean = slug.trim();
+    if (!clean) return null;
+    const row = this.ctx.storage.sql
+      .exec<{
+        slug: string;
+        name: string;
+        description: string;
+        tags_json: string;
+        version: number;
+        content_hash: string;
+        markdown: string;
+        files_json: string;
+        created_at: number;
+        updated_at: number;
+      }>(
+        `SELECT slug, name, description, tags_json, version, content_hash, markdown, files_json, created_at, updated_at
+         FROM skills WHERE slug = ?1 LIMIT 1`,
+        clean,
+      )
+      .toArray()[0];
+    if (!row) return null;
+    return {
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      tags: JSON.parse(row.tags_json) as string[],
+      version: Number(row.version),
+      contentHash: row.content_hash,
+      markdown: row.markdown,
+      files: JSON.parse(row.files_json) as Record<string, string>,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  async deleteSkill(slug: string): Promise<{ deleted: boolean }> {
+    this.requireProfile();
+    const clean = slug.trim();
+    if (!clean) return { deleted: false };
+    const existing = this.ctx.storage.sql
+      .exec<{ slug: string }>(`SELECT slug FROM skills WHERE slug = ?1 LIMIT 1`, clean)
+      .toArray();
+    if (existing.length === 0) return { deleted: false };
+    this.ctx.storage.sql.exec(`DELETE FROM skills WHERE slug = ?1`, clean);
+    return { deleted: true };
+  }
+
+  async resolveSkills(selectors: string[]): Promise<SkillRecord[]> {
+    if (!this.readProfileOrNull()) return [];
+    if (!Array.isArray(selectors) || selectors.length === 0) return [];
+    const cleaned = selectors.map((s) => (typeof s === "string" ? s.trim() : "")).filter(Boolean);
+    if (cleaned.length === 0) return [];
+
+    const rows = this.ctx.storage.sql
+      .exec<{
+        slug: string;
+        name: string;
+        description: string;
+        tags_json: string;
+        version: number;
+        content_hash: string;
+        markdown: string;
+        files_json: string;
+        created_at: number;
+        updated_at: number;
+      }>(
+        `SELECT slug, name, description, tags_json, version, content_hash, markdown, files_json, created_at, updated_at
+         FROM skills ORDER BY slug ASC`,
+      )
+      .toArray();
+
+    const matchedRows = selectSkillsBySelectors(rows, cleaned);
+    return matchedRows.map((row) => ({
+      slug: row.slug,
+      name: row.name,
+      description: row.description,
+      tags: JSON.parse(row.tags_json) as string[],
+      version: Number(row.version),
+      contentHash: row.content_hash,
+      markdown: row.markdown,
+      files: JSON.parse(row.files_json) as Record<string, string>,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    }));
+  }
+
   // ---- 5. Agents Directory (`agents_index`) ----
 
   private findSealedProviderRow(candidates: string[], scope?: string | null): SealedProviderRow | null {
@@ -1515,6 +1749,7 @@ export class TenantDO extends DurableObject<Env> {
 
       const hasExplicitFeatures =
         params.input.builtins !== undefined ||
+        params.input.skills !== undefined ||
         params.input.mcpServers !== undefined ||
         params.input.tools !== undefined ||
         defCfg !== null ||
@@ -1523,6 +1758,7 @@ export class TenantDO extends DurableObject<Env> {
         ? JSON.stringify(
             extractAgentFeatureKeys({
               builtins: params.input.builtins ?? defCfg?.builtins,
+              skills: params.input.skills ?? defCfg?.skills,
               mcpServers: params.input.mcpServers ?? defCfg?.mcpServers,
               tools: params.input.tools ?? defCfg?.tools,
               repoId,

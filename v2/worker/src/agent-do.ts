@@ -1935,6 +1935,7 @@ export class AgentDO extends DurableObject<Env> {
       mcpServers: incoming.mcpServers ?? existing?.mcpServers ?? [],
       toolIdentity: incoming.toolIdentity ?? existing?.toolIdentity,
       builtins: incoming.builtins ?? existing?.builtins ?? [],
+      skills: incoming.skills !== undefined ? incoming.skills : (existing?.skills ?? []),
       queue: {
         mode: incoming.queue?.mode ?? existing?.queue.mode ?? "each",
         windowMs: incoming.queue?.windowMs ?? existing?.queue.windowMs ?? 0,
@@ -2129,6 +2130,7 @@ export class AgentDO extends DurableObject<Env> {
       mcpServers: cfg.mcpServers,
       toolIdentity: cfg.toolIdentity,
       builtins: cfg.builtins,
+      skills: cfg.skills ?? [],
       queue: cfg.queue,
       repoId: cfg.repoId,
       lineage: cfg.lineage,

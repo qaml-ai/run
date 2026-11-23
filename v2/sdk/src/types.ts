@@ -81,7 +81,7 @@ export interface BillingInfo { balanceUsd: number; monthlyCapUsd: number | null;
 export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey: string; }
 
 export type BuiltinCategory =
-  | "files" | "images" | "browser" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human"
+  | "files" | "images" | "browser" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human" | "skills"
   | (string & {});
 
 export interface McpServerConfig {
@@ -116,6 +116,7 @@ export interface AgentConfig {
   mcpServers?: McpServerConfig[];
   toolIdentity?: { subject: string; context?: Record<string, unknown> };
   builtins?: BuiltinCategory[];
+  skills?: string[];
   queue?: QueueConfig;
   repoId?: string | null;
   branch?: string;
@@ -123,8 +124,47 @@ export interface AgentConfig {
   idleTtlSeconds?: number;
   dreaming?: DreamingConfig;
 }
+export type UpsertAgentInput = AgentConfig;
 export type DefinitionConfig = Omit<AgentConfig, "tools" | "definition" | "toolIdentity"> & { name?: string; tools?: ToolDefinition[]; };
 export interface AgentDefinition extends DefinitionConfig { slug: string; createdAt?: number; updatedAt?: number; }
+
+export interface SkillUpsertInput {
+  name?: string;
+  description?: string;
+  tags?: string[];
+  markdown: string;
+  files?: Record<string, string>;
+}
+
+export interface SkillSummary {
+  slug: string;
+  name: string;
+  description: string;
+  tags: string[];
+  version: number;
+  contentHash: string;
+  files: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SkillRecord {
+  slug: string;
+  name: string;
+  description: string;
+  tags: string[];
+  version: number;
+  contentHash: string;
+  markdown: string;
+  files: Record<string, string>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ListSkillsOptions {
+  prefix?: string;
+  tag?: string;
+}
 
 export interface AgentSummary {
   id: string;
@@ -137,6 +177,7 @@ export interface AgentSummary {
   model?: string;
   instructions?: string;
   definition?: string | null;
+  skills?: string[];
   status?: "idle" | "running" | (string & {});
   activeRunId?: string | null;
   messageCount?: number;

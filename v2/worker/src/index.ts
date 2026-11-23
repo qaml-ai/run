@@ -57,6 +57,7 @@ import { recordOpsTenantRegistration, registerOpsRoutes } from "./ops-api.ts";
 import { executeStatelessRun, parseStatelessRunImages, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
+import { normalizeSkillSelectors, type SkillUpsertInput } from "./skills.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
 import { VoiceCallDO } from "./voice-call-do.ts";
 import {
@@ -505,6 +506,57 @@ app.delete("/v2/definitions/:slug", async (c) => {
   return c.json({ deleted: true });
 });
 
+// ---- 1b. Tenant-Scoped Skills (`/v2/skills`) ----
+
+function extractSkillSlugParam(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+app.get("/v2/skills", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const skills = await getTenantStub(c.env, auth.tenantId).listSkills({
+    prefix: c.req.query("prefix") || undefined,
+    tag: c.req.query("tag") || undefined,
+  });
+  return c.json({ skills });
+});
+
+app.put("/v2/skills/:slug{.+}", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const slug = extractSkillSlugParam(c.req.param("slug"));
+  const body = (await c.req.json().catch(() => null)) as SkillUpsertInput | null;
+  if (!body || typeof body !== "object") {
+    throw new ApiError(400, "invalid_request", "JSON request body is required");
+  }
+  const out = await getTenantStub(c.env, auth.tenantId).upsertSkill(slug, body);
+  return c.json(out);
+});
+
+app.get("/v2/skills/:slug{.+}", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const slug = extractSkillSlugParam(c.req.param("slug"));
+  const skill = await getTenantStub(c.env, auth.tenantId).getSkill(slug);
+  if (!skill) {
+    throw new ApiError(404, "skill_not_found", `Skill '${slug}' not found`);
+  }
+  return c.json(skill);
+});
+
+app.delete("/v2/skills/:slug{.+}", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const slug = extractSkillSlugParam(c.req.param("slug"));
+  const res = await getTenantStub(c.env, auth.tenantId).deleteSkill(slug);
+  return c.json({ ok: true, deleted: res.deleted });
+});
+
 // ---- 2. Repos (`/v2/repos`) ----
 
 app.post("/v2/repos", async (c) => {
@@ -775,6 +827,9 @@ app.put("/v2/agents/:key", async (c) => {
   }
 
   const input = (await c.req.json().catch(() => ({}))) as AgentUpsertInput;
+  if (input.skills !== undefined) {
+    input.skills = normalizeSkillSelectors(input.skills);
+  }
   const identity = input.toolIdentity;
   if (identity !== undefined && (!identity || typeof identity.subject !== "string" || !identity.subject.trim() ||
     (identity.context !== undefined && (!identity.context || typeof identity.context !== "object" || Array.isArray(identity.context))))) {
@@ -840,6 +895,7 @@ app.put("/v2/agents/:key", async (c) => {
         mcpServers: input.mcpServers ?? defCfg?.mcpServers,
         toolIdentity: identity,
         builtins: input.builtins ?? defCfg?.builtins,
+        skills: input.skills !== undefined ? input.skills : defCfg?.skills,
         queue: queueCfg,
         repoId: prep.repoId,
         lineage: prep.lineage,
@@ -2041,6 +2097,7 @@ export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
         tools: defCfg?.tools ?? [],
         mcpServers: defCfg?.mcpServers ?? [],
         builtins: defCfg?.builtins ?? [],
+        skills: defCfg?.skills ?? [],
       });
 
       const replyUrl = row.sealedReplyUrl ? await openSecret(row.sealedReplyUrl, this.env.VAULT_SECRET) : null;

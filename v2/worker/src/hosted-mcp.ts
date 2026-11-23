@@ -58,6 +58,7 @@ const BUILTIN_SUITES = [
   "web_search",
   "web_fetch",
   "human",
+  "skills",
 ] as const satisfies readonly BuiltinSuite[];
 
 interface McpExtra {
@@ -878,6 +879,7 @@ function createTenantMcpServer(
       model: z.string().optional().describe("Model ID from list_models"),
       instructions: z.string().optional().describe("System prompt / instructions"),
       builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
+      skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs (e.g. ['camel-bots/*'])"),
       spendLimitUsd: z.number().min(0).optional().describe("Maximum USD spend per agent"),
       idleTtlSeconds: z.number().int().min(0).optional().describe("Idle TTL in seconds"),
       repoId: z.string().nullable().optional().describe("Default CamelFS repo ID"),
@@ -928,6 +930,7 @@ function createTenantMcpServer(
       model: z.string().optional().describe("Model ID from list_models"),
       instructions: z.string().optional().describe("System prompt / instructions"),
       builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
+      skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs (e.g. ['camel-bots/*'])"),
       repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach"),
       branch: z.string().optional().describe("CamelFS branch ref"),
       spendLimitUsd: z.number().min(0).optional().describe("Spend limit in USD"),
@@ -989,6 +992,7 @@ function createTenantMcpServer(
         tools: input.tools ?? defCfg?.tools,
         mcpServers: input.mcpServers ?? defCfg?.mcpServers,
         builtins: input.builtins ?? defCfg?.builtins,
+        skills: input.skills ?? defCfg?.skills,
         queue: queueCfg,
         repoId: prep.repoId,
         lineage: prep.lineage,

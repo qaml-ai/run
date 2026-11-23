@@ -68,7 +68,8 @@ export type BuiltinSuite =
   | "workflows"
   | "web_search"
   | "web_fetch"
-  | "human";
+  | "human"
+  | "skills";
 
 export interface CustomToolSpec {
   name: string;
@@ -115,6 +116,7 @@ export interface AgentConfig {
   mcpServers: McpServerSpec[];
   toolIdentity?: ToolIdentity;
   builtins: BuiltinSuite[];
+  skills?: string[];
   queue: QueueModeConfig;
   repoId: string | null;
   lineage: string | null;
@@ -135,6 +137,7 @@ export interface AgentUpsertInput {
   mcpServers?: McpServerSpec[];
   toolIdentity?: ToolIdentity;
   builtins?: BuiltinSuite[];
+  skills?: string[];
   queue?: Partial<QueueModeConfig>;
   repoId?: string | null;
   branch?: string;

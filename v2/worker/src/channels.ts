@@ -168,6 +168,7 @@ export async function handleChannelInbound(
     tools: channelCfg.tools ?? defCfg?.tools ?? [],
     mcpServers: channelCfg.mcpServers ?? defCfg?.mcpServers ?? [],
     builtins: channelCfg.builtins ?? defCfg?.builtins ?? [],
+    skills: channelCfg.skills ?? defCfg?.skills ?? [],
   });
 
   const runRecord = await agentStub.startRun({

@@ -14,6 +14,7 @@ import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import { discoverMcpTools, invokeMcpTool, McpInputRequired, type DiscoveredMcpTool, type McpInputResponse } from "./mcp.ts";
 import { runCodemodeScript } from "./sandbox.ts";
+import { readSkillFile, searchSkills, type SkillRecord } from "./skills.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import type { ToolApproval } from "./tool-identity.ts";
 import {
@@ -75,6 +76,7 @@ export interface ToolExecutionContext {
   mcpInput?: McpInputResponse;
   codemodeDepth?: number;
   signal?: AbortSignal;
+  getResolvedSkills?: () => Promise<SkillRecord[]>;
   ensureAgentRepo(): Promise<{ repoId: string; lineage: string; branch: string }>;
   getVmSession(branch: string): { vmId: string; leaseExpiresAt: number } | null;
   saveVmSession(branch: string, vmId: string, leaseExpiresAt: number): void;
@@ -390,6 +392,58 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
       },
     },
   ],
+  skills: [
+    {
+      name: "read_skill",
+      description:
+        "Read an attached skill's SKILL.md instructions or one of its reference files with optional 1-indexed start_line/end_line slicing.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "Skill slug (e.g. 'camel-bots/sql-storage') or unique short name",
+          },
+          file: {
+            type: "string",
+            description: "Optional reference file path (e.g. 'references/sdk.d.ts'). Defaults to SKILL.md.",
+          },
+          start_line: {
+            type: "number",
+            description: "Optional 1-indexed starting line number.",
+          },
+          end_line: {
+            type: "number",
+            description: "Optional 1-indexed ending line number (inclusive).",
+          },
+        },
+        required: ["name"],
+      },
+    },
+    {
+      name: "search_skills",
+      description:
+        "Search across attached skills' SKILL.md and reference files for APIs, types, symbols, or rules without loading entire files.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Keyword, symbol name, or phrase to search for.",
+          },
+          skill: {
+            type: "string",
+            description: "Optional skill slug, short name, or glob selector to narrow the search.",
+          },
+          max_results: {
+            type: "number",
+            description: "Maximum number of ranked snippets to return (default 12, max 30).",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  ],
 };
 
 export interface BuiltToolCatalog {
@@ -402,6 +456,7 @@ export async function buildToolCatalog(
   config: AgentConfig,
   env: Env,
   signal?: AbortSignal,
+  opts?: { hasResolvedSkills?: boolean },
 ): Promise<BuiltToolCatalog> {
   const schemas: LlmToolSchema[] = [];
   const seen = new Set<string>();
@@ -419,7 +474,15 @@ export async function buildToolCatalog(
     });
   }
 
-  for (const suite of config.builtins ?? []) {
+  const effectiveBuiltins: BuiltinSuite[] = [...(config.builtins ?? [])];
+  if (
+    ((config.skills?.length ?? 0) > 0 || opts?.hasResolvedSkills) &&
+    !effectiveBuiltins.includes("skills")
+  ) {
+    effectiveBuiltins.push("skills");
+  }
+
+  for (const suite of effectiveBuiltins) {
     const suiteTools = BUILTIN_SCHEMAS[suite] ?? [];
     for (const st of suiteTools) {
       if (seen.has(st.name)) continue;
@@ -549,6 +612,28 @@ export async function executeToolCall(
         mcpInput: { key: error.key, url, audience, subject, sealedState, mode: elicitation.mode },
       });
     }
+  }
+
+  // 3b. Native Domain Skills tools (`read_skill`, `search_skills`)
+  if (toolName === "read_skill" || toolName === "search_skills") {
+    const skills = ctx.getResolvedSkills
+      ? await ctx.getResolvedSkills()
+      : (ctx.config.skills?.length ?? 0) > 0
+        ? await getTenantStub(ctx.env, ctx.config.tenantId).resolveSkills(ctx.config.skills!)
+        : [];
+    if (toolName === "read_skill") {
+      return readSkillFile(skills, {
+        name: String(args.name ?? ""),
+        file: typeof args.file === "string" ? args.file : undefined,
+        start_line: typeof args.start_line === "number" ? args.start_line : undefined,
+        end_line: typeof args.end_line === "number" ? args.end_line : undefined,
+      });
+    }
+    return searchSkills(skills, {
+      query: String(args.query ?? ""),
+      skill: typeof args.skill === "string" ? args.skill : undefined,
+      max_results: typeof args.max_results === "number" ? args.max_results : undefined,
+    });
   }
 
   if (toolName === "render_image") {
@@ -870,6 +955,7 @@ export async function executeToolCall(
       model,
       instructions,
       builtins: childBuiltins,
+      skills: defCfg?.skills ?? ctx.config.skills,
       tools: defCfg?.tools,
       mcpServers: defCfg?.mcpServers,
       definitionSlug: defEntry?.slug ?? null,
@@ -1083,6 +1169,7 @@ async function upsertChildAgentInCluster(
     model: string;
     instructions: string;
     builtins: BuiltinSuite[];
+    skills?: string[];
     tools?: AgentUpsertInput["tools"];
     mcpServers?: AgentUpsertInput["mcpServers"];
     definitionSlug?: string | null;
@@ -1118,6 +1205,7 @@ async function upsertChildAgentInCluster(
     instructions: opts.instructions,
     definition: opts.definitionSlug ?? undefined,
     builtins: opts.builtins,
+    skills: opts.skills,
     tools: opts.tools,
     mcpServers: opts.mcpServers,
     repoId: opts.repoId,

@@ -11,6 +11,15 @@ import {
 import { storeToolImages } from "./tool-images.ts";
 import { verifyRunFiles } from "./run-files.ts";
 import { readLegacyInlineContent } from "./legacy-inline-images.ts";
+import {
+  buildSkillsPromptBlock,
+  compareSlug,
+  parseSkillFrontmatter,
+  SKILL_MAX_BYTES,
+  SKILL_MAX_FILES,
+  utf8ByteLength,
+  type SkillRecord,
+} from "./skills.ts";
 import { getTenantStub, platformCreditReserve } from "./tenant-do.ts";
 import type { ToolApproval } from "./tool-identity.ts";
 import {
@@ -583,6 +592,122 @@ export async function runAgentTurn(
   });
 }
 
+const WORKSPACE_SKILLS_PREFIX = ".agents/skills";
+const WORKSPACE_SKILLS_MAX_COUNT = 20;
+
+async function discoverWorkspaceSkills(env: Env, config: AgentConfig): Promise<SkillRecord[]> {
+  if (!config.repoId || !config.lineage || !(config.builtins ?? []).includes("files")) {
+    return [];
+  }
+  const cfs = new CamelFsClient(env, config.tenantId);
+  let entries: Array<{ path: string; type: string; size: number }>;
+  try {
+    const listed = await cfs.ls(config.lineage, {
+      at: config.branch,
+      path: WORKSPACE_SKILLS_PREFIX,
+      recursive: true,
+    });
+    entries = listed.entries.filter((e) => e.type === "file");
+  } catch {
+    return [];
+  }
+  if (entries.length === 0) return [];
+
+  // Group files under `.agents/skills/<dir>/...` where a `SKILL.md` exists
+  const byDir = new Map<string, { skillMdPath: string; refPaths: Array<{ rel: string; full: string }> }>();
+  for (const entry of entries) {
+    const normalized = entry.path.replace(/^\/+/, "");
+    const prefix = `${WORKSPACE_SKILLS_PREFIX}/`;
+    if (!normalized.startsWith(prefix)) continue;
+    const rest = normalized.slice(prefix.length);
+    const slashIdx = rest.indexOf("/");
+    if (slashIdx <= 0) continue;
+    const dir = rest.slice(0, slashIdx);
+    const rel = rest.slice(slashIdx + 1);
+    if (!rel || dir.startsWith(".")) continue;
+
+    let bucket = byDir.get(dir);
+    if (!bucket) {
+      bucket = { skillMdPath: "", refPaths: [] };
+      byDir.set(dir, bucket);
+    }
+    if (rel === "SKILL.md") {
+      bucket.skillMdPath = normalized;
+    } else {
+      bucket.refPaths.push({ rel, full: normalized });
+    }
+  }
+
+  const dirs = [...byDir.entries()]
+    .filter(([, b]) => Boolean(b.skillMdPath))
+    .sort(([a], [b]) => compareSlug(a, b))
+    .slice(0, WORKSPACE_SKILLS_MAX_COUNT);
+
+  if (dirs.length === 0) return [];
+
+  const discovered: SkillRecord[] = [];
+  for (const [dir, bucket] of dirs) {
+    try {
+      const mdRes = await cfs.read(config.lineage, { at: config.branch, path: bucket.skillMdPath });
+      if (mdRes.binary || !mdRes.content) continue;
+      const markdown = mdRes.content;
+      let totalBytes = utf8ByteLength(markdown);
+      if (totalBytes > SKILL_MAX_BYTES) continue;
+
+      const fm = parseSkillFrontmatter(markdown);
+      const files: Record<string, string> = {};
+      const sortedRefs = bucket.refPaths.sort((a, b) => compareSlug(a.rel, b.rel)).slice(0, SKILL_MAX_FILES);
+      for (const ref of sortedRefs) {
+        try {
+          const refRes = await cfs.read(config.lineage, { at: config.branch, path: ref.full });
+          if (refRes.binary || refRes.content === null) continue;
+          const bytes = utf8ByteLength(ref.rel) + utf8ByteLength(refRes.content);
+          if (totalBytes + bytes > SKILL_MAX_BYTES) continue;
+          totalBytes += bytes;
+          files[ref.rel] = refRes.content;
+        } catch {
+          // Skip unreadable reference file
+        }
+      }
+
+      discovered.push({
+        slug: dir,
+        name: fm.name?.trim() || dir,
+        description: fm.description?.trim() || `Workspace skill from ${WORKSPACE_SKILLS_PREFIX}/${dir}`,
+        tags: fm.tags ?? [],
+        version: 1,
+        contentHash: "",
+        markdown,
+        files,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    } catch {
+      // Skip unreadable skill
+    }
+  }
+  return discovered;
+}
+
+async function resolveTurnSkills(env: Env, config: AgentConfig): Promise<SkillRecord[]> {
+  const selectors = config.skills ?? [];
+  const [tenantSkills, workspaceSkills] = await Promise.all([
+    selectors.length > 0
+      ? getTenantStub(env, config.tenantId).resolveSkills(selectors)
+      : Promise.resolve<SkillRecord[]>([]),
+    discoverWorkspaceSkills(env, config),
+  ]);
+
+  if (tenantSkills.length === 0 && workspaceSkills.length === 0) return [];
+  if (workspaceSkills.length === 0) return tenantSkills;
+  if (tenantSkills.length === 0) return workspaceSkills;
+
+  const merged = new Map<string, SkillRecord>();
+  for (const s of tenantSkills) merged.set(s.slug, s);
+  for (const s of workspaceSkills) merged.set(s.slug, s);
+  return [...merged.values()].sort((a, b) => compareSlug(a.slug, b.slug));
+}
+
 export async function resumePausedTurn(
   adapter: TurnStorageAdapter,
   params: {
@@ -614,7 +739,10 @@ export async function resumePausedTurn(
   });
 
   const config = adapter.getConfig();
-  const catalog = await buildToolCatalog(config, adapter.env, params.signal);
+  const resolvedSkills = await resolveTurnSkills(adapter.env, config);
+  const catalog = await buildToolCatalog(config, adapter.env, params.signal, {
+    hasResolvedSkills: resolvedSkills.length > 0,
+  });
   const toolCtx = adapter.makeToolContext(
     runId,
     approvedSet,
@@ -626,6 +754,7 @@ export async function resumePausedTurn(
     },
     params.signal,
   );
+  toolCtx.getResolvedSkills = async () => resolvedSkills;
 
   const tc = paused.currentToolCall;
   if ((paused.mcpInput && decision.kind === "question") || (decision.kind === "approval" && decision.approved)) {
@@ -848,7 +977,15 @@ async function continueTurnLoop(
       if (usage.costUsd >= spendLimit) throw runSpendLimitError(spendLimit);
     };
     checkRunSpend();
-    const catalog = await buildToolCatalog(config, adapter.env, state.signal);
+    // Resolve tenant + optional workspace skills once per turn (not per step) for prompt-cache stability.
+    const resolvedSkills = await resolveTurnSkills(adapter.env, config);
+    const skillsPromptBlock = buildSkillsPromptBlock(resolvedSkills);
+    const effectiveInstructions = skillsPromptBlock
+      ? (config.instructions ? `${config.instructions}\n\n${skillsPromptBlock}` : skillsPromptBlock)
+      : config.instructions;
+    const catalog = await buildToolCatalog(config, adapter.env, state.signal, {
+      hasResolvedSkills: resolvedSkills.length > 0,
+    });
     const toolCtx = adapter.makeToolContext(
       runId,
       approvedToolCallIds,
@@ -860,6 +997,7 @@ async function continueTurnLoop(
       },
       state.signal,
     );
+    toolCtx.getResolvedSkills = async () => resolvedSkills;
 
     // Finish any remaining tool calls from a resumed turn before calling the model again
     if (state.pendingToolQueue.length > 0) {
@@ -982,7 +1120,7 @@ async function continueTurnLoop(
         tenantId: config.tenantId,
         model: config.model,
         keyScope: effectiveScope,
-        instructions: config.instructions,
+        instructions: effectiveInstructions,
         messages: convMessages,
         tools: catalog.schemas,
         outputSchema,

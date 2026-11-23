@@ -28,6 +28,25 @@ Standard error envelope:
 - `POST /v2/billing/credits` (admin/topup): `{ amountUsd, refId, note? }` -> `{ balanceUsd }`
 - `PUT /v2/definitions/:slug` / `GET /v2/definitions` / `DELETE /v2/definitions/:slug`
 
+### Domain Skills (`/v2/skills`)
+Tenant-scoped progressive-disclosure skills stored in `TenantDO` SQLite. Slugs follow `^[a-z0-9][a-z0-9/_-]{0,127}$` (supports flat slugs like `sql-storage` and slash-namespaced slugs like `camel-bots/sql-storage`; no `..`, no leading/trailing `/`). Each skill is capped at 512 KiB total across `markdown` (`SKILL.md`) and up to 50 relative reference files in `files`.
+- `PUT /v2/skills/:slug` (upsert; supports slash-namespaced slugs like `PUT /v2/skills/camel-bots/sql-storage`):
+  ```json
+  {
+    "name": "optional-override (else YAML frontmatter name or slug leaf)",
+    "description": "optional-override (required from body or SKILL.md YAML frontmatter)",
+    "tags": ["optional", "tags"],
+    "markdown": "---\nname: sql-storage\ndescription: SQL storage rules\ntags: [storage, sql]\n---\n\n# SQL Storage\n...",
+    "files": {
+      "references/sdk.d.ts": "export interface SqlStorage { ... }"
+    }
+  }
+  ```
+  Computes a canonical SHA-256 `contentHash` and increments `version` only when content changes (idempotent when unchanged). Returns `{ slug, name, description, tags, version, contentHash, files: string[], createdAt, updatedAt }`.
+- `GET /v2/skills?prefix=&tag=`: lists metadata summaries deterministically sorted by `slug`.
+- `GET /v2/skills/:slug`: returns full skill `{ slug, name, description, tags, version, contentHash, markdown, files: Record<string, string>, createdAt, updatedAt }` (`404 skill_not_found` if missing).
+- `DELETE /v2/skills/:slug`: deletes a skill and returns `{ ok: true, deleted: boolean }`.
+
 ### Repos (`/v2/repos`)
 - `POST /v2/repos`: `{ name? }` -> `{ repoId, lineage, defaultRef: "refs/heads/main", commit }`
 - `GET /v2/repos` / `GET /v2/repos/:repoId` / `DELETE /v2/repos/:repoId`
@@ -42,7 +61,8 @@ Standard error envelope:
     "definition": "optional-slug",
     "tools": [{ "name": "lookupOrder", "description": "...", "parameters": { "type": "object", ... }, "url": "optional-webhook-url", "requiresApproval": false }],
     "mcpServers": [{ "name": "docs", "url": "https://..." }],
-    "builtins": ["files", "bash", "codemode", "delegate", "workflows", "web_search", "web_fetch", "human"],
+    "builtins": ["files", "bash", "codemode", "delegate", "workflows", "web_search", "web_fetch", "human", "skills"],
+    "skills": ["camel-bots/*", "custom-skill"],
     "queue": { "mode": "each | batch", "windowMs": 0 },
     "repoId": "optional-repo-id",
     "branch": "refs/heads/main",
@@ -113,4 +133,5 @@ Standard error envelope:
 - `POST /v2/images/render`: `{ svg: string, files?: Record<string, string | { data: string }>, format?: "png" }` returns `{ contentType, width, height, data }` (base64 PNG) and records a zero-cost `resvg` usage row in `GET /v2/billing`. Accepts PNG, JPEG, WebP, and GIF (first frame auto-converted to PNG), up to 1 MiB SVG, 2048×2048 / 4 MP output (max 4096 px side), 16 inputs up to 10 MiB each (14 MiB total base64), and 4,000 `<textbox>` text measurements. See the [SVG rendering guide](../../docs/guides/images.md#rendering-svg-cards-in-v2).
 - `POST /v2/moderations/images`: raw `image/jpeg` or `image/png` body (up to 5 MiB). Wraps OpenAI `omni-moderation-latest` fail-closed and returns `{ id, model, flagged, categories, category_scores, category_applied_input_types }`.
 - Agent builtins for images: `images` suite provides `render_image` (`{ svg, files?: Record<string, repoPath>, path }`, auto-converting WebP/GIF repo inputs and showing the rendered PNG back to the model); `files` suite provides `view_image` (`{ path, at? }`) for inspecting PNG, JPEG, GIF, or WebP files in the agent repository.
+- Agent skills & builtins: attaching `skills: ["camel-bots/*", ...]` (exact slugs, prefix globs, or `"*"`) on an agent or definition resolves matching tenant skills once per turn (plus optional repo-local `.agents/skills/*/SKILL.md` when `files` is enabled), appends a compact deterministically sorted `<skills>` index to system instructions for prompt-cache stability, and automatically enables the `read_skill` (`{ name, file?, start_line?, end_line? }`) and `search_skills` (`{ query, skill?, max_results? }`) tools (also selectable via `builtins: ["skills"]`).
 - `POST /v2/webhooks` / `GET /v2/webhooks` / `DELETE /v2/webhooks/:id` (HMAC-SHA256 `X-CamelRun-Signature` via Cloudflare Queue).

@@ -5,9 +5,9 @@ import {
   type ApiToken, type BillingInfo, type CamelRunAdminOptions, type CamelRunOptions, type ChannelConfig,
   type ChannelInfo, type CreatedTenant, type CreateTenantOptions, type CreateTokenInput,
   type DecisionRequest, type DecisionResult, type DefinitionConfig, type FetchLike,
-  type GenerateImageInput, type ImageRecord, type RenderImageOptions, type RenderedImage, type LocalTool, type ProviderConfig, type RepoCommit,
+  type GenerateImageInput, type ImageRecord, type ListSkillsOptions, type RenderImageOptions, type RenderedImage, type LocalTool, type ProviderConfig, type RepoCommit,
   type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
-  type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SpeechInput,
+  type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SkillRecord, type SkillSummary, type SkillUpsertInput, type SpeechInput,
   type SpeechResult, type StatelessRunOptions, type TenantInfo, type TranscribeInput,
   type TranscriptionResult, type VoiceSession, type WebhookEndpoint, type WebSocketConstructorLike,
 } from "./types.ts";
@@ -17,6 +17,13 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
   for (const [k, v] of Object.entries(params)) if (v !== undefined) qs.set(k, String(v));
   const s = qs.toString();
   return s ? `?${s}` : "";
+}
+
+function encodeSkillSlug(slug: string): string {
+  return slug
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 function unwrapList<T>(res: unknown, key: string): T[] {
@@ -116,6 +123,17 @@ export class CamelRun {
       this.requestJson("PUT", `/v2/definitions/${encodeURIComponent(slug)}`, config),
     list: async (): Promise<AgentDefinition[]> => unwrapList<AgentDefinition>(await this.requestJson("GET", "/v2/definitions"), "definitions"),
     delete: (slug: string): Promise<{ deleted: boolean }> => this.requestJson("DELETE", `/v2/definitions/${encodeURIComponent(slug)}`),
+  };
+
+  readonly skills = {
+    upsert: (slug: string, input: SkillUpsertInput): Promise<SkillSummary> =>
+      this.requestJson("PUT", `/v2/skills/${encodeSkillSlug(slug)}`, input),
+    list: async (options?: ListSkillsOptions): Promise<SkillSummary[]> =>
+      unwrapList<SkillSummary>(await this.requestJson("GET", `/v2/skills${buildQuery({ prefix: options?.prefix, tag: options?.tag })}`), "skills"),
+    get: (slug: string): Promise<SkillRecord> =>
+      this.requestJson("GET", `/v2/skills/${encodeSkillSlug(slug)}`),
+    delete: (slug: string): Promise<{ ok: boolean; deleted: boolean }> =>
+      this.requestJson("DELETE", `/v2/skills/${encodeSkillSlug(slug)}`),
   };
 
   readonly repos = {
