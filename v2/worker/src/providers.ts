@@ -311,7 +311,9 @@ export async function resolveModelEndpoint(
   }
 
   if (explicitProvider === "azure" && PLATFORM_AZURE_MODELS.has(canonicalModelId) && !stored) {
-    const { AZURE_OPENAI_SOL_ENDPOINT: endpoint, AZURE_OPENAI_SOL_API_KEY: apiKey } = env;
+    const useLunaEndpoint = canonicalModelId === "gpt-6-luna" && Boolean(env.AZURE_OPENAI_LUNA_ENDPOINT && env.AZURE_OPENAI_LUNA_API_KEY);
+    const endpoint = useLunaEndpoint ? env.AZURE_OPENAI_LUNA_ENDPOINT : env.AZURE_OPENAI_SOL_ENDPOINT;
+    const apiKey = useLunaEndpoint ? env.AZURE_OPENAI_LUNA_API_KEY : env.AZURE_OPENAI_SOL_API_KEY;
     if (!endpoint || !apiKey) {
       throw new ApiError(503, "missing_provider_key", `The platform Azure deployment for ${canonicalModelId} is not configured`);
     }

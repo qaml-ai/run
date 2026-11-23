@@ -33,6 +33,9 @@ export async function listV2Models(
   const platformHas = (provider: string, modelId: string): boolean => {
     if (keyScope) return false;
     if (provider === "azure" && PLATFORM_AZURE_MODELS.has(modelId)) {
+      if (modelId === "gpt-6-luna" && env.AZURE_OPENAI_LUNA_API_KEY && env.AZURE_OPENAI_LUNA_ENDPOINT) {
+        return true;
+      }
       return Boolean(env.AZURE_OPENAI_SOL_API_KEY && env.AZURE_OPENAI_SOL_ENDPOINT);
     }
     if (provider === "openai") return Boolean(env.OPENAI_API_KEY);

@@ -36,6 +36,8 @@ export interface Env {
   OPENAI_API_KEY?: string;
   AZURE_OPENAI_SOL_ENDPOINT?: string;
   AZURE_OPENAI_SOL_API_KEY?: string;
+  AZURE_OPENAI_LUNA_ENDPOINT?: string;
+  AZURE_OPENAI_LUNA_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
