@@ -334,3 +334,66 @@ func TestApplyWorkspaceDeltaAndLoadCommitTree(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreExpectedCommitCAS(t *testing.T) {
+	ctx := context.Background()
+	eng := newTestRepoEngine(t)
+
+	lin, err := eng.CreateLineage(ctx, repo.CreateLineageRequest{TenantID: "ten_cas"})
+	if err != nil {
+		t.Fatalf("CreateLineage: %v", err)
+	}
+
+	w1, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
+		Ref:  "refs/heads/main",
+		Puts: []repo.WritePut{{Path: "app.txt", Content: "v1\n"}},
+	})
+	if err != nil {
+		t.Fatalf("Write v1: %v", err)
+	}
+
+	w2, err := eng.Write(ctx, lin.Lineage, repo.WriteRequest{
+		Ref:  "refs/heads/main",
+		Puts: []repo.WritePut{{Path: "app.txt", Content: "v2\n"}},
+	})
+	if err != nil {
+		t.Fatalf("Write v2: %v", err)
+	}
+
+	// Stale ExpectedCommit must fail with cas_conflict and leave ref untouched.
+	_, err = eng.Restore(ctx, lin.Lineage, repo.RestoreRequest{
+		Ref:            "refs/heads/main",
+		TargetCommit:   w1.Commit,
+		ExpectedCommit: w1.Commit,
+		Author:         "tenant:ten_cas",
+		Message:        "stale restore",
+	})
+	if !apperr.IsCode(err, apperr.CodeCASConflict) {
+		t.Fatalf("expected cas_conflict for stale expectedCommit, got %v", err)
+	}
+
+	stillV2, err := eng.Read(ctx, lin.Lineage, repo.ReadParams{At: "refs/heads/main", Path: "app.txt"})
+	if err != nil || stillV2.Content == nil || *stillV2.Content != "v2\n" {
+		t.Fatalf("expected v2 after failed CAS restore, got %+v (err=%v)", stillV2, err)
+	}
+
+	// Matching ExpectedCommit must succeed atomically.
+	restored, err := eng.Restore(ctx, lin.Lineage, repo.RestoreRequest{
+		Ref:            "refs/heads/main",
+		TargetCommit:   w1.Commit,
+		ExpectedCommit: w2.Commit,
+		Author:         "tenant:ten_cas",
+		Message:        "cas restore to v1",
+	})
+	if err != nil {
+		t.Fatalf("Restore with matching expectedCommit: %v", err)
+	}
+	if restored.Tree != w1.Tree {
+		t.Fatalf("expected restored tree %s, got %s", w1.Tree, restored.Tree)
+	}
+
+	nowV1, err := eng.Read(ctx, lin.Lineage, repo.ReadParams{At: "refs/heads/main", Path: "app.txt"})
+	if err != nil || nowV1.Content == nil || *nowV1.Content != "v1\n" {
+		t.Fatalf("expected v1 after matching CAS restore, got %+v (err=%v)", nowV1, err)
+	}
+}

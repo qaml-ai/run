@@ -287,7 +287,9 @@ export interface HistoryMessage {
   createdAt?: number;
 }
 
-export interface RepoInfo { repoId: string; name?: string | null; lineage: string; defaultRef: string; commit: string; tree?: string; createdAt?: number; }
+export interface RepoRefLease { holder: string; epoch: number; expiresAt: number; }
+export interface RepoRefInfo { name: string; commit: string; tree: string; updatedAt: number; lease?: RepoRefLease | null; }
+export interface RepoInfo { repoId: string; name?: string | null; lineage: string; defaultRef: string; commit: string; tree?: string; createdAt?: number; refs?: RepoRefInfo[]; }
 export interface RepoEntry { path: string; type: "file" | "dir" | "symlink" | (string & {}); size: number; mode: number; hash: string; }
 export interface RepoPutFile { path: string; content?: string; base64?: string; mode?: number; }
 export interface RepoMoveFile { from: string; to: string; }
@@ -300,6 +302,34 @@ export interface RepoWriteResult { commit: string; tree: string; changed: string
 export interface RepoReadResult { commit: string; path: string; size: number; mode: number; binary: boolean; content: string | null; base64: string | null; }
 export interface RepoGrepMatch { path: string; line: number; column: number; text: string; }
 export interface RepoCommit { commit: string; tree: string; parents: string[]; author: string; message: string; createdAt: number; }
+export interface RepoUpdateRefInput { ref: string; commit?: string; expectedCommit?: string; holder?: string; delete?: boolean; }
+export interface RepoUpdateRefResult { ref: string; commit: string; tree: string; }
+export interface RepoLeaseRefInput { ref: string; holder: string; ttlMs?: number; release?: boolean; }
+export interface RepoLeaseRefResult { ref: string; commit: string; tree: string; holder: string; epoch: number; expiresAt: number; }
+export interface RepoDiffOptions { from: string; to?: string; path?: string; statOnly?: boolean; maxBytes?: number; contextLines?: number; }
+export interface RepoDiffFile {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  oldHash?: string;
+  newHash?: string;
+  oldSize?: number;
+  newSize?: number;
+  additions?: number;
+  deletions?: number;
+  binary?: boolean;
+  patch?: string;
+  truncated?: boolean;
+}
+export interface RepoDiffResult {
+  from: string;
+  to: string;
+  fromTree?: string;
+  toTree?: string;
+  identical: boolean;
+  summary: { added: number; modified: number; deleted: number; totalFiles: number };
+  files: RepoDiffFile[];
+  truncated: boolean;
+}
 
 export interface DecisionRequest<TChoice extends string = string> { input: string; choices: readonly TChoice[]; instructions?: string; model?: string; }
 export interface DecisionResult<TChoice extends string = string> { choice: TChoice; confidence: number; scores: Record<TChoice, number>; costUsd: number; }

@@ -172,11 +172,12 @@ type HistoryResponse struct {
 }
 
 type RestoreRequest struct {
-	Ref          string `json:"ref"`
-	TargetCommit string `json:"targetCommit"`
-	Holder       string `json:"holder,omitempty"`
-	Author       string `json:"author,omitempty"`
-	Message      string `json:"message,omitempty"`
+	Ref            string `json:"ref"`
+	TargetCommit   string `json:"targetCommit"`
+	ExpectedCommit string `json:"expectedCommit,omitempty"`
+	Holder         string `json:"holder,omitempty"`
+	Author         string `json:"author,omitempty"`
+	Message        string `json:"message,omitempty"`
 }
 
 type RestoreResponse struct {

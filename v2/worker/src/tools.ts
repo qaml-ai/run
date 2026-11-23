@@ -9,6 +9,7 @@ import {
 } from "./browser.ts";
 import { normalizeSvgRasterInput, recordSvgRenderUsage, renderSvg } from "./svg-render.ts";
 import { FILE_LIMITS } from "./lib/limits.ts";
+import { computeRepoDiff, utf8ByteLength } from "./lib/repo-diff.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
@@ -125,7 +126,7 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
     {
       name: "read_file",
       description:
-        "Read file contents from the agent repository (optionally at an attachment's commit) or virtual skill files under /.skills/<slug>/SKILL.md. Supports text files (bounded to 2000 lines / 50KB with 1-indexed offset & limit continuation) and images.",
+        "Read file contents from the agent repository (optionally at an attachment's commit or bounded by 1-indexed start_line/end_line) or virtual skill files under /.skills/<slug>/SKILL.md. Supports text files (bounded with 1-indexed offset & limit continuation) and images.",
       parameters: {
         type: "object",
         properties: {
@@ -135,7 +136,9 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
           },
           at: { type: "string", description: "Ref or commit of the file version to read" },
           offset: { type: "number", description: "Line number to start reading from (1-indexed)" },
-          limit: { type: "number", description: "Maximum number of lines to read" },
+          limit: { type: "number", description: "Maximum number of lines to read (or byte budget with start_line/end_line)" },
+          start_line: { type: "number", description: "1-indexed inclusive start line number" },
+          end_line: { type: "number", description: "1-indexed inclusive end line number" },
         },
         required: ["path"],
       },
@@ -247,6 +250,22 @@ const BUILTIN_SCHEMAS: Record<BuiltinSuite, LlmToolSchema[]> = {
         properties: {
           limit: { type: "number" },
         },
+      },
+    },
+    {
+      name: "repo_diff",
+      description: "Compute a unified diff or changed-file summary between two commits or refs in the repository.",
+      parameters: {
+        type: "object",
+        properties: {
+          from: { type: "string", description: "Base commit SHA or ref name" },
+          to: { type: "string", description: "Target commit SHA or ref name (defaults to current branch)" },
+          path: { type: "string", description: "Optional file path or directory prefix filter" },
+          stat_only: { type: "boolean", description: "Return only file metadata without unified diff patches" },
+          max_bytes: { type: "number", description: "Maximum total patch bytes (default 65536, max 524288)" },
+          context_lines: { type: "number", description: "Context lines per diff hunk (default 3, 0..20)" },
+        },
+        required: ["from"],
       },
     },
   ],
@@ -641,21 +660,135 @@ export async function executeToolCall(
     });
   }
 
-  // 3c. Bounded file reader powered by `@earendil-works/pi-durable` (`createReadTool`)
-  // Handles both CamelFS repository files (including `at` commit refs) and virtual `/.skills/...` paths
-  // without forcing repo provisioning when reading virtual skills.
+  // 3c. Bounded file reader powered by `@earendil-works/pi-durable` (`createReadTool`),
+  // plus explicit 1-indexed inclusive `start_line`/`end_line` line-numbered reads on repo files.
   if (toolName === "read_file") {
-    return executePiReadFile({
-      env: ctx.env,
-      tenantId: ctx.config.tenantId,
-      path: String(args.path ?? ""),
-      at: typeof args.at === "string" ? args.at : undefined,
-      offset: typeof args.offset === "number" ? args.offset : undefined,
-      limit: typeof args.limit === "number" ? args.limit : undefined,
-      signal: ctx.signal,
-      ensureRepo: () => ctx.ensureAgentRepo(),
-      getResolvedSkills: ctx.getResolvedSkills,
-    });
+    const startLineArg =
+      typeof args.start_line === "number"
+        ? args.start_line
+        : typeof args.startLine === "number"
+          ? args.startLine
+          : undefined;
+    const endLineArg =
+      typeof args.end_line === "number"
+        ? args.end_line
+        : typeof args.endLine === "number"
+          ? args.endLine
+          : undefined;
+
+    if (startLineArg === undefined && endLineArg === undefined) {
+      return executePiReadFile({
+        env: ctx.env,
+        tenantId: ctx.config.tenantId,
+        path: String(args.path ?? ""),
+        at: typeof args.at === "string" ? args.at : undefined,
+        offset: typeof args.offset === "number" ? args.offset : undefined,
+        limit: typeof args.limit === "number" ? args.limit : undefined,
+        signal: ctx.signal,
+        ensureRepo: () => ctx.ensureAgentRepo(),
+        getResolvedSkills: ctx.getResolvedSkills,
+      });
+    }
+
+    if (startLineArg !== undefined && (!Number.isFinite(startLineArg) || startLineArg < 1)) {
+      throw new Error("read_file: start_line must be a positive integer (>= 1)");
+    }
+    if (endLineArg !== undefined && (!Number.isFinite(endLineArg) || endLineArg < 1)) {
+      throw new Error("read_file: end_line must be a positive integer (>= 1)");
+    }
+
+    const { lineage, branch } = await ctx.ensureAgentRepo();
+    const cfs = new CamelFsClient(ctx.env, ctx.config.tenantId);
+    const path = normalizeRepoPath(String(args.path ?? ""));
+    const at = typeof args.at === "string" ? args.at : branch;
+    const file = await cfs.read(lineage, { at, path });
+    if (file.binary || file.content === null) {
+      return {
+        ...file,
+        totalLines: 0,
+        startLine: 0,
+        endLine: 0,
+        truncated: false,
+      };
+    }
+
+    const rawText = file.content;
+    const rawLines =
+      rawText.length === 0
+        ? []
+        : (rawText.endsWith("\n") ? rawText.slice(0, -1) : rawText).split("\n");
+    const totalLines = rawLines.length;
+    const startLine = startLineArg !== undefined ? Math.floor(startLineArg) : 1;
+    const requestedEnd = endLineArg !== undefined ? Math.floor(endLineArg) : totalLines;
+    if (endLineArg !== undefined && requestedEnd < startLine) {
+      throw new Error(`read_file: end_line (${requestedEnd}) must be >= start_line (${startLine})`);
+    }
+    if (totalLines === 0 || startLine > totalLines) {
+      return {
+        commit: file.commit,
+        path: file.path,
+        size: file.size,
+        mode: file.mode,
+        binary: false,
+        content: "",
+        base64: null,
+        totalLines,
+        startLine: totalLines === 0 ? 0 : startLine,
+        endLine: totalLines === 0 ? 0 : totalLines,
+        truncated: false,
+      };
+    }
+
+    const MAX_LINES = 500;
+    const MAX_BYTES =
+      typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0
+        ? Math.floor(args.limit)
+        : 32 * 1024;
+    const clampedEnd = Math.min(totalLines, requestedEnd);
+    const maxLineEnd = Math.min(clampedEnd, startLine + MAX_LINES - 1);
+
+    const formattedLines: string[] = [];
+    let usedBytes = 0;
+    let actualEndLine = startLine - 1;
+    let byteTruncated = false;
+
+    for (let lineNo = startLine; lineNo <= maxLineEnd; lineNo++) {
+      const rawLine = rawLines[lineNo - 1]!;
+      const cleanLine = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      const numbered = `${lineNo}: ${cleanLine}`;
+      const chunk = formattedLines.length === 0 ? numbered : `\n${numbered}`;
+      const chunkBytes = utf8ByteLength(chunk);
+      if (usedBytes + chunkBytes > MAX_BYTES) {
+        if (formattedLines.length === 0) {
+          let slice = numbered;
+          while (slice.length > 0 && utf8ByteLength(slice) > MAX_BYTES) {
+            slice = slice.slice(0, Math.floor(slice.length * 0.8));
+          }
+          formattedLines.push(slice);
+          actualEndLine = lineNo;
+        }
+        byteTruncated = true;
+        break;
+      }
+      formattedLines.push(numbered);
+      usedBytes += chunkBytes;
+      actualEndLine = lineNo;
+    }
+
+    const truncated = byteTruncated || actualEndLine < clampedEnd;
+    return {
+      commit: file.commit,
+      path: file.path,
+      size: file.size,
+      mode: file.mode,
+      binary: false,
+      content: formattedLines.join("\n"),
+      base64: null,
+      totalLines,
+      startLine,
+      endLine: actualEndLine,
+      truncated,
+    };
   }
 
   if (toolName === "render_image") {
@@ -711,7 +844,8 @@ export async function executeToolCall(
     toolName === "delete_file" ||
     toolName === "repo_checkpoint" ||
     toolName === "repo_restore" ||
-    toolName === "repo_history"
+    toolName === "repo_history" ||
+    toolName === "repo_diff"
   ) {
     const { repoId, lineage, branch } = await ctx.ensureAgentRepo();
     const cfs = new CamelFsClient(ctx.env, ctx.config.tenantId);
@@ -728,6 +862,7 @@ export async function executeToolCall(
         { type: "image", mimeType: header.mimeType, data: file.base64 },
       ] };
     }
+
 
     if (toolName === "write_file") {
       const path = normalizeRepoPath(String(args.path ?? ""));
@@ -748,17 +883,49 @@ export async function executeToolCall(
 
     if (toolName === "edit_file") {
       const path = normalizeRepoPath(String(args.path ?? ""));
-      const oldString = String(args.oldString ?? "");
-      const newString = String(args.newString ?? "");
-      const replaceAll = Boolean(args.replaceAll);
+      const oldString = String(args.oldString ?? args.old_text ?? "");
+      const newString = String(args.newString ?? args.new_text ?? "");
+      const replaceAll = Boolean(args.replaceAll ?? args.replace_all);
+      if (!oldString) {
+        throw new Error(`edit_file: oldString must not be empty for '${path}'`);
+      }
       const current = await cfs.read(lineage, { at: branch, path });
       const text = current.content ?? "";
-      if (!text.includes(oldString)) {
+
+      const matchLines: number[] = [];
+      let searchPos = 0;
+      let currentLine = 1;
+      let countedUpTo = 0;
+      while (true) {
+        const idx = text.indexOf(oldString, searchPos);
+        if (idx === -1) break;
+        for (let i = countedUpTo; i < idx; i++) {
+          if (text.charCodeAt(i) === 10) currentLine++;
+        }
+        countedUpTo = idx;
+        matchLines.push(currentLine);
+        searchPos = idx + oldString.length;
+      }
+
+      if (matchLines.length === 0) {
         throw new Error(`edit_file: oldString not found in '${path}'`);
       }
-      const updated = replaceAll
-        ? text.split(oldString).join(newString)
-        : text.replace(oldString, newString);
+      if (matchLines.length > 1 && !replaceAll) {
+        const previewLines =
+          matchLines.slice(0, 20).join(", ") +
+          (matchLines.length > 20 ? `, ... (+${matchLines.length - 20} more)` : "");
+        throw new Error(
+          `edit_file: oldString matched ${matchLines.length} times in '${path}' (lines ${previewLines}). Provide more surrounding context to uniquely identify the target, or set replaceAll: true to replace all occurrences.`,
+        );
+      }
+
+      let updated: string;
+      if (replaceAll) {
+        updated = text.split(oldString).join(newString);
+      } else {
+        const firstIdx = text.indexOf(oldString);
+        updated = text.slice(0, firstIdx) + newString + text.slice(firstIdx + oldString.length);
+      }
       const out = await cfs.write(lineage, {
         ref: branch,
         expectedCommit: current.commit,
@@ -802,6 +969,9 @@ export async function executeToolCall(
         deletes: [path],
       });
       ctx.recordFilesChanged(out.changed);
+      void getTenantStub(ctx.env, ctx.config.tenantId)
+        .updateRepoCommit(repoId, out.commit)
+        .catch(() => {});
       return out;
     }
 
@@ -841,6 +1011,37 @@ export async function executeToolCall(
       return cfs.history(lineage, {
         ref: branch,
         limit: typeof args.limit === "number" ? args.limit : 20,
+      });
+    }
+
+    if (toolName === "repo_diff") {
+      const from = typeof args.from === "string" ? args.from.trim() : "";
+      if (!from) {
+        throw new Error("repo_diff: `from` commit SHA or ref is required");
+      }
+      const to = typeof args.to === "string" && args.to.trim() ? args.to.trim() : branch;
+      const path = typeof args.path === "string" && args.path.trim() ? args.path.trim() : undefined;
+      const statOnly = Boolean(args.stat_only ?? args.statOnly);
+      const maxBytes =
+        typeof args.max_bytes === "number"
+          ? args.max_bytes
+          : typeof args.maxBytes === "number"
+            ? args.maxBytes
+            : undefined;
+      const contextLines =
+        typeof args.context_lines === "number"
+          ? args.context_lines
+          : typeof args.contextLines === "number"
+            ? args.contextLines
+            : undefined;
+      return computeRepoDiff(cfs, lineage, {
+        from,
+        to,
+        defaultRef: branch,
+        path,
+        statOnly,
+        maxBytes,
+        contextLines,
       });
     }
   }

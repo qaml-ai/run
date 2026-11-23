@@ -20,6 +20,12 @@ import {
 } from "./auth.ts";
 import { CamelFsClient } from "./camelfs.ts";
 import {
+  computeRepoDiff,
+  DIFF_DEFAULT_CONTEXT_LINES,
+  DIFF_DEFAULT_MAX_BYTES,
+  validateRefName,
+} from "./lib/repo-diff.ts";
+import {
   createChannelRecord,
   deleteChannelRecord,
   handleChannelInbound,
@@ -83,6 +89,7 @@ import { toolIdentityKeys } from "./tool-identity.ts";
 import {
   ApiError,
   errorResponse,
+  extractApiError,
   toApiErrorResponse,
   type AgentUpsertInput,
   type Env,
@@ -790,6 +797,147 @@ app.post("/v2/repos/:repoId/fork", async (c) => {
   return c.json(newRepo, 201);
 });
 
+function rethrowConflictAs409(err: unknown): never {
+  const apiErr = extractApiError(err);
+  if (
+    apiErr &&
+    (apiErr.status === 409 ||
+      apiErr.code === "cas_conflict" ||
+      apiErr.code === "ref_conflict" ||
+      apiErr.code === "ref_leased" ||
+      apiErr.code === "conflict")
+  ) {
+    throw new ApiError(409, apiErr.code, apiErr.message);
+  }
+  throw err;
+}
+
+app.post("/v2/repos/:repoId/refs", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const tenantStub = getTenantStub(c.env, auth.tenantId);
+  const repo = await tenantStub.getRepo(c.req.param("repoId"));
+  const body = (await c.req.json().catch(() => ({}))) as {
+    ref?: unknown;
+    commit?: unknown;
+    expectedCommit?: unknown;
+    holder?: unknown;
+    delete?: unknown;
+  };
+  const ref = validateRefName(body.ref);
+  const isDelete = Boolean(body.delete);
+  const commit = typeof body.commit === "string" ? body.commit.trim() : undefined;
+  if (!isDelete && !commit) {
+    throw new ApiError(400, "invalid_request", "`commit` is required unless `delete` is true");
+  }
+  const expectedCommit =
+    typeof body.expectedCommit === "string" && body.expectedCommit.trim()
+      ? body.expectedCommit.trim()
+      : undefined;
+  const holder =
+    typeof body.holder === "string" && body.holder.trim() ? body.holder.trim() : undefined;
+
+  const cfs = new CamelFsClient(c.env, auth.tenantId);
+  try {
+    const out = await cfs.updateRef(repo.lineage, {
+      ref,
+      ...(commit ? { commit } : {}),
+      ...(expectedCommit ? { expectedCommit } : {}),
+      ...(holder ? { holder } : {}),
+      ...(isDelete ? { delete: true } : {}),
+    });
+    if (!isDelete && out.ref === repo.defaultRef && out.commit) {
+      void tenantStub.updateRepoCommit(repo.repoId, out.commit).catch(() => {});
+    }
+    return c.json(out);
+  } catch (err) {
+    rethrowConflictAs409(err);
+  }
+});
+
+app.post("/v2/repos/:repoId/lease", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
+  const body = (await c.req.json().catch(() => ({}))) as {
+    ref?: unknown;
+    holder?: unknown;
+    ttlMs?: unknown;
+    release?: unknown;
+  };
+  const ref = body.ref !== undefined ? validateRefName(body.ref) : repo.defaultRef;
+  const holder = typeof body.holder === "string" ? body.holder.trim() : "";
+  if (!holder) {
+    throw new ApiError(400, "invalid_request", "`holder` is required");
+  }
+  const release = Boolean(body.release);
+  let ttlMs: number | undefined;
+  if (body.ttlMs !== undefined) {
+    const parsedTtl = Number(body.ttlMs);
+    if (!Number.isFinite(parsedTtl) || parsedTtl <= 0) {
+      throw new ApiError(400, "invalid_request", "`ttlMs` must be a positive number");
+    }
+    ttlMs = Math.floor(parsedTtl);
+  }
+
+  const cfs = new CamelFsClient(c.env, auth.tenantId);
+  try {
+    const out = await cfs.leaseRef(repo.lineage, {
+      ref,
+      holder,
+      ...(ttlMs !== undefined ? { ttlMs } : {}),
+      ...(release ? { release: true } : {}),
+    });
+    return c.json(out);
+  } catch (err) {
+    rethrowConflictAs409(err);
+  }
+});
+
+app.get("/v2/repos/:repoId/diff", async (c) => {
+  const auth = await authenticateRequest(c.env, c.req.raw);
+  assertTenantScope(auth);
+  const repo = await getTenantStub(c.env, auth.tenantId).getRepo(c.req.param("repoId"));
+  const from = c.req.query("from")?.trim() ?? "";
+  if (!from) {
+    throw new ApiError(400, "invalid_request", "`from` query parameter is required");
+  }
+  const to = c.req.query("to")?.trim() || repo.defaultRef;
+  const path = c.req.query("path") || undefined;
+  const statRaw = (c.req.query("statOnly") ?? "").trim().toLowerCase();
+  const statOnly = statRaw === "1" || statRaw === "true";
+
+  const maxBytesRaw = c.req.query("maxBytes");
+  let maxBytes = DIFF_DEFAULT_MAX_BYTES;
+  if (maxBytesRaw !== undefined && maxBytesRaw !== "") {
+    maxBytes = Number(maxBytesRaw);
+    if (!Number.isFinite(maxBytes) || maxBytes < 0) {
+      throw new ApiError(400, "invalid_request", "`maxBytes` must be a non-negative integer");
+    }
+  }
+
+  const ctxRaw = c.req.query("contextLines");
+  let contextLines = DIFF_DEFAULT_CONTEXT_LINES;
+  if (ctxRaw !== undefined && ctxRaw !== "") {
+    contextLines = Number(ctxRaw);
+    if (!Number.isFinite(contextLines) || contextLines < 0 || contextLines > 20) {
+      throw new ApiError(400, "invalid_request", "`contextLines` must be between 0 and 20");
+    }
+  }
+
+  const cfs = new CamelFsClient(c.env, auth.tenantId);
+  const diff = await computeRepoDiff(cfs, repo.lineage, {
+    from,
+    to,
+    defaultRef: repo.defaultRef,
+    path,
+    statOnly,
+    maxBytes,
+    contextLines,
+  });
+  return c.json(diff);
+});
+
 app.post("/v2/repos/:repoId/restore", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
@@ -798,15 +946,51 @@ app.post("/v2/repos/:repoId/restore", async (c) => {
   const body = (await c.req.json()) as {
     ref?: string;
     targetCommit: string;
+    expectedCommit?: string;
+    holder?: string;
     message?: string;
   };
+  if (!body.targetCommit || typeof body.targetCommit !== "string" || !body.targetCommit.trim()) {
+    throw new ApiError(400, "invalid_request", "`targetCommit` is required");
+  }
+  const targetRef = body.ref?.trim() || repo.defaultRef;
+  const expectedCommit =
+    typeof body.expectedCommit === "string" && body.expectedCommit.trim()
+      ? body.expectedCommit.trim()
+      : undefined;
+  const holder =
+    typeof body.holder === "string" && body.holder.trim() ? body.holder.trim() : undefined;
+
   const cfs = new CamelFsClient(c.env, auth.tenantId);
-  const out = await cfs.restore(repo.lineage, {
-    ref: body.ref || repo.defaultRef,
-    targetCommit: body.targetCommit,
-    author: `tenant:${auth.tenantId}`,
-    message: body.message || "restore",
-  });
+  if (expectedCommit) {
+    const refsRes = await cfs.listRefs(repo.lineage, targetRef);
+    const current = refsRes.refs.find((r) => r.name === targetRef);
+    if (!current || current.commit !== expectedCommit) {
+      throw new ApiError(
+        409,
+        "conflict",
+        `Expected commit '${expectedCommit}' on ref '${targetRef}', got '${current?.commit ?? "missing"}'`,
+      );
+    }
+  }
+
+  let out: { commit: string; tree: string };
+  try {
+    out = await cfs.restore(repo.lineage, {
+      ref: targetRef,
+      targetCommit: body.targetCommit.trim(),
+      ...(expectedCommit ? { expectedCommit } : {}),
+      ...(holder ? { holder } : {}),
+      author: `tenant:${auth.tenantId}`,
+      message: body.message || "restore",
+    });
+  } catch (err) {
+    const apiErr = extractApiError(err);
+    if (apiErr && (apiErr.status === 409 || apiErr.code === "cas_conflict")) {
+      throw new ApiError(409, apiErr.code === "ref_leased" ? "ref_leased" : "conflict", apiErr.message);
+    }
+    throw err;
+  }
   void tenantStub.updateRepoCommit(repo.repoId, out.commit).catch(() => {});
   return c.json(out);
 });

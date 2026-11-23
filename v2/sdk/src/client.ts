@@ -6,7 +6,8 @@ import {
   type ChannelInfo, type CreatedTenant, type CreateTenantOptions, type CreateTokenInput,
   type DecisionRequest, type DecisionResult, type DefinitionConfig, type FetchLike,
   type GenerateImageInput, type ImageRecord, type ListSkillsOptions, type RenderImageOptions, type RenderedImage, type LocalTool, type ProviderConfig, type RepoCommit,
-  type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoReadResult,
+  type RepoDiffOptions, type RepoDiffResult, type RepoEntry, type RepoGrepMatch, type RepoInfo, type RepoLeaseRefInput,
+  type RepoLeaseRefResult, type RepoReadResult, type RepoUpdateRefInput, type RepoUpdateRefResult,
   type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SkillRecord, type SkillSummary, type SkillUpsertInput, type SpeechInput,
   type SpeechResult, type StatelessRunOptions, type TenantInfo, type TranscribeInput,
   type TranscriptionResult, type VoiceSession, type WebhookEndpoint, type WebSocketConstructorLike,
@@ -148,8 +149,23 @@ export class CamelRun {
       const resolvedPuts = puts ?? (path ? [{ path, content, base64, mode }] : undefined);
       return this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/write`, { ...rest, ...(resolvedPuts ? { puts: resolvedPuts } : {}) });
     },
-    restore: (repoId: string, input: { targetCommit: string; ref?: string; message?: string }): Promise<{ commit: string; tree: string }> =>
+    restore: (repoId: string, input: { targetCommit: string; ref?: string; expectedCommit?: string; holder?: string; message?: string }): Promise<{ commit: string; tree: string }> =>
       this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/restore`, input),
+    updateRef: (repoId: string, input: RepoUpdateRefInput): Promise<RepoUpdateRefResult> =>
+      this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/refs`, input),
+    leaseRef: (repoId: string, input: RepoLeaseRefInput): Promise<RepoLeaseRefResult> =>
+      this.requestJson("POST", `/v2/repos/${encodeURIComponent(repoId)}/lease`, input),
+    diff: (repoId: string, options: RepoDiffOptions): Promise<RepoDiffResult> => {
+      const q = buildQuery({
+        from: options.from,
+        to: options.to,
+        path: options.path,
+        statOnly: options.statOnly !== undefined ? (options.statOnly ? 1 : 0) : undefined,
+        maxBytes: options.maxBytes,
+        contextLines: options.contextLines,
+      });
+      return this.requestJson("GET", `/v2/repos/${encodeURIComponent(repoId)}/diff${q}`);
+    },
     ls: async (repoId: string, options?: { at?: string; path?: string; recursive?: boolean; glob?: string }): Promise<{ commit: string; entries: RepoEntry[] }> => {
       const q = buildQuery({ at: options?.at, path: options?.path, recursive: options?.recursive !== undefined ? (options.recursive ? 1 : 0) : undefined, glob: options?.glob });
       const res = await this.requestJson<unknown>("GET", `/v2/repos/${encodeURIComponent(repoId)}/ls${q}`);

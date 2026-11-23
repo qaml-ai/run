@@ -1125,6 +1125,9 @@ func (e *Engine) Restore(ctx context.Context, lineage string, req RestoreRequest
 		if curRef.Lease != nil && curRef.Lease.Holder != req.Holder {
 			return apperr.RefLeasedf("ref %q is leased by %q", refName, curRef.Lease.Holder)
 		}
+		if req.ExpectedCommit != "" && curRef.Commit != req.ExpectedCommit {
+			return apperr.CASConflictf("expected commit %q on ref %q, got %q", req.ExpectedCommit, refName, curRef.Commit)
+		}
 
 		if vmSession != nil {
 			if err := vmSession.StopForRestore(ctx); err != nil {

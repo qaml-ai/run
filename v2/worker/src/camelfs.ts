@@ -292,7 +292,12 @@ export class CamelFsClient {
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/lease`, {
       lineage,
       scopes: ["repo:write"],
-      body: { ttlMs: 600_000, ...req },
+      body: {
+        ref: req.ref,
+        holder: req.holder,
+        ttlMs: req.ttlMs ?? 600_000,
+        ...(req.release !== undefined ? { release: req.release } : {}),
+      },
     });
   }
 
@@ -368,7 +373,14 @@ export class CamelFsClient {
 
   async restore(
     lineage: string,
-    req: { ref: string; targetCommit: string; holder?: string; author?: string; message?: string },
+    req: {
+      ref: string;
+      targetCommit: string;
+      expectedCommit?: string;
+      holder?: string;
+      author?: string;
+      message?: string;
+    },
   ): Promise<{ commit: string; tree: string }> {
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/restore`, {
       lineage,

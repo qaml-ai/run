@@ -1792,4 +1792,259 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(speechRes.status, 200);
     assert.ok((await speechRes.arrayBuffer()).byteLength > 44);
   });
+
+  it("supports git-native refs, leases, restore CAS, repo diff, and bounded agent file tools", async (t) => {
+    const { apiKey } = await CamelRun.createTenant({
+      baseUrl: workerUrl,
+      adminKey: ADMIN_SECRET,
+      name: "git-native-repos",
+      initialCreditsUsd: 50,
+    });
+    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
+    t.after(() => camel.close());
+
+    const repo = await camel.repos.create({ name: "git-native-test" });
+
+    // 1. Seed initial commit c1 with text, unchanged, and binary files.
+    const pngBase64 = toolImage;
+    const w1 = await camel.repos.write(repo.repoId, {
+      message: "commit 1",
+      puts: [
+        { path: "keep.txt", content: "never changes\n" },
+        { path: "src/app.ts", content: "const a = 1;\nconst b = 2;\nconst c = 3;\n" },
+        { path: "drop.txt", content: "to be deleted\n" },
+        { path: "img.png", base64: pngBase64 },
+      ],
+    });
+
+    // 2. POST /v2/repos/:repoId/refs — validation + create ref + CAS conflict.
+    const invalidRefRes = await fetch(`${workerUrl}/v2/repos/${repo.repoId}/refs`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "main", commit: w1.commit }),
+    });
+    assert.equal(invalidRefRes.status, 400);
+
+    const traversalRefRes = await fetch(`${workerUrl}/v2/repos/${repo.repoId}/refs`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ref: "refs/heads/a..b", commit: w1.commit }),
+    });
+    assert.equal(traversalRefRes.status, 400);
+
+    const createdRef = await camel.repos.updateRef(repo.repoId, {
+      ref: "refs/camel/live",
+      commit: w1.commit,
+    });
+    assert.equal(createdRef.ref, "refs/camel/live");
+    assert.equal(createdRef.commit, w1.commit);
+
+    // Write second commit c2 on refs/heads/main.
+    const w2 = await camel.repos.write(repo.repoId, {
+      message: "commit 2",
+      puts: [
+        { path: "src/app.ts", content: "const a = 1;\nconst b = 20;\nconst c = 3;\nconst d = 4;\n" },
+        { path: "added.ts", content: "export const ok = true;\n" },
+        { path: "img.png", base64: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]).toString("base64") },
+      ],
+      deletes: ["drop.txt"],
+    });
+
+    // Stale expectedCommit on updateRef returns HTTP 409.
+    await assert.rejects(
+      () => camel.repos.updateRef(repo.repoId, {
+        ref: "refs/camel/live",
+        commit: w2.commit,
+        expectedCommit: "0".repeat(64),
+      }),
+      (err: unknown) => err instanceof CamelRunError && err.status === 409,
+    );
+
+    // 3. GET /v2/repos/:repoId/diff (using ref names, statOnly, path filter, and maxBytes).
+    const fullDiff = await camel.repos.diff(repo.repoId, {
+      from: "refs/camel/live",
+      to: "HEAD",
+    });
+    assert.equal(fullDiff.from, w1.commit);
+    assert.equal(fullDiff.to, w2.commit);
+    assert.equal(fullDiff.identical, false);
+    assert.equal(fullDiff.truncated, false);
+    assert.deepEqual(fullDiff.summary, { added: 1, modified: 2, deleted: 1, totalFiles: 4 });
+    const diffByPath = new Map(fullDiff.files.map((f) => [f.path, f]));
+    assert.ok(!diffByPath.has("keep.txt"), "unchanged file must be excluded");
+    assert.equal(diffByPath.get("img.png")?.binary, true);
+    assert.equal(diffByPath.get("img.png")?.patch, undefined);
+    assert.equal(diffByPath.get("src/app.ts")?.additions, 2);
+    assert.equal(diffByPath.get("src/app.ts")?.deletions, 1);
+    assert.match(diffByPath.get("src/app.ts")?.patch ?? "", /-const b = 2;\n\+const b = 20;/);
+    assert.equal(diffByPath.get("added.ts")?.status, "added");
+    assert.equal(diffByPath.get("drop.txt")?.status, "deleted");
+
+    const statDiff = await camel.repos.diff(repo.repoId, {
+      from: "refs/camel/live",
+      to: "refs/heads/main",
+      statOnly: true,
+    });
+    assert.equal(statDiff.summary.totalFiles, 4);
+    assert.ok(statDiff.files.every((f) => f.patch === undefined));
+
+    const pathDiff = await camel.repos.diff(repo.repoId, {
+      from: w1.commit,
+      to: w2.commit,
+      path: "src/app.ts",
+    });
+    assert.equal(pathDiff.files.length, 1);
+    assert.equal(pathDiff.files[0]?.path, "src/app.ts");
+
+    const truncatedDiff = await camel.repos.diff(repo.repoId, {
+      from: w1.commit,
+      to: w2.commit,
+      maxBytes: 40,
+    });
+    assert.equal(truncatedDiff.truncated, true);
+
+    // 4. POST /v2/repos/:repoId/lease — acquire, 409 conflict for intruder, release.
+    const lease1 = await camel.repos.leaseRef(repo.repoId, {
+      ref: "refs/camel/live",
+      holder: "worker-a",
+      ttlMs: 30_000,
+    });
+    assert.equal(lease1.holder, "worker-a");
+    assert.ok(lease1.epoch >= 1);
+
+    await assert.rejects(
+      () => camel.repos.leaseRef(repo.repoId, {
+        ref: "refs/camel/live",
+        holder: "worker-b",
+        ttlMs: 30_000,
+      }),
+      (err: unknown) => err instanceof CamelRunError && err.status === 409,
+    );
+
+    // Update ref by wrong holder while leased fails with 409.
+    await assert.rejects(
+      () => camel.repos.updateRef(repo.repoId, {
+        ref: "refs/camel/live",
+        commit: w2.commit,
+        expectedCommit: w1.commit,
+        holder: "worker-b",
+      }),
+      (err: unknown) => err instanceof CamelRunError && err.status === 409,
+    );
+
+    // Update ref by lease holder succeeds.
+    const movedRef = await camel.repos.updateRef(repo.repoId, {
+      ref: "refs/camel/live",
+      commit: w2.commit,
+      expectedCommit: w1.commit,
+      holder: "worker-a",
+    });
+    assert.equal(movedRef.commit, w2.commit);
+
+    const released = await camel.repos.leaseRef(repo.repoId, {
+      ref: "refs/camel/live",
+      holder: "worker-a",
+      release: true,
+    });
+    assert.equal(released.holder, "");
+
+    // Delete custom ref cleanly.
+    await camel.repos.updateRef(repo.repoId, {
+      ref: "refs/camel/live",
+      delete: true,
+    });
+
+    // 5. POST /v2/repos/:repoId/restore CAS support.
+    await assert.rejects(
+      () => camel.repos.restore(repo.repoId, {
+        targetCommit: w1.commit,
+        expectedCommit: w1.commit, // stale: HEAD is w2.commit!
+      }),
+      (err: unknown) => err instanceof CamelRunError && err.status === 409 && err.code === "conflict",
+    );
+
+    const restored = await camel.repos.restore(repo.repoId, {
+      targetCommit: w1.commit,
+      expectedCommit: w2.commit,
+      message: "cas restore",
+    });
+    assert.equal(restored.tree, w1.tree);
+
+    // 6. Builtin agent file tools: bounded read_file, edit_file multi-match error, delete_file updateRepoCommit, repo_diff.
+    const bigLines = Array.from({ length: 60 }, (_, i) => `line-${i + 1}: ${i % 10 === 0 ? "DUP_TOKEN" : "val"}`).join("\n") + "\n";
+    const seedForAgent = await camel.repos.write(repo.repoId, {
+      message: "seed agent file",
+      puts: [
+        { path: "big.txt", content: bigLines },
+        { path: "temp.txt", content: "delete me\n" },
+      ],
+    });
+
+    const agent = await camel.agents.upsert("git-tools-agent", {
+      model: "mock/default",
+      repoId: repo.repoId,
+      builtins: ["files"],
+    });
+
+    const readRangeRun = await agent.run(
+      `Read lines [CALL:read_file {"path":"big.txt","start_line":10,"end_line":12}]`,
+    );
+    assert.equal(readRangeRun.status, "completed");
+    assert.match(readRangeRun.text, /10: line-10: val/);
+    assert.match(readRangeRun.text, /11: line-11: DUP_TOKEN/);
+    assert.match(readRangeRun.text, /12: line-12: val/);
+    assert.match(readRangeRun.text, /"totalLines":60/);
+    assert.match(readRangeRun.text, /"truncated":false/);
+
+    // Byte-capped read_file line range sets truncated: true.
+    const readTruncRun = await agent.run(
+      `Read capped [CALL:read_file {"path":"big.txt","start_line":1,"end_line":60,"limit":60}]`,
+    );
+    assert.equal(readTruncRun.status, "completed");
+    assert.match(readTruncRun.text, /"truncated":true/);
+
+    // Backwards compatibility: read_file without start_line/end_line returns raw unnumbered content.
+    const readCompatRun = await agent.run(
+      `Read raw [CALL:read_file {"path":"temp.txt"}]`,
+    );
+    assert.equal(readCompatRun.status, "completed");
+    assert.match(readCompatRun.text, /"content":"delete me\\n"/);
+
+    // edit_file with multiple matches and replaceAll omitted must return an actionable error with count and line numbers.
+    const multiMatchRun = await agent.run(
+      `Try ambiguous edit [CALL:edit_file {"path":"big.txt","oldString":"DUP_TOKEN","newString":"FIXED"}]`,
+    );
+    assert.equal(multiMatchRun.status, "completed");
+    assert.match(multiMatchRun.text, /matched 6 times/);
+    assert.match(multiMatchRun.text, /lines 1, 11, 21, 31, 41, 51/);
+
+    // File must remain unmodified after rejected ambiguous edit.
+    const afterReject = await camel.repos.read(repo.repoId, { path: "big.txt" });
+    assert.equal(afterReject.content, bigLines);
+
+    // edit_file with replaceAll: true succeeds across all occurrences.
+    const replaceAllRun = await agent.run(
+      `Replace all [CALL:edit_file {"path":"big.txt","oldString":"DUP_TOKEN","newString":"FIXED","replaceAll":true}]`,
+    );
+    assert.equal(replaceAllRun.status, "completed");
+    const afterReplaceAll = await camel.repos.read(repo.repoId, { path: "big.txt" });
+    assert.ok(!afterReplaceAll.content?.includes("DUP_TOKEN"));
+    assert.equal(afterReplaceAll.content?.match(/FIXED/g)?.length, 6);
+
+    // delete_file updates repo commit cleanly.
+    const deleteRun = await agent.run(
+      `Delete temp [CALL:delete_file {"path":"temp.txt","message":"cleanup temp"}]`,
+    );
+    assert.equal(deleteRun.status, "completed");
+    const repoAfterDelete = await camel.repos.get(repo.repoId);
+    assert.notEqual(repoAfterDelete.commit, seedForAgent.commit);
+
+    // repo_diff builtin tool compares seedForAgent -> current branch.
+    const diffRun = await agent.run(
+      `Diff changes [CALL:repo_diff {"from":"${seedForAgent.commit}"}]`,
+    );
+    assert.equal(diffRun.status, "completed");
+    assert.match(diffRun.text, /temp\.txt/);
+    assert.match(diffRun.text, /"deleted":1/);
+  });
 });
