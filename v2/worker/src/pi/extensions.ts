@@ -39,6 +39,7 @@ import { CamelFsClient, normalizeRepoPath } from "../camelfs.ts";
 import { mintAgentToken, openSecret, randomId, sealSecret } from "../crypto.ts";
 import { imageHeader } from "../lib/image-header.ts";
 import { FILE_LIMITS } from "../lib/limits.ts";
+import { lookupCatalogModel } from "../model-catalog-data.ts";
 import {
   discoverMcpTools,
   invokeMcpTool,
@@ -958,15 +959,19 @@ export function createCamelRunBillingExtension(
           throw new SpendLimitExceededError(check.spentUsd, check.spendLimitUsd);
         },
         async afterResponse(message, api) {
-          const inputTokens = message.usage?.input ?? 0;
+          // pi-ai reports `usage.input` as UNCACHED input tokens, while CamelRun v2's usage &
+          // pricing schema defines `inputTokens` as TOTAL input tokens (inclusive of cache tokens).
+          const uncachedInputTokens = message.usage?.input ?? 0;
           const outputTokens = message.usage?.output ?? 0;
           const cacheReadTokens = message.usage?.cacheRead ?? 0;
+          const cacheWriteTokens = message.usage?.cacheWrite ?? 0;
+          const inputTokens = uncachedInputTokens + cacheReadTokens + cacheWriteTokens;
           const reportedCost = message.usage?.cost?.total ?? 0;
           const qualifiedModel = `${message.provider}/${message.model}`;
           const costUsd =
-            reportedCost > 0
-              ? reportedCost
-              : calculatePiCostUsd(qualifiedModel, inputTokens, outputTokens, 0, cacheReadTokens);
+            lookupCatalogModel(qualifiedModel) || reportedCost <= 0
+              ? calculatePiCostUsd(qualifiedModel, inputTokens, outputTokens, 0, cacheReadTokens)
+              : reportedCost;
 
           await options.onUsageRecorded?.({
             conversationId: api.conversationId,
