@@ -27,12 +27,19 @@ const inputRequestSchema = z.discriminatedUnion("method", [
 ]);
 
 export class McpInputRequired extends Error {
+  readonly key: string;
+  readonly input: z.infer<typeof inputRequestSchema>;
+  readonly requestState?: string;
+
   constructor(
-    readonly key: string,
-    readonly input: z.infer<typeof inputRequestSchema>,
-    readonly requestState?: string,
+    key: string,
+    input: z.infer<typeof inputRequestSchema>,
+    requestState?: string,
   ) {
     super("MCP tool is waiting for input");
+    this.key = key;
+    this.input = input;
+    this.requestState = requestState;
   }
 }
 

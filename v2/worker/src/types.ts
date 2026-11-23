@@ -17,6 +17,7 @@ export interface Env {
   TENANT_DO: DurableObjectNamespace<TenantDO>;
   AGENT_DO: DurableObjectNamespace<AgentDO>;
   VOICE_CALL_DO?: DurableObjectNamespace<VoiceCallDO>;
+  CODEMODE_SANDBOX?: DurableObjectNamespace;
   ADMIN_SECRET: string;
   VAULT_SECRET: string;
   BUILDER_CUTOVER_CREDIT_TENANT_ID?: string;

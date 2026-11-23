@@ -59,6 +59,11 @@
       {
         "name": "VOICE_CALL_DO",
         "class_name": "VoiceCallDO"
+      },
+      {
+        "name": "CODEMODE_SANDBOX",
+        "class_name": "CodemodeSandbox",
+        "script_name": "camelrun-v2-codemode-sandbox"
       }
     ]
   },
