@@ -3,6 +3,7 @@ import {
   parseTenantApiKeyTenant,
   sha256Hex,
 } from "./crypto.ts";
+import { OAUTH_ACCESS_PREFIX, resolveOAuthAccessToken } from "./oauth.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, type AuthContext, type Env } from "./types.ts";
 
@@ -76,6 +77,26 @@ export async function authenticateRequest(
   req: Request,
   options?: { allowQueryToken?: boolean; allowAdmin?: boolean; adminTenantId?: string },
 ): Promise<AuthContext> {
+  if (!(options?.allowAdmin && verifyAdminHeader(env, req))) {
+    const raw = extractRawToken(req, options?.allowQueryToken ?? false);
+    if (raw?.startsWith(OAUTH_ACCESS_PREFIX)) {
+      const oauth = await resolveOAuthAccessToken(env, raw);
+      if (!oauth) {
+        throw new ApiError(401, "unauthorized", "Invalid or expired OAuth token");
+      }
+      const profile = await getTenantStub(env, oauth.tenantId).getProfile();
+      if (!profile) {
+        throw new ApiError(401, "unauthorized", "Account no longer exists");
+      }
+      return {
+        kind: "tenant",
+        tenantId: oauth.tenantId,
+        keyId: oauth.grantId,
+        scopes: oauth.scopes,
+      };
+    }
+  }
+
   const creds = await parseRequestCredentials(env, req, options);
   if (creds.kind === "admin") {
     return {

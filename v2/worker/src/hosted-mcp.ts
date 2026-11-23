@@ -7,6 +7,13 @@ import { parseRequestCredentials } from "./auth.ts";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret, sha256Hex } from "./crypto.ts";
 import { listV2Models } from "./models.ts";
+import {
+  OAUTH_ACCESS_PREFIX,
+  oauthIssuerFor,
+  oauthProtectedResourceDocument,
+  oauthResourceOriginFor,
+  resolveOAuthAccessToken,
+} from "./oauth.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
 import { getSkillStore, normalizeSkillSelectors } from "./skills.ts";
 import { getTenantStub, type RepoRecord } from "./tenant-do.ts";
@@ -274,16 +281,24 @@ export function mcpMethodNotAllowed(): Response {
   );
 }
 
+function extractBearerToken(request: Request): string | null {
+  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization");
+  if (!authHeader) return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || null;
+}
+
 export function mcpUnauthorized(
   request: Request,
   publicOrigin: string,
   agentIdOrKey?: string,
 ): Response {
   const invalid = Boolean(request.headers.get("Authorization"));
-  const requestPath = new URL(request.url).pathname;
+  const reqPath = new URL(request.url).pathname;
+  const origPath = request.headers.get("x-camelrun-original-path");
   const resourcePath = agentIdOrKey
     ? `/v2/agents/${encodeURIComponent(agentIdOrKey)}/mcp`
-    : requestPath === "/mcp"
+    : reqPath === "/mcp" || origPath === "/mcp"
       ? "/mcp"
       : "/v2/mcp";
   const metadata = `${publicOrigin}/.well-known/oauth-protected-resource${resourcePath}`;
@@ -293,8 +308,8 @@ export function mcpUnauthorized(
       error_description: invalid
         ? "The token is invalid, expired or revoked"
         : agentIdOrKey
-          ? "Send Authorization: Bearer <cr_live_... or agt_tok_...>"
-          : "Send Authorization: Bearer <cr_live_... API key>",
+          ? "Send Authorization: Bearer <aro_..., cr_live_..., or agt_tok_...>"
+          : "Send Authorization: Bearer <aro_... OAuth token or cr_live_... API key>",
     },
     {
       status: 401,
@@ -315,15 +330,10 @@ export function mcpProtectedResourceMetadata(
   resourcePath: string,
 ): Response {
   if (request.method === "OPTIONS") return mcpPreflight();
-  const origin = publicOriginFor(request, env);
+  const resourceOrigin = oauthResourceOriginFor(request, env);
+  const issuer = oauthIssuerFor(request, env);
   return Response.json(
-    {
-      resource: `${origin}${resourcePath}`,
-      resource_name: "CamelRun",
-      bearer_methods_supported: ["header"],
-      scopes_supported: ["agents"],
-      resource_documentation: "https://camelai.com/docs/camelrun/overview",
-    },
+    oauthProtectedResourceDocument(`${resourceOrigin}${resourcePath}`, issuer, ["agents"]),
     {
       status: 200,
       headers: {
@@ -650,15 +660,51 @@ function flattenHistoryMessage(msg: {
   };
 }
 
+type McpRunCreds =
+  | { kind: "tenant" | "agent"; tenantId: string; tokenHash: string; agentId?: string }
+  | { kind: "oauth"; tenantId: string; grantId: string };
+
 async function startPreparedAgentRun(
   env: Env,
   ctx: Pick<ExecutionContext, "waitUntil">,
-  creds: { kind: "tenant" | "agent"; tenantId: string; tokenHash: string; agentId?: string },
+  creds: McpRunCreds,
   idOrKey: string,
   body: StartRunInput,
 ): Promise<{ agentId: string; stub: RpcStub<AgentDO>; run: RunRecord }> {
   const preacquireRunId = body.whileRunning !== "steer" ? randomId("run", 8) : undefined;
   const tenantStub = getTenantStub(env, creds.tenantId);
+
+  if (creds.kind === "oauth") {
+    const entry = await tenantStub.resolveAgent(idOrKey);
+    if (!entry) {
+      throw new ApiError(404, "agent_not_found", `Agent '${idOrKey}' not found`);
+    }
+    let slotAcquired = false;
+    let balanceUsd: number | undefined;
+    if (preacquireRunId) {
+      const lease = await tenantStub.acquireSlot(preacquireRunId, entry.id);
+      slotAcquired = true;
+      balanceUsd = lease.balanceUsd;
+    } else {
+      const profile = await tenantStub.getProfile();
+      balanceUsd = profile?.balanceUsd;
+    }
+    const stub = getAgentStub(env, entry.id);
+    try {
+      const run = await stub.startRun(body, {
+        runId: preacquireRunId,
+        preacquiredSlot: slotAcquired,
+        prefetchedBalanceUsd: balanceUsd,
+      });
+      return { agentId: entry.id, stub, run };
+    } catch (err) {
+      if (slotAcquired && preacquireRunId) {
+        ctx.waitUntil(tenantStub.releaseSlot(preacquireRunId).catch(() => {}));
+      }
+      throw err;
+    }
+  }
+
   const prep = await tenantStub.authorizeAndPrepareRun({
     credKind: creds.kind,
     tokenHash: creds.tokenHash,
@@ -879,6 +925,10 @@ function formatInputRequiredResult(
 // 1. Hosted Tenant MCP Server (`/v2/mcp` and `/mcp`)
 // ============================================================================
 
+type TenantMcpSession =
+  | { kind: "tenant"; tenantId: string; tokenHash: string; publicOrigin: string }
+  | { kind: "oauth"; tenantId: string; grantId: string; publicOrigin: string };
+
 export async function serveHostedTenantMcp(
   request: Request,
   env: Env,
@@ -887,35 +937,62 @@ export async function serveHostedTenantMcp(
   if (request.method === "OPTIONS") return mcpPreflight();
 
   const publicOrigin = publicOriginFor(request, env);
-  let creds: Awaited<ReturnType<typeof parseRequestCredentials>>;
-  try {
-    creds = await parseRequestCredentials(env, request);
-  } catch (err) {
-    const apiErr = extractApiError(err);
-    if (apiErr?.status === 401) {
+  const rawBearer = extractBearerToken(request);
+  let session: TenantMcpSession;
+
+  if (rawBearer?.startsWith(OAUTH_ACCESS_PREFIX)) {
+    const oauth = await resolveOAuthAccessToken(env, rawBearer, ctx);
+    if (!oauth) {
       return mcpUnauthorized(request, publicOrigin);
     }
-    throw err;
-  }
+    const profile = await getTenantStub(env, oauth.tenantId).getProfile();
+    if (!profile) {
+      return mcpUnauthorized(request, publicOrigin);
+    }
+    session = {
+      kind: "oauth",
+      tenantId: oauth.tenantId,
+      grantId: oauth.grantId,
+      publicOrigin,
+    };
+  } else {
+    let creds: Awaited<ReturnType<typeof parseRequestCredentials>>;
+    try {
+      creds = await parseRequestCredentials(env, request);
+    } catch (err) {
+      const apiErr = extractApiError(err);
+      if (apiErr?.status === 401) {
+        return mcpUnauthorized(request, publicOrigin);
+      }
+      throw err;
+    }
 
-  if (creds.kind === "agent") {
-    return Response.json(
-      {
-        error: "forbidden",
-        error_description:
-          "Agent-scoped tokens cannot access the tenant MCP server; connect to /v2/agents/<agent>/mcp instead",
-      },
-      { status: 403, headers: AGENT_MCP_CORS },
-    );
-  }
-  if (creds.kind !== "tenant") {
-    return mcpUnauthorized(request, publicOrigin);
-  }
+    if (creds.kind === "agent") {
+      return Response.json(
+        {
+          error: "forbidden",
+          error_description:
+            "Agent-scoped tokens cannot access the tenant MCP server; connect to /v2/agents/<agent>/mcp instead",
+        },
+        { status: 403, headers: AGENT_MCP_CORS },
+      );
+    }
+    if (creds.kind !== "tenant") {
+      return mcpUnauthorized(request, publicOrigin);
+    }
 
-  const tenantStub = getTenantStub(env, creds.tenantId);
-  const verified = await tenantStub.verifyApiKey(creds.tokenHash);
-  if (!verified) {
-    return mcpUnauthorized(request, publicOrigin);
+    const tenantStub = getTenantStub(env, creds.tenantId);
+    const verified = await tenantStub.verifyApiKey(creds.tokenHash);
+    if (!verified) {
+      return mcpUnauthorized(request, publicOrigin);
+    }
+
+    session = {
+      kind: "tenant",
+      tenantId: verified.tenantId,
+      tokenHash: creds.tokenHash,
+      publicOrigin,
+    };
   }
 
   if (request.method !== "POST") return mcpMethodNotAllowed();
@@ -924,11 +1001,7 @@ export async function serveHostedTenantMcp(
   if (!read.ok) return read.response;
   const messages = parseJsonRpcMessages(read.body);
 
-  const server = createTenantMcpServer(env, ctx, {
-    tenantId: verified.tenantId,
-    tokenHash: creds.tokenHash,
-    publicOrigin,
-  });
+  const server = createTenantMcpServer(env, ctx, session);
 
   const shouldStream = messages.some(
     (m) => m?.method === "tools/call" && m?.params?._meta?.progressToken !== undefined,
@@ -940,9 +1013,9 @@ export async function serveHostedTenantMcp(
 function createTenantMcpServer(
   env: Env,
   ctx: Pick<ExecutionContext, "waitUntil">,
-  session: { tenantId: string; tokenHash: string; publicOrigin: string },
+  session: TenantMcpSession,
 ): McpServer {
-  const { tenantId, tokenHash, publicOrigin } = session;
+  const { tenantId, publicOrigin } = session;
   const tenantStub = getTenantStub(env, tenantId);
   const cfs = new CamelFsClient(env, tenantId);
 
@@ -1422,16 +1495,77 @@ function createTenantMcpServer(
       const minted = await mintAgentToken(tenantId, candidateAgentId);
       const candidateSealedToken = await sealSecret(minted.token, env.VAULT_SECRET);
 
-      const prep = await tenantStub.authorizeAndPrepareAgent({
-        credKind: "tenant",
-        tokenHash,
-        key: trimmedKey,
-        input,
-        defaultModel: env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
-        candidateAgentId,
-        candidateTokenHash: minted.tokenHash,
-        candidateSealedToken,
-      });
+      let prep: {
+        agentId: string;
+        tenantId: string;
+        model: string;
+        repoId: string | null;
+        lineage: string | null;
+        branch: string;
+        created: boolean;
+        definitionConfig: AgentUpsertInput | null;
+      };
+
+      if (session.kind === "oauth") {
+        let defCfg: AgentUpsertInput | null = null;
+        if (input.definition) {
+          const def = await tenantStub.getDefinition(input.definition);
+          if (!def) {
+            throw new ApiError(404, "definition_not_found", `Definition '${input.definition}' not found`);
+          }
+          defCfg = def.config;
+        }
+        const existing = await tenantStub.resolveAgent(trimmedKey);
+        const created = !existing;
+        const agentId = existing?.id ?? candidateAgentId;
+        const model =
+          input.model ??
+          defCfg?.model ??
+          existing?.model ??
+          env.DEFAULT_MODEL ??
+          DEFAULT_MODEL_ID;
+        const repoId =
+          input.repoId !== undefined
+            ? input.repoId
+            : (defCfg?.repoId ?? existing?.repoId ?? null);
+        const branch = input.branch ?? defCfg?.branch ?? existing?.branch ?? "refs/heads/main";
+        let lineage: string | null = null;
+        if (repoId) {
+          const repo = await tenantStub.getRepo(repoId);
+          lineage = repo.lineage;
+        }
+        await tenantStub.upsertAgentIndex({
+          id: agentId,
+          key: trimmedKey,
+          tokenHash: existing?.tokenHash ?? minted.tokenHash,
+          sealedToken: existing?.sealedToken ?? candidateSealedToken,
+          model,
+          repoId,
+          branch,
+          definitionSlug: input.definition ?? existing?.definition ?? null,
+        });
+        prep = {
+          agentId,
+          tenantId,
+          model,
+          repoId,
+          lineage,
+          branch,
+          created,
+          definitionConfig: defCfg,
+        };
+      } else {
+        prep = await tenantStub.authorizeAndPrepareAgent({
+          credKind: "tenant",
+          tokenHash: session.tokenHash,
+          key: trimmedKey,
+          input,
+          defaultModel: env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
+          candidateAgentId,
+          candidateTokenHash: minted.tokenHash,
+          candidateSealedToken,
+        });
+      }
 
       const defCfg = prep.definitionConfig;
       const queueCfg = input.queue
@@ -1656,10 +1790,14 @@ function createTenantMcpServer(
       const inbox = new AsyncInbox<FollowItem>();
       const socket = shouldWait ? await openAgentEventSocket(stub, inbox) : null;
       try {
+        const runCreds: McpRunCreds =
+          session.kind === "oauth"
+            ? { kind: "oauth", tenantId, grantId: session.grantId }
+            : { kind: "tenant", tenantId, tokenHash: session.tokenHash };
         const { run } = await startPreparedAgentRun(
           env,
           ctx,
-          { kind: "tenant", tenantId, tokenHash },
+          runCreds,
           entry.id,
           {
             prompt: message,
@@ -2116,44 +2254,80 @@ export async function servePerAgentMcp(
   if (request.method === "OPTIONS") return mcpPreflight();
 
   const publicOrigin = publicOriginFor(request, env);
-  let creds: Awaited<ReturnType<typeof parseRequestCredentials>>;
-  try {
-    creds = await parseRequestCredentials(env, request);
-  } catch (err) {
-    const apiErr = extractApiError(err);
-    if (apiErr?.status === 401) {
+  const rawBearer = extractBearerToken(request);
+  let runCreds: McpRunCreds;
+  let agentId: string;
+  let trustedResponder: boolean;
+
+  if (rawBearer?.startsWith(OAUTH_ACCESS_PREFIX)) {
+    const oauth = await resolveOAuthAccessToken(env, rawBearer, ctx);
+    if (!oauth) {
       return mcpUnauthorized(request, publicOrigin, idOrKey);
     }
-    throw err;
-  }
-
-  if (creds.kind !== "tenant" && creds.kind !== "agent") {
-    return mcpUnauthorized(request, publicOrigin, idOrKey);
-  }
-
-  let prep: Awaited<ReturnType<ReturnType<typeof getTenantStub>["authorizeAndPrepareRun"]>>;
-  try {
-    prep = await getTenantStub(env, creds.tenantId).authorizeAndPrepareRun({
-      credKind: creds.kind,
-      tokenHash: creds.tokenHash,
-      agentIdFromToken: creds.kind === "agent" ? creds.agentId : undefined,
-      idOrKey,
-      defaultModel: env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
-      operation: "run",
-      includeProviderCredentials: false,
-    });
-  } catch (err) {
-    const apiErr = extractApiError(err);
-    if (apiErr?.status === 401) {
+    const tenantStub = getTenantStub(env, oauth.tenantId);
+    const profile = await tenantStub.getProfile();
+    if (!profile) {
       return mcpUnauthorized(request, publicOrigin, idOrKey);
     }
-    if (apiErr) {
+    const resolved = await tenantStub.resolveAgent(idOrKey);
+    if (!resolved) {
       return Response.json(
-        { error: { code: apiErr.code, message: apiErr.message } },
-        { status: apiErr.status, headers: AGENT_MCP_CORS },
+        { error: { code: "agent_not_found", message: `Agent '${idOrKey}' not found` } },
+        { status: 404, headers: AGENT_MCP_CORS },
       );
     }
-    throw err;
+    runCreds = { kind: "oauth", tenantId: oauth.tenantId, grantId: oauth.grantId };
+    agentId = resolved.id;
+    trustedResponder = true;
+  } else {
+    let creds: Awaited<ReturnType<typeof parseRequestCredentials>>;
+    try {
+      creds = await parseRequestCredentials(env, request);
+    } catch (err) {
+      const apiErr = extractApiError(err);
+      if (apiErr?.status === 401) {
+        return mcpUnauthorized(request, publicOrigin, idOrKey);
+      }
+      throw err;
+    }
+
+    if (creds.kind !== "tenant" && creds.kind !== "agent") {
+      return mcpUnauthorized(request, publicOrigin, idOrKey);
+    }
+
+    let prep: Awaited<ReturnType<ReturnType<typeof getTenantStub>["authorizeAndPrepareRun"]>>;
+    try {
+      prep = await getTenantStub(env, creds.tenantId).authorizeAndPrepareRun({
+        credKind: creds.kind,
+        tokenHash: creds.tokenHash,
+        agentIdFromToken: creds.kind === "agent" ? creds.agentId : undefined,
+        idOrKey,
+        defaultModel: env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID,
+        operation: "run",
+        includeProviderCredentials: false,
+      });
+    } catch (err) {
+      const apiErr = extractApiError(err);
+      if (apiErr?.status === 401) {
+        return mcpUnauthorized(request, publicOrigin, idOrKey);
+      }
+      if (apiErr) {
+        return Response.json(
+          { error: { code: apiErr.code, message: apiErr.message } },
+          { status: apiErr.status, headers: AGENT_MCP_CORS },
+        );
+      }
+      throw err;
+    }
+
+    runCreds = {
+      kind: creds.kind,
+      tenantId: creds.tenantId,
+      tokenHash: creds.tokenHash,
+      agentId: creds.kind === "agent" ? creds.agentId : undefined,
+    };
+    agentId = prep.agentId;
+    trustedResponder = creds.kind === "tenant";
   }
 
   if (request.method !== "POST") return mcpMethodNotAllowed();
@@ -2162,9 +2336,7 @@ export async function servePerAgentMcp(
   if (!read.ok) return read.response;
   const messages = parseJsonRpcMessages(read.body);
 
-  const agentId = prep.agentId;
   const stub = getAgentStub(env, agentId);
-  const trustedResponder = creds.kind === "tenant";
 
   // Handle client JSON-RPC responses to server-initiated elicitation requests (`id: "input:<inputId>"`).
   const elicitationReplies = messages.filter(
@@ -2202,7 +2374,7 @@ export async function servePerAgentMcp(
   const capFlags = sessionId?.split(".")[1] ?? "";
   const can = { form: capFlags.includes("f"), url: capFlags.includes("u") };
 
-  const agentEntry = await getTenantStub(env, creds.tenantId)
+  const agentEntry = await getTenantStub(env, runCreds.tenantId)
     .resolveAgent(agentId)
     .catch(() => null);
   const agentName = agentEntry?.key || idOrKey;
@@ -2250,12 +2422,7 @@ export async function servePerAgentMcp(
       return conversePerAgent({
         env,
         ctx,
-        creds: {
-          kind: creds.kind as "tenant" | "agent",
-          tenantId: creds.tenantId,
-          tokenHash: creds.tokenHash,
-          agentId: creds.kind === "agent" ? creds.agentId : undefined,
-        },
+        creds: runCreds,
         agentId,
         stub,
         publicOrigin,
@@ -2285,7 +2452,7 @@ export async function servePerAgentMcp(
 async function conversePerAgent(opts: {
   env: Env;
   ctx: Pick<ExecutionContext, "waitUntil">;
-  creds: { kind: "tenant" | "agent"; tenantId: string; tokenHash: string; agentId?: string };
+  creds: McpRunCreds;
   agentId: string;
   stub: RpcStub<AgentDO>;
   publicOrigin: string;

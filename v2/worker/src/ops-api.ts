@@ -48,6 +48,7 @@ import {
 } from "../../../shared/ops-types.ts";
 import { getAgentStub } from "./agent-do.ts";
 import { verifyAdminHeader } from "./auth.ts";
+import { listAllOAuthGrants, listTenantOAuthGrants, type OAuthGrantRecord } from "./oauth.ts";
 import { getTenantStub, type OpsRegisteredTenant, type TenantOpsSnapshot } from "./tenant-do.ts";
 import { ApiError, type Env } from "./types.ts";
 
@@ -443,58 +444,135 @@ function buildGrowth(tenants: HydratedTenant[], rawDays: string, now = Date.now(
   };
 }
 
-function buildAcquisition(tenants: HydratedTenant[], rawDays: string, now = Date.now()): AdminAcquisition {
+const SIGNUP_PLUGIN_WINDOW_MS = 3_600_000; // 1 hour
+
+/**
+ * First OAuth grant created within 1 hour of self-serve signup attributes that signup to its MCP plugin.
+ * Matches v1 `src/admin-mcp.ts` (`mcpSignupAttribution`).
+ */
+function mcpSignupAttributionMap(
+  tenants: HydratedTenant[],
+  grants: OAuthGrantRecord[],
+  from: number,
+  until: number,
+): Map<string, { kind: (typeof MCP_CLIENT_KINDS)[number]; date: string }> {
+  const earliestByTenant = new Map<string, OAuthGrantRecord>();
+  for (const g of grants) {
+    const prev = earliestByTenant.get(g.tenantId);
+    if (!prev || g.createdAt < prev.createdAt || (g.createdAt === prev.createdAt && g.grantId < prev.grantId)) {
+      earliestByTenant.set(g.tenantId, g);
+    }
+  }
+  const out = new Map<string, { kind: (typeof MCP_CLIENT_KINDS)[number]; date: string }>();
+  for (const t of tenants) {
+    if (!t.counted || t.createdAt < from || t.createdAt >= until) continue;
+    const first = earliestByTenant.get(t.reg.tenantId);
+    if (!first) continue;
+    if (first.createdAt >= t.createdAt && first.createdAt <= t.createdAt + SIGNUP_PLUGIN_WINDOW_MS) {
+      out.set(t.reg.tenantId, { kind: first.clientKind, date: utcDate(t.createdAt) });
+    }
+  }
+  return out;
+}
+
+function buildAcquisition(
+  tenants: HydratedTenant[],
+  grants: OAuthGrantRecord[],
+  rawDays: string,
+  now = Date.now(),
+): AdminAcquisition {
   const win = parseAdminWindow(rawDays, now);
   const dates = windowDates(win.from, win.days);
   const counted = tenants.filter((t) => t.counted && t.createdAt >= win.from && t.createdAt < win.until);
+  const plugins = mcpSignupAttributionMap(tenants, grants, win.from, win.until);
 
-  const byDate = new Map<string, number>();
-  let madeAgent = 0;
-  let activated = 0;
-  let activeTwoDays = 0;
-  let paying = 0;
-  const deltas: number[] = [];
+  type SourceRow = AdminAcquisition["sources"][number];
+  const blank = (source: string, kind: SourceRow["kind"]): SourceRow => ({
+    source,
+    kind,
+    signups: 0,
+    made_agent: 0,
+    activated: 0,
+    active_two_days: 0,
+    paying: 0,
+    median_days_to_first_run: null,
+  });
+
+  const sources = new Map<string, SourceRow>();
+  const waits = new Map<SourceRow, number[]>();
+  const daily = new Map<string, Map<string, number>>(dates.map((d) => [d, new Map()]));
+  const total = blank("All", "direct");
 
   for (const t of counted) {
-    const signupDay = utcDate(t.createdAt);
-    byDate.set(signupDay, (byDate.get(signupDay) ?? 0) + 1);
+    const plugin = plugins.get(t.reg.tenantId);
+    const label = plugin ? MCP_CLIENT_LABELS[plugin.kind] : "Not captured";
+    const kind: SourceRow["kind"] = plugin ? "plugin" : "not_captured";
+    const key = `${kind}:${label}`;
+    let row = sources.get(key);
+    if (!row) {
+      row = blank(label, kind);
+      sources.set(key, row);
+    }
+
     const activeDays = tenantActiveDays(t);
     const sorted = [...activeDays].sort();
-    if (t.snapshot.totalAgents > 0 || sorted.length > 0) madeAgent++;
-    if (sorted.length > 0) {
-      activated++;
-      deltas.push(Math.max(0, Math.round((Date.parse(`${sorted[0]!}T00:00:00Z`) - startOfUtcDay(t.createdAt)) / DAY_MS)));
+    const madeAgent = t.snapshot.totalAgents > 0 || sorted.length > 0;
+    const isActivated = sorted.length > 0;
+    const isTwoDays = activeDays.size >= 2;
+    const isPaying = t.snapshot.ledgerSummary.purchasedUsd - t.snapshot.ledgerSummary.refundedUsd > 0;
+    const firstDelta = isActivated
+      ? Math.max(0, Math.round((Date.parse(`${sorted[0]!}T00:00:00Z`) - startOfUtcDay(t.createdAt)) / DAY_MS))
+      : null;
+
+    for (const target of [row, total]) {
+      target.signups++;
+      if (madeAgent) target.made_agent++;
+      if (isActivated) target.activated++;
+      if (isTwoDays) target.active_two_days++;
+      if (isPaying) target.paying++;
+      if (firstDelta !== null) {
+        const list = waits.get(target) ?? [];
+        list.push(firstDelta);
+        waits.set(target, list);
+      }
     }
-    if (activeDays.size >= 2) activeTwoDays++;
-    if (t.snapshot.ledgerSummary.purchasedUsd - t.snapshot.ledgerSummary.refundedUsd > 0) paying++;
+
+    const signupDay = utcDate(t.createdAt);
+    const dayCounts = daily.get(signupDay);
+    if (dayCounts) {
+      dayCounts.set(key, (dayCounts.get(key) ?? 0) + 1);
+    }
   }
 
-  const totalRow = {
-    source: "Not captured",
-    kind: "not_captured" as const,
-    signups: counted.length,
-    made_agent: madeAgent,
-    activated,
-    active_two_days: activeTwoDays,
-    paying,
-    median_days_to_first_run: median(deltas),
-  };
+  for (const [row, list] of waits) {
+    row.median_days_to_first_run = median(list);
+  }
+
+  const ranked = [...sources.entries()].sort((a, b) => b[1].signups - a[1].signups || a[0].localeCompare(b[0]));
 
   return {
     schema_version: 1,
     range: win.range,
     generated_at: new Date(now).toISOString(),
-    sources: counted.length > 0 ? [totalRow] : [],
-    total: { ...totalRow, source: "All", kind: "direct" as const },
-    daily: dates.map((date) => ({
-      date,
-      counts: counted.length > 0 ? [byDate.get(date) ?? 0] : [],
-    })),
+    sources: ranked.map(([, row]) => row),
+    total,
+    daily: dates.map((date) => {
+      const counts = daily.get(date);
+      return {
+        date,
+        counts: ranked.map(([key]) => counts?.get(key) ?? 0),
+      };
+    }),
     recorded_since: null,
   };
 }
 
-function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()): AdminUsage {
+function buildUsage(
+  tenants: HydratedTenant[],
+  grants: OAuthGrantRecord[],
+  rawDays: string,
+  now = Date.now(),
+): AdminUsage {
   const win = parseAdminWindow(rawDays, now);
   const dates = windowDates(win.from, win.days);
   const startStr = utcDate(win.from);
@@ -548,6 +626,18 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
 
   const accounts: AdminUsageAccount[] = [];
   const topAgents: AdminTopAgent[] = [];
+
+  const activeGrantsByTenant = new Map<string, OAuthGrantRecord[]>();
+  const mcpClientAccounts = new Map<string, Set<string>>();
+  for (const g of grants) {
+    if (g.revokedAt != null) continue;
+    const list = activeGrantsByTenant.get(g.tenantId) ?? [];
+    list.push(g);
+    activeGrantsByTenant.set(g.tenantId, list);
+    const set = mcpClientAccounts.get(g.clientName) ?? new Set<string>();
+    set.add(g.tenantId);
+    mcpClientAccounts.set(g.clientName, set);
+  }
 
   for (const t of tenants) {
     const isCounted = t.counted;
@@ -663,6 +753,9 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
     if (t.snapshot.providers.length > 0) recordIntegration("own_keys", "Own model keys", t.reg.tenantId, isCounted);
     if (t.snapshot.counts.webhooks > 0) recordIntegration("webhook", "Webhooks", t.reg.tenantId, isCounted);
     if (t.snapshot.counts.repos > 0) recordIntegration("repos", "Repositories", t.reg.tenantId, isCounted);
+    if ((activeGrantsByTenant.get(t.reg.tenantId)?.length ?? 0) > 0) {
+      recordIntegration("mcp_clients", "Connected an MCP client", t.reg.tenantId, isCounted);
+    }
     for (const ch of t.snapshot.channels) {
       const label = ch.kind === "slack" ? "Slack" : ch.kind === "email" ? "Email" : "HTTP channel";
       recordIntegration(`channel_${ch.kind}`, label, t.reg.tenantId, isCounted);
@@ -799,7 +892,9 @@ function buildUsage(tenants: HydratedTenant[], rawDays: string, now = Date.now()
         self_serve_accounts: s.ssAccounts.size,
       }))
       .sort((a, b) => b.accounts - a.accounts),
-    mcp_clients: [],
+    mcp_clients: [...mcpClientAccounts.entries()]
+      .map(([client, accts]) => ({ client, accounts: accts.size }))
+      .sort((a, b) => b.accounts - a.accounts || a.client.localeCompare(b.client)),
     accounts: accounts.slice(0, 200),
     agents: topAgents.slice(0, 50),
   };
@@ -1227,25 +1322,114 @@ async function buildHealth(
   };
 }
 
-function buildMcp(rawDays: string, now = Date.now()): AdminMcp {
+function buildMcp(
+  tenants: HydratedTenant[],
+  grants: OAuthGrantRecord[],
+  rawDays: string,
+  now = Date.now(),
+): AdminMcp {
   const win = parseAdminWindow(rawDays, now);
+  const dates = windowDates(win.from, win.days);
+  const countedById = new Map<string, HydratedTenant>();
+  for (const t of tenants) {
+    if (t.counted) countedById.set(t.reg.tenantId, t);
+  }
+
+  // Daily grid: every UTC date x every MCP client kind
+  const daily = dates.flatMap((date) =>
+    MCP_CLIENT_KINDS.map((kind) => ({ date, kind, signups: 0, token_active_accounts: 0 })),
+  );
+  const byDayKind = new Map(daily.map((row) => [`${row.date}/${row.kind}`, row]));
+
+  // 1. Plugin-attributed signups (first OAuth grant within 1 hour of self-serve account creation)
+  const signups = mcpSignupAttributionMap(tenants, grants, win.from, win.until);
+  for (const entry of signups.values()) {
+    const row = byDayKind.get(`${entry.date}/${entry.kind}`);
+    if (row) row.signups++;
+  }
+
+  // 2. Daily & weekly token-active accounts based on grant `usedAt`
+  const dayTenants = new Map<string, Set<string>>();
+  const weekTenants = new Map<string, Set<string>>();
+  const activeUpperBound = Math.min(win.until, now + 1);
+  for (const g of grants) {
+    if (!countedById.has(g.tenantId)) continue;
+    if (g.usedAt === null || g.usedAt < win.from || g.usedAt >= activeUpperBound) continue;
+    const dayStr = utcDate(g.usedAt);
+    const weekStr = weekStartUtc(dayStr);
+    const dayKey = `${dayStr}/${g.clientKind}`;
+    const weekKey = `${weekStr}/${g.clientKind}`;
+    if (!dayTenants.has(dayKey)) dayTenants.set(dayKey, new Set());
+    if (!weekTenants.has(weekKey)) weekTenants.set(weekKey, new Set());
+    dayTenants.get(dayKey)!.add(g.tenantId);
+    weekTenants.get(weekKey)!.add(g.tenantId);
+  }
+  for (const [key, set] of dayTenants) {
+    const row = byDayKind.get(key);
+    if (row) row.token_active_accounts = set.size;
+  }
+
+  const weekLabels = [...new Set(dates.map((date) => weekStartUtc(date)))];
+  const weekly = weekLabels.flatMap((week) =>
+    MCP_CLIENT_KINDS.map((kind) => ({
+      week,
+      kind,
+      token_active_accounts: weekTenants.get(`${week}/${kind}`)?.size ?? 0,
+    })),
+  );
+
+  // 3. Funnel across self-serve accounts signed up in window that authorized each kind by now
+  const grantsByTenant = new Map<string, OAuthGrantRecord[]>();
+  for (const g of grants) {
+    if (g.createdAt > now) continue;
+    const list = grantsByTenant.get(g.tenantId) ?? [];
+    list.push(g);
+    grantsByTenant.set(g.tenantId, list);
+  }
+
+  const funnel = MCP_CLIENT_KINDS.map((kind) => ({
+    kind,
+    label: MCP_CLIENT_LABELS[kind],
+    authorized: 0,
+    made_agent: 0,
+    ran_turn: 0,
+    came_back: 0,
+  }));
+  const funnelByKind = new Map(funnel.map((row) => [row.kind, row]));
+
+  for (const t of countedById.values()) {
+    if (t.createdAt < win.from || t.createdAt >= win.until) continue;
+    const tenantGrants = grantsByTenant.get(t.reg.tenantId);
+    if (!tenantGrants || tenantGrants.length === 0) continue;
+
+    const kinds = new Set(tenantGrants.map((g) => g.clientKind));
+    const activeDays = [...tenantActiveDays(t)].sort();
+    const firstRun = activeDays[0] ?? null;
+    const lastRun = activeDays.at(-1) ?? null;
+    const madeAgent = t.snapshot.totalAgents > 0 || firstRun !== null;
+    const cameBack = firstRun !== null && lastRun !== null && lastRun > firstRun;
+
+    for (const kind of kinds) {
+      const f = funnelByKind.get(kind);
+      if (!f) continue;
+      f.authorized++;
+      if (madeAgent) f.made_agent++;
+      if (firstRun !== null) f.ran_turn++;
+      if (cameBack) f.came_back++;
+    }
+  }
+
   return {
     schema_version: 1,
     range: win.range,
     generated_at: new Date(now).toISOString(),
-    daily: [],
-    weekly: [],
-    funnel: MCP_CLIENT_KINDS.map((kind) => ({
-      kind,
-      label: MCP_CLIENT_LABELS[kind],
-      authorized: 0,
-      made_agent: 0,
-      ran_turn: 0,
-      came_back: 0,
-    })),
+    daily,
+    weekly,
+    funnel,
     limitations: [
-      "Latest token issuance or refresh only; not MCP request activity.",
-      "CamelRun v2 hosted MCP uses tenant bearer tokens rather than v1 OAuth grant attribution tables.",
+      "Activity is the latest token issuance, refresh, or throttled access-token use in each OAuth grant, not per-request MCP call counts. Earlier days are overwritten when used_at advances. Weeks are Monday UTC, clipped to the selected window.",
+      "Sign-ups use the first OAuth grant within one hour of account creation. Registration names and redirect hosts are client-declared, not verified vendor identity.",
+      "The funnel includes self-serve accounts signed up in the window that authorized each kind by now. Agent creation and model-response usage are account-wide, not proof of work through that plugin. Return means a model response on a UTC day after the first response; an account can appear under multiple kinds.",
     ],
   };
 }
@@ -1261,13 +1445,14 @@ async function buildAccountDetail(
   const startStr = utcDate(win.from);
   const endStr = utcDate(win.until - DAY_MS);
 
-  const [snapshot, registry] = await Promise.all([
+  const [snapshot, registry, tenantGrants] = await Promise.all([
     getTenantStub(env, tenantId).getOpsSnapshot(Math.max(win.days, 90), {
       currentFromMs: win.from,
       currentUntilMs: win.until,
       previousFromMs: win.previousFrom,
     }),
     getTenantStub(env, CONSOLE_ACCOUNTS_DO_NAME).listOpsTenants().catch(() => [] as OpsRegisteredTenant[]),
+    listTenantOAuthGrants(env, tenantId).catch(() => [] as OAuthGrantRecord[]),
   ]);
   if (!snapshot) return null;
 
@@ -1446,7 +1631,7 @@ async function buildAccountDetail(
       schedules: totalSchedules,
     },
     provider_keys: snapshot.providers,
-    mcp_clients: [],
+    mcp_clients: [...new Set(tenantGrants.filter((g) => g.revokedAt === null).map((g) => g.clientName))].sort(),
   };
 }
 
@@ -1671,8 +1856,11 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/v2/admin/ops/acquisition", async (c) => {
     requireAdmin(c.env, c.req.raw);
     const days = parseDaysOrThrow(c.req.query("days"));
-    const { tenants } = await collectTenants(c.env, Math.max(Number(days), 90));
-    return c.json(buildAcquisition(tenants, days), 200, { "Cache-Control": "no-store" });
+    const [{ tenants }, grants] = await Promise.all([
+      collectTenants(c.env, Math.max(Number(days), 90)),
+      listAllOAuthGrants(c.env).catch(() => [] as OAuthGrantRecord[]),
+    ]);
+    return c.json(buildAcquisition(tenants, grants, days), 200, { "Cache-Control": "no-store" });
   });
 
   app.get("/v2/admin/ops/usage", async (c) => {
@@ -1680,12 +1868,15 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
     const days = parseDaysOrThrow(c.req.query("days"));
     const now = Date.now();
     const win = parseAdminWindow(days, now);
-    const { tenants } = await collectTenants(c.env, Number(days) * 2 + 2, {
-      currentFromMs: win.from,
-      currentUntilMs: win.until,
-      previousFromMs: win.previousFrom,
-    });
-    return c.json(buildUsage(tenants, days, now), 200, { "Cache-Control": "no-store" });
+    const [{ tenants }, grants] = await Promise.all([
+      collectTenants(c.env, Number(days) * 2 + 2, {
+        currentFromMs: win.from,
+        currentUntilMs: win.until,
+        previousFromMs: win.previousFrom,
+      }),
+      listAllOAuthGrants(c.env).catch(() => [] as OAuthGrantRecord[]),
+    ]);
+    return c.json(buildUsage(tenants, grants, days, now), 200, { "Cache-Control": "no-store" });
   });
 
   app.get("/v2/admin/ops/revenue", async (c) => {
@@ -1703,10 +1894,14 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
     return c.json(report, 200, { "Cache-Control": "no-store" });
   });
 
-  app.get("/v2/admin/ops/mcp", (c) => {
+  app.get("/v2/admin/ops/mcp", async (c) => {
     requireAdmin(c.env, c.req.raw);
     const days = parseDaysOrThrow(c.req.query("days"));
-    return c.json(buildMcp(days), 200, { "Cache-Control": "no-store" });
+    const [{ tenants }, grants] = await Promise.all([
+      collectTenants(c.env, Math.max(Number(days), 90)),
+      listAllOAuthGrants(c.env).catch(() => [] as OAuthGrantRecord[]),
+    ]);
+    return c.json(buildMcp(tenants, grants, days), 200, { "Cache-Control": "no-store" });
   });
 
   app.get("/v2/admin/ops/account", async (c) => {

@@ -1,4 +1,4 @@
-import { handleConsoleRequest, type ConsoleEnv } from "./console.ts";
+import { handleConsoleRequest, readConsoleSessionFromRequest, type ConsoleEnv } from "./console.ts";
 import { handleOpsRequest, type OpsEnv } from "./ops.ts";
 
 export interface Env extends ConsoleEnv, OpsEnv {
@@ -6,6 +6,25 @@ export interface Env extends ConsoleEnv, OpsEnv {
 }
 
 const isApiHost = (hostname: string) => hostname === "run.camelai.com" || hostname === "agents.camelai.dev";
+
+function parseTenantIdFromApiKey(apiKey: string | undefined): string | undefined {
+  if (!apiKey || !apiKey.startsWith("cr_live_")) return undefined;
+  const rest = apiKey.slice("cr_live_".length);
+  const dot = rest.indexOf(".");
+  return dot > 0 ? rest.slice(0, dot) : undefined;
+}
+
+function isOAuthDiscoveryPath(pathname: string): boolean {
+  return (
+    pathname === "/.well-known/oauth-authorization-server" ||
+    pathname === "/.well-known/oauth-protected-resource" ||
+    pathname.startsWith("/.well-known/oauth-protected-resource/")
+  );
+}
+
+function isOAuthPath(pathname: string): boolean {
+  return pathname === "/oauth" || pathname.startsWith("/oauth/");
+}
 
 function isRetiredApiPath(path: string): boolean {
   try {
@@ -23,6 +42,32 @@ function legacyRetired(): Response {
   );
 }
 
+async function forwardOAuthToV2(request: Request, env: Env, pathname: string): Promise<Response> {
+  const forwarded = new Request(request.url, request);
+  // Never trust client-supplied internal auth/session headers
+  forwarded.headers.delete("x-admin-key");
+  forwarded.headers.delete("x-oauth-session");
+
+  if (pathname === "/oauth/authorize" && env.ADMIN_SECRET) {
+    const session = await readConsoleSessionFromRequest(request, env);
+    const tenantId = session?.tenantId || parseTenantIdFromApiKey(session?.apiKey);
+    if (session && tenantId) {
+      forwarded.headers.set("X-Admin-Key", env.ADMIN_SECRET);
+      forwarded.headers.set(
+        "X-OAuth-Session",
+        JSON.stringify({
+          tenantId,
+          email: session.email ?? null,
+          login: session.login ?? null,
+          name: session.name ?? null,
+        }),
+      );
+    }
+  }
+
+  return env.V2.fetch(forwarded);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { hostname, pathname } = new URL(request.url);
@@ -32,15 +77,11 @@ export default {
     if (isApiHost(hostname) && pathname === "/mcp" && !request.headers.has("upgrade")) {
       return env.V2.fetch(request);
     }
-    if (
-      isApiHost(hostname) &&
-      (pathname === "/.well-known/oauth-protected-resource" ||
-        pathname === "/.well-known/oauth-protected-resource/mcp" ||
-        pathname === "/.well-known/oauth-protected-resource/v2/mcp" ||
-        /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(pathname) ||
-        pathname === "/.well-known/oauth-authorization-server")
-    ) {
+    if (isApiHost(hostname) && isOAuthDiscoveryPath(pathname)) {
       return env.V2.fetch(request);
+    }
+    if (isApiHost(hostname) && isOAuthPath(pathname)) {
+      return forwardOAuthToV2(request, env, pathname);
     }
 
     if (isApiHost(hostname)) {

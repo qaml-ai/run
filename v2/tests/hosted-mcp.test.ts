@@ -456,16 +456,23 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
     assert.deepEqual(metaJson.bearer_methods_supported, ["header"]);
   }
 
-  // OAuth Authorization Server discovery returns explicit 404 + CORS (OAuth AS not enabled in v2)
+  // OAuth 2.1 Authorization Server discovery returns 200 RFC 8414 metadata + CORS
   const asPreflight = await worker.fetch(`${origin}/.well-known/oauth-authorization-server`, {
     method: "OPTIONS",
   });
   assert.equal(asPreflight.status, 204);
   assert.equal(asPreflight.headers.get("access-control-allow-origin"), "*");
   const asRes = await worker.fetch(`${origin}/.well-known/oauth-authorization-server`);
-  assert.equal(asRes.status, 404);
+  assert.equal(asRes.status, 200);
   assert.equal(asRes.headers.get("access-control-allow-origin"), "*");
-  assert.equal(((await asRes.json()) as { error: string }).error, "oauth_not_enabled");
+  const asJson = (await asRes.json()) as {
+    authorization_endpoint: string;
+    token_endpoint: string;
+    registration_endpoint: string;
+  };
+  assert.ok(asJson.authorization_endpoint.endsWith("/oauth/authorize"));
+  assert.ok(asJson.token_endpoint.endsWith("/oauth/token"));
+  assert.ok(asJson.registration_endpoint.endsWith("/oauth/register"));
 
   // 405 on GET / DELETE once authenticated on /v2/mcp
   for (const method of ["GET", "DELETE"]) {

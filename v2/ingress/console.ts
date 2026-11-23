@@ -171,6 +171,16 @@ function parseCookies(header: string | null): Record<string, string> {
   return out;
 }
 
+export async function readConsoleSessionFromRequest(
+  request: Request,
+  env: Pick<ConsoleEnv, "CONSOLE_SESSION_SECRET">,
+): Promise<SessionPayload | null> {
+  if (!env.CONSOLE_SESSION_SECRET) return null;
+  const raw = parseCookies(request.headers.get("cookie"))[COOKIE_NAME];
+  if (!raw) return null;
+  return openConsoleSession(raw, env.CONSOLE_SESSION_SECRET);
+}
+
 function isLocalHttp(url: URL): boolean {
   return url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
 }
@@ -191,6 +201,9 @@ function clearSessionCookies(url: URL): string[] {
 function safeNextPath(raw: string | null | undefined): string | undefined {
   if (!raw) return undefined;
   if (/^\/(?:console|ops)(?:\/[^\s]*)?$/.test(raw) && !raw.startsWith("/console//") && !raw.startsWith("/ops//")) {
+    return raw;
+  }
+  if (raw.startsWith("/oauth/authorize?") && !/[\r\n\s]/.test(raw)) {
     return raw;
   }
   return undefined;

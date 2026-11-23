@@ -48,12 +48,12 @@ import {
   handleVoiceSearchRequest,
 } from "./media.ts";
 import {
-  mcpAuthorizationServerMetadata,
   mcpProtectedResourceMetadata,
   serveHostedTenantMcp,
   servePerAgentMcp,
 } from "./hosted-mcp.ts";
 import { listV2Models } from "./models.ts";
+import { registerOAuthRoutes } from "./oauth.ts";
 import { recordOpsTenantRegistration, registerOpsRoutes } from "./ops-api.ts";
 import { executeStatelessRun, parseStatelessRunImages, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
@@ -100,13 +100,13 @@ function isHostedMcpPath(path: string): boolean {
     path === "/mcp" ||
     path === "/v2/mcp" ||
     /^\/v2\/agents\/[^/]+\/mcp$/.test(path) ||
+    path === "/.well-known/oauth-authorization-server" ||
     path === "/.well-known/oauth-protected-resource" ||
-    path === "/.well-known/oauth-protected-resource/mcp" ||
-    path === "/.well-known/oauth-protected-resource/v2/mcp" ||
-    /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(path) ||
+    path.startsWith("/.well-known/oauth-protected-resource/") ||
+    path === "/oauth" ||
+    path.startsWith("/oauth/") ||
     path === "/v2/.well-known/oauth-protected-resource/mcp" ||
-    /^\/v2\/\.well-known\/oauth-protected-resource\/agents\/[^/]+\/mcp$/.test(path) ||
-    path === "/.well-known/oauth-authorization-server"
+    /^\/v2\/\.well-known\/oauth-protected-resource\/agents\/[^/]+\/mcp$/.test(path)
   );
 }
 
@@ -128,7 +128,9 @@ app.get("/v2", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/health", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/.well-known/jwks.json", (c) => c.json(toolIdentityKeys(c.env), 200, { "Cache-Control": "public, max-age=60" }));
 
-// ---- 0. Hosted MCP Endpoints (Tenant & Per-Agent Streamable HTTP) ----
+// ---- 0. Hosted MCP & OAuth 2.1 Authorization Server Endpoints ----
+
+registerOAuthRoutes(app);
 
 app.all("/v2/mcp", (c) => serveHostedTenantMcp(c.req.raw, c.env, c.executionCtx));
 app.all("/mcp", (c) => serveHostedTenantMcp(c.req.raw, c.env, c.executionCtx));
@@ -160,9 +162,6 @@ app.on(["GET", "OPTIONS"], "/v2/.well-known/oauth-protected-resource/agents/:idO
     c.env,
     `/v2/agents/${encodeURIComponent(c.req.param("idOrKey"))}/mcp`,
   ),
-);
-app.on(["GET", "OPTIONS"], "/.well-known/oauth-authorization-server", (c) =>
-  mcpAuthorizationServerMetadata(c.req.raw, c.env),
 );
 
 // ---- 1. Tenants, Keys, Providers, Billing & Definitions (Per-Tenant TenantDO RPC) ----
