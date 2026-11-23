@@ -195,6 +195,12 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
   };
 
   await t.test("calculateCostUsd discounts cacheReadTokens accurately across models and tiers", async () => {
+    // azure/gpt-6-luna <= 272k: uncached $0.10/1M, cacheRead $0.01/1M, output $0.50/1M
+    const lunaShort = await calcCost("azure/gpt-6-luna", 100_000, 1_000, 90_000);
+    // 10k * 0.1 + 90k * 0.01 + 1k * 0.5 = 0.001 + 0.0009 + 0.0005 = 0.0024
+    assert.equal(lunaShort.costUsd, 0.0024);
+    assert.equal(lunaShort.usage.cacheReadTokens, 90_000);
+
     // azure/gpt-6.1-terra <= 272k: uncached $1/1M, cacheRead $0.05/1M, output $5/1M
     const terraShort = await calcCost("azure/gpt-6.1-terra", 100_000, 1_000, 90_000);
     // 10k * 1 + 90k * 0.05 + 1k * 5 = 0.01 + 0.0045 + 0.005 = 0.0195
@@ -317,11 +323,14 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     assert.equal(gemDone.outputTokens, 300);
     assert.equal(gemDone.cacheReadTokens, 30_000);
 
-    // Azure Responses clamps prompt_cache_key to 64 chars
+    // Azure Responses clamps prompt_cache_key to 64 chars (both sol and luna use platform Azure)
     const longKey = "a".repeat(80);
     await runStream("azure/gpt-6.2-sol", undefined, longKey);
     const lastAzure = recordedRequests.at(-1)!;
     assert.equal(lastAzure.path, "/openai/v1/responses");
+    await runStream("azure/gpt-6-luna", undefined, "luna-cache-key");
+    const lastLuna = recordedRequests.at(-1)!;
+    assert.equal(lastLuna.path, "/openai/v1/responses");
     assert.equal(lastAzure.body.prompt_cache_key, "a".repeat(64));
   });
 

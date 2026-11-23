@@ -60,9 +60,10 @@ interface ResolvedEndpoint {
   headers?: Record<string, string>;
 }
 
+const AZURE_LUNA = "azure/gpt-6-luna";
 const AZURE_TERRA = "azure/gpt-6.1-terra";
 const AZURE_SOL = "azure/gpt-6.2-sol";
-export const PLATFORM_AZURE_MODELS = new Set(["gpt-6.1-terra", "gpt-6.2-sol"]);
+export const PLATFORM_AZURE_MODELS = new Set(["gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol"]);
 const MUSE_EMBER = "openrouter/meta/muse-ember";
 const GEMINI_CARBON = "openrouter/google/gemini-4-carbon";
 export const DEFAULT_MODEL_ID = AZURE_TERRA;
