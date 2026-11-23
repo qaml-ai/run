@@ -654,6 +654,17 @@ function clampOpenAiPromptCacheKey(key?: string): string | undefined {
     : chars.slice(0, OPENAI_PROMPT_CACHE_KEY_MAX_LENGTH).join("");
 }
 
+function sanitizeLoneSurrogates(s: string): string {
+  // Replace unpaired UTF-16 surrogates with U+FFFD so strict JSON parsers (Azure/OpenAI/Meta/Google) never reject payloads.
+  const fn = (s as string & { toWellFormed?: () => string }).toWellFormed;
+  if (typeof fn === "function") return fn.call(s);
+  return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
+
+function safeJsonStringify(value: unknown): string {
+  return JSON.stringify(value, (_key, val) => (typeof val === "string" ? sanitizeLoneSurrogates(val) : val));
+}
+
 async function* streamOpenAiChat(
   endpoint: ResolvedEndpoint,
   req: StreamModelRequest,
@@ -752,7 +763,7 @@ async function* streamOpenAiChat(
       "Content-Type": "application/json",
       Accept: "text/event-stream, application/json",
     },
-    body: JSON.stringify(payload),
+    body: safeJsonStringify(payload),
     signal: req.signal,
   });
 
@@ -1035,7 +1046,7 @@ async function* streamOpenAiResponses(
   const res = await fetch(buildResponsesUrl(endpoint.baseUrl, codex), {
     method: "POST",
     headers: responseHeaders,
-    body: JSON.stringify(payload),
+    body: safeJsonStringify(payload),
     signal: req.signal,
   });
 
@@ -1237,7 +1248,7 @@ async function* streamAnthropicMessages(
       "Content-Type": "application/json",
       Accept: "text/event-stream, application/json",
     },
-    body: JSON.stringify(payload),
+    body: safeJsonStringify(payload),
     signal: req.signal,
   });
 
@@ -1440,7 +1451,7 @@ async function* streamGeminiContent(
       ...(endpoint.headers ?? {}),
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(payload),
+    body: safeJsonStringify(payload),
     signal: req.signal,
   });
 

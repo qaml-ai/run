@@ -18,7 +18,13 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
   const provider = createServer(async (req, res) => {
     const body = [];
     for await (const part of req) body.push(part);
-    const { input } = JSON.parse(Buffer.concat(body).toString()) as { input: InputItem[] };
+    const rawBody = Buffer.concat(body).toString();
+    if (/\\u[dD][89a-fA-F][0-9a-fA-F]{2}/.test(rawBody)) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "invalid_json", message: "lone surrogate in JSON body" } }));
+      return;
+    }
+    const { input } = JSON.parse(rawBody) as { input: InputItem[] };
     requests.push(input);
     const pending = new Set<string>();
     let unpaired = false;
@@ -116,5 +122,17 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
       ["next", "user", { text: "new turn" }],
       ["old", "tool", result("unrecorded", "after intervening turn")],
     ], [{ role: "assistant", content: "still visible" }, { role: "user", content: "new turn" }]);
+  });
+
+  await t.test("lone UTF-16 surrogates in history are sanitized to U+FFFD while preserving valid emoji", async () => {
+    await ask([
+      ["s1", "assistant", { text: "", toolCalls: [toolCall("call_surr")] }],
+      ["s1", "tool", result("call_surr", "coins 🪙\n\ud83c\nend")],
+      ["s2", "user", { text: "hi \udfff ok" }],
+    ], [
+      callItem("call_surr"),
+      outputItem("call_surr", "coins 🪙\n\ufffd\nend"),
+      { role: "user", content: "hi \ufffd ok" },
+    ]);
   });
 });
