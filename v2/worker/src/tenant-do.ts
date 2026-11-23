@@ -2012,7 +2012,7 @@ export class TenantDO extends DurableObject<Env> {
     );
   }
 
-  async updateAgentRepo(agentId: string, repoId: string, branch: string): Promise<void> {
+  async updateAgentRepo(agentId: string, repoId: string | null, branch: string): Promise<void> {
     if (!this.readProfileOrNull()) return;
     this.ctx.storage.sql.exec(
       `UPDATE agents_index SET repo_id = ?1, branch = ?2, updated_at = ?3 WHERE id = ?4`,
@@ -2035,6 +2035,59 @@ export class TenantDO extends DurableObject<Env> {
       createdAt: number;
       updatedAt: number;
     }>
+  >;
+  async listAgents(opts: {
+    limit?: number;
+    cursor?: string;
+    prefix?: string;
+    definitionId?: string;
+  }): Promise<{
+    agents: Array<{
+      id: string;
+      key: string;
+      model: string;
+      repoId: string | null;
+      branch: string;
+      definition: string | null;
+      running: boolean;
+      createdAt: number;
+      updatedAt: number;
+    }>;
+    nextCursor?: string;
+    total: number;
+  }>;
+  async listAgents(opts?: {
+    limit?: number;
+    cursor?: string;
+    prefix?: string;
+    definitionId?: string;
+  }): Promise<
+    | Array<{
+        id: string;
+        key: string;
+        model: string;
+        repoId: string | null;
+        branch: string;
+        definition: string | null;
+        running: boolean;
+        createdAt: number;
+        updatedAt: number;
+      }>
+    | {
+        agents: Array<{
+          id: string;
+          key: string;
+          model: string;
+          repoId: string | null;
+          branch: string;
+          definition: string | null;
+          running: boolean;
+          createdAt: number;
+          updatedAt: number;
+        }>;
+        nextCursor?: string;
+        total: number;
+      }
   > {
     this.requireProfile();
     const now = Date.now();
@@ -2043,19 +2096,18 @@ export class TenantDO extends DurableObject<Env> {
       .exec<{ agent_id: string }>(`SELECT DISTINCT agent_id FROM active_leases WHERE expires_at > ?1`, now)
       .toArray();
     const activeIds = new Set(activeRows.map((r) => r.agent_id));
-    const rows = this.ctx.storage.sql
-      .exec<{
-        id: string;
-        agent_key: string;
-        model: string;
-        repo_id: string | null;
-        branch: string;
-        definition_slug: string | null;
-        created_at: number;
-        updated_at: number;
-      }>(`SELECT * FROM agents_index ORDER BY updated_at DESC LIMIT 200`)
-      .toArray();
-    return rows.map((r) => ({
+
+    type AgentIndexRow = {
+      id: string;
+      agent_key: string;
+      model: string;
+      repo_id: string | null;
+      branch: string;
+      definition_slug: string | null;
+      created_at: number;
+      updated_at: number;
+    };
+    const mapRow = (r: AgentIndexRow) => ({
       id: r.id,
       key: r.agent_key,
       model: r.model,
@@ -2065,7 +2117,58 @@ export class TenantDO extends DurableObject<Env> {
       running: activeIds.has(r.id),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
-    }));
+    });
+
+    if (opts === undefined) {
+      const rows = this.ctx.storage.sql
+        .exec<AgentIndexRow>(`SELECT * FROM agents_index ORDER BY updated_at DESC, id DESC LIMIT 200`)
+        .toArray();
+      return rows.map(mapRow);
+    }
+
+    const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
+    const offset = parsePaginationCursor(opts.cursor);
+    const prefix = opts.prefix?.trim() || "";
+    const definitionId = opts.definitionId?.trim() || "";
+
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (prefix) {
+      params.push(prefix.length, prefix, prefix.length, prefix);
+      const p1 = params.length - 3;
+      const p2 = params.length - 2;
+      const p3 = params.length - 1;
+      const p4 = params.length;
+      clauses.push(`(substr(agent_key, 1, ?${p1}) = ?${p2} OR substr(id, 1, ?${p3}) = ?${p4})`);
+    }
+    if (definitionId) {
+      params.push(definitionId);
+      clauses.push(`definition_slug = ?${params.length}`);
+    }
+    const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
+    const totalRow = this.ctx.storage.sql
+      .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM agents_index ${whereSql}`, ...params)
+      .one();
+    const total = Number(totalRow.cnt ?? 0);
+
+    const pageParams = [...params, limit, offset];
+    const limitIdx = params.length + 1;
+    const offsetIdx = params.length + 2;
+    const rows = this.ctx.storage.sql
+      .exec<AgentIndexRow>(
+        `SELECT * FROM agents_index ${whereSql} ORDER BY updated_at DESC, id DESC LIMIT ?${limitIdx} OFFSET ?${offsetIdx}`,
+        ...pageParams,
+      )
+      .toArray();
+
+    const agents = rows.map(mapRow);
+    const nextOffset = offset + agents.length;
+    return {
+      agents,
+      ...(nextOffset < total ? { nextCursor: String(nextOffset) } : {}),
+      total,
+    };
   }
 
   async deleteAgentIndex(agentId: string): Promise<void> {
@@ -2120,26 +2223,80 @@ export class TenantDO extends DurableObject<Env> {
     };
   }
 
-  async listRepos(): Promise<RepoRecord[]> {
+  async listRepos(): Promise<RepoRecord[]>;
+  async listRepos(opts: {
+    limit?: number;
+    cursor?: string;
+    prefix?: string;
+  }): Promise<{
+    repos: RepoRecord[];
+    nextCursor?: string;
+    total: number;
+  }>;
+  async listRepos(opts?: {
+    limit?: number;
+    cursor?: string;
+    prefix?: string;
+  }): Promise<RepoRecord[] | { repos: RepoRecord[]; nextCursor?: string; total: number }> {
     this.requireProfile();
-    const rows = this.ctx.storage.sql
-      .exec<{
-        id: string;
-        name: string;
-        lineage: string;
-        default_ref: string;
-        commit_hash: string;
-        created_at: number;
-      }>(`SELECT * FROM repos ORDER BY created_at DESC`)
-      .toArray();
-    return rows.map((r) => ({
+    type RepoRow = {
+      id: string;
+      name: string;
+      lineage: string;
+      default_ref: string;
+      commit_hash: string;
+      created_at: number;
+    };
+    const mapRow = (r: RepoRow): RepoRecord => ({
       repoId: r.id,
       name: r.name,
       lineage: r.lineage,
       defaultRef: r.default_ref,
       commit: r.commit_hash,
       createdAt: r.created_at,
-    }));
+    });
+
+    if (opts === undefined) {
+      const rows = this.ctx.storage.sql
+        .exec<RepoRow>(`SELECT * FROM repos ORDER BY created_at DESC, id DESC`)
+        .toArray();
+      return rows.map(mapRow);
+    }
+
+    const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
+    const offset = parsePaginationCursor(opts.cursor);
+    const prefix = opts.prefix?.trim() || "";
+
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (prefix) {
+      params.push(prefix.length, prefix, prefix.length, prefix);
+      clauses.push(`(substr(id, 1, ?1) = ?2 OR substr(name, 1, ?3) = ?4)`);
+    }
+    const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
+    const totalRow = this.ctx.storage.sql
+      .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM repos ${whereSql}`, ...params)
+      .one();
+    const total = Number(totalRow.cnt ?? 0);
+
+    const pageParams = [...params, limit, offset];
+    const limitIdx = params.length + 1;
+    const offsetIdx = params.length + 2;
+    const rows = this.ctx.storage.sql
+      .exec<RepoRow>(
+        `SELECT * FROM repos ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ?${limitIdx} OFFSET ?${offsetIdx}`,
+        ...pageParams,
+      )
+      .toArray();
+
+    const repos = rows.map(mapRow);
+    const nextOffset = offset + repos.length;
+    return {
+      repos,
+      ...(nextOffset < total ? { nextCursor: String(nextOffset) } : {}),
+      total,
+    };
   }
 
   async getRepo(repoId: string): Promise<RepoRecord> {
@@ -3690,4 +3847,17 @@ export class TenantDO extends DurableObject<Env> {
     );
     return this.requireProfile();
   }
+}
+
+function parsePaginationCursor(cursor?: string): number {
+  if (cursor === undefined || cursor === null || cursor === "") return 0;
+  const trimmed = String(cursor).trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new ApiError(400, "invalid_cursor", `Invalid pagination cursor '${cursor}'`);
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new ApiError(400, "invalid_cursor", `Invalid pagination cursor '${cursor}'`);
+  }
+  return parsed;
 }

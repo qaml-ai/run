@@ -23,12 +23,6 @@ function legacyRetired(): Response {
   );
 }
 
-function forwardToV2Mcp(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  url.pathname = "/v2/mcp";
-  return env.V2.fetch(new Request(url, request));
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { hostname, pathname } = new URL(request.url);
@@ -36,12 +30,15 @@ export default {
       return env.V2.fetch(request);
     }
     if (isApiHost(hostname) && pathname === "/mcp" && !request.headers.has("upgrade")) {
-      return forwardToV2Mcp(request, env);
+      return env.V2.fetch(request);
     }
     if (
-      hostname === "run.camelai.com" &&
-      (pathname === "/.well-known/oauth-protected-resource/v2/mcp" ||
-        /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(pathname))
+      isApiHost(hostname) &&
+      (pathname === "/.well-known/oauth-protected-resource" ||
+        pathname === "/.well-known/oauth-protected-resource/mcp" ||
+        pathname === "/.well-known/oauth-protected-resource/v2/mcp" ||
+        /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(pathname) ||
+        pathname === "/.well-known/oauth-authorization-server")
     ) {
       return env.V2.fetch(request);
     }

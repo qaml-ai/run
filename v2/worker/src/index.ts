@@ -48,6 +48,7 @@ import {
   handleVoiceSearchRequest,
 } from "./media.ts";
 import {
+  mcpAuthorizationServerMetadata,
   mcpProtectedResourceMetadata,
   serveHostedTenantMcp,
   servePerAgentMcp,
@@ -99,10 +100,13 @@ function isHostedMcpPath(path: string): boolean {
     path === "/mcp" ||
     path === "/v2/mcp" ||
     /^\/v2\/agents\/[^/]+\/mcp$/.test(path) ||
+    path === "/.well-known/oauth-protected-resource" ||
+    path === "/.well-known/oauth-protected-resource/mcp" ||
     path === "/.well-known/oauth-protected-resource/v2/mcp" ||
     /^\/\.well-known\/oauth-protected-resource\/v2\/agents\/[^/]+\/mcp$/.test(path) ||
     path === "/v2/.well-known/oauth-protected-resource/mcp" ||
-    /^\/v2\/\.well-known\/oauth-protected-resource\/agents\/[^/]+\/mcp$/.test(path)
+    /^\/v2\/\.well-known\/oauth-protected-resource\/agents\/[^/]+\/mcp$/.test(path) ||
+    path === "/.well-known/oauth-authorization-server"
   );
 }
 
@@ -131,6 +135,12 @@ app.all("/mcp", (c) => serveHostedTenantMcp(c.req.raw, c.env, c.executionCtx));
 app.all("/v2/agents/:idOrKey/mcp", (c) =>
   servePerAgentMcp(c.req.raw, c.env, c.executionCtx, c.req.param("idOrKey")),
 );
+app.on(["GET", "OPTIONS"], "/.well-known/oauth-protected-resource", (c) =>
+  mcpProtectedResourceMetadata(c.req.raw, c.env, "/mcp"),
+);
+app.on(["GET", "OPTIONS"], "/.well-known/oauth-protected-resource/mcp", (c) =>
+  mcpProtectedResourceMetadata(c.req.raw, c.env, "/mcp"),
+);
 app.on(["GET", "OPTIONS"], "/.well-known/oauth-protected-resource/v2/mcp", (c) =>
   mcpProtectedResourceMetadata(c.req.raw, c.env, "/v2/mcp"),
 );
@@ -150,6 +160,9 @@ app.on(["GET", "OPTIONS"], "/v2/.well-known/oauth-protected-resource/agents/:idO
     c.env,
     `/v2/agents/${encodeURIComponent(c.req.param("idOrKey"))}/mcp`,
   ),
+);
+app.on(["GET", "OPTIONS"], "/.well-known/oauth-authorization-server", (c) =>
+  mcpAuthorizationServerMetadata(c.req.raw, c.env),
 );
 
 // ---- 1. Tenants, Keys, Providers, Billing & Definitions (Per-Tenant TenantDO RPC) ----
@@ -1159,7 +1172,7 @@ app.post("/v2/agents/:idOrKey/reset-context", async (c) => {
 
 app.post("/v2/agents/:idOrKey/fork", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
-  const body = (await c.req.json().catch(() => ({}))) as { key?: string; atSeq?: number };
+  const body = (await c.req.json().catch(() => ({}))) as { key?: string; atSeq?: number; forkRepo?: boolean };
   return c.json(await stub.forkAgent(body));
 });
 
@@ -1185,9 +1198,12 @@ app.get("/v2/agents/:idOrKey/inputs", async (c) => {
 app.post("/v2/agents/:idOrKey/schedules", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
   const body = (await c.req.json()) as {
+    id?: string;
     intervalSeconds?: number;
     cron?: string;
     cronExpr?: string;
+    runAt?: string | number;
+    enabled?: boolean;
     prompt: string;
   };
   return c.json(await stub.createSchedule(body), 201);

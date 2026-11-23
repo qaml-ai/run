@@ -1793,12 +1793,16 @@ export class AgentDO extends DurableObject<Env> {
       .toArray();
 
     for (const sch of dueSchedules) {
-      const nextDue = computeNextScheduleDue(sch.interval_seconds, sch.cron_expr, now);
-      this.ctx.storage.sql.exec(
-        `UPDATE schedules SET next_due_at = ?1 WHERE id = ?2`,
-        nextDue,
-        sch.id,
-      );
+      if (!sch.interval_seconds && !sch.cron_expr) {
+        this.ctx.storage.sql.exec(`UPDATE schedules SET enabled = 0 WHERE id = ?1`, sch.id);
+      } else {
+        const nextDue = computeNextScheduleDue(sch.interval_seconds, sch.cron_expr, now);
+        this.ctx.storage.sql.exec(
+          `UPDATE schedules SET next_due_at = ?1 WHERE id = ?2`,
+          nextDue,
+          sch.id,
+        );
+      }
       try {
         await this.enqueueOrRunInternal({ prompt: sch.prompt, wait: false, supersedeInputs: false });
       } catch (error) {
@@ -2497,7 +2501,7 @@ export class AgentDO extends DurableObject<Env> {
     return { ok: true, upToSeq, summary };
   }
 
-  async forkAgent(body?: { key?: string; atSeq?: number }): Promise<{
+  async forkAgent(body?: { key?: string; atSeq?: number; forkRepo?: boolean }): Promise<{
     id: string;
     key: string;
     agentToken: string;
@@ -2548,9 +2552,11 @@ export class AgentDO extends DurableObject<Env> {
     let forkedBranch = sourceCfg.branch || "refs/heads/main";
     let forkedCommit = "";
 
-    const sourceLineage =
-      sourceCfg.lineage ??
-      (sourceCfg.repoId ? (await tenantStub.getRepo(sourceCfg.repoId)).lineage : null);
+    const shouldForkRepo = body?.forkRepo !== false;
+    const sourceLineage = shouldForkRepo
+      ? (sourceCfg.lineage ??
+        (sourceCfg.repoId ? (await tenantStub.getRepo(sourceCfg.repoId)).lineage : null))
+      : null;
 
     if (sourceLineage) {
       const cfs = new CamelFsClient(this.env, sourceCfg.tenantId);
@@ -2781,9 +2787,12 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   async createSchedule(body: {
+    id?: string;
     intervalSeconds?: number;
     cron?: string;
     cronExpr?: string;
+    runAt?: string | number;
+    enabled?: boolean;
     prompt: string;
   }): Promise<ScheduleRecord> {
     this.ensureSql();
@@ -2795,24 +2804,43 @@ export class AgentDO extends DurableObject<Env> {
         ? Math.floor(body.intervalSeconds)
         : null;
     const cronExpr = (body.cronExpr ?? body.cron)?.trim() || null;
-    if (!intervalSeconds && !cronExpr) {
+    let parsedRunAt: number | null = null;
+    if (body.runAt !== undefined && body.runAt !== null && body.runAt !== "") {
+      const ms = typeof body.runAt === "number" ? body.runAt : Date.parse(body.runAt);
+      if (!Number.isFinite(ms) || ms <= 0) {
+        throw new ApiError(400, "invalid_request", "`runAt` must be a valid ISO timestamp or Unix ms");
+      }
+      parsedRunAt = Math.floor(ms);
+    }
+    if (!intervalSeconds && !cronExpr && parsedRunAt === null) {
       throw new ApiError(
         400,
         "invalid_request",
-        "Provide either `intervalSeconds` or `cronExpr`",
+        "Provide `intervalSeconds`, `cron`/`cronExpr`, or `runAt`",
       );
     }
 
-    const id = randomId("sch", 6);
-    const nextDueAt = computeNextScheduleDue(intervalSeconds, cronExpr, Date.now());
+    const id = body.id?.trim() || randomId("sch", 6);
+    const enabled = body.enabled !== false;
+    const nextDueAt =
+      parsedRunAt !== null && !intervalSeconds && !cronExpr
+        ? parsedRunAt
+        : computeNextScheduleDue(intervalSeconds, cronExpr, Date.now());
     this.ctx.storage.sql.exec(
       `INSERT INTO schedules (id, interval_seconds, cron_expr, prompt, next_due_at, enabled)
-       VALUES (?1, ?2, ?3, ?4, ?5, 1)`,
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+       ON CONFLICT(id) DO UPDATE SET
+         interval_seconds = excluded.interval_seconds,
+         cron_expr = excluded.cron_expr,
+         prompt = excluded.prompt,
+         next_due_at = excluded.next_due_at,
+         enabled = excluded.enabled`,
       id,
       intervalSeconds,
       cronExpr,
       body.prompt.trim(),
       nextDueAt,
+      enabled ? 1 : 0,
     );
     await this.scheduleNextAlarm();
     return {
@@ -2821,7 +2849,7 @@ export class AgentDO extends DurableObject<Env> {
       cronExpr,
       prompt: body.prompt.trim(),
       nextDueAt,
-      enabled: true,
+      enabled,
     };
   }
 

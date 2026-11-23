@@ -8,7 +8,8 @@ import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret, sha256Hex } from "./crypto.ts";
 import { listV2Models } from "./models.ts";
 import { DEFAULT_MODEL_ID } from "./providers.ts";
-import { getTenantStub } from "./tenant-do.ts";
+import { getSkillStore, normalizeSkillSelectors } from "./skills.ts";
+import { getTenantStub, type RepoRecord } from "./tenant-do.ts";
 import {
   ApiError,
   extractApiError,
@@ -51,6 +52,7 @@ const TERMINAL_EVENT_TYPES = new Set([
 const BUILTIN_SUITES = [
   "files",
   "images",
+  "browser",
   "bash",
   "codemode",
   "delegate",
@@ -60,6 +62,171 @@ const BUILTIN_SUITES = [
   "human",
   "skills",
 ] as const satisfies readonly BuiltinSuite[];
+
+const customToolSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
+  url: z.string().url().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  requiresApproval: z.boolean().optional(),
+});
+
+const mcpServerSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+  auth: z.object({ type: z.literal("runtime") }).optional(),
+  audience: z.string().optional(),
+  allowTools: z.array(z.string()).optional(),
+});
+
+const queueConfigSchema = z.object({
+  mode: z.enum(["each", "batch"]).optional(),
+  windowMs: z.number().int().min(0).optional(),
+});
+
+const dreamingConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  idleSeconds: z.number().int().min(0).optional(),
+});
+
+const SECRET_KEY_RE = /^(token|agentToken|sealedToken|apiKey|secret|password|authorization)$/i;
+
+function redactHeaderRecord(headers: unknown): Record<string, string> | undefined {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return undefined;
+  return Object.fromEntries(Object.keys(headers as Record<string, unknown>).map((k) => [k, "***"]));
+}
+
+function redactSecretObject(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSecretObject);
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "headers" && item && typeof item === "object" && !Array.isArray(item)) {
+      out[key] = redactHeaderRecord(item);
+    } else if (SECRET_KEY_RE.test(key)) {
+      out[key] = "***";
+    } else {
+      out[key] = redactSecretObject(item);
+    }
+  }
+  return out;
+}
+
+function redactAgentConfigFields<T extends Record<string, unknown>>(obj: T): T {
+  const copy: Record<string, unknown> = { ...obj };
+  delete copy.agentToken;
+  delete copy.sealedToken;
+  if (Array.isArray(copy.mcpServers)) {
+    copy.mcpServers = copy.mcpServers.map((s) => redactSecretObject(s));
+  }
+  if (Array.isArray(copy.tools)) {
+    copy.tools = copy.tools.map((t) => redactSecretObject(t));
+  }
+  return copy as T;
+}
+
+function redactDefinition<T extends { config: Record<string, unknown> }>(def: T): T {
+  return {
+    ...def,
+    config: redactAgentConfigFields(def.config),
+  };
+}
+
+function parseMcpCursor(cursor?: string): number {
+  if (cursor === undefined || cursor === null || cursor === "") return 0;
+  const trimmed = String(cursor).trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new ApiError(400, "invalid_cursor", `Invalid pagination cursor '${cursor}'`);
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new ApiError(400, "invalid_cursor", `Invalid pagination cursor '${cursor}'`);
+  }
+  return parsed;
+}
+
+const CAMELRUN_DOCS: Record<string, string> = {
+  index: `# CamelRun v2 Documentation Index
+
+Available topics (call read_docs with topic):
+- overview: Architecture, endpoints, authentication, and core concepts
+- mcp: Hosted Tenant MCP (/mcp, /v2/mcp) and Per-Agent MCP (/v2/agents/:idOrKey/mcp)
+- agents: Durable keyed agents, definitions, forking, runs, history, inputs
+- schedules: Cron, interval, and one-shot agent schedules
+- camelfs: Versioned CamelFS repositories and file tools
+- skills: Tenant-scoped reusable markdown skills
+- auth: API keys, agent tokens, and RFC 9728 discovery metadata
+
+Full docs: https://camelai.com/docs/camelrun/overview`,
+
+  overview: `# CamelRun v2 Overview
+
+Base URL: https://run.camelai.com
+- Tenant Hosted MCP: POST /mcp or POST /v2/mcp (Bearer cr_live_...)
+- Per-Agent MCP: POST /v2/agents/:idOrKey/mcp (Bearer cr_live_... or agt_tok_...)
+- REST API: /v2/agents, /v2/definitions, /v2/skills, /v2/repos, /v2/models, /v2/billing
+
+Agents are durable and keyed: the same key always refers to the same agent and its conversation history until deleted.
+Most tools accept either an agent's key or its ID (agt_...).`,
+
+  mcp: `# CamelRun v2 Hosted MCP
+
+## Endpoints
+- Tenant MCP: POST https://run.camelai.com/mcp (and /v2/mcp)
+  Requires a tenant API key (Authorization: Bearer cr_live_...).
+  Exposes account, billing, models, definitions, skills, agents, runs, inputs, schedules, and CamelFS tools.
+- Per-Agent MCP: POST https://run.camelai.com/v2/agents/:idOrKey/mcp
+  Accepts a tenant key or the agent's scoped token (agt_tok_...).
+  Exposes one tool: message({ text, requestId? }) with SSE progress notifications and MCP elicitation support.
+
+## Streaming & Long Runs
+- Include _meta.progressToken on tools/call to receive SSE progress notifications.
+- Use send_message with wait: false to start a run asynchronously, then poll with get_run({ agent, runId }).`,
+
+  agents: `# Agents & Definitions
+
+- Definitions (upsert_definition, list_definitions, get_definition, delete_definition, definition_agents):
+  Reusable templates (model, instructions, builtins, skills, tools, mcpServers, repoId, spendLimitUsd).
+  Secret headers in mcpServers and custom tools are redacted on read.
+- Agents (upsert_agent, configure_agent, list_agents, get_agent, fork_agent, delete_agent):
+  Created/updated by durable key. Use configure_agent to patch model, instructions, spendLimitUsd, compactThresholdTokens, skills, repoId, or branch without losing history.
+- Runs & Human Inputs (send_message, get_run, get_history, list_inputs, answer_input, abort_agent):
+  If a run returns status "input_required", inspect pending inputs via list_inputs and resume with answer_input.`,
+
+  schedules: `# Agent Schedules
+
+Tools: list_schedules, add_schedule, delete_schedule.
+Each schedule wakes an agent with a prompt using one of:
+- cron (5-field UTC cron expression, e.g. "0 9 * * 1-5")
+- intervalSeconds (repeat every N seconds)
+- runAt (ISO-8601 timestamp or Unix ms for a one-shot run)
+
+Optional id/name lets you upsert a named schedule; enabled: false pauses it without deleting.`,
+
+  camelfs: `# CamelFS Versioned Repositories
+
+Tools: list_repos, list_files, read_file, write_file, grep_files.
+- list_repos supports limit (default 50, max 200), cursor, and prefix filtering.
+- Every write_file creates an immutable commit on the target ref (default repo defaultRef) and supports optimistic concurrency via expectedCommit.`,
+
+  skills: `# Tenant Skills
+
+Tools: list_skills, get_skill, upsert_skill, delete_skill.
+- Skills are tenant-scoped markdown bundles (slug like "team/deploy-guide", optional tags and reference files).
+- Attach skills to agents or definitions via skills: ["team/*"] and include "skills" in builtins so agents can discover and read them on demand.`,
+
+  auth: `# Authentication & Discovery
+
+- Tenant API keys (cr_live_...) grant full tenant access on /mcp, /v2/mcp, /v2/agents/:idOrKey/mcp, and /v2/* REST endpoints.
+- Agent tokens (agt_tok_...) are scoped to a single agent on /v2/agents/:idOrKey/mcp and agent run/read/input REST endpoints.
+- RFC 9728 Protected Resource Metadata is served at:
+  - /.well-known/oauth-protected-resource (resource: /mcp)
+  - /.well-known/oauth-protected-resource/mcp (resource: /mcp)
+  - /.well-known/oauth-protected-resource/v2/mcp (resource: /v2/mcp)
+  - /.well-known/oauth-protected-resource/v2/agents/:idOrKey/mcp`,
+};
 
 interface McpExtra {
   requestId: string | number;
@@ -75,12 +242,13 @@ interface WaitingElicitation {
 
 const waitingElicitations = new Map<string, WaitingElicitation>();
 
-const HOSTED_MCP_INSTRUCTIONS = `Manage durable agents, definitions, CamelFS repositories, and account billing on CamelRun v2 (https://run.camelai.com).
+const HOSTED_MCP_INSTRUCTIONS = `Manage durable agents, definitions, skills, schedules, CamelFS repositories, and account billing on CamelRun v2 (https://run.camelai.com).
 
 - An agent is durable and keyed: the same key refers to the same agent and its conversation history until deleted. Agent tools accept either the agent's key or its id (agt_...).
-- Use upsert_agent to create or update an agent, and send_message to run a prompt and wait for its reply (progress notifications stream during long turns).
-- If a run pauses with status "input_required", show the pending inputs to the user and call answer_input with the inputId to resume the turn.
-- Use list_repos, list_files, read_file, write_file, and grep_files to inspect and edit versioned CamelFS repositories.`;
+- Use upsert_agent to create or update an agent, configure_agent to patch specific settings, fork_agent to branch an agent's history/repo, and send_message to run a prompt (or pass wait: false and check progress with get_run).
+- If a run pauses with status "input_required", inspect pending items with list_inputs and call answer_input with the inputId to resume the turn.
+- Use list_schedules, add_schedule, and delete_schedule to manage cron, interval, or one-shot wake-ups.
+- Use list_repos (paginated), list_files, read_file, write_file, and grep_files to inspect and edit versioned CamelFS repositories, and read_docs for concise API/MCP reference.`;
 
 function publicOriginFor(request: Request, env: Env): string {
   const configured = env.VOICE_PUBLIC_URL?.trim();
@@ -112,9 +280,12 @@ export function mcpUnauthorized(
   agentIdOrKey?: string,
 ): Response {
   const invalid = Boolean(request.headers.get("Authorization"));
+  const requestPath = new URL(request.url).pathname;
   const resourcePath = agentIdOrKey
     ? `/v2/agents/${encodeURIComponent(agentIdOrKey)}/mcp`
-    : "/v2/mcp";
+    : requestPath === "/mcp"
+      ? "/mcp"
+      : "/v2/mcp";
   const metadata = `${publicOrigin}/.well-known/oauth-protected-resource${resourcePath}`;
   return Response.json(
     {
@@ -148,6 +319,7 @@ export function mcpProtectedResourceMetadata(
   return Response.json(
     {
       resource: `${origin}${resourcePath}`,
+      resource_name: "CamelRun",
       bearer_methods_supported: ["header"],
       scopes_supported: ["agents"],
       resource_documentation: "https://camelai.com/docs/camelrun/overview",
@@ -157,6 +329,25 @@ export function mcpProtectedResourceMetadata(
       headers: {
         ...AGENT_MCP_CORS,
         "Cache-Control": "public, max-age=300",
+      },
+    },
+  );
+}
+
+export function mcpAuthorizationServerMetadata(request: Request, _env: Env): Response {
+  if (request.method === "OPTIONS") return mcpPreflight();
+  return Response.json(
+    {
+      error: "oauth_not_enabled",
+      error_description:
+        "Interactive OAuth 2.1 token issuance is not enabled on CamelRun v2; authenticate with Authorization: Bearer <cr_live_... or agt_tok_...>.",
+      service_documentation: "https://camelai.com/docs/camelrun/overview",
+    },
+    {
+      status: 404,
+      headers: {
+        ...AGENT_MCP_CORS,
+        "Cache-Control": "no-store",
       },
     },
   );
@@ -859,15 +1050,97 @@ function createTenantMcpServer(
     { skipCap: true },
   );
 
+  register(
+    "read_docs",
+    "Read CamelRun docs",
+    "Read concise CamelRun v2 API and Hosted MCP documentation. Omit topic for the documentation index.",
+    {
+      topic: z
+        .string()
+        .optional()
+        .describe("Topic name: overview, mcp, agents, schedules, camelfs, skills, auth (default: index)"),
+      path: z
+        .string()
+        .optional()
+        .describe("Alias for topic (v1 compatibility, e.g. 'llms.txt' or 'guides/definitions.md')"),
+    },
+    readAnn,
+    async ({ topic, path }) => {
+      const raw = (topic ?? path ?? "index").trim().toLowerCase();
+      const cleaned = raw.replace(/^\/+/, "").replace(/^docs\//, "").replace(/\.md$/, "");
+      const aliases: Record<string, string> = {
+        "": "index",
+        index: "index",
+        "llms.txt": "index",
+        overview: "overview",
+        mcp: "mcp",
+        "guides/mcp-server": "mcp",
+        "reference/cli": "mcp",
+        agents: "agents",
+        definitions: "agents",
+        "guides/definitions": "agents",
+        "guides/tools": "agents",
+        schedules: "schedules",
+        camelfs: "camelfs",
+        repos: "camelfs",
+        skills: "skills",
+        auth: "auth",
+      };
+      const resolved = aliases[cleaned];
+      if (resolved && CAMELRUN_DOCS[resolved]) {
+        return CAMELRUN_DOCS[resolved];
+      }
+      return `Unknown doc topic '${raw}'.\n\n${CAMELRUN_DOCS.index}`;
+    },
+  );
+
   // ---- Definitions ----
+
+  const definitionIdParam = z.string().min(1).describe("Definition slug");
 
   register(
     "list_definitions",
     "List definitions",
-    "List reusable agent definitions configured in this account.",
+    "List reusable agent definitions configured in this account (credentials redacted).",
     {},
     readAnn,
-    async () => ({ definitions: await tenantStub.listDefinitions() }),
+    async () => {
+      const defs = await tenantStub.listDefinitions();
+      return {
+        definitions: defs.map((d) =>
+          redactDefinition({
+            ...d,
+            config: (d.config ?? {}) as unknown as Record<string, unknown>,
+          }),
+        ),
+      };
+    },
+  );
+
+  register(
+    "get_definition",
+    "Get definition",
+    "Get a reusable agent definition by slug (credentials redacted).",
+    {
+      idOrSlug: definitionIdParam.optional().describe("Definition slug"),
+      slug: definitionIdParam.optional().describe("Alias for idOrSlug"),
+      definition: definitionIdParam.optional().describe("Alias for idOrSlug (v1 compatibility)"),
+    },
+    readAnn,
+    async ({ idOrSlug, slug, definition }) => {
+      const target = (idOrSlug ?? slug ?? definition)?.trim();
+      if (!target) {
+        throw new ApiError(400, "invalid_request", "Provide `idOrSlug` (definition slug)");
+      }
+      const def = await tenantStub.getDefinition(target);
+      if (!def) {
+        throw new ApiError(404, "not_found", `Definition '${target}' not found`);
+      }
+      return redactDefinition({
+        ...def,
+        config: (def.config ?? {}) as unknown as Record<string, unknown>,
+      });
+    },
   );
 
   register(
@@ -880,6 +1153,11 @@ function createTenantMcpServer(
       instructions: z.string().optional().describe("System prompt / instructions"),
       builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
       skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs (e.g. ['camel-bots/*'])"),
+      tools: z.array(customToolSchema).optional().describe("Custom HTTP/webhook tools"),
+      mcpServers: z.array(mcpServerSchema).optional().describe("External MCP servers to attach"),
+      queue: queueConfigSchema.optional().describe("Queue mode configuration (each or batch)"),
+      dreaming: dreamingConfigSchema.optional().describe("Idle dreaming consolidation settings"),
+      compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
       spendLimitUsd: z.number().min(0).optional().describe("Maximum USD spend per agent"),
       idleTtlSeconds: z.number().int().min(0).optional().describe("Idle TTL in seconds"),
       repoId: z.string().nullable().optional().describe("Default CamelFS repo ID"),
@@ -891,7 +1169,113 @@ function createTenantMcpServer(
       const cleaned = Object.fromEntries(
         Object.entries(config).filter(([, v]) => v !== undefined),
       ) as AgentUpsertInput;
-      return tenantStub.upsertDefinition(slug.trim(), cleaned);
+      if (cleaned.skills !== undefined) {
+        cleaned.skills = normalizeSkillSelectors(cleaned.skills);
+      }
+      const saved = await tenantStub.upsertDefinition(slug.trim(), cleaned);
+      return redactDefinition({
+        ...saved,
+        config: (saved.config ?? {}) as unknown as Record<string, unknown>,
+      });
+    },
+  );
+
+  register(
+    "delete_definition",
+    "Delete definition",
+    "Delete a reusable agent definition by slug. Existing agents keep running with their current config.",
+    {
+      idOrSlug: definitionIdParam.optional().describe("Definition slug to delete"),
+      slug: definitionIdParam.optional().describe("Alias for idOrSlug"),
+      definition: definitionIdParam.optional().describe("Alias for idOrSlug (v1 compatibility)"),
+    },
+    destructiveAnn,
+    async ({ idOrSlug, slug, definition }) => {
+      const target = (idOrSlug ?? slug ?? definition)?.trim();
+      if (!target) {
+        throw new ApiError(400, "invalid_request", "Provide `idOrSlug` (definition slug)");
+      }
+      const deleted = await tenantStub.deleteDefinition(target);
+      if (!deleted) {
+        throw new ApiError(404, "not_found", `Definition '${target}' not found`);
+      }
+      return { deleted: true, slug: target };
+    },
+  );
+
+  // ---- Skills ----
+
+  const skillStore = getSkillStore(env);
+
+  register(
+    "list_skills",
+    "List tenant skills",
+    "List reusable tenant-scoped markdown skills, optionally filtered by slug prefix or tag.",
+    {
+      prefix: z.string().optional().describe("Optional slug prefix filter (e.g. 'team/')"),
+      tag: z.string().optional().describe("Optional tag filter"),
+    },
+    readAnn,
+    async ({ prefix, tag }) => ({
+      skills: await skillStore.listSkills(tenantId, {
+        prefix: prefix?.trim() || undefined,
+        tag: tag?.trim() || undefined,
+      }),
+    }),
+  );
+
+  register(
+    "get_skill",
+    "Get tenant skill",
+    "Get a tenant skill by slug including its markdown body and reference files.",
+    {
+      slug: z.string().min(1).max(128).describe("Skill slug (e.g. 'team/deploy-guide')"),
+    },
+    readAnn,
+    async ({ slug }) => {
+      const skill = await skillStore.getSkill(tenantId, slug.trim());
+      if (!skill) {
+        throw new ApiError(404, "skill_not_found", `Skill '${slug}' not found`);
+      }
+      return skill;
+    },
+  );
+
+  register(
+    "upsert_skill",
+    "Upsert tenant skill",
+    "Create or update a tenant-scoped markdown skill by slug.",
+    {
+      slug: z.string().min(1).max(128).describe("Skill slug (lowercase segments separated by '/', '-', '_')"),
+      markdown: z.string().min(1).describe("Skill markdown content (optional YAML frontmatter)"),
+      name: z.string().optional().describe("Optional display name"),
+      description: z.string().optional().describe("Optional short description"),
+      tags: z.array(z.string()).optional().describe("Optional discovery tags"),
+      files: z.record(z.string(), z.string()).optional().describe("Optional relative reference files map"),
+    },
+    { ...destructiveAnn, idempotentHint: true },
+    async ({ slug, markdown, name, description, tags, files }) =>
+      skillStore.upsertSkill(tenantId, slug.trim(), {
+        markdown,
+        ...(name !== undefined ? { name } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(tags !== undefined ? { tags } : {}),
+        ...(files !== undefined ? { files } : {}),
+      }),
+  );
+
+  register(
+    "delete_skill",
+    "Delete tenant skill",
+    "Delete a tenant skill by slug.",
+    {
+      slug: z.string().min(1).max(128).describe("Skill slug to delete"),
+    },
+    destructiveAnn,
+    async ({ slug }) => {
+      const clean = slug.trim();
+      const res = await skillStore.deleteSkill(tenantId, clean);
+      return { ok: true, slug: clean, deleted: res.deleted };
     },
   );
 
@@ -899,24 +1283,104 @@ function createTenantMcpServer(
 
   const agentParam = z.string().min(1).describe("Agent key or id (agt_...)");
 
+  const listAgentsPaginated = async (opts: {
+    limit?: number;
+    cursor?: string;
+    prefix?: string;
+    definitionId?: string;
+  }) => {
+    const limit = Math.min(200, Math.max(1, Math.floor(opts.limit ?? 50)));
+    const offset = parseMcpCursor(opts.cursor);
+    const prefix = opts.prefix?.trim() || undefined;
+    const definitionId = opts.definitionId?.trim() || undefined;
+
+    const raw = (await tenantStub.listAgents({
+      limit,
+      cursor: offset > 0 ? String(offset) : undefined,
+      prefix,
+      definitionId,
+    })) as unknown;
+
+    // Fallback for warm deferred TenantDOs that ignore the options arg and return an unpaginated array.
+    if (Array.isArray(raw)) {
+      const filtered = raw.filter((item: { id?: string; key?: string; definition?: string | null }) => {
+        if (definitionId && item.definition !== definitionId) return false;
+        if (prefix) {
+          const k = item.key ?? "";
+          const i = item.id ?? "";
+          if (!k.startsWith(prefix) && !i.startsWith(prefix)) return false;
+        }
+        return true;
+      });
+      const total = filtered.length;
+      const agents = filtered.slice(offset, offset + limit);
+      const nextOffset = offset + agents.length;
+      return {
+        agents,
+        ...(nextOffset < total ? { nextCursor: String(nextOffset) } : {}),
+        total,
+      };
+    }
+
+    const page = raw as {
+      agents: Array<Record<string, unknown>>;
+      nextCursor?: string;
+      total?: number;
+    };
+    const agents = Array.isArray(page.agents) ? page.agents.slice(0, limit) : [];
+    return {
+      agents,
+      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      ...(typeof page.total === "number" ? { total: page.total } : {}),
+    };
+  };
+
+  register(
+    "definition_agents",
+    "List a definition's agents",
+    "List agents associated with a given definition slug (paginated).",
+    {
+      definitionId: definitionIdParam.optional().describe("Definition slug to filter agents by"),
+      definition: definitionIdParam.optional().describe("Alias for definitionId (v1 compatibility)"),
+      limit: z.number().int().min(1).max(200).optional().describe("Maximum agents to return (default 50, max 200)"),
+      cursor: z.string().optional().describe("Pagination cursor from previous response"),
+    },
+    readAnn,
+    async ({ definitionId, definition, limit, cursor }) => {
+      const target = (definitionId ?? definition)?.trim();
+      if (!target) {
+        throw new ApiError(400, "invalid_request", "Provide `definitionId` (definition slug)");
+      }
+      const page = await listAgentsPaginated({ definitionId: target, limit, cursor });
+      return { definitionId: target, ...page };
+    },
+  );
+
   register(
     "list_agents",
     "List agents",
-    "List durable keyed agents in this account (id, key, model, repoId, branch, definition).",
-    {},
+    "List durable keyed agents in this account with optional pagination and prefix/definition filtering.",
+    {
+      limit: z.number().int().min(1).max(200).optional().describe("Maximum agents to return (default 50, max 200)"),
+      cursor: z.string().optional().describe("Pagination cursor from a previous list_agents call"),
+      prefix: z.string().optional().describe("Filter agents whose key or id starts with this prefix"),
+      definitionId: z.string().optional().describe("Filter agents by definition slug"),
+    },
     readAnn,
-    async () => ({ agents: await tenantStub.listAgents() }),
+    async ({ limit, cursor, prefix, definitionId }) =>
+      listAgentsPaginated({ limit, cursor, prefix, definitionId }),
   );
 
   register(
     "get_agent",
     "Get agent",
-    "Get an agent's configuration, active run, last run, and pending inputs.",
+    "Get an agent's configuration, active run, last run, and pending inputs (credentials redacted).",
     { agent: agentParam },
     readAnn,
     async ({ agent }) => {
       const { stub } = await resolveAgentOrThrow(agent);
-      return stub.getState();
+      const state = await stub.getState();
+      return redactAgentConfigFields(state as unknown as Record<string, unknown>);
     },
   );
 
@@ -931,6 +1395,11 @@ function createTenantMcpServer(
       instructions: z.string().optional().describe("System prompt / instructions"),
       builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
       skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs (e.g. ['camel-bots/*'])"),
+      tools: z.array(customToolSchema).optional().describe("Custom HTTP/webhook tools"),
+      mcpServers: z.array(mcpServerSchema).optional().describe("External MCP servers to attach"),
+      queue: queueConfigSchema.optional().describe("Queue mode configuration (each or batch)"),
+      dreaming: dreamingConfigSchema.optional().describe("Idle dreaming consolidation settings"),
+      compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
       repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach"),
       branch: z.string().optional().describe("CamelFS branch ref"),
       spendLimitUsd: z.number().min(0).optional().describe("Spend limit in USD"),
@@ -946,6 +1415,9 @@ function createTenantMcpServer(
       const input = Object.fromEntries(
         Object.entries(rest).filter(([, v]) => v !== undefined),
       ) as AgentUpsertInput;
+      if (input.skills !== undefined) {
+        input.skills = normalizeSkillSelectors(input.skills);
+      }
       const candidateAgentId = randomId("agt", 8);
       const minted = await mintAgentToken(tenantId, candidateAgentId);
       const candidateSealedToken = await sealSecret(minted.token, env.VAULT_SECRET);
@@ -992,13 +1464,17 @@ function createTenantMcpServer(
         tools: input.tools ?? defCfg?.tools,
         mcpServers: input.mcpServers ?? defCfg?.mcpServers,
         builtins: input.builtins ?? defCfg?.builtins,
-        skills: input.skills ?? defCfg?.skills,
+        skills: input.skills !== undefined ? input.skills : defCfg?.skills,
         queue: queueCfg,
         repoId: prep.repoId,
         lineage: prep.lineage,
         branch: prep.branch,
         spendLimitUsd: input.spendLimitUsd ?? defCfg?.spendLimitUsd,
         idleTtlSeconds: input.idleTtlSeconds ?? defCfg?.idleTtlSeconds,
+        compactThresholdTokens:
+          input.compactThresholdTokens !== undefined
+            ? Math.floor(input.compactThresholdTokens)
+            : defCfg?.compactThresholdTokens,
         dreaming: dreamingCfg,
       });
 
@@ -1010,6 +1486,126 @@ function createTenantMcpServer(
         model: initResult.config.model,
         created: prep.created,
       };
+    },
+  );
+
+  register(
+    "configure_agent",
+    "Configure agent",
+    "Patch an existing agent's configuration (model, instructions, spendLimitUsd, compactThresholdTokens, skills, builtins, repoId, branch, etc.) while keeping its history.",
+    {
+      agent: agentParam,
+      model: z.string().min(1).optional().describe("Model ID from list_models"),
+      instructions: z.string().optional().describe("Replace system prompt / instructions"),
+      spendLimitUsd: z.number().min(0).optional().describe("Spend limit in USD"),
+      compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
+      skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs"),
+      builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
+      repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach, or null to detach"),
+      branch: z.string().min(1).optional().describe("CamelFS branch ref"),
+      keyScope: z.string().nullable().optional().describe("Optional BYOK key scope"),
+      idleTtlSeconds: z.number().int().min(0).optional().describe("Idle TTL in seconds"),
+      tools: z.array(customToolSchema).optional().describe("Custom HTTP/webhook tools"),
+      mcpServers: z.array(mcpServerSchema).optional().describe("External MCP servers to attach"),
+      queue: queueConfigSchema.optional().describe("Queue mode configuration"),
+      dreaming: dreamingConfigSchema.optional().describe("Idle dreaming consolidation settings"),
+    },
+    destructiveAnn,
+    async ({ agent, ...patch }) => {
+      const provided = Object.entries(patch).filter(([, v]) => v !== undefined);
+      if (provided.length === 0) {
+        throw new ApiError(400, "invalid_request", "Provide at least one configuration field to update");
+      }
+      const { entry, stub } = await resolveAgentOrThrow(agent);
+
+      let nextRepoId: string | null | undefined;
+      let nextLineage: string | null | undefined;
+      let nextBranch: string | undefined = patch.branch?.trim() || undefined;
+
+      if (patch.repoId !== undefined) {
+        if (patch.repoId === null || patch.repoId === "") {
+          nextRepoId = null;
+          nextLineage = null;
+        } else {
+          const repo = await tenantStub.getRepo(patch.repoId.trim());
+          nextRepoId = repo.repoId;
+          nextLineage = repo.lineage;
+          if (!nextBranch) nextBranch = repo.defaultRef;
+        }
+      }
+
+      const normalizedSkills =
+        patch.skills !== undefined ? normalizeSkillSelectors(patch.skills) : undefined;
+
+      const initResult = await stub.initAgent({
+        id: entry.id,
+        tenantId,
+        key: entry.key,
+        ...(patch.model !== undefined ? { model: patch.model.trim() } : {}),
+        ...(patch.keyScope !== undefined ? { keyScope: patch.keyScope?.trim() || null } : {}),
+        ...(patch.instructions !== undefined ? { instructions: patch.instructions } : {}),
+        ...(patch.spendLimitUsd !== undefined ? { spendLimitUsd: patch.spendLimitUsd } : {}),
+        ...(patch.compactThresholdTokens !== undefined
+          ? { compactThresholdTokens: Math.floor(patch.compactThresholdTokens) }
+          : {}),
+        ...(normalizedSkills !== undefined ? { skills: normalizedSkills } : {}),
+        ...(patch.builtins !== undefined ? { builtins: patch.builtins } : {}),
+        ...(patch.idleTtlSeconds !== undefined ? { idleTtlSeconds: patch.idleTtlSeconds } : {}),
+        ...(patch.tools !== undefined ? { tools: patch.tools } : {}),
+        ...(patch.mcpServers !== undefined ? { mcpServers: patch.mcpServers } : {}),
+        ...(patch.queue !== undefined
+          ? { queue: { mode: patch.queue.mode ?? "each", windowMs: patch.queue.windowMs ?? 0 } }
+          : {}),
+        ...(patch.dreaming !== undefined
+          ? {
+              dreaming: {
+                enabled: patch.dreaming.enabled ?? false,
+                idleSeconds: patch.dreaming.idleSeconds ?? 3600,
+              },
+            }
+          : {}),
+        ...(nextRepoId !== undefined ? { repoId: nextRepoId, lineage: nextLineage ?? null } : {}),
+        ...(nextBranch !== undefined ? { branch: nextBranch } : {}),
+      });
+
+      if (nextRepoId !== undefined || nextBranch !== undefined) {
+        await tenantStub.updateAgentRepo(
+          entry.id,
+          initResult.config.repoId,
+          initResult.config.branch,
+        );
+      }
+
+      return redactAgentConfigFields(initResult.config as unknown as Record<string, unknown>);
+    },
+  );
+
+  register(
+    "fork_agent",
+    "Fork agent",
+    "Fork an existing agent into a new agent with a copy of its configuration, conversation history (optionally up to atSeq), and optionally its CamelFS repository.",
+    {
+      agent: agentParam,
+      newKey: z.string().min(1).max(80).optional().describe("Durable key for the forked agent"),
+      key: z.string().min(1).max(80).optional().describe("Alias for newKey (v1 compatibility)"),
+      name: z.string().min(1).max(80).optional().describe("Optional fallback key name if newKey/key is omitted"),
+      atSeq: z.number().int().min(0).optional().describe("Copy messages up to this sequence number (default latest)"),
+      forkRepo: z
+        .boolean()
+        .optional()
+        .describe("Also fork the attached CamelFS repository (default true)"),
+    },
+    addAnn,
+    async ({ agent, newKey, key, name, atSeq, forkRepo }) => {
+      const { stub } = await resolveAgentOrThrow(agent);
+      const targetKey = (newKey ?? key ?? name)?.trim() || undefined;
+      const forked = await stub.forkAgent({
+        ...(targetKey ? { key: targetKey } : {}),
+        ...(atSeq !== undefined ? { atSeq } : {}),
+        ...(forkRepo !== undefined ? { forkRepo } : {}),
+      });
+      const { agentToken: _redactedToken, ...safeFork } = forked;
+      return safeFork;
     },
   );
 
@@ -1100,6 +1696,63 @@ function createTenantMcpServer(
   );
 
   register(
+    "get_run",
+    "Get agent run",
+    "Fetch a run's status, reply text, structured output, usage, pending inputs, or error. Useful after send_message with wait: false.",
+    {
+      agent: agentParam,
+      runId: z.string().min(1).optional().describe("Run ID (run_...)"),
+      requestId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Idempotency key / requestId (alternative to runId)"),
+      byIdempotencyKey: z
+        .boolean()
+        .optional()
+        .describe("Look up runId as an idempotency key (default false unless requestId is used)"),
+      wait: z
+        .boolean()
+        .optional()
+        .describe("Wait for the run to settle if still running (default false)"),
+    },
+    readAnn,
+    async ({ agent, runId, requestId, byIdempotencyKey, wait }, extra) => {
+      const lookupId = (runId ?? requestId)?.trim();
+      if (!lookupId) {
+        throw new ApiError(400, "invalid_request", "Provide `runId` or `requestId`");
+      }
+      const { entry, stub } = await resolveAgentOrThrow(agent);
+      const useIdempotencyKey = Boolean(byIdempotencyKey || (!runId && requestId));
+      const run = await stub.getRun(lookupId, useIdempotencyKey);
+      if (!wait || TERMINAL_STATUSES.has(run.status)) {
+        return summarizeRun({ id: entry.id, key: entry.key }, run);
+      }
+      const inbox = new AsyncInbox<FollowItem>();
+      const socket = await openAgentEventSocket(stub, inbox);
+      try {
+        const settled = await followRunWithProgress(stub, run, extra, socket, inbox);
+        if (settled === "aborted") {
+          return {
+            agentId: entry.id,
+            agentKey: entry.key,
+            runId: run.id,
+            status: "cancelled_wait",
+            note: "The MCP call was cancelled; the agent's run continues in the background.",
+          };
+        }
+        return summarizeRun({ id: entry.id, key: entry.key }, settled);
+      } finally {
+        try {
+          socket?.close(1000, "done");
+        } catch {
+          // Ignore close errors
+        }
+      }
+    },
+  );
+
+  register(
     "get_history",
     "Get agent history",
     "Read an agent's conversation messages (role, text, tool calls, tool results).",
@@ -1124,25 +1777,68 @@ function createTenantMcpServer(
   );
 
   register(
+    "list_inputs",
+    "List pending inputs",
+    "List pending approvals and human questions waiting for an answer on an agent.",
+    { agent: agentParam },
+    readAnn,
+    async ({ agent }) => {
+      const { entry, stub } = await resolveAgentOrThrow(agent);
+      const runs = await stub.getRunsWithPendingInputs();
+      const inputs = runs.flatMap((r) =>
+        (r.inputs ?? [])
+          .filter((inp) => inp.status === "pending")
+          .map((inp) => ({ ...inp, runId: r.id })),
+      );
+      return {
+        agentId: entry.id,
+        agentKey: entry.key,
+        inputs,
+        runs: runs.map((r) => summarizeRun({ id: entry.id, key: entry.key }, r)),
+      };
+    },
+  );
+
+  register(
     "answer_input",
     "Answer pending input",
-    "Answer a pending approval or human question on an agent and resume its paused run.",
+    "Answer a pending approval or human question on an agent and resume its paused run. Supports both v2 (inputId, approved, answer) and v1/alias (id, value) parameters.",
     {
       agent: agentParam,
-      inputId: z.string().min(1).describe("Pending input ID (inp_...)"),
+      inputId: z.string().min(1).optional().describe("Pending input ID (inp_...)"),
+      id: z.string().min(1).optional().describe("Alias for inputId"),
       approved: z
         .boolean()
         .optional()
         .describe("Approve (true) or decline (false). Required for approval inputs; defaults to true for questions."),
       answer: z.unknown().optional().describe("Answer value for question or form inputs"),
+      value: z
+        .unknown()
+        .optional()
+        .describe("Alias for approved/answer (v1 compatibility: boolean approves/declines, 'decline' declines, else sets answer)"),
       wait: z.boolean().optional().describe("Wait for the resumed run to settle (default true)"),
     },
     { ...destructiveAnn, openWorldHint: true },
-    async ({ agent, inputId, approved, answer, wait }) => {
+    async ({ agent, inputId, id, approved, answer, value, wait }) => {
+      const resolvedInputId = (inputId ?? id)?.trim();
+      if (!resolvedInputId) {
+        throw new ApiError(400, "invalid_request", "Provide `inputId` (or `id`)");
+      }
+      let resolvedApproved = approved;
+      let resolvedAnswer = answer;
+      if (resolvedApproved === undefined && resolvedAnswer === undefined && value !== undefined) {
+        if (typeof value === "boolean") {
+          resolvedApproved = value;
+        } else if (value === "decline") {
+          resolvedApproved = false;
+        } else {
+          resolvedAnswer = value;
+        }
+      }
       const { entry, stub } = await resolveAgentOrThrow(agent);
       const run = await stub.respondToInput(
-        inputId,
-        { approved, answer, wait: wait !== false },
+        resolvedInputId,
+        { approved: resolvedApproved, answer: resolvedAnswer, wait: wait !== false },
         true,
       );
       return summarizeRun({ id: entry.id, key: entry.key }, run);
@@ -1165,6 +1861,94 @@ function createTenantMcpServer(
     },
   );
 
+  // ---- Schedules ----
+
+  register(
+    "list_schedules",
+    "List agent schedules",
+    "List cron, interval, and one-shot schedules configured on an agent.",
+    { agent: agentParam },
+    readAnn,
+    async ({ agent }) => {
+      const { entry, stub } = await resolveAgentOrThrow(agent);
+      const res = await stub.listSchedules();
+      return { agentId: entry.id, agentKey: entry.key, schedules: res.schedules };
+    },
+  );
+
+  register(
+    "add_schedule",
+    "Add agent schedule",
+    "Create or upsert a scheduled wake-up on an agent using cron (5-field UTC), intervalSeconds, or one-shot runAt.",
+    {
+      agent: agentParam,
+      id: z.string().min(1).max(80).optional().describe("Optional schedule ID to upsert"),
+      name: z.string().min(1).max(80).optional().describe("Alias for id"),
+      prompt: z.string().min(1).optional().describe("Prompt / message to send when the schedule fires"),
+      text: z.string().min(1).optional().describe("Alias for prompt (v1 compatibility)"),
+      cron: z.string().min(1).optional().describe("5-field UTC cron expression, e.g. '0 9 * * 1-5'"),
+      cronExpr: z.string().min(1).optional().describe("Alias for cron"),
+      intervalSeconds: z.number().int().min(1).optional().describe("Repeat interval in seconds"),
+      everySeconds: z.number().int().min(1).optional().describe("Alias for intervalSeconds"),
+      runAt: z
+        .union([z.string(), z.number()])
+        .optional()
+        .describe("One-shot ISO-8601 timestamp or Unix ms"),
+      timezone: z
+        .string()
+        .optional()
+        .describe("Optional timezone note (note: v2 cron expressions currently evaluate in UTC)"),
+      enabled: z.boolean().optional().describe("Whether the schedule is enabled (default true)"),
+    },
+    { ...addAnn, openWorldHint: true },
+    async ({
+      agent,
+      id,
+      name,
+      prompt,
+      text,
+      cron,
+      cronExpr,
+      intervalSeconds,
+      everySeconds,
+      runAt,
+      enabled,
+    }) => {
+      const effectivePrompt = (prompt ?? text)?.trim();
+      if (!effectivePrompt) {
+        throw new ApiError(400, "invalid_request", "`prompt` (or `text`) is required");
+      }
+      const { entry, stub } = await resolveAgentOrThrow(agent);
+      const schedule = await stub.createSchedule({
+        ...(id ?? name ? { id: (id ?? name)!.trim() } : {}),
+        ...((intervalSeconds ?? everySeconds) !== undefined
+          ? { intervalSeconds: intervalSeconds ?? everySeconds }
+          : {}),
+        ...(cron ?? cronExpr ? { cron: (cron ?? cronExpr)!.trim() } : {}),
+        ...(runAt !== undefined ? { runAt } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+        prompt: effectivePrompt,
+      });
+      return { agentId: entry.id, agentKey: entry.key, ...schedule };
+    },
+  );
+
+  register(
+    "delete_schedule",
+    "Delete agent schedule",
+    "Delete a schedule from an agent by scheduleId.",
+    {
+      agent: agentParam,
+      scheduleId: z.string().min(1).describe("Schedule ID (sch_... or custom id)"),
+    },
+    destructiveAnn,
+    async ({ agent, scheduleId }) => {
+      const { entry, stub } = await resolveAgentOrThrow(agent);
+      await stub.deleteSchedule(scheduleId.trim());
+      return { agentId: entry.id, agentKey: entry.key, scheduleId: scheduleId.trim(), deleted: true };
+    },
+  );
+
   // ---- CamelFS Repositories ----
 
   const repoIdParam = z.string().min(1).describe("CamelFS repository ID");
@@ -1172,10 +1956,48 @@ function createTenantMcpServer(
   register(
     "list_repos",
     "List repositories",
-    "List the account's versioned CamelFS repositories.",
-    {},
+    "List the account's versioned CamelFS repositories with pagination and optional prefix filtering.",
+    {
+      limit: z.number().int().min(1).max(200).optional().describe("Maximum repositories to return (default 50, max 200)"),
+      cursor: z.string().optional().describe("Pagination cursor from a previous list_repos call"),
+      prefix: z.string().optional().describe("Filter repositories whose repoId or name starts with this prefix"),
+    },
     readAnn,
-    async () => ({ repos: await tenantStub.listRepos() }),
+    async ({ limit, cursor, prefix }) => {
+      const pageLimit = Math.min(200, Math.max(1, Math.floor(limit ?? 50)));
+      const offset = parseMcpCursor(cursor);
+      const cleanPrefix = prefix?.trim() || undefined;
+
+      const raw = (await tenantStub.listRepos({
+        limit: pageLimit,
+        cursor: offset > 0 ? String(offset) : undefined,
+        prefix: cleanPrefix,
+      })) as unknown;
+
+      // Fallback for warm deferred TenantDOs that ignore the options arg and return RepoRecord[].
+      if (Array.isArray(raw)) {
+        const filtered = (raw as RepoRecord[]).filter((r) => {
+          if (!cleanPrefix) return true;
+          return r.repoId.startsWith(cleanPrefix) || r.name.startsWith(cleanPrefix);
+        });
+        const total = filtered.length;
+        const repos = filtered.slice(offset, offset + pageLimit);
+        const nextOffset = offset + repos.length;
+        return {
+          repos,
+          ...(nextOffset < total ? { nextCursor: String(nextOffset) } : {}),
+          total,
+        };
+      }
+
+      const page = raw as { repos: RepoRecord[]; nextCursor?: string; total?: number };
+      const repos = Array.isArray(page.repos) ? page.repos.slice(0, pageLimit) : [];
+      return {
+        repos,
+        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        ...(typeof page.total === "number" ? { total: page.total } : {}),
+      };
+    },
   );
 
   register(

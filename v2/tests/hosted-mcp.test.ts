@@ -52,83 +52,148 @@ async function readMcpResponse(res: {
 }
 
 test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp) end-to-end", async (t) => {
-  // 1. Mock OpenAI-compatible LLM server (supports normal replies + ask_human tool calls)
+  // 1. Mock OpenAI-compatible LLM server (supports BOTH OpenAI Responses API `/v1/responses` AND Chat Completions `/v1/chat/completions`, plus normal replies, SLOW_TURN, and ask_human tool calls)
+  const extractText = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => (part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : ""))
+        .join("");
+    }
+    return String(content ?? "");
+  };
+
   const llmServer = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as {
         messages?: Array<{ role: string; content?: unknown }>;
+        input?: Array<{ type?: string; role?: string; content?: unknown; output?: unknown }>;
       };
-      const messages = body.messages ?? [];
-      const last = messages.at(-1);
-      const userMsgs = messages.filter((m) => m.role === "user");
-      const lastUserText = String(userMsgs.at(-1)?.content ?? "");
+      const isResponsesApi = (req.url ?? "").includes("/responses") || Array.isArray(body.input);
 
-      res.setHeader("Content-Type", "application/json");
-      if (last?.role === "tool") {
+      const respond = (kind: "reply" | "tool_result" | "ask_human", text: string) => {
+        res.setHeader("Content-Type", "application/json");
+        if (isResponsesApi) {
+          if (kind === "ask_human") {
+            res.end(
+              JSON.stringify({
+                id: "resp_mock_human",
+                object: "response",
+                status: "completed",
+                output: [
+                  {
+                    type: "function_call",
+                    call_id: "call_human_1",
+                    name: "ask_human",
+                    arguments: JSON.stringify({
+                      question: "Which environment should I deploy to?",
+                      options: ["staging", "production"],
+                    }),
+                  },
+                ],
+                usage: { input_tokens: 15, output_tokens: 10 },
+              }),
+            );
+            return;
+          }
+          res.end(
+            JSON.stringify({
+              id: "resp_mock_text",
+              object: "response",
+              status: "completed",
+              output: [
+                {
+                  type: "message",
+                  role: "assistant",
+                  content: [{ type: "output_text", text }],
+                },
+              ],
+              usage: { input_tokens: 12, output_tokens: 8 },
+            }),
+          );
+          return;
+        }
+
+        if (kind === "ask_human") {
+          res.end(
+            JSON.stringify({
+              choices: [
+                {
+                  finish_reason: "tool_calls",
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                      {
+                        id: "call_human_1",
+                        type: "function",
+                        function: {
+                          name: "ask_human",
+                          arguments: JSON.stringify({
+                            question: "Which environment should I deploy to?",
+                            options: ["staging", "production"],
+                          }),
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+              usage: { prompt_tokens: 15, completion_tokens: 10 },
+            }),
+          );
+          return;
+        }
+
         res.end(
           JSON.stringify({
             choices: [
               {
                 finish_reason: "stop",
-                message: {
-                  role: "assistant",
-                  content: `Confirmed after input: ${String(last.content ?? "")}`,
-                },
+                message: { role: "assistant", content: text },
               },
             ],
-            usage: { prompt_tokens: 20, completion_tokens: 12 },
+            usage: { prompt_tokens: 12, completion_tokens: 8 },
           }),
         );
+      };
+
+      if (isResponsesApi) {
+        const items = body.input ?? [];
+        const last = items.at(-1);
+        if (last?.type === "function_call_output") {
+          const outText = typeof last.output === "string" ? last.output : JSON.stringify(last.output ?? "");
+          respond("tool_result", `Confirmed after input: ${outText}`);
+          return;
+        }
+        const userItems = items.filter((m) => m.role === "user");
+        const lastUserText = extractText(userItems.at(-1)?.content ?? "");
+        const delayMs = lastUserText.includes("SLOW_TURN") ? 120 : 0;
+        setTimeout(() => {
+          if (lastUserText.includes("NEEDS_INPUT")) {
+            respond("ask_human", "");
+          } else {
+            respond("reply", `Reply: ${lastUserText}`);
+          }
+        }, delayMs);
         return;
       }
 
+      const messages = body.messages ?? [];
+      const last = messages.at(-1);
+      if (last?.role === "tool") {
+        respond("tool_result", `Confirmed after input: ${extractText(last.content)}`);
+        return;
+      }
+      const userMsgs = messages.filter((m) => m.role === "user");
+      const lastUserText = extractText(userMsgs.at(-1)?.content ?? "");
       if (lastUserText.includes("NEEDS_INPUT")) {
-        res.end(
-          JSON.stringify({
-            choices: [
-              {
-                finish_reason: "tool_calls",
-                message: {
-                  role: "assistant",
-                  content: null,
-                  tool_calls: [
-                    {
-                      id: "call_human_1",
-                      type: "function",
-                      function: {
-                        name: "ask_human",
-                        arguments: JSON.stringify({
-                          question: "Which environment should I deploy to?",
-                          options: ["staging", "production"],
-                        }),
-                      },
-                    },
-                  ],
-                },
-              },
-            ],
-            usage: { prompt_tokens: 15, completion_tokens: 10 },
-          }),
-        );
+        respond("ask_human", "");
         return;
       }
-
-      res.end(
-        JSON.stringify({
-          choices: [
-            {
-              finish_reason: "stop",
-              message: {
-                role: "assistant",
-                content: `Reply: ${lastUserText}`,
-              },
-            },
-          ],
-          usage: { prompt_tokens: 12, completion_tokens: 8 },
-        }),
-      );
+      respond("reply", `Reply: ${lastUserText}`);
     });
   });
   await new Promise<void>((resolve) => llmServer.listen(0, "127.0.0.1", resolve));
@@ -355,7 +420,8 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
     const unauth = await postMcp(path, { jsonrpc: "2.0", id: 1, method: "initialize" });
     assert.equal(unauth.status, 401, `unauth ${path}`);
     const wwwAuth = unauth.headers.get("www-authenticate") ?? "";
-    assert.match(wwwAuth, /^Bearer resource_metadata="https:\/\/run\.camelai\.com\/\.well-known\/oauth-protected-resource\//);
+    const expectedMetaUrl = `https://run.camelai.com/.well-known/oauth-protected-resource${path}`;
+    assert.match(wwwAuth, new RegExp(`^Bearer resource_metadata="${expectedMetaUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
     assert.match(wwwAuth, /scope="agents"/);
     assert.equal(unauth.headers.get("access-control-allow-origin"), "*");
 
@@ -368,12 +434,38 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
     assert.match(badAuth.headers.get("www-authenticate") ?? "", /error="invalid_token"/);
   }
 
-  // Protected-resource metadata endpoints
-  const metaRes = await worker.fetch(`${origin}/.well-known/oauth-protected-resource/v2/mcp`);
-  assert.equal(metaRes.status, 200);
-  const metaJson = (await metaRes.json()) as { resource: string; scopes_supported: string[] };
-  assert.equal(metaJson.resource, "https://run.camelai.com/v2/mcp");
-  assert.deepEqual(metaJson.scopes_supported, ["agents"]);
+  // Protected-resource metadata endpoints (RFC 9728 root, /mcp, /v2/mcp, and per-agent)
+  for (const [metaPath, expectedResource] of [
+    ["/.well-known/oauth-protected-resource", "https://run.camelai.com/mcp"],
+    ["/.well-known/oauth-protected-resource/mcp", "https://run.camelai.com/mcp"],
+    ["/.well-known/oauth-protected-resource/v2/mcp", "https://run.camelai.com/v2/mcp"],
+    [
+      "/.well-known/oauth-protected-resource/v2/agents/helper/mcp",
+      "https://run.camelai.com/v2/agents/helper/mcp",
+    ],
+  ] as const) {
+    const metaRes = await worker.fetch(`${origin}${metaPath}`);
+    assert.equal(metaRes.status, 200, `GET ${metaPath}`);
+    const metaJson = (await metaRes.json()) as {
+      resource: string;
+      scopes_supported: string[];
+      bearer_methods_supported: string[];
+    };
+    assert.equal(metaJson.resource, expectedResource, `resource for ${metaPath}`);
+    assert.deepEqual(metaJson.scopes_supported, ["agents"]);
+    assert.deepEqual(metaJson.bearer_methods_supported, ["header"]);
+  }
+
+  // OAuth Authorization Server discovery returns explicit 404 + CORS (OAuth AS not enabled in v2)
+  const asPreflight = await worker.fetch(`${origin}/.well-known/oauth-authorization-server`, {
+    method: "OPTIONS",
+  });
+  assert.equal(asPreflight.status, 204);
+  assert.equal(asPreflight.headers.get("access-control-allow-origin"), "*");
+  const asRes = await worker.fetch(`${origin}/.well-known/oauth-authorization-server`);
+  assert.equal(asRes.status, 404);
+  assert.equal(asRes.headers.get("access-control-allow-origin"), "*");
+  assert.equal(((await asRes.json()) as { error: string }).error, "oauth_not_enabled");
 
   // 405 on GET / DELETE once authenticated on /v2/mcp
   for (const method of ["GET", "DELETE"]) {
@@ -420,16 +512,31 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
     "whoami",
     "list_models",
     "get_billing",
+    "read_docs",
     "list_definitions",
+    "get_definition",
     "upsert_definition",
+    "delete_definition",
+    "definition_agents",
+    "list_skills",
+    "get_skill",
+    "upsert_skill",
+    "delete_skill",
     "list_agents",
     "get_agent",
     "upsert_agent",
+    "configure_agent",
+    "fork_agent",
     "delete_agent",
     "send_message",
+    "get_run",
     "get_history",
+    "list_inputs",
     "answer_input",
     "abort_agent",
+    "list_schedules",
+    "add_schedule",
+    "delete_schedule",
     "list_repos",
     "list_files",
     "read_file",
@@ -487,40 +594,136 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
   assert.equal(models.isError, false);
   assert.ok((models.json() as Array<{ id: string }>).some((m) => m.id === "openai/gpt-4o-mini"));
 
-  // Definitions
+  // read_docs
+  const docsIndex = await callTenantTool("read_docs", {});
+  assert.equal(docsIndex.isError, false);
+  assert.match(docsIndex.rawText, /CamelRun v2 Documentation Index/);
+  const docsSchedules = await callTenantTool("read_docs", { topic: "schedules" });
+  assert.equal(docsSchedules.isError, false);
+  assert.match(docsSchedules.rawText, /add_schedule/);
+
+  // Skills CRUD via MCP
+  const upsertedSkill = await callTenantTool("upsert_skill", {
+    slug: "ops/deploy-check",
+    markdown: "# Deploy Check\nAlways verify typecheck and tests.\n",
+    description: "Pre-deploy checklist",
+    tags: ["ops", "deploy"],
+  });
+  assert.equal(upsertedSkill.isError, false);
+  assert.equal(upsertedSkill.json().slug, "ops/deploy-check");
+
+  const listedSkills = await callTenantTool("list_skills", { prefix: "ops/" });
+  assert.equal(listedSkills.isError, false);
+  assert.equal(listedSkills.json().skills.length, 1);
+
+  const gotSkill = await callTenantTool("get_skill", { slug: "ops/deploy-check" });
+  assert.equal(gotSkill.isError, false);
+  assert.match(gotSkill.json().markdown, /Always verify typecheck/);
+
+  // Definitions (including secret redaction of mcpServers[].headers & tools[].headers)
   const upsertDef = await callTenantTool("upsert_definition", {
     slug: "support-bot",
     model: "openai/gpt-4o-mini",
     instructions: "SECRET_SYSTEM_PROMPT_DO_NOT_LEAK",
     builtins: ["human"],
+    mcpServers: [
+      {
+        name: "internal-crm",
+        url: "https://crm.example.com/mcp",
+        headers: { Authorization: "Bearer SUPER_SECRET_MCP_TOKEN", "X-Api-Key": "sk-secret-123" },
+      },
+    ],
+    tools: [
+      {
+        name: "notify_webhook",
+        description: "Send notification",
+        url: "https://hooks.example.com/notify",
+        headers: { "X-Webhook-Secret": "whsec_top_secret" },
+      },
+    ],
   });
   assert.equal(upsertDef.isError, false);
   assert.equal(upsertDef.json().slug, "support-bot");
+  assert.equal(upsertDef.json().config.mcpServers[0].headers.Authorization, "***");
+  assert.equal(upsertDef.json().config.tools[0].headers["X-Webhook-Secret"], "***");
 
   const listDefs = await callTenantTool("list_definitions", {});
   assert.equal(listDefs.isError, false);
   assert.equal(listDefs.json().definitions.length, 1);
+  assert.ok(!listDefs.rawText.includes("SUPER_SECRET_MCP_TOKEN"), "list_definitions leaked MCP header secret");
+  assert.ok(!listDefs.rawText.includes("whsec_top_secret"), "list_definitions leaked tool header secret");
+  assert.equal(listDefs.json().definitions[0].config.mcpServers[0].headers.Authorization, "***");
 
-  // Upsert agent (must NOT leak agentToken)
+  const gotDef = await callTenantTool("get_definition", { idOrSlug: "support-bot" });
+  assert.equal(gotDef.isError, false);
+  assert.equal(gotDef.json().slug, "support-bot");
+  assert.ok(!gotDef.rawText.includes("SUPER_SECRET_MCP_TOKEN"), "get_definition leaked MCP header secret");
+  assert.equal(gotDef.json().config.mcpServers[0].headers["X-Api-Key"], "***");
+
+  // Create + delete a temporary definition
+  const tempDef = await callTenantTool("upsert_definition", { slug: "temp-def", model: "openai/gpt-4o-mini" });
+  assert.equal(tempDef.isError, false);
+  const delDef = await callTenantTool("delete_definition", { idOrSlug: "temp-def" });
+  assert.equal(delDef.isError, false);
+  assert.equal(delDef.json().deleted, true);
+
+  // Upsert agent with schema fields that were previously stripped (queue, dreaming, compactThresholdTokens, skills, tools, mcpServers)
   const upsertedAgent = await callTenantTool("upsert_agent", {
     key: "mcp-agent-1",
     definition: "support-bot",
+    queue: { mode: "batch", windowMs: 250 },
+    dreaming: { enabled: true, idleSeconds: 1800 },
+    compactThresholdTokens: 64000,
+    skills: ["ops/*"],
   });
   assert.equal(upsertedAgent.isError, false);
   const agent1 = upsertedAgent.json() as { id: string; key: string; agentToken?: string };
   assert.equal(agent1.key, "mcp-agent-1");
   assert.equal(agent1.agentToken, undefined, "agentToken must not be exposed by MCP upsert_agent");
 
-  const listedAgents = await callTenantTool("list_agents", {});
+  const listedAgents = await callTenantTool("list_agents", { limit: 10, prefix: "mcp-" });
   assert.equal(listedAgents.isError, false);
   assert.ok(
     (listedAgents.json().agents as Array<{ key: string }>).some((a) => a.key === "mcp-agent-1"),
   );
+  assert.equal(listedAgents.json().total, 1);
+
+  const defAgents = await callTenantTool("definition_agents", { definitionId: "support-bot" });
+  assert.equal(defAgents.isError, false);
+  assert.equal(defAgents.json().definitionId, "support-bot");
+  assert.equal(defAgents.json().agents.length, 1);
+  assert.equal(defAgents.json().agents[0].key, "mcp-agent-1");
 
   const gotAgent = await callTenantTool("get_agent", { agent: "mcp-agent-1" });
   assert.equal(gotAgent.isError, false);
-  assert.equal(gotAgent.json().id, agent1.id);
-  assert.equal(gotAgent.json().key, "mcp-agent-1");
+  const gotAgentData = gotAgent.json();
+  assert.equal(gotAgentData.id, agent1.id);
+  assert.equal(gotAgentData.key, "mcp-agent-1");
+  assert.deepEqual(gotAgentData.queue, { mode: "batch", windowMs: 250 });
+  assert.deepEqual(gotAgentData.dreaming, { enabled: true, idleSeconds: 1800 });
+  assert.equal(gotAgentData.compactThresholdTokens, 64000);
+  assert.deepEqual(gotAgentData.skills, ["ops/*"]);
+  assert.ok(!gotAgent.rawText.includes("SUPER_SECRET_MCP_TOKEN"), "get_agent leaked MCP header secret");
+  assert.ok(!gotAgent.rawText.includes("whsec_top_secret"), "get_agent leaked tool header secret");
+  assert.equal(gotAgentData.mcpServers[0].headers.Authorization, "***");
+
+  // configure_agent patches specific fields cleanly without clearing history/other config
+  const configured = await callTenantTool("configure_agent", {
+    agent: "mcp-agent-1",
+    spendLimitUsd: 25,
+    compactThresholdTokens: 96000,
+    instructions: "Updated instructions for mcp-agent-1",
+  });
+  assert.equal(configured.isError, false);
+  assert.equal(configured.json().spendLimitUsd, 25);
+  assert.equal(configured.json().compactThresholdTokens, 96000);
+  assert.equal(configured.json().instructions, "Updated instructions for mcp-agent-1");
+  assert.ok(!configured.rawText.includes("SUPER_SECRET_MCP_TOKEN"), "configure_agent leaked MCP secret");
+
+  // Clean up test skill after verifying
+  const delSkill = await callTenantTool("delete_skill", { slug: "ops/deploy-check" });
+  assert.equal(delSkill.isError, false);
+  assert.equal(delSkill.json().deleted, true);
 
   // send_message completing a normal turn (also exercises SSE streaming when progressToken provided)
   const msg1 = await callTenantTool(
@@ -533,12 +736,100 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
   assert.equal(msg1.json().status, "completed");
   assert.equal(msg1.json().text, "Reply: Hello from tenant MCP");
 
+  // send_message with wait: false + get_run (by runId and by requestId + wait: true)
+  const asyncReqId = "req_async_get_run_1";
+  const asyncStart = await callTenantTool("send_message", {
+    agent: "mcp-agent-1",
+    message: "SLOW_TURN check async run",
+    requestId: asyncReqId,
+    wait: false,
+  });
+  assert.equal(asyncStart.isError, false);
+  const asyncRunId = asyncStart.json().runId as string;
+  assert.ok(asyncRunId.startsWith("run_"));
+
+  const gotRun = await callTenantTool("get_run", {
+    agent: "mcp-agent-1",
+    runId: asyncRunId,
+    wait: true,
+  });
+  assert.equal(gotRun.isError, false);
+  assert.equal(gotRun.json().status, "completed");
+  assert.equal(gotRun.json().text, "Reply: SLOW_TURN check async run");
+
+  const gotRunByReqId = await callTenantTool("get_run", {
+    agent: "mcp-agent-1",
+    requestId: asyncReqId,
+  });
+  assert.equal(gotRunByReqId.isError, false);
+  assert.equal(gotRunByReqId.json().runId, asyncRunId);
+
   // get_history
   const hist = await callTenantTool("get_history", { agent: "mcp-agent-1", limit: 10 });
   assert.equal(hist.isError, false);
   assert.ok(hist.json().messages.length >= 2);
 
-  // send_message hitting input_required -> answer_input resumes to completed!
+  // fork_agent (must NOT expose agentToken, copies history)
+  const forked = await callTenantTool("fork_agent", {
+    agent: "mcp-agent-1",
+    newKey: "mcp-agent-fork",
+    forkRepo: false,
+  });
+  assert.equal(forked.isError, false);
+  const forkedData = forked.json() as { id: string; key: string; agentToken?: string; forkedFrom: { agentId: string } };
+  assert.equal(forkedData.key, "mcp-agent-fork");
+  assert.equal(forkedData.agentToken, undefined, "fork_agent must not leak agentToken");
+  assert.equal(forkedData.forkedFrom.agentId, agent1.id);
+
+  // list_agents pagination across multiple agents
+  const page1Agents = await callTenantTool("list_agents", { limit: 1 });
+  assert.equal(page1Agents.isError, false);
+  assert.equal(page1Agents.json().agents.length, 1);
+  assert.equal(page1Agents.json().total, 2);
+  assert.ok(page1Agents.json().nextCursor, "Expected nextCursor for list_agents page 1");
+  const page2Agents = await callTenantTool("list_agents", {
+    limit: 1,
+    cursor: page1Agents.json().nextCursor,
+  });
+  assert.equal(page2Agents.isError, false);
+  assert.equal(page2Agents.json().agents.length, 1);
+  assert.notEqual(page2Agents.json().agents[0].id, page1Agents.json().agents[0].id);
+
+  // Schedules CRUD: add_schedule (cron, one-shot runAt, upsert by id), list_schedules, delete_schedule
+  const addedCron = await callTenantTool("add_schedule", {
+    agent: "mcp-agent-1",
+    id: "daily-standup",
+    cron: "0 9 * * 1-5",
+    prompt: "Summarize yesterday's work",
+  });
+  assert.equal(addedCron.isError, false);
+  assert.equal(addedCron.json().id, "daily-standup");
+  assert.equal(addedCron.json().cronExpr, "0 9 * * 1-5");
+
+  const addedOneShot = await callTenantTool("add_schedule", {
+    agent: "mcp-agent-1",
+    runAt: new Date(Date.now() + 3600_000).toISOString(),
+    prompt: "One-shot reminder",
+    enabled: true,
+  });
+  assert.equal(addedOneShot.isError, false);
+  assert.ok(addedOneShot.json().id.startsWith("sch_"));
+
+  const listedScheds = await callTenantTool("list_schedules", { agent: "mcp-agent-1" });
+  assert.equal(listedScheds.isError, false);
+  assert.equal(listedScheds.json().schedules.length, 2);
+
+  const deletedSched = await callTenantTool("delete_schedule", {
+    agent: "mcp-agent-1",
+    scheduleId: "daily-standup",
+  });
+  assert.equal(deletedSched.isError, false);
+  assert.equal(deletedSched.json().deleted, true);
+
+  const listedSchedsAfter = await callTenantTool("list_schedules", { agent: "mcp-agent-1" });
+  assert.equal(listedSchedsAfter.json().schedules.length, 1);
+
+  // send_message hitting input_required -> list_inputs -> answer_input (v2 params & v1 alias params!)
   const paused = await callTenantTool("send_message", {
     agent: "mcp-agent-1",
     message: "Please deploy NEEDS_INPUT",
@@ -552,11 +843,16 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
   assert.equal(pausedData.inputs.length, 1);
   assert.equal(pausedData.inputs[0]!.kind, "question");
 
+  const listedInputs = await callTenantTool("list_inputs", { agent: "mcp-agent-1" });
+  assert.equal(listedInputs.isError, false);
+  assert.equal(listedInputs.json().inputs.length, 1);
+  assert.equal(listedInputs.json().inputs[0].id, pausedData.inputs[0]!.id);
+
+  // Test answer_input with v1/alias params (`id` + `value`)
   const resumed = await callTenantTool("answer_input", {
     agent: "mcp-agent-1",
-    inputId: pausedData.inputs[0]!.id,
-    approved: true,
-    answer: "staging",
+    id: pausedData.inputs[0]!.id,
+    value: "staging",
   });
   assert.equal(resumed.isError, false);
   assert.equal(resumed.json().status, "completed");
@@ -575,15 +871,40 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
       Authorization: `Bearer ${tenant.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ name: "mcp-repo" }),
+    body: JSON.stringify({ name: "mcp-repo-alpha" }),
   });
   assert.equal(createRepoRes.status, 201);
   const createdRepo = (await createRepoRes.json()) as { repoId: string };
 
-  const reposList = await callTenantTool("list_repos", {});
-  assert.equal(reposList.isError, false);
+  // Create two more repos to verify list_repos pagination (limit, cursor, prefix, total)
+  for (const name of ["mcp-repo-beta", "other-repo-gamma"]) {
+    const r = await worker.fetch(`${origin}/v2/repos`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tenant.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name }),
+    });
+    assert.equal(r.status, 201);
+  }
+
+  const reposPage1 = await callTenantTool("list_repos", { limit: 2 });
+  assert.equal(reposPage1.isError, false);
+  assert.equal(reposPage1.json().repos.length, 2);
+  assert.equal(reposPage1.json().total, 3);
+  assert.equal(reposPage1.json().nextCursor, "2");
+
+  const reposPage2 = await callTenantTool("list_repos", { limit: 2, cursor: reposPage1.json().nextCursor });
+  assert.equal(reposPage2.isError, false);
+  assert.equal(reposPage2.json().repos.length, 1);
+  assert.equal(reposPage2.json().nextCursor, undefined);
+
+  const reposPrefixed = await callTenantTool("list_repos", { prefix: "mcp-repo-" });
+  assert.equal(reposPrefixed.isError, false);
+  assert.equal(reposPrefixed.json().total, 2);
   assert.ok(
-    (reposList.json().repos as Array<{ repoId: string }>).some(
+    (reposPrefixed.json().repos as Array<{ repoId: string }>).some(
       (r) => r.repoId === createdRepo.repoId,
     ),
   );
@@ -869,7 +1190,7 @@ test("v2 ingress routes /mcp, /v2/mcp, /v2/agents/:id/mcp, and protected-resourc
   });
   const env = { V2: { fetch: v2 } };
 
-  // 1. Bearer cr_live_... on /mcp routes directly to V2 at /v2/mcp
+  // 1. Bearer cr_live_... on /mcp routes directly to V2 preserving /mcp path (for RFC 9728 metadata alignment)
   const r1 = await ingressWorker.fetch(
     new Request("https://run.camelai.com/mcp", {
       method: "POST",
@@ -879,30 +1200,33 @@ test("v2 ingress routes /mcp, /v2/mcp, /v2/agents/:id/mcp, and protected-resourc
     env,
   );
   assert.equal(r1.status, 200);
-  assert.deepEqual(await r1.json(), { routedTo: "/v2/mcp" });
+  assert.deepEqual(await r1.json(), { routedTo: "/mcp" });
 
-  // 2. OPTIONS /mcp routes to V2 at /v2/mcp
+  // 2. OPTIONS /mcp routes to V2 at /mcp
   const r2 = await ingressWorker.fetch(
     new Request("https://run.camelai.com/mcp", { method: "OPTIONS" }),
     env,
   );
   assert.equal(r2.status, 200);
-  assert.deepEqual(await r2.json(), { routedTo: "/v2/mcp" });
+  assert.deepEqual(await r2.json(), { routedTo: "/mcp" });
 
-  // 3. Unauthenticated POST /mcp routes to V2 at /v2/mcp
+  // 3. Unauthenticated POST /mcp routes to V2 at /mcp
   const r3 = await ingressWorker.fetch(
     new Request("https://run.camelai.com/mcp", { method: "POST", body: "{}" }),
     env,
   );
   assert.equal(r3.status, 200);
-  assert.deepEqual(await r3.json(), { routedTo: "/v2/mcp" });
+  assert.deepEqual(await r3.json(), { routedTo: "/mcp" });
 
-  // 4. /v2/mcp, /v2/agents/:id/mcp, and protected-resource metadata route directly to V2
+  // 4. /v2/mcp, /v2/agents/:id/mcp, and all RFC 9728 / RFC 8414 discovery metadata routes go directly to V2
   for (const path of [
     "/v2/mcp",
     "/v2/agents/helper/mcp",
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
     "/.well-known/oauth-protected-resource/v2/mcp",
     "/.well-known/oauth-protected-resource/v2/agents/helper/mcp",
+    "/.well-known/oauth-authorization-server",
   ]) {
     const r = await ingressWorker.fetch(new Request(`https://run.camelai.com${path}`), env);
     assert.equal(r.status, 200, path);
@@ -910,5 +1234,5 @@ test("v2 ingress routes /mcp, /v2/mcp, /v2/agents/:id/mcp, and protected-resourc
   }
 
   assert.equal(origin.mock.callCount(), 0);
-  assert.equal(v2Seen.length, 7);
+  assert.equal(v2Seen.length, 10);
 });
