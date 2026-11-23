@@ -925,7 +925,7 @@ export function createCamelRunBillingExtension(
     context: Context,
   ): Promise<{ exceeded: boolean; spentUsd: number; spendLimitUsd: number }> => {
     const spendLimitUsd = options.getSpendLimitUsd?.();
-    if (spendLimitUsd === undefined || !Number.isFinite(spendLimitUsd) || spendLimitUsd <= 0) {
+    if (spendLimitUsd === undefined || !Number.isFinite(spendLimitUsd) || spendLimitUsd < 0) {
       return { exceeded: false, spentUsd: 0, spendLimitUsd: Number.POSITIVE_INFINITY };
     }
     const spentUsd = await computeTotalSpentUsd(options, api, context);

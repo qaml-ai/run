@@ -16,12 +16,19 @@ import {
   type TranscriptContext,
   type Usage,
 } from "@earendil-works/pi-ai";
-import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
-import { azureOpenAIResponsesApi } from "@earendil-works/pi-ai/api/azure-openai-responses.lazy";
-import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
-import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import * as anthropicMessagesModule from "@earendil-works/pi-ai/api/anthropic-messages";
+import * as azureOpenAIResponsesModule from "@earendil-works/pi-ai/api/azure-openai-responses";
+import * as googleGenerativeAIModule from "@earendil-works/pi-ai/api/google-generative-ai";
+import * as openAICodexResponsesModule from "@earendil-works/pi-ai/api/openai-codex-responses";
+import * as openAICompletionsModule from "@earendil-works/pi-ai/api/openai-completions";
+import * as openAIResponsesModule from "@earendil-works/pi-ai/api/openai-responses";
+
+const anthropicMessagesApi = (): ProviderStreams => anthropicMessagesModule as unknown as ProviderStreams;
+const azureOpenAIResponsesApi = (): ProviderStreams => azureOpenAIResponsesModule as unknown as ProviderStreams;
+const googleGenerativeAIApi = (): ProviderStreams => googleGenerativeAIModule as unknown as ProviderStreams;
+const openAICodexResponsesApi = (): ProviderStreams => openAICodexResponsesModule as unknown as ProviderStreams;
+const openAICompletionsApi = (): ProviderStreams => openAICompletionsModule as unknown as ProviderStreams;
+const openAIResponsesApi = (): ProviderStreams => openAIResponsesModule as unknown as ProviderStreams;
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { AZURE_MODELS } from "@earendil-works/pi-ai/providers/azure.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";

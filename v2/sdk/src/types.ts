@@ -108,7 +108,10 @@ export interface LocalTool<TArgs = Record<string, unknown>, TResult = unknown> e
 export interface QueueConfig { mode: "each" | "batch"; windowMs?: number; }
 export interface DreamingConfig { enabled: boolean; idleSeconds?: number; }
 
+export type AgentEngine = "legacy" | "pi";
+
 export interface AgentConfig {
+  engine?: AgentEngine;
   model?: string;
   instructions?: string;
   definition?: string;
@@ -170,6 +173,7 @@ export interface ListSkillsOptions {
 export interface AgentSummary {
   id: string;
   key: string;
+  engine?: AgentEngine;
   agentToken?: string;
   repoId?: string | null;
   lineage?: string | null;

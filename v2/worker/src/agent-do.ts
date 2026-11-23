@@ -1,7 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
+import { PiAgentEngine, type LifecycleJobContext } from "./pi/agent-engine.ts";
 import { DEFAULT_MODEL_ID, calculateCostUsd } from "./providers.ts";
 import { consumeInfraCredit } from "./ops-metadata.ts";
 import { getTenantStub } from "./tenant-do.ts";
@@ -26,6 +28,7 @@ import {
   extractApiError,
   toApiErrorResponse,
   type AgentConfig,
+  type AgentEngine,
   type AgentEventRecord,
   type Env,
   type PendingInputView,
@@ -106,6 +109,115 @@ export class AgentDO extends DurableObject<Env> {
   private pendingWsCalls = new Map<string, PendingWsCall>();
   private lastDreamedSeq = 0;
   private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
+  private piEngine: PiAgentEngine | null = null;
+
+  private isPiEngine(cfg?: AgentConfig | null): boolean {
+    return (cfg ?? this.readConfigOrNull())?.engine === "pi";
+  }
+
+  private hasLifecycleJobsTable(): boolean {
+    const rows = this.ctx.storage.sql
+      .exec<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_jobs' LIMIT 1`,
+      )
+      .toArray();
+    return rows.length > 0;
+  }
+
+  private ensurePiEngine(): PiAgentEngine {
+    if (!this.piEngine) {
+      this.piEngine = new PiAgentEngine({
+        durableObject: this,
+        env: this.env,
+        ctx: this.ctx,
+        getConfig: () => this.requireConfig(),
+        readConfigOrNull: () => this.readConfigOrNull(),
+        isDestroying: () => this.destroying,
+        ensureAgentRepository: () => this.ensureAgentRepository(),
+        getVmSession: (branch: string) => {
+          const rows = this.ctx.storage.sql
+            .exec<{ vm_id: string; lease_expires_at: number }>(
+              `SELECT vm_id, lease_expires_at FROM vm_session WHERE branch = ?1 LIMIT 1`,
+              branch,
+            )
+            .toArray();
+          if (!rows[0]) return null;
+          return { vmId: rows[0].vm_id, leaseExpiresAt: rows[0].lease_expires_at };
+        },
+        saveVmSession: (branch: string, vmId: string, leaseExpiresAt: number) => {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO vm_session (branch, vm_id, lease_expires_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(branch) DO UPDATE SET vm_id = excluded.vm_id, lease_expires_at = excluded.lease_expires_at`,
+            branch,
+            vmId,
+            leaseExpiresAt,
+          );
+          void this.scheduleNextAlarm();
+        },
+        clearVmSession: (branch: string, vmId: string) => {
+          this.ctx.storage.sql.exec(
+            "DELETE FROM vm_session WHERE branch = ?1 AND vm_id = ?2",
+            branch,
+            vmId,
+          );
+        },
+        recordChildAgent: (entry) => {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO children (id, child_agent_id, child_agent_key, parent_run_id, status, result_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET status = excluded.status, result_json = excluded.result_json`,
+            entry.id,
+            entry.childAgentId,
+            entry.childAgentKey,
+            entry.parentRunId,
+            entry.status,
+            JSON.stringify(entry.result ?? null),
+          );
+        },
+        getChildAgent: (idOrAgentId: string) => {
+          const rows = this.ctx.storage.sql
+            .exec<{
+              id: string;
+              child_agent_id: string;
+              child_agent_key: string;
+              status: string;
+              result_json: string | null;
+            }>(
+              `SELECT * FROM children WHERE id = ?1 OR child_agent_id = ?1 OR child_agent_key = ?1 LIMIT 1`,
+              idOrAgentId,
+            )
+            .toArray();
+          const r = rows[0];
+          if (!r) return null;
+          return {
+            id: r.id,
+            childAgentId: r.child_agent_id,
+            childAgentKey: r.child_agent_key,
+            status: r.status,
+            result: r.result_json ? JSON.parse(r.result_json) : null,
+          };
+        },
+        hasWebSocketTool: (name: string) => this.findSocketForTool(name) !== null,
+        invokeWebSocketTool: (name, args, callId) => this.dispatchWebSocketTool(name, args, callId),
+        recordAndBroadcastEvent: (runId, type, data) =>
+          this.recordAndBroadcastEvent(runId, type, data),
+        enqueueAppWebhook: (tenantId, eventType, payload) =>
+          this.enqueueAppWebhook(tenantId, eventType, payload),
+        scheduleNextAlarm: () => this.scheduleNextAlarm(),
+        materializeRunRecord: (runId) => this.materializeRunRecord(runId),
+        waitForRunSettlement: (runId) => this.waitForRunSettlement(runId),
+        notifyRunWaiters: (runId) => this.notifyRunWaiters(runId),
+        releaseUnusedPreacquiredHint: (tenantId, hints) =>
+          this.releaseUnusedPreacquiredHint(tenantId, hints),
+        setActiveRunId: (runId) => {
+          this.activeRunId = runId;
+        },
+        getActiveRunId: () => this.activeRunId,
+      });
+    }
+    return this.piEngine;
+  }
 
   private ensureSql(): void {
     if (this.sqlReady) return;
@@ -257,7 +369,7 @@ export class AgentDO extends DurableObject<Env> {
       this.lastDreamedSeq = Number(dreamRow.v) || 0;
     }
 
-    if (!this.activeRunId) {
+    if (!this.activeRunId && !this.isPiEngine()) {
       const orphaned = this.ctx.storage.sql
         .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'running'`)
         .toArray();
@@ -1756,6 +1868,23 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
+    if (this.piEngine !== null || this.isPiEngine(cfg) || this.hasLifecycleJobsTable()) {
+      const engine = this.ensurePiEngine();
+      await engine.ensureStarted();
+      if (candidates.length > 0) {
+        const earliest = Math.max(now + 250, Math.min(...candidates));
+        await engine.lifecycle.jobs.push({
+          id: "camelrun:periodic",
+          fn: "camelrun_periodic",
+          time: earliest,
+          singleflight: true,
+        });
+      } else {
+        await engine.lifecycle.jobs.cancel("camelrun:periodic");
+      }
+      return;
+    }
+
     if (candidates.length > 0) {
       const earliest = Math.max(now + 250, Math.min(...candidates));
       await this.ctx.storage.setAlarm(earliest);
@@ -1770,11 +1899,36 @@ export class AgentDO extends DurableObject<Env> {
     const cfg = this.readConfigOrNull();
     if (!cfg) return;
 
+    if (this.isPiEngine(cfg) || this.hasLifecycleJobsTable()) {
+      const engine = this.ensurePiEngine();
+      await engine.ensureStarted();
+      await engine.lifecycle.alarm();
+      return;
+    }
+
+    await this.runPeriodicTasks();
+  }
+
+  async onJob(context: LifecycleJobContext): Promise<void> {
+    if (this.destroying) return;
+    this.ensureSql();
+    if (context.job.fn === "camelrun_periodic") {
+      await this.runPeriodicTasks();
+    }
+  }
+
+  private async runPeriodicTasks(): Promise<void> {
+    if (this.destroying) return;
+    this.ensureSql();
+    const cfg = this.readConfigOrNull();
+    if (!cfg) return;
+
     const generation = this.storageGeneration;
     const stopping = () => this.destroying || this.storageGeneration !== generation;
     const now = Date.now();
+    const isPi = this.isPiEngine(cfg);
 
-    // 1. Expire stale pending human inputs
+    // 1. Expire stale pending human inputs (pi-durable handles its own ToolPark deadlines via pi-wake)
     const expiredInputs = this.ctx.storage.sql
       .exec<{
         id: string;
@@ -1788,13 +1942,16 @@ export class AgentDO extends DurableObject<Env> {
       )
       .toArray();
     for (const inp of expiredInputs) {
+      if (PiAgentEngine.isPiInputRow(inp.pending_turn_json)) continue;
       this.expirePendingInput(inp, now);
     }
 
-    this.reportStalledRuns(now);
-    await this.scheduleNextAlarm();
-    if (stopping()) return;
-    this.ctx.waitUntil(this.drainRunQueue());
+    if (!isPi) {
+      this.reportStalledRuns(now);
+      await this.scheduleNextAlarm();
+      if (stopping()) return;
+      this.ctx.waitUntil(this.drainRunQueue());
+    }
 
     // 2. Clean up expired VM session leases
     const expiredVms = this.ctx.storage.sql
@@ -1834,7 +1991,7 @@ export class AgentDO extends DurableObject<Env> {
         );
       }
       try {
-        await this.enqueueOrRunInternal({ prompt: sch.prompt, wait: false, supersedeInputs: false });
+        await this.startRun({ prompt: sch.prompt, wait: false, supersedeInputs: false });
       } catch (error) {
         if (!stopping()) throw error;
       }
@@ -1945,11 +2102,34 @@ export class AgentDO extends DurableObject<Env> {
   ): Promise<{ config: AgentConfig; created: boolean; run?: RunRecord }> {
     this.ensureSql();
     const existing = this.readConfigOrNull();
+    const defaultEngine: AgentEngine = this.env.DEFAULT_AGENT_ENGINE === "pi" ? "pi" : "legacy";
+    const currentEngine: AgentEngine = existing?.engine ?? "legacy";
+    const nextEngine: AgentEngine = existing
+      ? (incoming.engine ?? currentEngine)
+      : (incoming.engine ?? defaultEngine);
+
+    if (existing && incoming.engine !== undefined && incoming.engine !== currentEngine) {
+      const hasActiveWork =
+        Boolean(this.activeRunId) ||
+        Boolean(this.piEngine?.isBusy()) ||
+        this.ctx.storage.sql
+          .exec(`SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1`)
+          .toArray().length > 0;
+      if (hasActiveWork) {
+        throw new ApiError(
+          409,
+          "engine_busy",
+          "Cannot switch agent engine while a run is active or awaiting input",
+        );
+      }
+    }
+
     const now = Date.now();
     const merged: AgentConfig = {
       id: incoming.id,
       tenantId: incoming.tenantId,
       key: incoming.key,
+      engine: nextEngine,
       model:
         incoming.model ??
         existing?.model ??
@@ -2009,7 +2189,9 @@ export class AgentDO extends DurableObject<Env> {
           console.error("Agent model index update failed", { agentId: merged.id, error });
         }));
       }
-      const run = await this.enqueueOrRunInternal(initialRun.input, initialRun.hints);
+      const run = this.isPiEngine(merged)
+        ? await this.ensurePiEngine().startRun(initialRun.input, initialRun.hints)
+        : await this.enqueueOrRunInternal(initialRun.input, initialRun.hints);
       return { config: merged, created: !existing, run };
     }
 
@@ -2043,6 +2225,9 @@ export class AgentDO extends DurableObject<Env> {
     }
     const updated = { ...cfg, model, keyScope: nextScope, updatedAt: Date.now() };
     this.writeConfig(updated);
+    if (this.isPiEngine(updated)) {
+      await this.ensurePiEngine().syncModelChange(updated);
+    }
     await this.syncIndexedModel(updated);
     return { model, ...(nextScope ? { keyScope: nextScope } : {}), changed: true };
   }
@@ -2094,6 +2279,7 @@ export class AgentDO extends DurableObject<Env> {
       summary: string;
       created_at: number;
     } | null;
+    piEntries?: EntryRecord[];
   }): Promise<{ seeded: true }> {
     this.ensureSql();
     this.writeConfig(payload.config);
@@ -2117,6 +2303,9 @@ export class AgentDO extends DurableObject<Env> {
         m.tokens_est,
         m.created_at,
       );
+    }
+    if (payload.piEntries !== undefined && this.isPiEngine(payload.config)) {
+      await this.ensurePiEngine().seedForkEntries(payload.config, payload.piEntries);
     }
     return { seeded: true };
   }
@@ -2172,10 +2361,14 @@ export class AgentDO extends DurableObject<Env> {
     const msgCountRow = this.ctx.storage.sql
       .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM messages`)
       .one();
+    const piMsgCount = this.isPiEngine(cfg)
+      ? await this.ensurePiEngine().getMessageCount()
+      : null;
     return {
       id: cfg.id,
       key: cfg.key,
       tenantId: cfg.tenantId,
+      engine: cfg.engine ?? "legacy",
       model: cfg.model,
       keyScope: cfg.keyScope ?? null,
       instructions: cfg.instructions,
@@ -2195,7 +2388,7 @@ export class AgentDO extends DurableObject<Env> {
       dreaming: cfg.dreaming,
       status: this.activeRunId ? "running" : "idle",
       activeRunId: this.activeRunId,
-      messageCount: Number(msgCountRow.cnt ?? 0),
+      messageCount: piMsgCount ?? Number(msgCountRow.cnt ?? 0),
       lastRun: latestRunRow ? this.materializeRunRecord(latestRunRow.id) : null,
       createdAt: cfg.createdAt,
       updatedAt: cfg.updatedAt,
@@ -2206,6 +2399,9 @@ export class AgentDO extends DurableObject<Env> {
     this.ensureSql();
     if (typeof body.prompt !== "string") {
       throw new ApiError(400, "invalid_request", "`prompt` must be a string");
+    }
+    if (this.isPiEngine()) {
+      return this.ensurePiEngine().startRun(body, hints);
     }
     return this.enqueueOrRunInternal(body, hints);
   }
@@ -2266,6 +2462,9 @@ export class AgentDO extends DurableObject<Env> {
     cancelledRunIds: string[];
   }> {
     this.ensureSql();
+    if (this.isPiEngine()) {
+      return this.ensurePiEngine().abortRuns(body);
+    }
     const cancelledRunIds: string[] = [];
 
     if (this.activeRunId && this.activeAbortController) {
@@ -2343,6 +2542,10 @@ export class AgentDO extends DurableObject<Env> {
     nextBefore?: number | null;
   }> {
     this.ensureSql();
+    if (this.isPiEngine()) {
+      const piHistory = await this.ensurePiEngine().getHistory(opts);
+      if (piHistory !== null) return piHistory;
+    }
     const after = Math.max(0, Number(opts?.after ?? 0));
     const limit = Math.max(1, Math.min(500, Number(opts?.limit ?? 50)));
     const before = opts?.before;
@@ -2511,6 +2714,9 @@ export class AgentDO extends DurableObject<Env> {
     keepLast?: number;
   }): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
     this.ensureSql();
+    if (this.isPiEngine()) {
+      return this.ensurePiEngine().compactHistory(body);
+    }
     return performCompaction(this.buildAdapter(), {
       customSummary: body?.summary,
       keepLast: body?.keepLast,
@@ -2522,6 +2728,9 @@ export class AgentDO extends DurableObject<Env> {
     keepLast?: number;
   }): Promise<{ ok: true; upToSeq: number; summary: string }> {
     this.ensureSql();
+    if (this.isPiEngine()) {
+      return this.ensurePiEngine().resetContext(body);
+    }
     const keepLast = Math.max(0, Number(body?.keepLast ?? 0));
     const allRows = this.ctx.storage.sql
       .exec<{ seq: number; role: StoredMessage["role"] }>(`SELECT seq, role FROM messages ORDER BY seq ASC`)
@@ -2556,30 +2765,54 @@ export class AgentDO extends DurableObject<Env> {
     const sourceCfg = this.requireConfig();
     const tenantStub = getTenantStub(this.env, sourceCfg.tenantId);
 
-    const maxSeqRow = this.ctx.storage.sql
-      .exec<{ max_seq: number | null }>(`SELECT MAX(seq) AS max_seq FROM messages`)
-      .one();
-    const targetSeq =
-      typeof body?.atSeq === "number" ? body.atSeq : Number(maxSeqRow.max_seq ?? 0);
+    const isPi = this.isPiEngine(sourceCfg);
+    let targetSeq: number;
+    let piEntries: EntryRecord[] | undefined;
+    let copiedMessages: Array<{
+      seq: number;
+      run_id: string | null;
+      role: string;
+      content_json: string;
+      tokens_est: number;
+      created_at: number;
+    }> = [];
+    let copiedCompaction: {
+      id: string;
+      up_to_seq: number;
+      summary: string;
+      created_at: number;
+    } | null = null;
 
-    const copiedMessages = this.ctx.storage.sql
-      .exec<{
-        seq: number;
-        run_id: string | null;
-        role: string;
-        content_json: string;
-        tokens_est: number;
-        created_at: number;
-      }>(`SELECT * FROM messages WHERE seq <= ?1 ORDER BY seq ASC`, targetSeq)
-      .toArray();
+    if (isPi) {
+      const exported = await this.ensurePiEngine().exportEntriesUpTo(body?.atSeq);
+      piEntries = exported.entries;
+      targetSeq = exported.targetSeq;
+    } else {
+      const maxSeqRow = this.ctx.storage.sql
+        .exec<{ max_seq: number | null }>(`SELECT MAX(seq) AS max_seq FROM messages`)
+        .one();
+      targetSeq =
+        typeof body?.atSeq === "number" ? body.atSeq : Number(maxSeqRow.max_seq ?? 0);
 
-    const copiedCompaction =
-      this.ctx.storage.sql
-        .exec<{ id: string; up_to_seq: number; summary: string; created_at: number }>(
-          `SELECT * FROM compactions WHERE up_to_seq <= ?1 ORDER BY up_to_seq DESC LIMIT 1`,
-          targetSeq,
-        )
-        .toArray()[0] ?? null;
+      copiedMessages = this.ctx.storage.sql
+        .exec<{
+          seq: number;
+          run_id: string | null;
+          role: string;
+          content_json: string;
+          tokens_est: number;
+          created_at: number;
+        }>(`SELECT * FROM messages WHERE seq <= ?1 ORDER BY seq ASC`, targetSeq)
+        .toArray();
+
+      copiedCompaction =
+        this.ctx.storage.sql
+          .exec<{ id: string; up_to_seq: number; summary: string; created_at: number }>(
+            `SELECT * FROM compactions WHERE up_to_seq <= ?1 ORDER BY up_to_seq DESC LIMIT 1`,
+            targetSeq,
+          )
+          .toArray()[0] ?? null;
+    }
 
     const newKey =
       body?.key?.trim() || `${sourceCfg.key}-fork-${randomId("f", 3).slice(2)}`;
@@ -2650,6 +2883,7 @@ export class AgentDO extends DurableObject<Env> {
       config: forkedConfig,
       messages: copiedMessages,
       compaction: copiedCompaction,
+      ...(piEntries !== undefined ? { piEntries } : {}),
     });
 
     return {
@@ -2717,6 +2951,10 @@ export class AgentDO extends DurableObject<Env> {
     }
     if (!inp.pending_turn_json) {
       throw new ApiError(500, "missing_turn_state", "Paused turn state missing");
+    }
+
+    if (PiAgentEngine.isPiInputRow(inp.pending_turn_json)) {
+      return this.ensurePiEngine().respondToInput(inp, body, trustedResponder);
     }
 
     if (body?.approved !== undefined && typeof body.approved !== "boolean") {
@@ -3174,6 +3412,10 @@ export class AgentDO extends DurableObject<Env> {
         for (const v of vms) {
           await cfs.stopVm(v.vm_id, cfg.lineage).catch(() => {});
         }
+      }
+      if (this.piEngine) {
+        await this.piEngine.dispose().catch(() => {});
+        this.piEngine = null;
       }
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();

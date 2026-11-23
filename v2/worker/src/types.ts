@@ -29,6 +29,7 @@ export interface Env {
   TOOL_IDENTITY_ISSUER?: string;
   TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;
+  DEFAULT_AGENT_ENGINE?: AgentEngine;
   BROWSER_DEFAULT_ENGINE?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_BROWSER_RUN_TOKEN?: string;
@@ -105,10 +106,13 @@ export interface DreamingConfig {
   idleSeconds: number;
 }
 
+export type AgentEngine = "legacy" | "pi";
+
 export interface AgentConfig {
   id: string;
   tenantId: string;
   key: string;
+  engine?: AgentEngine;
   model: string;
   keyScope?: string | null;
   instructions: string;
@@ -131,6 +135,7 @@ export interface AgentConfig {
 }
 
 export interface AgentUpsertInput {
+  engine?: AgentEngine;
   model?: string;
   keyScope?: string | null;
   instructions?: string;

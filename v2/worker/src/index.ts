@@ -853,6 +853,9 @@ app.put("/v2/agents/:key", async (c) => {
   }
 
   const input = (await c.req.json().catch(() => ({}))) as AgentUpsertInput;
+  if (input.engine !== undefined && input.engine !== "legacy" && input.engine !== "pi") {
+    throw new ApiError(400, "invalid_request", "`engine` must be 'legacy' or 'pi'");
+  }
   if (input.skills !== undefined) {
     input.skills = normalizeSkillSelectors(input.skills);
   }
@@ -922,6 +925,7 @@ app.put("/v2/agents/:key", async (c) => {
         id: prep.agentId,
         tenantId: prep.tenantId,
         key,
+        engine: input.engine ?? defCfg?.engine,
         model: input.model ?? defCfg?.model,
         keyScope: input.keyScope !== undefined ? (input.keyScope?.trim() || null) : defCfg?.keyScope,
         initialModel: prep.model,
@@ -979,6 +983,7 @@ app.put("/v2/agents/:key", async (c) => {
       repoId: prep.repoId,
       branch: prep.branch,
       model: initResult.config.model,
+      engine: initResult.config.engine ?? "legacy",
       created: prep.created,
       ...(initResult.run ? { run: initResult.run } : {}),
     },
