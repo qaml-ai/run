@@ -28,6 +28,8 @@ import { Lifecycle, type LifecycleJobContext } from "agents/lifecycle";
 import type { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "../camelfs.ts";
 import { randomId } from "../crypto.ts";
+import { consumeInfraCredit } from "../ops-metadata.ts";
+import { resolveTenantByokProvider } from "../providers.ts";
 import { verifyRunFiles } from "../run-files.ts";
 import { getSkillStore, type SkillRecord } from "../skills.ts";
 import { getTenantStub, platformCreditReserve } from "../tenant-do.ts";
@@ -752,7 +754,8 @@ export class PiAgentEngine {
     tracker.usage.inputTokens += ev.inputTokens;
     tracker.usage.outputTokens += ev.outputTokens;
     tracker.usage.cacheReadTokens = (tracker.usage.cacheReadTokens ?? 0) + ev.cacheReadTokens;
-    tracker.usage.costUsd = Number((tracker.usage.costUsd + ev.costUsd).toFixed(8));
+    const billedStepUsd = tracker.usage.byok ? 0 : ev.costUsd;
+    tracker.usage.costUsd = Number((tracker.usage.costUsd + billedStepUsd).toFixed(8));
 
     if (tracker.actor) {
       this.host.ctx.storage.transactionSync(() => {
@@ -1242,18 +1245,48 @@ export class PiAgentEngine {
           tracker.usage.vmMs > 0 ||
           tracker.usage.costUsd > 0
         ) {
+          const refId = `run:${tracker.runId}`;
+          const isByok = tracker.usage.byok === true;
+          let platformCostUsd = tracker.usage.costUsd;
+
+          if (isByok) {
+            const vmCostUsd = calculatePiCostUsd("mock", 0, 0, tracker.usage.vmMs, 0);
+            let uncoveredInfraUsd = vmCostUsd;
+            if (vmCostUsd > 0) {
+              const infra = await consumeInfraCredit(
+                this.host.env,
+                cfg.tenantId,
+                vmCostUsd,
+                refId,
+              ).catch(() => ({
+                coveredUsd: 0,
+                uncoveredUsd: vmCostUsd,
+                remainingUsd: 0,
+              }));
+              uncoveredInfraUsd = infra.uncoveredUsd;
+            }
+            if (uncoveredInfraUsd > 0) {
+              const profile = await tenantStub.getProfile().catch(() => null);
+              const availableBalance = Math.max(0, profile?.balanceUsd ?? 0);
+              platformCostUsd = Number(Math.min(availableBalance, uncoveredInfraUsd).toFixed(8));
+            } else {
+              platformCostUsd = 0;
+            }
+          }
+
           await tenantStub
             .settleUsage({
-              refId: `run:${tracker.runId}`,
+              refId,
               model: cfg.model,
               inputTokens: tracker.usage.inputTokens,
               outputTokens: tracker.usage.outputTokens,
               cacheReadTokens: tracker.usage.cacheReadTokens ?? 0,
               vmMs: tracker.usage.vmMs,
-              costUsd: tracker.usage.costUsd,
+              costUsd: platformCostUsd,
               note: `Agent ${cfg.key} (${cfg.id})`,
               agentId: cfg.id,
               actor: tracker.actor,
+              ...(isByok ? { byok: true } : {}),
             })
             .catch(() => {});
         }
@@ -1464,7 +1497,19 @@ export class PiAgentEngine {
       );
     }
 
-    if (!cfg.model.startsWith("mock") && !platformCreditReserve(this.host.env, cfg.tenantId)) {
+    const effectiveScope =
+      hints?.prefetchedProvider?.keyScope !== undefined
+        ? (hints.prefetchedProvider.keyScope ?? null)
+        : (body.keyScope ?? cfg.keyScope ?? null);
+    const { isByok } = await resolveTenantByokProvider(
+      this.host.env,
+      cfg.tenantId,
+      cfg.model,
+      hints?.prefetchedProvider,
+      effectiveScope,
+    );
+
+    if (!cfg.model.startsWith("mock") && !isByok && !platformCreditReserve(this.host.env, cfg.tenantId)) {
       const balanceUsd =
         hints?.prefetchedBalanceUsd !== undefined
           ? hints.prefetchedBalanceUsd
@@ -1503,7 +1548,7 @@ export class PiAgentEngine {
         actor,
         outputSchema: body.outputSchema ?? null,
         spendLimitUsd: effectiveSpendLimit,
-        usage: emptyUsage(),
+        usage: isByok ? { ...emptyUsage(), byok: true } : emptyUsage(),
         filesChanged: new Set(),
         toolCalls: [],
         seenToolStarts: new Set(),
