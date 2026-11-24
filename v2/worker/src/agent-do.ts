@@ -1265,6 +1265,60 @@ export class AgentDO extends DurableObject<Env> {
     }
   }
 
+  private async hasDuePeriodicWork(now: number, cfg: AgentConfig): Promise<boolean> {
+    const sql = this.ctx.storage.sql;
+    if (
+      sql
+        .exec(`SELECT 1 FROM inputs WHERE status = 'pending' AND expires_at <= ?1 LIMIT 1`, now)
+        .toArray().length > 0
+    ) {
+      return true;
+    }
+    if (
+      sql.exec(`SELECT 1 FROM vm_session WHERE lease_expires_at <= ?1 LIMIT 1`, now).toArray()
+        .length > 0
+    ) {
+      return true;
+    }
+    if (
+      sql
+        .exec(`SELECT 1 FROM schedules WHERE enabled = 1 AND next_due_at <= ?1 LIMIT 1`, now)
+        .toArray().length > 0
+    ) {
+      return true;
+    }
+    if (
+      sql
+        .exec(`SELECT 1 FROM app_webhook_deliveries WHERE next_attempt_at <= ?1 LIMIT 1`, now)
+        .toArray().length > 0
+    ) {
+      return true;
+    }
+    if (this.watchableRuns().some((run) => now - run.started_at >= RUN_STALL_AFTER_MS)) {
+      return true;
+    }
+    if (
+      !this.activeRunId &&
+      sql.exec(`SELECT 1 FROM runs WHERE status = 'queued' LIMIT 1`).toArray().length > 0 &&
+      sql
+        .exec(`SELECT 1 FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`)
+        .toArray().length === 0
+    ) {
+      return true;
+    }
+    if (cfg.dreaming?.enabled && cfg.dreaming.idleSeconds > 0 && !this.activeRunId) {
+      const latest = await this.ensurePiEngine().getLatestMessageMeta();
+      if (
+        latest &&
+        latest.seq > this.lastDreamedSeq &&
+        now - latest.createdAt >= cfg.dreaming.idleSeconds * 1000
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   override async alarm(): Promise<void> {
     if (this.destroying) return;
     this.ensureSql();
@@ -1274,14 +1328,29 @@ export class AgentDO extends DurableObject<Env> {
     const generation = this.storageGeneration;
     this.periodicRanInAlarm = false;
 
+    const hasJobsTable =
+      this.ctx.storage.sql
+        .exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_jobs' LIMIT 1`)
+        .toArray().length > 0;
+    const hadDueLifecycleJob =
+      hasJobsTable &&
+      this.ctx.storage.sql
+        .exec(`SELECT 1 FROM cf_agents_jobs WHERE time <= ?1 LIMIT 1`, Date.now())
+        .toArray().length > 0;
+
     const engine = this.ensurePiEngine();
     await engine.ensureStarted();
     if (this.destroying || this.storageGeneration !== generation) return;
     await engine.lifecycle.alarm();
     if (this.destroying || this.storageGeneration !== generation) return;
 
-    // Also run periodic maintenance if `alarm()` was fired directly (e.g. legacy DO alarm or test trigger)
-    if (!this.periodicRanInAlarm) {
+    // On a lifecycle-driven alarm (such as a 30s `pi-wake` heartbeat), only run periodic
+    // maintenance if periodic work is actually due. On a direct/legacy `alarm()` invocation
+    // with no due lifecycle jobs, run periodic maintenance as before.
+    if (
+      !this.periodicRanInAlarm &&
+      (!hadDueLifecycleJob || (await this.hasDuePeriodicWork(Date.now(), cfg)))
+    ) {
       await this.runPeriodicTasks();
     }
   }
@@ -1322,8 +1391,6 @@ export class AgentDO extends DurableObject<Env> {
     }
 
     this.reportStalledRuns(now);
-    await this.scheduleNextAlarm();
-    if (stopping()) return;
     this.ctx.waitUntil(this.drainRunQueue());
 
     // 2. Clean up expired VM session leases

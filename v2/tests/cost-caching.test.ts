@@ -312,7 +312,7 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { threshold: expected });
     };
-    await check("azure/gpt-6.1-terra", 272_000 - 16_384);
+    await check("azure/gpt-6.1-terra", 1_050_000 - 16_384);
     await check("azure/gpt-6.2-sol", 1_050_000 - 16_384);
     await check("openai/gpt-4.1", 1_047_576 - 16_384);
     await check("anthropic/claude-sonnet-4-0", 200_000 - 16_384);

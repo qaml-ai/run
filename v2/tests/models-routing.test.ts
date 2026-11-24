@@ -412,9 +412,9 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     // 20k*2 + 80k*0.1 + 10k*10 = 0.04 + 0.008 + 0.1 = 0.148
     assert.equal(s55.costUsd, 0.148);
 
-    // azure/gpt-6.1-terra: $1 in, $5 out, $0.05 cacheRead, ctx 272_000; >272k tier $2 in, $7.50 out, $0.10 cacheRead
+    // azure/gpt-6.1-terra: $1 in, $5 out, $0.05 cacheRead, ctx 1_050_000; >272k tier $2 in, $7.50 out, $0.10 cacheRead
     const terraShort = await check("azure/gpt-6.1-terra", 100_000, 10_000, 80_000);
-    assert.equal(terraShort.contextWindow, 272_000);
+    assert.equal(terraShort.contextWindow, 1_050_000);
     // 20k*1 + 80k*0.05 + 10k*5 = 0.02 + 0.004 + 0.05 = 0.074
     assert.equal(terraShort.costUsd, 0.074);
 

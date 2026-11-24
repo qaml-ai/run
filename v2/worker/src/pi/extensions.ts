@@ -240,7 +240,60 @@ export function createCamelRunCodingExtension(
       return formatBoundedLineRange(args.path, fullText, args.start_line, args.end_line, args.limit);
     }
     if (args.at && options?.readAtCommit) {
-      return { output: [{ type: "text" as const, text: await options.readAtCommit(args.path, args.at) }] };
+      const fullText = await options.readAtCommit(args.path, args.at);
+      const allLines = fullText.split("\n");
+      const totalFileLines = allLines.length;
+      const startLine = args.offset !== undefined ? Math.max(1, Math.floor(args.offset)) : 1;
+      if (startLine > totalFileLines) {
+        return {
+          output: [{ type: "text" as const, text: "" }],
+          diagnostics: [
+            {
+              severity: "info" as const,
+              code: "offset_beyond_eof",
+              message: `Offset ${startLine} is beyond end of file (${totalFileLines} lines total).`,
+            },
+          ],
+        };
+      }
+      const MAX_LINES = 2_000;
+      const MAX_BYTES = 50 * 1024;
+      const maxLines =
+        typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0
+          ? Math.min(Math.floor(args.limit), MAX_LINES)
+          : MAX_LINES;
+      const encoder = new TextEncoder();
+      const keptLines: string[] = [];
+      let usedBytes = 0;
+      let truncatedByBytes = false;
+      const sliceEnd = Math.min(totalFileLines, startLine - 1 + maxLines);
+      for (let i = startLine - 1; i < sliceEnd; i++) {
+        const line = allLines[i]!;
+        const lineBytes = encoder.encode(line).byteLength + (keptLines.length > 0 ? 1 : 0);
+        if (usedBytes + lineBytes > MAX_BYTES) {
+          truncatedByBytes = true;
+          break;
+        }
+        keptLines.push(line);
+        usedBytes += lineBytes;
+      }
+      const endLine = startLine + keptLines.length - 1;
+      const hasMore = startLine - 1 + keptLines.length < totalFileLines;
+      if (!truncatedByBytes && !hasMore) {
+        return { output: [{ type: "text" as const, text: keptLines.join("\n") }] };
+      }
+      const nextOffset = Math.max(startLine, endLine + 1);
+      const limitNote = truncatedByBytes ? " (50.0KB limit)" : "";
+      return {
+        output: [{ type: "text" as const, text: keptLines.join("\n") }],
+        diagnostics: [
+          {
+            severity: "info" as const,
+            code: "truncated",
+            message: `Showing lines ${startLine}-${Math.max(startLine, endLine)} of ${totalFileLines}${limitNote}. Use offset=${nextOffset} to continue.`,
+          },
+        ],
+      };
     }
     return base.execute(args as never, api as never, context);
   };
@@ -1139,7 +1192,14 @@ export function createCamelRunBillingExtension(
           const qualifiedModel = `${message.provider}/${message.model}`;
           const costUsd =
             lookupCatalogModel(qualifiedModel) || reportedCost <= 0
-              ? calculatePiCostUsd(qualifiedModel, inputTokens, outputTokens, 0, cacheReadTokens)
+              ? calculatePiCostUsd(
+                  qualifiedModel,
+                  inputTokens,
+                  outputTokens,
+                  0,
+                  cacheReadTokens,
+                  cacheWriteTokens,
+                )
               : reportedCost;
 
           await options.onUsageRecorded?.({
@@ -1616,7 +1676,10 @@ export function createCamelRunBrowserExtension(
 
 export interface CamelRunDelegateExtensionOptions {
   env: Env;
-  config: AgentConfig;
+  /** Live config getter (preferred so config updates after extension install are reflected). */
+  getConfig?: () => AgentConfig;
+  /** Static fallback config if `getConfig` is not supplied. */
+  config?: AgentConfig;
   getRunId?: () => string;
   recordChildAgent?: (entry: {
     id: string;
@@ -1732,7 +1795,11 @@ export function createCamelRunDelegateExtension(
       return options.onDelegate({ synchronous, ...args });
     }
 
-    const { env, config } = options;
+    const { env } = options;
+    const config = options.getConfig?.() ?? options.config;
+    if (!config) {
+      throw new Error("Agent configuration is not available for delegation");
+    }
     const tenantStub = getTenantStub(env, config.tenantId);
     const defSlug = args.definition?.trim() || undefined;
     const defEntry = defSlug ? await tenantStub.getDefinition(defSlug) : null;

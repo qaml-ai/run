@@ -915,8 +915,8 @@ export class PiAgentEngine {
       this.registry.install(
         createCamelRunDelegateExtension({
           env: this.host.env,
-          config: cfg,
-          getRunId: () => this.activeTracker?.runId ?? "",
+          getConfig: () => this.host.getConfig(),
+          getRunId: () => this.getOrRehydrateActiveTracker()?.runId ?? "",
           recordChildAgent: (entry) => {
             sql.exec(
               `INSERT INTO children (id, child_agent_id, child_agent_key, parent_run_id, status, result_json)
@@ -1746,7 +1746,7 @@ export class PiAgentEngine {
       hints?.prefetchedProvider?.keyScope !== undefined
         ? (hints.prefetchedProvider.keyScope ?? null)
         : (params.keyScope ?? cfg.keyScope ?? null);
-    const { isByok } = await resolveTenantByokProvider(
+    const { isByok, prefetchedProvider } = await resolveTenantByokProvider(
       this.host.env,
       cfg.tenantId,
       cfg.model,
@@ -1769,7 +1769,10 @@ export class PiAgentEngine {
 
     try {
       await this.ensureStarted();
-      await this.refreshModels(cfg, { keyScope: params.keyScope, hints });
+      await this.refreshModels(cfg, {
+        keyScope: params.keyScope,
+        hints: prefetchedProvider ? { ...(hints ?? {}), prefetchedProvider } : hints,
+      });
       if (!cfg.model.startsWith("mock")) {
         const ref = parsePiModelRef(cfg.model, this.host.env);
         const providerObj = this.currentModels?.getProvider(ref.provider);
@@ -2326,11 +2329,17 @@ export class PiAgentEngine {
           await sub?.wait(BG);
         }
         if (result?.entryId !== undefined || result?.submissionId !== undefined) {
-          const allAfter = await this.listAllEntries();
-          const compEntry =
-            result?.entryId !== undefined
-              ? allAfter.find((e) => Number(e.id) === Number(result.entryId))
-              : [...allAfter].reverse().find((e) => CompactionEntry.is(e));
+          let compEntry: EntryRecord | undefined;
+          let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+          for (;;) {
+            const page = await conv.entries({ order: "descending" }, 16, cursor, BG);
+            compEntry =
+              result?.entryId !== undefined
+                ? page.items.find((e) => Number(e.id) === Number(result.entryId))
+                : page.items.find((e) => CompactionEntry.is(e));
+            if (compEntry || !page.next) break;
+            cursor = page.next;
+          }
           if (compEntry) {
             const msg = compEntry.model?.[0];
             const rawText =
@@ -2368,8 +2377,9 @@ export class PiAgentEngine {
     await this.ensureRootMigrated(cfg);
 
     const summary = body?.summary?.trim() ?? "";
-    const beforeEntries = await this.listAllEntries();
-    const upToSeq = Number(beforeEntries.at(-1)?.id ?? 0);
+    const conv = await this.getRootConversation();
+    const tailPage = conv ? await conv.entries({ order: "descending" }, 1, undefined, BG) : null;
+    const upToSeq = Number(tailPage?.items[0]?.id ?? 0);
 
     await this.harness.session(ROOT_SESSION).reset(summary || undefined);
     this.host.recordAndBroadcastEvent(null, "context_reset", { upToSeq });
@@ -2526,13 +2536,20 @@ export class PiAgentEngine {
 
   async getLatestMessageMeta(): Promise<{ seq: number; createdAt: number } | null> {
     if (this.rootReady || this.hasPiRootConversation()) {
-      const entries = await this.listAllEntries();
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const e = entries[i]!;
-        if (isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e)) {
-          const msg = e.model?.[0] as { timestamp?: number } | undefined;
-          return { seq: Number(e.id), createdAt: msg?.timestamp || Date.now() };
+      await this.ensureStarted();
+      const conv = await this.getRootConversation();
+      if (!conv) return null;
+      let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+      for (;;) {
+        const page = await conv.entries({ order: "descending" }, 16, cursor, BG);
+        for (const e of page.items) {
+          if (isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e)) {
+            const msg = e.model?.[0] as { timestamp?: number } | undefined;
+            return { seq: Number(e.id), createdAt: msg?.timestamp || Date.now() };
+          }
         }
+        if (!page.next) break;
+        cursor = page.next;
       }
       return null;
     }
@@ -2657,7 +2674,7 @@ export class PiAgentEngine {
       // MEMORY.md doesn't exist yet
     }
 
-    const history = (await this.getHistory({ limit: 100 })) ?? {
+    const history = (await this.getHistory({ before: Number.MAX_SAFE_INTEGER, limit: 100 })) ?? {
       messages: [],
       compaction: null,
       nextAfter: 0,
@@ -2672,11 +2689,23 @@ export class PiAgentEngine {
     }
     const transcript = lines.join("\n\n").slice(-160_000);
 
+    const { isByok, prefetchedProvider } = await resolveTenantByokProvider(
+      this.host.env,
+      cfg.tenantId,
+      cfg.model,
+      undefined,
+      cfg.keyScope ?? null,
+    );
+    const prefetchedCredentials = prefetchedProvider
+      ? { [parsePiModelRef(cfg.model, this.host.env).provider]: prefetchedProvider.credentials }
+      : undefined;
+
     const completion = await completePiModel({
       env: this.host.env,
       tenantId: cfg.tenantId,
       model: cfg.model,
       keyScope: cfg.keyScope ?? null,
+      prefetchedCredentials,
       instructions: [
         "Consolidate durable lessons, user preferences, and repository architecture notes into clean Markdown for /workspace/MEMORY.md.",
         existingMemory ? `Existing MEMORY.md:\n${existingMemory}` : "",
@@ -2701,9 +2730,36 @@ export class PiAgentEngine {
       puts: [{ path: "MEMORY.md", content: finalDoc + "\n", mode: 0o644 }],
     });
 
-    void getTenantStub(this.host.env, cfg.tenantId)
-      .updateRepoCommit(repoId, writeOut.commit)
-      .catch(() => {});
+    const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
+    const cacheWriteTokens = completion.message.usage?.cacheWrite ?? 0;
+    const dreamCostUsd = isByok
+      ? 0
+      : calculatePiCostUsd(
+          cfg.model,
+          completion.inputTokens,
+          completion.outputTokens,
+          0,
+          completion.cacheReadTokens,
+          cacheWriteTokens,
+        );
+    if (completion.inputTokens > 0 || completion.outputTokens > 0 || dreamCostUsd > 0) {
+      await tenantStub
+        .settleUsage({
+          refId: `dream:${cfg.id}:${writeOut.commit}`,
+          model: cfg.model,
+          inputTokens: completion.inputTokens,
+          outputTokens: completion.outputTokens,
+          cacheReadTokens: completion.cacheReadTokens,
+          vmMs: 0,
+          costUsd: dreamCostUsd,
+          note: `Dream ${cfg.key} (${cfg.id})`,
+          agentId: cfg.id,
+          ...(isByok ? { byok: true } : {}),
+        })
+        .catch(() => {});
+    }
+
+    void tenantStub.updateRepoCommit(repoId, writeOut.commit).catch(() => {});
 
     this.host.recordAndBroadcastEvent(null, "dream_completed", {
       path: "MEMORY.md",

@@ -218,7 +218,7 @@ describe("human input lifecycle: supersede, abort, expiry, and multi-actor isola
       assert.equal(content.toolCallId, approvalInput.toolCallId);
       assert.equal(content.toolName, "issueRefund");
       assert.equal(content.isError, true);
-      assert.equal(content.text, "Tool issueRefund was aborted");
+      assert.equal(content.text, "<harness>\n[error] Tool issueRefund was aborted\n</harness>");
 
       const approvalEvents = await approvalAgent.events({ runId: pausedApproval.id });
       const toolEnd = approvalEvents.find((e) => e.type === "tool_call_end");
@@ -269,7 +269,7 @@ describe("human input lifecycle: supersede, abort, expiry, and multi-actor isola
       const pairedToolMsg = lastReqMessages[assistantCallIdx + 1];
       assert.equal(pairedToolMsg?.role, "tool");
       assert.equal(pairedToolMsg?.tool_call_id, qInput.toolCallId);
-      assert.equal(pairedToolMsg?.content, "Tool ask_human was aborted");
+      assert.equal(pairedToolMsg?.content, "<harness>\n[error] Tool ask_human was aborted\n</harness>");
       assert.equal(lastReqMessages.at(-1)?.role, "user");
     } finally {
       await camel.close();
@@ -358,7 +358,7 @@ describe("human input lifecycle: supersede, abort, expiry, and multi-actor isola
       const history1 = await agent1.history({ limit: 50 });
       const toolMsg1 = history1.find((m) => m.runId === paused1.id && m.role === "tool");
       assert.ok(toolMsg1);
-      assert.equal((toolMsg1.content as Record<string, unknown>).text, "Tool ask_human was aborted");
+      assert.equal((toolMsg1.content as Record<string, unknown>).text, "<harness>\n[error] Tool ask_human was aborted\n</harness>");
 
       const events1 = await agent1.events({ runId: paused1.id });
       assert.ok(events1.some((e) => e.type === "input_resolved" && eventData(e).id === inp1.id && eventData(e).status === "superseded"));
@@ -397,7 +397,7 @@ describe("human input lifecycle: supersede, abort, expiry, and multi-actor isola
       assert.equal(content2.toolCallId, inp2.toolCallId);
       assert.equal(content2.toolName, "ask_human");
       assert.equal(content2.isError, true);
-      assert.equal(content2.text, "Tool ask_human was aborted");
+      assert.equal(content2.text, "<harness>\n[error] Tool ask_human was aborted\n</harness>");
 
       const events2 = await agent2.events({ runId: paused2.id });
       assert.ok(events2.some((e) => e.type === "tool_call_end" && eventData(e).callId === inp2.toolCallId && eventData(e).ok === false));
@@ -451,7 +451,7 @@ describe("human input lifecycle: supersede, abort, expiry, and multi-actor isola
       assert.equal(content.toolCallId, inp.toolCallId);
       assert.equal(content.toolName, "ask_human");
       assert.equal(content.isError, true);
-      assert.equal(content.text, "Tool ask_human was aborted");
+      assert.equal(content.text, "<harness>\n[error] Tool ask_human was aborted\n</harness>");
 
       const events = await agent.events({ runId: paused.id });
       const toolEnd = events.find((e) => e.type === "tool_call_end");

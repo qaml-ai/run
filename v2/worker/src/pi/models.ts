@@ -1,4 +1,5 @@
 import {
+  calculateCost,
   createAssistantMessageEventStream,
   createModels,
   createProvider,
@@ -64,9 +65,36 @@ function tenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
   return env.TENANT_DO.get(env.TENANT_DO.idFromName(tenantId)) as unknown as RpcStub<TenantDO>;
 }
 
+function lookupPiAiModel(resolved: string): Model<Api> | undefined {
+  const ref = parsePiModelRef(resolved);
+  switch (ref.provider) {
+    case "azure":
+      return (AZURE_MODELS as Record<string, Model<Api>>)[ref.modelId];
+    case "openai":
+      return (OPENAI_MODELS as Record<string, Model<Api>>)[ref.modelId];
+    case "anthropic":
+      return (ANTHROPIC_MODELS as Record<string, Model<Api>>)[ref.modelId];
+    case "gemini":
+      return (GOOGLE_MODELS as Record<string, Model<Api>>)[ref.modelId];
+    case "openai-codex":
+      return (OPENAI_CODEX_MODELS as Record<string, Model<Api>>)[ref.modelId];
+    default:
+      return undefined;
+  }
+}
+
+export function isReasoningModel(rawModel: string): boolean {
+  const resolved = VIRTUAL_MODEL_ALIASES[rawModel] ?? rawModel;
+  const piModel = lookupPiAiModel(resolved);
+  if (piModel) return Boolean(piModel.reasoning);
+  return Boolean(lookupCatalogModel(resolved)?.reasoning);
+}
+
 /**
  * Pure cost calculation helper (zero `cloudflare:workers` runtime imports) matching
- * CamelRun v2's tiered pricing and cache-read pricing rules.
+ * CamelRun v2's tiered pricing, cache-read, and cache-write pricing rules.
+ * Prefers bundled `pi-ai` model metadata via `calculateCost()` before falling back
+ * to `V2_MODEL_CATALOG`.
  */
 export function calculatePiCostUsd(
   model: string,
@@ -74,16 +102,36 @@ export function calculatePiCostUsd(
   outputTokens: number,
   vmMs = 0,
   cacheReadTokens = 0,
+  cacheWriteTokens = 0,
 ): number {
   const vmCost = (vmMs / 1000) * 0.00005;
   const resolved = VIRTUAL_MODEL_ALIASES[model] ?? model;
   if (resolved.startsWith("mock/") || resolved === "mock") {
     return Number(vmCost.toFixed(8));
   }
+
+  const clampedCacheRead = Math.max(0, Math.min(inputTokens, cacheReadTokens));
+  const clampedCacheWrite = Math.max(0, Math.min(inputTokens - clampedCacheRead, cacheWriteTokens));
+  const uncachedInput = Math.max(0, inputTokens - clampedCacheRead - clampedCacheWrite);
+
+  const piModel = lookupPiAiModel(resolved);
+  if (piModel) {
+    const usage: Usage = {
+      input: uncachedInput,
+      output: outputTokens,
+      cacheRead: clampedCacheRead,
+      cacheWrite: clampedCacheWrite,
+      totalTokens: inputTokens + outputTokens,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    calculateCost(piModel, usage);
+    return Number((usage.cost.total + vmCost).toFixed(8));
+  }
+
   const catalogEntry = lookupCatalogModel(resolved);
   const pickTier = (cost: ModelCostSpec) => {
     if (cost.tiers && cost.tiers.length > 0) {
-      let active: { input: number; output: number; cacheRead?: number } = cost;
+      let active: { input: number; output: number; cacheRead?: number; cacheWrite?: number } = cost;
       for (const tier of cost.tiers) {
         if (inputTokens > tier.inputTokensAbove) active = tier;
       }
@@ -93,24 +141,23 @@ export function calculatePiCostUsd(
   };
   const pricing =
     resolved === "azure/gpt-6.2-sol" && inputTokens > 272_000
-      ? { input: 4, output: 15, cacheRead: 0.2 }
+      ? { input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }
       : catalogEntry
         ? pickTier(catalogEntry.cost)
         : { input: 0.5, output: 2.0 };
-  const clampedCacheRead = Math.max(0, Math.min(inputTokens, cacheReadTokens));
-  const uncachedInput = Math.max(0, inputTokens - clampedCacheRead);
   const cacheReadRate = pricing.cacheRead ?? pricing.input * 0.1;
+  const cacheWriteRate = pricing.cacheWrite ?? pricing.input;
   const tokenCost =
     (uncachedInput * pricing.input +
       clampedCacheRead * cacheReadRate +
+      clampedCacheWrite * cacheWriteRate +
       outputTokens * pricing.output) /
     1_000_000;
   return Number((tokenCost + vmCost).toFixed(8));
 }
 
 export const PLATFORM_AZURE_MODELS = new Set(["gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol"]);
-export const DEFAULT_PI_MODEL_ID = "azure/gpt-6.1-terra";
-export const DEFAULT_MODEL_ID = DEFAULT_PI_MODEL_ID;
+export const DEFAULT_MODEL_ID = "azure/gpt-6.1-terra";
 export const calculateCostUsd = calculatePiCostUsd;
 
 export function addModelUsage(
@@ -119,6 +166,7 @@ export function addModelUsage(
   input: number,
   output: number,
   cacheRead = 0,
+  cacheWrite = 0,
 ): void {
   const clampedCacheRead = Math.max(0, Math.min(input, cacheRead));
   usage.inputTokens += input;
@@ -127,17 +175,14 @@ export function addModelUsage(
     usage.cacheReadTokens = (usage.cacheReadTokens ?? 0) + clampedCacheRead;
   }
   usage.costUsd = Number(
-    (usage.costUsd + calculatePiCostUsd(model, input, output, 0, clampedCacheRead)).toFixed(8),
+    (usage.costUsd + calculatePiCostUsd(model, input, output, 0, clampedCacheRead, cacheWrite)).toFixed(8),
   );
-}
-
-export function addVmUsage(usage: RunUsage, model: string, vmMs: number): void {
-  usage.vmMs += vmMs;
-  usage.costUsd = Number((usage.costUsd + calculatePiCostUsd(model, 0, 0, vmMs)).toFixed(8));
 }
 
 export function getModelContextWindow(rawModel: string): number {
   const resolved = VIRTUAL_MODEL_ALIASES[rawModel] ?? rawModel;
+  const piModel = lookupPiAiModel(resolved);
+  if (piModel && piModel.contextWindow > 0) return piModel.contextWindow;
   const catalogEntry = lookupCatalogModel(resolved);
   if (catalogEntry) return catalogEntry.contextWindow;
   const m = resolved.toLowerCase();
@@ -289,7 +334,7 @@ export async function resolveTenantByokProvider(
 }
 
 const VIRTUAL_MODEL_ALIASES: Record<string, string> = {
-  "camelrun/default": DEFAULT_PI_MODEL_ID,
+  "camelrun/default": DEFAULT_MODEL_ID,
   "camelrun/fast": "openrouter/meta/muse-ember",
   "camelrun/strong": "openrouter/google/gemini-4-carbon",
   "muse-ember": "openrouter/meta/muse-ember",
@@ -352,7 +397,7 @@ export function parsePiModelRef(
   rawModel: string | undefined,
   env?: Pick<Env, "DEFAULT_MODEL">,
 ): ModelRef {
-  const candidate = (rawModel || env?.DEFAULT_MODEL || DEFAULT_PI_MODEL_ID).trim();
+  const candidate = (rawModel || env?.DEFAULT_MODEL || DEFAULT_MODEL_ID).trim();
   const expanded = VIRTUAL_MODEL_ALIASES[candidate] ?? candidate;
 
   if (expanded === "mock" || expanded.startsWith("mock/")) {
@@ -539,20 +584,51 @@ function createStaticAuth(
   };
 }
 
+function createLazyAuth(
+  name: string,
+  resolveAuth: () => Promise<
+    { apiKey?: string; headers?: Record<string, string>; baseUrl?: string } | undefined
+  >,
+) {
+  return {
+    apiKey: {
+      name,
+      async resolve() {
+        const resolved = await resolveAuth();
+        if (!resolved) return undefined;
+        const hasHeaders = Boolean(resolved.headers && Object.keys(resolved.headers).length > 0);
+        if (!resolved.apiKey && !hasHeaders) return undefined;
+        return {
+          auth: {
+            ...(resolved.apiKey ? { apiKey: resolved.apiKey } : {}),
+            ...(hasHeaders ? { headers: resolved.headers } : {}),
+            ...(resolved.baseUrl ? { baseUrl: resolved.baseUrl } : {}),
+          },
+          source: name,
+        };
+      },
+    },
+  };
+}
+
+interface ResolvedStreamOverride {
+  apiKey?: string;
+  baseUrl?: string;
+  headers?: Record<string, string>;
+  deploymentName?: string;
+}
+
 function wrapStreamsWithOverrides(
   streams: ProviderStreams,
-  resolvePerModel: (model: Model<Api>) => {
-    apiKey?: string;
-    baseUrl?: string;
-    headers?: Record<string, string>;
-    deploymentName?: string;
-  },
+  resolvePerModel: (
+    model: Model<Api>,
+  ) => ResolvedStreamOverride | Promise<ResolvedStreamOverride>,
 ): ProviderStreams {
-  const adapt = (
+  const adapt = async (
     model: Model<Api>,
     options?: ApiStreamOptions<Api> | SimpleStreamOptions,
-  ): { model: Model<Api>; options: ApiStreamOptions<Api> | SimpleStreamOptions } => {
-    const resolved = resolvePerModel(model);
+  ): Promise<{ model: Model<Api>; options: ApiStreamOptions<Api> | SimpleStreamOptions }> => {
+    const resolved = await resolvePerModel(model);
     const nextModel: Model<Api> = resolved.baseUrl
       ? { ...model, baseUrl: resolved.baseUrl }
       : model;
@@ -604,12 +680,12 @@ function wrapStreamsWithOverrides(
   return {
     stream: (model, context, options) =>
       lazyStream(model, async () => {
-        const adapted = adapt(model, options);
+        const adapted = await adapt(model, options);
         return streams.stream(adapted.model, context, adapted.options as ApiStreamOptions<Api>);
       }),
     streamSimple: (model, context, options) =>
       lazyStream(model, async () => {
-        const adapted = adapt(model, options);
+        const adapted = await adapt(model, options);
         return streams.streamSimple(adapted.model, context, adapted.options as SimpleStreamOptions);
       }),
   };
@@ -1104,29 +1180,39 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
     }
   };
 
-  // Prefetch credentials for the requested provider (plus core providers if prefetched)
-  const providersToResolve = new Set<string>(["azure", "openai", "anthropic", "gemini", "openrouter", "openai-codex"]);
-  if (requestedRef && requestedRef.provider !== "mock") {
-    providersToResolve.add(requestedRef.provider);
-  }
-  for (const key of Object.keys(prefetched)) {
-    providersToResolve.add(key);
-  }
-
-  const secrets = new Map<string, ProviderCredentials | null>();
-  await Promise.all(
-    [...providersToResolve].map(async (provider) => {
+  // Lazy memoized secret lookup: only resolves the active provider eagerly (0 RPCs for mock
+  // or when prefetchedCredentials already has the active provider; other core providers resolve
+  // on demand inside auth.resolve / lazyStream).
+  const secretCache = new Map<string, Promise<ProviderCredentials | null>>();
+  const getSecret = (provider: string): Promise<ProviderCredentials | null> => {
+    const cached = secretCache.get(provider);
+    if (cached) return cached;
+    const promise = (async () => {
       if (provider === "gemini") {
         const direct = await lookupSecret("gemini", normScope);
-        secrets.set("gemini", direct ?? (await lookupSecret("google", normScope)));
-      } else if (provider === "openai") {
-        const direct = await lookupSecret("openai", normScope);
-        secrets.set("openai", direct ?? (await lookupSecret("openai-responses", normScope)));
-      } else {
-        secrets.set(provider, await lookupSecret(provider, normScope));
+        return direct ?? (await lookupSecret("google", normScope));
       }
-    }),
-  );
+      if (provider === "openai") {
+        const direct = await lookupSecret("openai", normScope);
+        return direct ?? (await lookupSecret("openai-responses", normScope));
+      }
+      return lookupSecret(provider, normScope);
+    })();
+    secretCache.set(provider, promise);
+    return promise;
+  };
+
+  const eagerSecret = async (provider: string): Promise<ProviderCredentials | null> => {
+    if (
+      requestedRef?.provider === provider ||
+      Object.prototype.hasOwnProperty.call(prefetched, provider) ||
+      (provider === "gemini" && Object.prototype.hasOwnProperty.call(prefetched, "google")) ||
+      (provider === "openai" && Object.prototype.hasOwnProperty.call(prefetched, "openai-responses"))
+    ) {
+      return getSecret(provider);
+    }
+    return null;
+  };
 
   const models = createModels();
 
@@ -1141,7 +1227,7 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 
   // 2. Dual-endpoint Azure platform provider + BYOK override
   {
-    const azureByok = secrets.get("azure") ?? null;
+    const azureByok = await eagerSecret("azure");
     const azureCatalogModels: Model<Api>[] = Object.values(AZURE_MODELS).map((m) => {
       const cfg = resolveAzurePlatformConfig(env, m.id, { byok: azureByok, keyScope: normScope });
       return {
@@ -1174,11 +1260,11 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
         (env.AZURE_OPENAI_SOL_ENDPOINT && env.AZURE_OPENAI_SOL_API_KEY) ||
           (env.AZURE_OPENAI_LUNA_ENDPOINT && env.AZURE_OPENAI_LUNA_API_KEY),
       );
-    const azureConfigured = Boolean(azureByok || anyPlatformAzure);
 
-    const resolvePerAzureModel = (model: Model<Api>) => {
+    const resolvePerAzureModel = async (model: Model<Api>) => {
+      const byok = await getSecret("azure");
       const cfg = resolveAzurePlatformConfig(env, model.id, {
-        byok: azureByok,
+        byok,
         keyScope: normScope,
       });
       if (!cfg) {
@@ -1200,11 +1286,19 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
       createProvider({
         id: "azure",
         name: "Azure OpenAI",
-        auth: createStaticAuth(
-          "Azure OpenAI",
-          azureConfigured ? (azureByok?.apiKey || env.AZURE_OPENAI_SOL_API_KEY || env.AZURE_OPENAI_LUNA_API_KEY) : undefined,
-          azureByok?.headers,
-        ),
+        auth: createLazyAuth("Azure OpenAI", async () => {
+          const byok = await getSecret("azure");
+          const configured = Boolean(byok || anyPlatformAzure);
+          if (!configured) return undefined;
+          return {
+            apiKey:
+              byok?.apiKey ||
+              env.AZURE_OPENAI_SOL_API_KEY ||
+              env.AZURE_OPENAI_LUNA_API_KEY ||
+              undefined,
+            headers: byok?.headers,
+          };
+        }),
         models: azureCatalogModels,
         api: {
           "azure-openai-responses": wrapStreamsWithOverrides(
@@ -1223,33 +1317,42 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 
   // 3. OpenAI
   {
-    const byok = secrets.get("openai") ?? null;
-    const apiKey = byok?.apiKey || (normScope ? "" : env.OPENAI_API_KEY || "");
-    const baseUrl = (byok?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
-    const defaultApi: Api = byok?.apiStyle ? apiForStyle(byok.apiStyle) : "openai-responses";
+    const initialByok = await eagerSecret("openai");
+    const defaultBaseUrl = (initialByok?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+    const defaultApi: Api = initialByok?.apiStyle ? apiForStyle(initialByok.apiStyle) : "openai-responses";
     const list: Model<Api>[] = Object.values(OPENAI_MODELS).map((m) => ({
       ...m,
-      api: byok?.apiStyle ? defaultApi : m.api,
-      baseUrl,
+      api: initialByok?.apiStyle ? defaultApi : m.api,
+      baseUrl: defaultBaseUrl,
     }));
     if (requestedRef?.provider === "openai" && !list.some((m) => m.id === requestedRef.modelId)) {
-      list.push(buildFallbackModel("openai", requestedRef.modelId, defaultApi, baseUrl));
+      list.push(buildFallbackModel("openai", requestedRef.modelId, defaultApi, defaultBaseUrl));
     }
-    const resolveOverride = (model: Model<Api>) => ({
-      apiKey,
-      baseUrl,
-      headers: byok?.headers,
-      deploymentName:
-        byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
-          ? byok.modelAliases[model.id]
-          : undefined,
-    });
+    const resolveOverride = async (model: Model<Api>) => {
+      const byok = await getSecret("openai");
+      const apiKey = byok?.apiKey || (normScope ? "" : env.OPENAI_API_KEY || "");
+      const baseUrl = (byok?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+      return {
+        apiKey,
+        baseUrl,
+        headers: byok?.headers,
+        deploymentName:
+          byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
+            ? byok.modelAliases[model.id]
+            : undefined,
+      };
+    };
     models.setProvider(
       createProvider({
         id: "openai",
         name: "OpenAI",
-        baseUrl,
-        auth: createStaticAuth("OpenAI API key", apiKey || undefined, byok?.headers, baseUrl),
+        baseUrl: defaultBaseUrl,
+        auth: createLazyAuth("OpenAI API key", async () => {
+          const byok = await getSecret("openai");
+          const apiKey = byok?.apiKey || (normScope ? "" : env.OPENAI_API_KEY || "");
+          const baseUrl = (byok?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
+          return { apiKey: apiKey || undefined, headers: byok?.headers, baseUrl };
+        }),
         models: list,
         api: {
           "openai-responses": wrapStreamsWithOverrides(openAIResponsesApi(), resolveOverride),
@@ -1261,33 +1364,42 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 
   // 4. Anthropic
   {
-    const byok = secrets.get("anthropic") ?? null;
-    const apiKey = byok?.apiKey || (normScope ? "" : env.ANTHROPIC_API_KEY || "");
-    const baseUrl = (byok?.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
-    const defaultApi: Api = byok?.apiStyle ? apiForStyle(byok.apiStyle) : "anthropic-messages";
+    const initialByok = await eagerSecret("anthropic");
+    const defaultBaseUrl = (initialByok?.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
+    const defaultApi: Api = initialByok?.apiStyle ? apiForStyle(initialByok.apiStyle) : "anthropic-messages";
     const list: Model<Api>[] = Object.values(ANTHROPIC_MODELS).map((m) => ({
       ...m,
-      api: byok?.apiStyle ? defaultApi : m.api,
-      baseUrl,
+      api: initialByok?.apiStyle ? defaultApi : m.api,
+      baseUrl: defaultBaseUrl,
     }));
     if (requestedRef?.provider === "anthropic" && !list.some((m) => m.id === requestedRef.modelId)) {
-      list.push(buildFallbackModel("anthropic", requestedRef.modelId, defaultApi, baseUrl));
+      list.push(buildFallbackModel("anthropic", requestedRef.modelId, defaultApi, defaultBaseUrl));
     }
-    const resolveOverride = (model: Model<Api>) => ({
-      apiKey,
-      baseUrl,
-      headers: byok?.headers,
-      deploymentName:
-        byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
-          ? byok.modelAliases[model.id]
-          : undefined,
-    });
+    const resolveOverride = async (model: Model<Api>) => {
+      const byok = await getSecret("anthropic");
+      const apiKey = byok?.apiKey || (normScope ? "" : env.ANTHROPIC_API_KEY || "");
+      const baseUrl = (byok?.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
+      return {
+        apiKey,
+        baseUrl,
+        headers: byok?.headers,
+        deploymentName:
+          byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
+            ? byok.modelAliases[model.id]
+            : undefined,
+      };
+    };
     models.setProvider(
       createProvider({
         id: "anthropic",
         name: "Anthropic",
-        baseUrl,
-        auth: createStaticAuth("Anthropic API key", apiKey || undefined, byok?.headers, baseUrl),
+        baseUrl: defaultBaseUrl,
+        auth: createLazyAuth("Anthropic API key", async () => {
+          const byok = await getSecret("anthropic");
+          const apiKey = byok?.apiKey || (normScope ? "" : env.ANTHROPIC_API_KEY || "");
+          const baseUrl = (byok?.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
+          return { apiKey: apiKey || undefined, headers: byok?.headers, baseUrl };
+        }),
         models: list,
         api: {
           "anthropic-messages": wrapStreamsWithOverrides(anthropicMessagesApi(), resolveOverride),
@@ -1299,34 +1411,49 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 
   // 5. Gemini (Google Generative AI)
   {
-    const byok = secrets.get("gemini") ?? null;
-    const apiKey = byok?.apiKey || (normScope ? "" : env.GEMINI_API_KEY || "");
-    const baseUrl = (byok?.baseUrl || "https://generativelanguage.googleapis.com/v1beta").replace(/\/+$/, "");
-    const defaultApi: Api = byok?.apiStyle ? apiForStyle(byok.apiStyle) : "google-generative-ai";
+    const initialByok = await eagerSecret("gemini");
+    const defaultBaseUrl = (
+      initialByok?.baseUrl || "https://generativelanguage.googleapis.com/v1beta"
+    ).replace(/\/+$/, "");
+    const defaultApi: Api = initialByok?.apiStyle ? apiForStyle(initialByok.apiStyle) : "google-generative-ai";
     const list: Model<Api>[] = Object.values(GOOGLE_MODELS).map((m) => ({
       ...m,
       provider: "gemini",
-      api: byok?.apiStyle ? defaultApi : m.api,
-      baseUrl,
+      api: initialByok?.apiStyle ? defaultApi : m.api,
+      baseUrl: defaultBaseUrl,
     }));
     if (requestedRef?.provider === "gemini" && !list.some((m) => m.id === requestedRef.modelId)) {
-      list.push(buildFallbackModel("gemini", requestedRef.modelId, defaultApi, baseUrl));
+      list.push(buildFallbackModel("gemini", requestedRef.modelId, defaultApi, defaultBaseUrl));
     }
-    const resolveOverride = (model: Model<Api>) => ({
-      apiKey,
-      baseUrl,
-      headers: byok?.headers,
-      deploymentName:
-        byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
-          ? byok.modelAliases[model.id]
-          : undefined,
-    });
+    const resolveOverride = async (model: Model<Api>) => {
+      const byok = await getSecret("gemini");
+      const apiKey = byok?.apiKey || (normScope ? "" : env.GEMINI_API_KEY || "");
+      const baseUrl = (
+        byok?.baseUrl || "https://generativelanguage.googleapis.com/v1beta"
+      ).replace(/\/+$/, "");
+      return {
+        apiKey,
+        baseUrl,
+        headers: byok?.headers,
+        deploymentName:
+          byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
+            ? byok.modelAliases[model.id]
+            : undefined,
+      };
+    };
     models.setProvider(
       createProvider({
         id: "gemini",
         name: "Google Gemini",
-        baseUrl,
-        auth: createStaticAuth("Gemini API key", apiKey || undefined, byok?.headers, baseUrl),
+        baseUrl: defaultBaseUrl,
+        auth: createLazyAuth("Gemini API key", async () => {
+          const byok = await getSecret("gemini");
+          const apiKey = byok?.apiKey || (normScope ? "" : env.GEMINI_API_KEY || "");
+          const baseUrl = (
+            byok?.baseUrl || "https://generativelanguage.googleapis.com/v1beta"
+          ).replace(/\/+$/, "");
+          return { apiKey: apiKey || undefined, headers: byok?.headers, baseUrl };
+        }),
         models: list,
         api: {
           "google-generative-ai": wrapStreamsWithOverrides(googleGenerativeAIApi(), resolveOverride),
@@ -1338,31 +1465,40 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 
   // 6. OpenRouter (uses lean V2_MODEL_CATALOG + dynamic requested model ID, avoiding 301 KiB openrouter.json bloat)
   {
-    const byok = secrets.get("openrouter") ?? null;
-    const apiKey = byok?.apiKey || (normScope ? "" : env.OPENROUTER_API_KEY || "");
-    const baseUrl = (byok?.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-    const defaultApi: Api = byok?.apiStyle ? apiForStyle(byok.apiStyle) : "openai-completions";
+    const initialByok = await eagerSecret("openrouter");
+    const defaultBaseUrl = (initialByok?.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+    const defaultApi: Api = initialByok?.apiStyle ? apiForStyle(initialByok.apiStyle) : "openai-completions";
     const list: Model<Api>[] = V2_MODEL_CATALOG.filter((m) => m.provider === "openrouter").map(
-      (m) => buildFallbackModel("openrouter", m.modelId, defaultApi, baseUrl),
+      (m) => buildFallbackModel("openrouter", m.modelId, defaultApi, defaultBaseUrl),
     );
     if (requestedRef?.provider === "openrouter" && !list.some((m) => m.id === requestedRef.modelId)) {
-      list.push(buildFallbackModel("openrouter", requestedRef.modelId, defaultApi, baseUrl));
+      list.push(buildFallbackModel("openrouter", requestedRef.modelId, defaultApi, defaultBaseUrl));
     }
-    const resolveOverride = (model: Model<Api>) => ({
-      apiKey,
-      baseUrl,
-      headers: byok?.headers,
-      deploymentName:
-        byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
-          ? byok.modelAliases[model.id]
-          : undefined,
-    });
+    const resolveOverride = async (model: Model<Api>) => {
+      const byok = await getSecret("openrouter");
+      const apiKey = byok?.apiKey || (normScope ? "" : env.OPENROUTER_API_KEY || "");
+      const baseUrl = (byok?.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+      return {
+        apiKey,
+        baseUrl,
+        headers: byok?.headers,
+        deploymentName:
+          byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
+            ? byok.modelAliases[model.id]
+            : undefined,
+      };
+    };
     models.setProvider(
       createProvider({
         id: "openrouter",
         name: "OpenRouter",
-        baseUrl,
-        auth: createStaticAuth("OpenRouter API key", apiKey || undefined, byok?.headers, baseUrl),
+        baseUrl: defaultBaseUrl,
+        auth: createLazyAuth("OpenRouter API key", async () => {
+          const byok = await getSecret("openrouter");
+          const apiKey = byok?.apiKey || (normScope ? "" : env.OPENROUTER_API_KEY || "");
+          const baseUrl = (byok?.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+          return { apiKey: apiKey || undefined, headers: byok?.headers, baseUrl };
+        }),
         models: list,
         api: {
           "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride),
@@ -1374,36 +1510,47 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 
   // 7. OpenAI Codex (BYOK)
   {
-    const byok = secrets.get("openai-codex") ?? null;
-    const apiKey = byok?.apiKey || "";
-    const baseUrl = (byok?.baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, "");
+    const initialByok = await eagerSecret("openai-codex");
+    const defaultBaseUrl = (initialByok?.baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, "");
     const list: Model<Api>[] = Object.values(OPENAI_CODEX_MODELS).map((m) => ({
       ...m,
-      baseUrl,
+      baseUrl: defaultBaseUrl,
     }));
     if (requestedRef?.provider === "openai-codex" && !list.some((m) => m.id === requestedRef.modelId)) {
-      list.push(buildFallbackModel("openai-codex", requestedRef.modelId, "openai-codex-responses", baseUrl));
+      list.push(buildFallbackModel("openai-codex", requestedRef.modelId, "openai-codex-responses", defaultBaseUrl));
     }
     models.setProvider(
       createProvider({
         id: "openai-codex",
         name: "OpenAI Codex",
-        baseUrl,
-        auth: createStaticAuth("OpenAI Codex", apiKey || undefined, byok?.headers, baseUrl),
+        baseUrl: defaultBaseUrl,
+        auth: createLazyAuth("OpenAI Codex", async () => {
+          const byok = await getSecret("openai-codex");
+          const baseUrl = (byok?.baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, "");
+          return { apiKey: byok?.apiKey || undefined, headers: byok?.headers, baseUrl };
+        }),
         models: list,
-        api: wrapStreamsWithOverrides(openAICodexResponsesApi(), () => ({
-          apiKey,
-          baseUrl,
-          headers: byok?.headers,
-        })),
+        api: wrapStreamsWithOverrides(openAICodexResponsesApi(), async () => {
+          const byok = await getSecret("openai-codex");
+          return {
+            apiKey: byok?.apiKey || "",
+            baseUrl: (byok?.baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, ""),
+            headers: byok?.headers,
+          };
+        }),
       }),
     );
   }
 
   // 8. Custom / OpenAI-compatible BYOK providers (e.g. xai, deepseek, custom, bedrock-openai-*)
   const coreProviders = new Set(["mock", "azure", "openai", "anthropic", "gemini", "openrouter", "openai-codex"]);
-  for (const [providerId, byok] of secrets.entries()) {
+  const extraProviders = new Set<string>(Object.keys(prefetched));
+  if (requestedRef && !coreProviders.has(requestedRef.provider)) {
+    extraProviders.add(requestedRef.provider);
+  }
+  for (const providerId of extraProviders) {
     if (coreProviders.has(providerId)) continue;
+    const byok = await getSecret(providerId);
     const defaults = OPENAI_COMPAT_DEFAULTS[providerId];
     if (!byok && !defaults) continue;
     const api: Api = byok?.apiStyle

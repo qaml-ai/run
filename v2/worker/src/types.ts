@@ -29,7 +29,6 @@ export interface Env {
   TOOL_IDENTITY_ISSUER?: string;
   TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;
-  DEFAULT_AGENT_ENGINE?: AgentEngine;
   BROWSER_DEFAULT_ENGINE?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_BROWSER_RUN_TOKEN?: string;

@@ -544,7 +544,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(azureRequests.length, 2);
     for (const { body, key, authorization } of azureRequests) {
       assert.equal(body.model, "gpt-6.1-terra");
-      assert.deepEqual(body.reasoning, { effort: "low" });
+      assert.deepEqual(body.reasoning, { effort: "low", summary: "auto" });
+      assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
       assert.equal(body.store, false);
       assert.equal(Object.hasOwn(body, "instructions"), false);
       assert.deepEqual((body.input as unknown[]).slice(0, 2), [
@@ -629,7 +630,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(key, "fixture-azure-key");
     assert.equal(authorization, undefined);
     assert.equal(body.model, "gpt-6.1-terra");
-    assert.deepEqual(body.reasoning, { effort: "low" });
+    assert.deepEqual(body.reasoning, { effort: "low", summary: "auto" });
+    assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
     assert.equal(body.store, false);
     assert.equal(Object.hasOwn(body, "instructions"), false);
     assert.deepEqual(body.input, [

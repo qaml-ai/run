@@ -1,5 +1,5 @@
 import { randomId } from "./crypto.ts";
-import { DEFAULT_MODEL_ID, calculateCostUsd, streamPiModel } from "./pi/models.ts";
+import { DEFAULT_MODEL_ID, calculateCostUsd, isReasoningModel, streamPiModel } from "./pi/models.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, estimateTokens, type Env } from "./types.ts";
 
@@ -138,7 +138,7 @@ export async function runDecisionClassifier(
       ].join("\n"),
       messages: [{ role: "user", content: req.input, timestamp: Date.now() }],
       outputSchema: schema,
-      temperature: 0,
+      ...(isReasoningModel(model) ? {} : { temperature: 0 }),
     })) {
       if (chunk.type === "text_delta") {
         rawText += chunk.delta;
