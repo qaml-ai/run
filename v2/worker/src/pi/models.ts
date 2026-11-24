@@ -1071,12 +1071,31 @@ export type ProviderCredentialLookup = (
   keyScope: string | null,
 ) => Promise<ProviderCredentials | null>;
 
+export const PI_COMPACT_RESERVE_TOKENS = 16_384;
+
+function applyCompactionWindow<M extends Model<Api>>(
+  model: M,
+  compactThresholdTokens?: number | null,
+): M {
+  const threshold = getAutoCompactThreshold(
+    `${model.provider}/${model.id}`,
+    compactThresholdTokens,
+  );
+  return { ...model, contextWindow: threshold + PI_COMPACT_RESERVE_TOKENS };
+}
+
 export interface BuildPiModelsOptions {
   env: Env;
   tenantId: string;
   keyScope?: string | null;
   /** Optional model string being requested so dynamic/custom BYOK models are guaranteed registered. */
   rawModel?: string;
+  /**
+   * Optional per-agent compaction threshold override. Each registered model's `contextWindow` is set
+   * to `effectiveThreshold + PI_COMPACT_RESERVE_TOKENS` so pi-durable's native threshold compaction
+   * triggers cleanly at the desired token limit with standard `reserveTokens`.
+   */
+  compactThresholdTokens?: number | null;
   /** Pre-fetched BYOK provider secrets keyed by provider name (avoids redundant TenantDO RPC). */
   prefetchedCredentials?: Record<string, ProviderCredentials | null>;
   /** Override secret lookup (defaults to `getTenantStub(env, tenantId).getProviderSecret`). */
@@ -1132,6 +1151,22 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
   );
 
   const models = createModels();
+  const capModel = <T>(m: T): T =>
+    m && typeof m === "object" && "contextWindow" in m && "provider" in m && "id" in m
+      ? (applyCompactionWindow(
+          m as unknown as Model<Api>,
+          options.compactThresholdTokens,
+        ) as unknown as T)
+      : m;
+  const origSetProvider = models.setProvider.bind(models);
+  models.setProvider = (provider) =>
+    origSetProvider({
+      ...provider,
+      getModels: () => provider.getModels().map(capModel),
+      ...(provider.getAllModels
+        ? { getAllModels: () => provider.getAllModels!().map(capModel) }
+        : {}),
+    });
 
   // 1. Mock provider (always registered for tests)
   models.setProvider(

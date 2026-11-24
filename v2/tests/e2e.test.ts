@@ -569,7 +569,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       await client.repos.write(repo.repoId, { puts: [{ path: "fixture.png", base64: toolImage }] });
       const lookup = { name: "lookup", description: "Return a screenshot", parameters: { type: "object", properties: {} } };
       const fixtures = [
-        { name: "mcp", input: "mcp-image-fixture", options: { mcpServers: [{ name: "meteo", url: `${auxUrl}/mcp` }] } },
+        { name: "mcp", input: "mcp-image-fixture", options: { mcpServers: [{ name: "meteo", url: `${auxUrl}/mcp`, deferred: false }] } },
         { name: "webhook", input: "webhook-image-fixture", options: { tools: [{ ...lookup, url: `${auxUrl}/tool-image` }] } },
         { name: "sdk", input: "sdk-image-fixture", options: { tools: [{ ...lookup, execute: () => imageResult }] } },
         { name: "repo", input: "repo-image-fixture", options: { repoId: repo.repoId } },
@@ -914,7 +914,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const agent = await camel.agents.upsert("run-actor", {
       model: "mock/default",
       toolIdentity: { subject: "thread-owner", context: { thread: "shared-thread" } },
-      mcpServers: [{ name: "app", url: audience, audience, auth: { type: "runtime" } }],
+      mcpServers: [{ name: "app", url: audience, audience, auth: { type: "runtime" }, deferred: false }],
     });
     const scoped = new CamelRun({ baseUrl: workerUrl, apiKey: agent.agentToken! });
     t.after(() => scoped.close());
@@ -1556,7 +1556,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     // Remote HTTP MCP Server discovery & invocation + Dreaming into camelfs MEMORY.md
     const mcpAgent = await camel.agents.upsert("mcp-dreamer", {
       model: "mock/default",
-      mcpServers: [{ name: "meteo", url: `${auxUrl}/mcp` }],
+      mcpServers: [{ name: "meteo", url: `${auxUrl}/mcp`, deferred: false }],
       builtins: ["files"],
     });
     const mcpRun = await mcpAgent.run(

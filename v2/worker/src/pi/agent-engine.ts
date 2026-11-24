@@ -95,8 +95,8 @@ import {
   completePiModel,
   createProviderRequestExtension,
   getAutoCompactThreshold,
-  getModelContextWindow,
   parsePiModelRef,
+  PI_COMPACT_RESERVE_TOKENS,
   resolveTenantByokProvider,
 } from "./models.ts";
 
@@ -292,6 +292,7 @@ export class PiAgentEngine {
             tenantId: cfg.tenantId,
             keyScope: cfg.keyScope ?? null,
             rawModel: cfg.model,
+            compactThresholdTokens: cfg.compactThresholdTokens,
             getOutputSchema: () => this.activeTracker?.outputSchema ?? null,
           });
         }
@@ -306,21 +307,15 @@ export class PiAgentEngine {
             onWake,
             settings: () => {
               const cur = this.host.readConfigOrNull();
-              const modelName = cur?.model ?? cfg.model;
-              const ref = parsePiModelRef(modelName, this.host.env);
-              const resolvedContextWindow =
-                this.currentModels?.getModel(ref.provider, ref.modelId)?.contextWindow ??
-                getModelContextWindow(modelName);
               const effectiveThreshold = getAutoCompactThreshold(
-                modelName,
+                cur?.model ?? cfg.model,
                 cur?.compactThresholdTokens,
               );
-              const reserveTokens = Math.max(16_384, resolvedContextWindow - effectiveThreshold);
               return {
                 compaction: {
                   enabled: true,
-                  keepRecentTokens: Math.min(20_000, Math.floor(effectiveThreshold / 2)),
-                  reserveTokens,
+                  reserveTokens: PI_COMPACT_RESERVE_TOKENS,
+                  keepRecentTokens: Math.min(12_000, Math.floor(effectiveThreshold / 2)),
                   backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
                 },
                 afterFailedRun: "keep",
@@ -898,7 +893,7 @@ export class PiAgentEngine {
   }
 
   private async ensureMcpExtensionReady(cfg: AgentConfig): Promise<void> {
-    const deferByDefault = (cfg.builtins ?? []).includes("tool_search");
+    const deferByDefault = true;
     const mcpFp = JSON.stringify({ servers: cfg.mcpServers ?? [], deferByDefault });
     if (mcpFp === this.installedMcpFingerprint) return;
     if ((cfg.mcpServers ?? []).length > 0) {
@@ -974,13 +969,11 @@ export class PiAgentEngine {
     const hasSkills = builtins.has("skills") || (cfg.skills?.length ?? 0) > 0;
     const hasMcp = (cfg.mcpServers?.length ?? 0) > 0;
 
-    const enabledTools = this.registry
-      .snapshot()
-      .tools()
-      .filter(({ extension, tool: { name } }) =>
+    const registeredTools = this.registry.snapshot().tools();
+    const baseEnabled = registeredTools.filter(
+      ({ extension, tool: { name } }) =>
         customNames.has(name) ||
         (extension.name === "camelrun-mcp" && hasMcp) ||
-        (name === TOOL_SEARCH_TOOL_NAME && builtins.has("tool_search")) ||
         (FILES_TOOL_NAMES.has(name) && builtins.has("files")) ||
         (name === "render_image" && builtins.has("images")) ||
         (name === "bash" && builtins.has("bash")) ||
@@ -992,8 +985,16 @@ export class PiAgentEngine {
         (name === "web_fetch" && builtins.has("web_fetch")) ||
         (name === "web_search" && builtins.has("web_search")) ||
         (name === "run_workflow" && builtins.has("workflows")),
-      )
-      .map(({ tool }) => tool);
+    );
+    const hasDeferredTools = baseEnabled.some(({ tool }) => tool.deferred === true);
+    const enableToolSearch = builtins.has("tool_search") || hasDeferredTools;
+    const toolSearchEntry = enableToolSearch
+      ? registeredTools.find(({ tool: { name } }) => name === TOOL_SEARCH_TOOL_NAME)
+      : undefined;
+    const enabledTools = [
+      ...baseEnabled.map(({ tool }) => tool),
+      ...(toolSearchEntry ? [toolSearchEntry.tool] : []),
+    ];
 
     return {
       model: parsePiModelRef(cfg.model, this.host.env),
@@ -1217,6 +1218,7 @@ export class PiAgentEngine {
       tenantId: cfg.tenantId,
       keyScope,
       rawModel: cfg.model,
+      compactThresholdTokens: cfg.compactThresholdTokens,
       prefetchedCredentials: Object.keys(prefetchedCredentials).length > 0 ? prefetchedCredentials : undefined,
       getOutputSchema: () => this.activeTracker?.outputSchema ?? null,
     });

@@ -856,7 +856,6 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
       method: "PUT",
       body: JSON.stringify({
         model: "mock/default",
-        builtins: ["tool_search"],
         tools: [
           {
             name: "calc_double",
