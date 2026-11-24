@@ -1158,6 +1158,15 @@ export class PiAgentEngine {
       toolCallId: ev.toolCallId,
       prompt: ev.prompt,
       expiresAt: ev.expiresAt,
+      input: {
+        id: ev.inputId,
+        runId,
+        toolCallId: ev.toolCallId,
+        kind: ev.kind,
+        prompt: ev.prompt,
+        status: "pending",
+        expiresAt: ev.expiresAt,
+      },
     });
     this.host.setActiveRunId(null);
     this.host.notifyRunWaiters(runId);
