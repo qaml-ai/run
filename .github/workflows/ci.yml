@@ -1,6 +1,6 @@
 name: CI
 on:
-  push: { branches: [main, camelfs/files-model] }
+  push: { branches: [main] }
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
@@ -10,7 +10,53 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  changes:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: filter
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            range="$base...HEAD"
+          else
+            base="${{ github.event.before }}"
+            range="$base..$GITHUB_SHA"
+          fi
+          if [[ -z "$base" || "$base" == "0000000000000000000000000000000000000000" ]]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(git diff --name-only "$range" 2>/dev/null) || { echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [[ -z "$files" ]]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if [[ "$f" == docs/* ]]; then
+              continue
+            fi
+            if [[ "$f" == *.md && "/$f" != */tests/* ]]; then
+              continue
+            fi
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          done <<< "$files"
+          echo "Docs-only change detected; skipping heavy CI jobs."
+          echo "code=false" >> "$GITHUB_OUTPUT"
+
   checks:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -18,37 +64,87 @@ jobs:
       - uses: ./.github/actions/node-dependencies
       - run: npm run typecheck
       - run: npm run test:ui
+      - name: Run zero-dependency jobhost unit tests
+        run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/jobhost-attest.test.ts tests/jobhost-scaler.test.ts
 
-  v2:
-    timeout-minutes: 20
+  v2-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/node-dependencies
+      - uses: actions/cache@v4
+        id: v2-deps
+        with:
+          path: v2/node_modules
+          key: v2-node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('v2/package-lock.json', 'v2/package.json') }}
+      - if: steps.v2-deps.outputs.cache-hit != 'true'
+        name: Install v2 dependencies
+        working-directory: v2
+        run: npm ci --no-audit --no-fund
       - uses: actions/setup-go@v5
         with: { go-version-file: v2/camelfsd/go.mod, cache-dependency-path: v2/camelfsd/go.sum }
-      - name: Build and test v2 camelfsd
+      - name: Lint, test, and build v2 camelfsd
         working-directory: v2/camelfsd
         run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
           go test ./...
           go build -o bin/camelfsd ./cmd/camelfsd
-      - name: Install v2 dependencies
-        working-directory: v2
-        run: npm install --no-audit --no-fund
-      - name: Typecheck and bundle v2 Workers
+      - name: Build console SPA
+        run: npm run build:console
+      - name: Typecheck and bundle v2 Workers and SDK
         working-directory: v2
         run: |
           npm run typecheck
           npm run build:worker
           npm run build:ingress
           npm run build:svg-renderer
-      - name: Run v2 Worker & Ingress E2E tests
+          npm run build:codemode-sandbox
+          XDG_CONFIG_HOME=/tmp/xdg WRANGLER_LOG_PATH=.wrangler/logs \
+            npx wrangler deploy --dry-run -c worker/wrangler.production.jsonc --outdir dist/worker-prod
+          wasm_count=$(find dist/worker dist/worker-prod -name '*.wasm' | wc -l)
+          echo "worker wasm count: $wasm_count"
+          test "$wasm_count" -eq 0
+          (cd sdk && npm run build)
+
+  v2-tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/node-dependencies
+      - uses: actions/cache@v4
+        id: v2-deps
+        with:
+          path: v2/node_modules
+          key: v2-node-modules-${{ runner.os }}-${{ runner.arch }}-22-${{ hashFiles('v2/package-lock.json', 'v2/package.json') }}
+      - if: steps.v2-deps.outputs.cache-hit != 'true'
+        name: Install v2 dependencies
+        working-directory: v2
+        run: npm ci --no-audit --no-fund
+      - uses: actions/setup-go@v5
+        with: { go-version-file: v2/camelfsd/go.mod, cache-dependency-path: v2/camelfsd/go.sum }
+      - name: Build v2 camelfsd
+        working-directory: v2/camelfsd
+        run: go build -o bin/camelfsd ./cmd/camelfsd
+      - name: Run v2 Worker & Ingress E2E tests (shard ${{ matrix.shard }}/4)
         run: |
           XDG_CONFIG_HOME=/tmp/xdg WRANGLER_LOG_PATH=v2/.wrangler/logs \
             node --experimental-strip-types --disable-warning=ExperimentalWarning \
-            --test --test-concurrency=1 --test-timeout=180000 v2/tests/*.test.ts
+            --test --test-shard=${{ matrix.shard }}/4 --test-concurrency=1 --test-timeout=180000 v2/tests/*.test.ts
 
   camelfsd:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: camelfsd } }
@@ -64,15 +160,19 @@ jobs:
       - run: go vet ./...
       - name: Wait for DynamoDB Local
         run: for i in $(seq 60); do curl -s --max-time 1 -o /dev/null http://127.0.0.1:8000 && exit 0; sleep 1; done; exit 1
-      - run: go test ./...
-        env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
-      - name: DynamoDB tests ran (not skipped)
+      - name: Run Go tests (including DynamoDB)
         env: { CAMELFS_DDB_LOCAL: "http://127.0.0.1:8000" }
         run: |
-          out=$(go test -count=1 -v ./internal/refstore/... 2>&1)
-          if grep -q -- "--- SKIP" <<<"$out" || ! grep -q -- "--- PASS: TestCasRace" <<<"$out"; then echo "$out" | tail -40; exit 1; fi
-          out=$(go test -count=1 -v -run TestDDBHostTierContract ./internal/computehost/ 2>&1)
-          if grep -q -- "--- SKIP" <<<"$out" || ! grep -q -- "--- PASS: TestDDBHostTierContract" <<<"$out"; then echo "$out" | tail -40; exit 1; fi
+          set -o pipefail
+          go test -count=1 -v ./... | tee /tmp/go-test.log
+          if grep -q -- "CAMELFS_DDB_LOCAL is unset" /tmp/go-test.log \
+            || grep -qE -- "--- SKIP: (TestCas|TestAcquire|TestExpiry|TestApplyMark|TestDDBHostTierContract)" /tmp/go-test.log \
+            || ! grep -q -- "--- PASS: TestCasRace" /tmp/go-test.log \
+            || ! grep -q -- "--- PASS: TestDDBHostTierContract" /tmp/go-test.log; then
+            echo "Required DynamoDB tests were skipped or did not pass!"
+            grep -E -- "--- (SKIP|FAIL|PASS): (TestCas|TestAcquire|TestExpiry|TestApplyMark|TestDDBHostTierContract)" /tmp/go-test.log || true
+            exit 1
+          fi
       - run: go build -o "$RUNNER_TEMP/camelfsd" ./cmd/camelfsd
       - uses: ./.github/actions/node-dependencies
       - name: Real camelfsd contract
@@ -95,9 +195,9 @@ jobs:
     name: CI success
     timeout-minutes: 5
     if: always()
-    needs: [checks, v2, camelfsd]
+    needs: [changes, checks, v2-build, v2-tests, camelfsd]
     runs-on: ubuntu-latest
     steps:
       - name: Require all checks green
         env: { RESULTS: '${{ toJSON(needs) }}' }
-        run: echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+        run: echo "$RESULTS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")'

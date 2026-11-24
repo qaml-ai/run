@@ -1,9 +1,9 @@
 name: Guest image
-# Builds and publishes the guest image for every camelfs/files-model push that touches a guest input
+# Builds and publishes the guest image for every main push that touches a guest input
 # (camelfsd/scripts/guest-inputs.txt). Its own workflow, one run per commit and never cancelled: in ci.yml a newer
 # push cancels the running CI, and a cancelled publish was lost for good (the next push's range had no guest inputs).
 on:
-  push: { branches: [main, camelfs/files-model] }
+  push: { branches: [main] }
 permissions:
   contents: read
 concurrency:
