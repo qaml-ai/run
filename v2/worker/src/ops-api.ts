@@ -1901,59 +1901,6 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
     return c.json({ tenants }, 200, { "Cache-Control": "no-store" });
   });
 
-  app.post("/v2/admin/tenants/:tenantId/migrate-pi", async (c) => {
-    requireAdmin(c.env, c.req.raw);
-    const tenantId = c.req.param("tenantId")?.trim() ?? "";
-    if (!tenantId || !/^[A-Za-z0-9_.:@-]{1,200}$/.test(tenantId)) {
-      throw new ApiError(400, "invalid_request", "`tenantId` is required");
-    }
-    const body = (await c.req.json().catch(() => ({}))) as {
-      after?: unknown;
-      limit?: unknown;
-      concurrency?: unknown;
-    };
-    const after = typeof body.after === "string" && body.after.length > 0 ? body.after : undefined;
-    const rawLimit = body.limit !== undefined ? Number(body.limit) : 50;
-    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 50;
-    const rawConc = body.concurrency !== undefined ? Number(body.concurrency) : 10;
-    const concurrency = Number.isFinite(rawConc) ? Math.max(1, Math.min(50, Math.floor(rawConc))) : 10;
-
-    const { agentIds, nextAfter } = await getTenantStub(c.env, tenantId).listAgentIdsPage(after, limit);
-
-    let migrated = 0;
-    let alreadyPi = 0;
-    let empty = 0;
-    const errors: Array<{ agentId: string; error: string }> = [];
-
-    await mapWithConcurrency(agentIds, concurrency, async (agentId) => {
-      try {
-        const res = await getAgentStub(c.env, agentId).migrateToPi();
-        if (res.status === "migrated") migrated++;
-        else if (res.status === "already_pi") alreadyPi++;
-        else empty++;
-      } catch (err) {
-        errors.push({
-          agentId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    });
-
-    return c.json(
-      {
-        tenantId,
-        scanned: agentIds.length,
-        migrated,
-        alreadyPi,
-        empty,
-        errors,
-        nextAfter,
-      },
-      200,
-      { "Cache-Control": "no-store" },
-    );
-  });
-
   app.post("/v2/admin/ops/register-tenant", async (c) => {
     requireAdmin(c.env, c.req.raw);
     const body = (await c.req.json().catch(() => ({}))) as {

@@ -1,5 +1,5 @@
 import app, { AgentDO as RuntimeAgentDO, TenantDO, VoiceCallDO } from "../../worker/src/index.ts";
-import { toApiErrorResponse, type Env, type StoredMessage } from "../../worker/src/types.ts";
+import { toApiErrorResponse, type Env } from "../../worker/src/types.ts";
 
 export { TenantDO, VoiceCallDO };
 
@@ -38,23 +38,6 @@ export class AgentDO extends RuntimeAgentDO {
       : 0;
     return { legacyMessagesCount, hasPiRoot, piEntriesCount };
   }
-
-  seedLegacyMessagesDirect(
-    rows: Array<{ role: StoredMessage["role"]; content: Record<string, unknown>; createdAt?: number }>,
-  ): { inserted: number } {
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i]!;
-      this.ctx.storage.sql.exec(
-        "INSERT INTO messages (seq, run_id, role, content_json, tokens_est, created_at) VALUES (?1, NULL, ?2, ?3, ?4, ?5)",
-        i + 1,
-        r.role,
-        JSON.stringify(r.content),
-        10,
-        r.createdAt ?? 1000 + i,
-      );
-    }
-    return { inserted: rows.length };
-  }
 }
 
 export default {
@@ -66,18 +49,6 @@ export default {
       try {
         const stub = env.AGENT_DO.get(env.AGENT_DO.idFromName(inspectMatch[1]!)) as unknown as AgentDO;
         return Response.json(await stub.inspectPiStorage());
-      } catch (err) {
-        return toApiErrorResponse(err);
-      }
-    }
-    const seedMatch = /^\/_migration_fixture\/([^/]+)\/seed-legacy$/.exec(url.pathname);
-    if (seedMatch && request.method === "POST") {
-      try {
-        const body = (await request.json()) as {
-          messages: Array<{ role: StoredMessage["role"]; content: Record<string, unknown>; createdAt?: number }>;
-        };
-        const stub = env.AGENT_DO.get(env.AGENT_DO.idFromName(seedMatch[1]!)) as unknown as AgentDO;
-        return Response.json(await stub.seedLegacyMessagesDirect(body.messages));
       } catch (err) {
         return toApiErrorResponse(err);
       }

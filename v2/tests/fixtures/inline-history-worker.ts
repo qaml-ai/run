@@ -22,11 +22,12 @@ export class AgentDO extends RuntimeAgentDO {
   }
 
   fixturePiMessages(): PiAiMessage[] {
-    const legacyCount = this.ctx.storage.sql
-      .exec<{ cnt: number }>("SELECT COUNT(*) AS cnt FROM messages")
-      .one().cnt;
-    if (legacyCount !== 0) {
-      throw new Error(`Expected 0 rows in legacy messages table after direct pi-durable import, got ${legacyCount}`);
+    const hasLegacyTable =
+      this.ctx.storage.sql
+        .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'messages' LIMIT 1")
+        .toArray().length > 0;
+    if (hasLegacyTable) {
+      throw new Error("Expected legacy messages table not to exist after direct pi-durable import");
     }
     const rows = this.ctx.storage.sql
       .exec<{ record: string }>("SELECT record FROM pi_entries WHERE conversation_id = 1 ORDER BY id ASC")

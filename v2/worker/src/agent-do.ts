@@ -158,20 +158,7 @@ export class AgentDO extends DurableObject<Env> {
         }
       }
       this.ctx.storage.sql.exec("DELETE FROM pi_entry_meta");
-      this.ctx.storage.sql.exec("DELETE FROM messages");
-      this.ctx.storage.sql.exec("DELETE FROM compactions");
-      this.ctx.storage.sql.exec("DELETE FROM runtime_kv WHERE k IN ('pi_migrated_at', 'pi_legacy_seq')");
     });
-  }
-
-  async migrateToPi(): Promise<{ status: "empty" | "already_pi" | "migrated" }> {
-    const cfg = this.readConfigOrNull();
-    if (!cfg) return { status: "empty" };
-    this.ensureSql();
-    const engine = this.ensurePiEngine();
-    if (engine.hasPiRoot()) return { status: "already_pi" };
-    const { created } = await engine.ensureRootMigrated(cfg);
-    return { status: created ? "migrated" : "already_pi" };
   }
 
   private ensurePiEngine(): PiAgentEngine {
@@ -222,21 +209,6 @@ export class AgentDO extends DurableObject<Env> {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         config_json TEXT NOT NULL,
         updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        run_id TEXT,
-        role TEXT NOT NULL,
-        content_json TEXT NOT NULL,
-        tokens_est INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id);
-      CREATE TABLE IF NOT EXISTS compactions (
-        id TEXT PRIMARY KEY,
-        up_to_seq INTEGER NOT NULL,
-        summary TEXT NOT NULL,
-        created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS pi_entry_meta (
         entry_id INTEGER PRIMARY KEY,
@@ -1857,13 +1829,7 @@ export class AgentDO extends DurableObject<Env> {
     const latestRunRow = this.ctx.storage.sql
       .exec<{ id: string }>(`SELECT id FROM runs ORDER BY started_at DESC LIMIT 1`)
       .toArray()[0];
-    const piMsgCount = await this.ensurePiEngine().getMessageCount();
-    const messageCount =
-      piMsgCount ??
-      Number(
-        this.ctx.storage.sql.exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM messages`).one()
-          .cnt ?? 0,
-      );
+    const messageCount = (await this.ensurePiEngine().getMessageCount()) ?? 0;
     return {
       id: cfg.id,
       key: cfg.key,
@@ -2012,54 +1978,12 @@ export class AgentDO extends DurableObject<Env> {
     this.ensureSql();
     const piHistory = await this.ensurePiEngine().getHistory(opts);
     if (piHistory !== null) return piHistory;
-
-    // Read-only view of pre-migration legacy or v1-imported SQLite messages before first Pi turn
     const after = Math.max(0, Number(opts?.after ?? 0));
-    const limit = Math.max(1, Math.min(500, Number(opts?.limit ?? 50)));
-    const before = opts?.before;
-    const newest = before !== undefined;
-    const rows = this.ctx.storage.sql
-      .exec<{
-        seq: number;
-        run_id: string | null;
-        role: StoredMessage["role"];
-        content_json: string;
-        tokens_est: number;
-        created_at: number;
-      }>(
-        newest
-          ? "SELECT * FROM messages WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
-          : "SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
-        newest ? before : after,
-        newest ? limit + 1 : limit,
-      )
-      .toArray();
-    const hasOlder = newest && rows.length > limit;
-    if (hasOlder) rows.pop();
-    if (newest) rows.reverse();
-
-    const messages = rows.map((r) => ({
-      seq: r.seq,
-      runId: r.run_id,
-      role: r.role,
-      content: JSON.parse(r.content_json) as Record<string, unknown>,
-      tokensEst: r.tokens_est,
-      createdAt: r.created_at,
-    }));
-    const compRow = this.ctx.storage.sql
-      .exec<{ id: string; up_to_seq: number; summary: string }>(
-        `SELECT id, up_to_seq, summary FROM compactions ORDER BY up_to_seq DESC, created_at DESC LIMIT 1`,
-      )
-      .toArray()[0];
-    const compaction = compRow
-      ? { id: compRow.id, upToSeq: compRow.up_to_seq, summary: compRow.summary }
-      : null;
-    const nextAfter = messages.at(-1)?.seq ?? after;
     return {
-      messages,
-      compaction,
-      nextAfter,
-      ...(newest ? { nextBefore: hasOlder ? rows[0]!.seq : null } : {}),
+      messages: [],
+      compaction: null,
+      nextAfter: after,
+      ...(opts?.before !== undefined ? { nextBefore: null } : {}),
     };
   }
 
@@ -2103,23 +2027,19 @@ export class AgentDO extends DurableObject<Env> {
         throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable");
       }
       const state = this.ctx.storage.sql
-        .exec<{ count: number; used: number }>(`
-          SELECT (SELECT COUNT(*) FROM messages INDEXED BY idx_messages_run) AS count,
-            EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-            OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM inputs)
+        .exec<{ used: number }>(`
+          SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+            OR EXISTS (SELECT 1 FROM inputs)
             OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used
         `)
         .one();
       if (state.used || this.activeRunId) {
         throw new ApiError(409, "history_import_conflict", "The destination already has activity");
       }
-      const legacyCount = Number(state.count);
       const messageCount =
-        legacyCount > 0
-          ? legacyCount
-          : typeof imported.count === "number" && Number.isInteger(imported.count) && imported.count >= 0
-            ? imported.count
-            : this.countPiContentEntries();
+        typeof imported.count === "number" && Number.isInteger(imported.count) && imported.count >= 0
+          ? imported.count
+          : this.countPiContentEntries();
       return {
         tenantId: config.tenantId,
         agentId: config.id,
@@ -2197,13 +2117,12 @@ export class AgentDO extends DurableObject<Env> {
         const used = sql
           .exec<{ used: number }>(
             `SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-             OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions)
+             OR EXISTS (SELECT 1 FROM voice_sessions)
              OR EXISTS (SELECT 1 FROM schedules) AS used`,
           )
           .one();
-        const hasLegacyMessages = sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length > 0;
         const hasPiEntries = this.hasPiContentEntries();
-        if (used.used || this.activeRunId || (!imported && (hasLegacyMessages || hasPiEntries))) {
+        if (used.used || this.activeRunId || (!imported && hasPiEntries)) {
           throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
         }
         const offset = input.appendAfter ?? 0;
@@ -2224,9 +2143,7 @@ export class AgentDO extends DurableObject<Env> {
           const last =
             typeof imported?.count === "number"
               ? imported.count
-              : hasLegacyMessages
-                ? sql.exec<{ last: number }>("SELECT COALESCE(MAX(seq), 0) AS last FROM messages").one().last
-                : this.countPiContentEntries();
+              : this.countPiContentEntries();
           if (offset !== last) {
             throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
           }

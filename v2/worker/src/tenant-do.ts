@@ -2102,37 +2102,6 @@ export class TenantDO extends DurableObject<Env> {
     };
   }
 
-  async listAgentIdsPage(
-    after?: string,
-    limit = 50,
-  ): Promise<{ agentIds: string[]; nextAfter: string | null }> {
-    const profile = this.readProfileOrNull();
-    if (!profile) {
-      return { agentIds: [], nextAfter: null };
-    }
-    const safeLimit = Math.max(1, Math.min(200, Math.floor(Number(limit) || 50)));
-    const cursor = typeof after === "string" && after.length > 0 ? after : undefined;
-    const rows = cursor
-      ? this.ctx.storage.sql
-          .exec<{ id: string }>(
-            `SELECT id FROM agents_index WHERE id > ?1 ORDER BY id ASC LIMIT ?2`,
-            cursor,
-            safeLimit + 1,
-          )
-          .toArray()
-      : this.ctx.storage.sql
-          .exec<{ id: string }>(
-            `SELECT id FROM agents_index ORDER BY id ASC LIMIT ?1`,
-            safeLimit + 1,
-          )
-          .toArray();
-    const hasMore = rows.length > safeLimit;
-    if (hasMore) rows.pop();
-    const agentIds = rows.map((r) => r.id);
-    const nextAfter = hasMore && agentIds.length > 0 ? agentIds[agentIds.length - 1]! : null;
-    return { agentIds, nextAfter };
-  }
-
   async deleteAgentIndex(agentId: string): Promise<void> {
     if (!this.readProfileOrNull()) return;
     this.ctx.storage.sql.exec(`DELETE FROM agents_index WHERE id = ?1`, agentId);

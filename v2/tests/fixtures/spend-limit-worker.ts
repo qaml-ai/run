@@ -28,10 +28,12 @@ export class AgentDO extends RuntimeAgentDO {
 
   async fixtureState() {
     const sql = this.ctx.storage.sql;
+    const hasPiEntries =
+      sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pi_entries' LIMIT 1").toArray().length > 0;
     return {
       config: sql.exec<{ config_json: string }>("SELECT config_json FROM config WHERE id=1").one().config_json,
       runs: sql.exec("SELECT * FROM runs ORDER BY id").toArray(),
-      messages: sql.exec("SELECT * FROM messages ORDER BY seq").toArray(),
+      messages: hasPiEntries ? sql.exec("SELECT * FROM pi_entries ORDER BY id").toArray() : [],
       events: sql.exec("SELECT * FROM events ORDER BY seq").toArray(),
       changes: sql.exec<{ n: number }>("SELECT total_changes() AS n").one().n,
       alarm: await this.ctx.storage.getAlarm(),
