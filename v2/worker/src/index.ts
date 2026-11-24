@@ -40,7 +40,7 @@ import {
   sealSecret,
   verifyPassword,
 } from "./crypto.ts";
-import { runDecisionClassifier, type DecisionRequest } from "./decisions.ts";
+import { runDecisionClassifier, type DecisionEndpointRequest } from "./decisions.ts";
 import {
   handleImageGenerateRequest,
   handleImageGetRequest,
@@ -1495,8 +1495,16 @@ app.post("/v2/runs/text", async (c) => {
 app.post("/v2/decisions", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);
   assertTenantScope(auth);
-  const body = (await c.req.json()) as DecisionRequest;
-  const out = await runDecisionClassifier(c.env, auth.tenantId, body);
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new ApiError(400, "invalid_request", "Request body must be a JSON object");
+  }
+  const out = await runDecisionClassifier(
+    c.env,
+    auth.tenantId,
+    body as DecisionEndpointRequest,
+    c.req.raw.signal,
+  );
   return c.json(out);
 });
 
