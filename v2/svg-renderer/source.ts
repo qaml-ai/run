@@ -35,7 +35,19 @@ function dimension(value: string | undefined): number {
 
 interface CssRule {
   selector: string;
+  specificity: readonly [number, number, number];
   style: InheritedStyle;
+}
+
+function selectorSpecificity(selector: string): readonly [number, number, number] {
+  let ids = 0, classes = 0, tags = 0;
+  for (const part of selector.trim().split(/\s+/)) {
+    if (!part || part === "*") continue;
+    if (/^[a-zA-Z][a-zA-Z0-9_-]*/.test(part)) tags++;
+    ids += (part.match(/#[a-zA-Z0-9_-]+/g) ?? []).length;
+    classes += (part.match(/\.[a-zA-Z0-9_-]+/g) ?? []).length;
+  }
+  return [ids, classes, tags];
 }
 
 function parseSimpleCssRules(css: string): CssRule[] {
@@ -50,8 +62,40 @@ function parseSimpleCssRules(css: string): CssRule[] {
     if (Object.keys(style).length === 0) continue;
     for (const rawSelector of selectorList.split(",")) {
       const selector = rawSelector.trim();
-      if (selector) rules.push({ selector, style });
+      if (selector) rules.push({ selector, specificity: selectorSpecificity(selector), style });
     }
+  }
+  return rules;
+}
+
+function collectDocumentCssRules(svg: string): CssRule[] {
+  if (!/<(?:[a-zA-Z0-9_-]+:)?style[\s>]/i.test(svg)) return [];
+  const rules: CssRule[] = [];
+  let inStyle = false;
+  let styleBuf = "";
+  const scanner = new SaxesParser({ xmlns: false });
+  scanner.on("opentag", ({ name }) => {
+    if (name.replace(/^.*:/, "").toLowerCase() === "style") {
+      inStyle = true;
+      styleBuf = "";
+    }
+  });
+  scanner.on("closetag", ({ name }) => {
+    if (name.replace(/^.*:/, "").toLowerCase() === "style" && inStyle) {
+      rules.push(...parseSimpleCssRules(fontCss(styleBuf)));
+      inStyle = false;
+      styleBuf = "";
+    }
+  });
+  const onText = (value: string) => {
+    if (inStyle) styleBuf += value;
+  };
+  scanner.on("text", onText);
+  scanner.on("cdata", onText);
+  try {
+    scanner.write(svg).close();
+  } catch {
+    // Let the main parser surface XML syntax errors cleanly.
   }
   return rules;
 }
@@ -122,12 +166,21 @@ function resolveCssForElement(
   if (rules.length === 0) return {};
   const classes = new Set((attributes.class ?? "").trim().split(/\s+/).filter(Boolean));
   const id = attributes.id;
-  const resolved: InheritedStyle = {};
-  for (const rule of rules) {
+  const matched: Array<{ rule: CssRule; order: number }> = [];
+  for (let i = 0; i < rules.length; i++) {
+    const rule = rules[i]!;
     if (matchesSimpleSelector(rule.selector, tags, classes, id, ancestors)) {
-      Object.assign(resolved, rule.style);
+      matched.push({ rule, order: i });
     }
   }
+  matched.sort((a, b) =>
+    (a.rule.specificity[0] - b.rule.specificity[0]) ||
+    (a.rule.specificity[1] - b.rule.specificity[1]) ||
+    (a.rule.specificity[2] - b.rule.specificity[2]) ||
+    (a.order - b.order),
+  );
+  const resolved: InheritedStyle = {};
+  for (const { rule } of matched) Object.assign(resolved, rule.style);
   return resolved;
 }
 
@@ -136,6 +189,7 @@ function ownPresentationInherited(attributes: Record<string, string>): Inherited
   if (attributes["font-family"] !== undefined) out["font-family"] = attributes["font-family"];
   if (attributes["font-weight"] !== undefined) out["font-weight"] = attributes["font-weight"];
   if (attributes["font-style"] !== undefined) out["font-style"] = attributes["font-style"];
+  if (attributes["font-size"] !== undefined) out["font-size"] = attributes["font-size"];
   if (attributes["letter-spacing"] !== undefined) out["letter-spacing"] = attributes["letter-spacing"];
   if (attributes.fill !== undefined) out.fill = attributes.fill;
   Object.assign(out, extractInheritedFromDeclarations(parseStyleDeclarations(attributes.style)));
@@ -169,14 +223,13 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
     images.set(name, { href: `data:${header.mimeType};base64,${file.data}`, pixels: header.width * header.height });
   }
 
-  let width = 0, height = 0, decodedPixels = 0, elements = 0;
+  let width = 0, height = 0, decodedPixels = 0, elements = 0, textboxCount = 0;
   const parts: string[] = [];
   const stack: string[] = [];
   const elementStack: ElementNode[] = [];
   const styleStack: InheritedStyle[] = [];
-  const cssRules: CssRule[] = [];
-  let styleBuffer: string | undefined;
-  let textbox: { attributes: Record<string, string>; text: string; inherited: InheritedStyle } | undefined;
+  const cssRules: CssRule[] = collectDocumentCssRules(svg);
+  let textbox: { attributes: Record<string, string>; text: string; inherited: InheritedStyle; index: number } | undefined;
   const parser = new SaxesParser({ xmlns: false });
   const reject = () => { throw new Error("SVG contains a document declaration or external resource"); };
   parser.on("doctype", reject);
@@ -210,7 +263,9 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
         const image = images.get(value);
         if (!image) throw new Error("SVG image references must name an image in files");
         decodedPixels += image.pixels;
-        if (decodedPixels > LIMITS.imagePixels) throw new Error("SVG image decode budget exceeded");
+        if (decodedPixels > LIMITS.imagePixels) {
+          throw new Error(`SVG image decode budget exceeded (max ${LIMITS.imagePixels / (1024 * 1024)} megapixels total across embedded images)`);
+        }
         attributes[key] = image.href;
       } else if (!value.startsWith("#")) reject();
     }
@@ -232,7 +287,7 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
       };
       elementStack.push(node);
       styleStack.push(inherited);
-      textbox = { attributes, text: "", inherited };
+      textbox = { attributes, text: "", inherited, index: ++textboxCount };
       return;
     }
 
@@ -243,20 +298,15 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
     };
     elementStack.push(node);
     styleStack.push(nextInherited);
-    if (element === "style") styleBuffer = "";
     parts.push(`<${name}${Object.entries(attributes).map(([key, value]) => ` ${key}="${escape(value)}"`).join("")}>`);
   });
   parser.on("closetag", ({ name }) => {
-    const element = stack.pop();
+    stack.pop();
     elementStack.pop();
     styleStack.pop();
-    if (element === "style" && styleBuffer !== undefined) {
-      cssRules.push(...parseSimpleCssRules(styleBuffer));
-      styleBuffer = undefined;
-    }
     if (textbox) {
       if (!measure) throw new Error("Textbox layout requires the SVG renderer");
-      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text), measure, textbox.inherited));
+      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text), measure, textbox.inherited, textbox.index));
       textbox = undefined;
       return;
     }
@@ -265,9 +315,7 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
   const text = (value: string) => {
     if (textbox) textbox.text += value;
     else if (stack.at(-1) === "style") {
-      const normalized = fontCss(value);
-      if (styleBuffer !== undefined) styleBuffer += normalized;
-      parts.push(escape(normalized));
+      parts.push(escape(fontCss(value)));
     } else parts.push(escape(stack.some(element => element === "text") ? normalizeMissingGlyphs(value) : value));
   };
   parser.on("text", text);

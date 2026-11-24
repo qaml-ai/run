@@ -53,15 +53,25 @@ export function supportsCodepoint(character: string): boolean {
 }
 
 /**
- * Ensures resvg 2.6.2 never stalls mid-run font fallback:
- * 1. Replaces uncovered characters with their NFKC compatibility decomposition (keeping supported
+ * Ensures resvg 2.6.2 never stalls mid-run font fallback or emits tofu boxes for emoji/combining sequences:
+ * 1. Normalizes to NFC first so decomposed combining accents (e.g. e + U+0301) render as precomposed glyphs.
+ * 2. Drops emoji skin-tone modifiers (U+1F3FB–U+1F3FF), keycap combining marks (U+20E3), and tag
+ *    characters (U+E0020–U+E007F) that render as empty boxes in resvg/NotoEmoji.
+ * 3. Replaces ZWJ (U+200D) with ZWNJ (U+200C) and inserts ZWNJ between adjacent Regional Indicators
+ *    (U+1F1E6–U+1F1FF) so ZWJ emoji sequences and flags draw their component glyphs instead of tofu boxes.
+ * 4. Replaces uncovered characters with their NFKC compatibility decomposition (keeping supported
  *    chars and substituting any remaining unsupported printable chars with "?") while preserving
  *    safe whitespace/joiner/variation characters.
- * 2. Breaks f+f / f+i / f+l ligatures with U+200C (ZWNJ) so Noto Sans/Serif ligature shaping
+ * 5. Breaks f+f / f+i / f+l ligatures with U+200C (ZWNJ) so Noto Sans/Serif ligature shaping
  *    cannot stall glyph fallback for trailing math/emoji runs.
  */
 export function normalizeMissingGlyphs(text: string): string {
-  const safe = Array.from(text, character => {
+  const preprocessed = text
+    .normalize("NFC")
+    .replace(/[\u{1F3FB}-\u{1F3FF}\u20E3\u{E0020}-\u{E007F}]/gu, "")
+    .replace(/\u200d/g, "\u200c")
+    .replace(/([\u{1F1E6}-\u{1F1FF}])(?=[\u{1F1E6}-\u{1F1FF}])/gu, "$1\u200c");
+  const safe = Array.from(preprocessed, character => {
     if (supportsCodepoint(character)) return character;
     const normalized = character.normalize("NFKC");
     if (normalized !== character) {

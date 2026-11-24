@@ -1021,12 +1021,39 @@ export class TenantDO extends DurableObject<Env> {
     agentId?: string;
     actor?: string;
     byok?: boolean;
+    skipLedger?: boolean;
   }): Promise<{ settled: true }> {
     const profile = this.readProfileOrNull();
     if (!profile) return { settled: true };
     const now = Date.now();
     const day = new Date(now).toISOString().slice(0, 10);
     const isByok = input.byok === true;
+
+    // Free/zero-cost metered events (e.g. image:resvg renders) record usage_daily without polluting
+    // credit_ledger / /v2/billing's last-50 money ledger with $0 entries.
+    if (input.skipLedger && Math.abs(input.costUsd) === 0) {
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO usage_daily (day, model, runs_count, own_key_runs, input_tokens, output_tokens, cache_read_tokens, vm_ms, cost_usd)
+           VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, 0)
+           ON CONFLICT(day, model) DO UPDATE SET
+             runs_count = usage_daily.runs_count + 1,
+             own_key_runs = usage_daily.own_key_runs + excluded.own_key_runs,
+             input_tokens = usage_daily.input_tokens + excluded.input_tokens,
+             output_tokens = usage_daily.output_tokens + excluded.output_tokens,
+             cache_read_tokens = usage_daily.cache_read_tokens + excluded.cache_read_tokens,
+             vm_ms = usage_daily.vm_ms + excluded.vm_ms`,
+          day,
+          input.model,
+          isByok ? 1 : 0,
+          input.inputTokens,
+          input.outputTokens,
+          input.cacheReadTokens ?? 0,
+          input.vmMs,
+        );
+      });
+      return { settled: true };
+    }
 
     this.ctx.storage.transactionSync(() => {
       const existing = this.ctx.storage.sql

@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { unstable_startWorker } from "wrangler";
 
 interface BillingState {
-  billing: { balanceUsd: number; usage: Array<{ runsCount: number; costUsd: number }> };
+  billing: {
+    balanceUsd: number;
+    usage: Array<{ model: string; runsCount: number; costUsd: number; vmMs: number }>;
+    recent: Array<{ refId: string; amountUsd: number; kind: string }>;
+  };
   ledger: Array<{ amount_usd: number; kind: string }>;
 }
 
@@ -73,4 +77,17 @@ test("platform reserves preserve metered usage, deduplicate charges and rolls ba
   const before = await send("read", builder);
   await send("settle", builder, 100, "run:rollback", 500);
   assert.deepEqual(await send("read", builder), before);
+
+  // Free $0 image:resvg usage with skipLedger=true records usage_daily without inserting a $0 credit_ledger row.
+  const otherBefore = await send<BillingState>("read", "other");
+  await send("free-image", "other", 0, "svg:rnd1");
+  await send("free-image", "other", 0, "svg:rnd2");
+  const otherAfter = await send<BillingState>("read", "other");
+  assert.equal(otherAfter.ledger.length, otherBefore.ledger.length, "free $0 render must not insert into credit_ledger");
+  assert.equal(otherAfter.billing.recent.length, otherBefore.billing.recent.length, "free $0 render must not pollute /v2/billing recent ledger");
+  const svgRow = otherAfter.billing.usage.find(u => u.model === "image:resvg");
+  assert.ok(svgRow, "image:resvg usage row must be recorded in usage_daily");
+  assert.equal(svgRow.runsCount, 2);
+  assert.equal(svgRow.vmMs, 110);
+  assert.equal(svgRow.costUsd, 0);
 });

@@ -89,13 +89,19 @@ export async function normalizeSvgRasterInput(
   if (!env.IMAGES) {
     throw new ApiError(503, "image_conversion_unavailable", "Image conversion for WebP/GIF is unavailable");
   }
-  const source = new Blob([new Uint8Array(bytes)]).stream();
-  const output = await env.IMAGES.input(source).output({ format: "image/png", anim: false });
-  const response = output.response();
-  if (!response.ok) {
+  let converted: Buffer;
+  try {
+    const source = new Blob([new Uint8Array(bytes)]).stream();
+    const output = await env.IMAGES.input(source).output({ format: "image/png", anim: false });
+    const response = output.response();
+    if (!response.ok) {
+      throw new ApiError(422, "invalid_image", "Could not convert WebP or GIF image to PNG");
+    }
+    converted = Buffer.from(await response.arrayBuffer());
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
     throw new ApiError(422, "invalid_image", "Could not convert WebP or GIF image to PNG");
   }
-  const converted = Buffer.from(await response.arrayBuffer());
   const outHeader = imageHeader(converted);
   if (
     !outHeader ||
@@ -282,19 +288,20 @@ export async function renderSvg(env: Env, svg: unknown, files?: Record<string, {
 }
 
 export async function recordSvgRenderUsage(
-  tenantStub: { settleUsage(input: { refId: string; model: string; inputTokens: number; outputTokens: number; vmMs: number; costUsd: number; note?: string }): Promise<unknown> },
+  tenantStub: { settleUsage(input: { refId: string; model: string; inputTokens: number; outputTokens: number; vmMs: number; costUsd: number; note?: string; skipLedger?: boolean }): Promise<unknown> },
   durationMs: number,
   note = "POST /v2/images/render",
 ): Promise<void> {
   await tenantStub
     .settleUsage({
       refId: `svg:${randomId("rnd", 8)}`,
-      model: "resvg",
+      model: "image:resvg",
       inputTokens: 0,
       outputTokens: 0,
       vmMs: Math.max(0, Math.round(durationMs)),
       costUsd: 0,
       note,
+      skipLedger: true,
     })
     .catch(() => {});
 }

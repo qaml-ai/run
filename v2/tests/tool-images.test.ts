@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
-import { normalizeSvgRasterInput, resolveRenderFiles } from "../worker/src/svg-render.ts";
+import { normalizeSvgRasterInput, recordSvgRenderUsage, resolveRenderFiles } from "../worker/src/svg-render.ts";
 import { toolImageContent, toolImageKey, type ToolImageRef } from "../worker/src/tool-images.ts";
-import type { Env } from "../worker/src/types.ts";
+import { ApiError, type Env } from "../worker/src/types.ts";
 
 test("toolImageContent detects image blocks and toolImageKey scopes R2 paths by tenant", () => {
   const ordinary = { content: [{ type: "text", text: "hello" }], info: 1 };
@@ -68,4 +68,36 @@ test("normalizeSvgRasterInput and resolveRenderFiles auto-convert WebP and GIF i
   assert.equal(resolved?.avatar?.data, convertedPng.toString("base64"));
   assert.equal(resolved?.badge?.data, convertedPng.toString("base64"));
   assert.equal(conversions, 4);
+
+  // Damaged WebP/GIF that causes IMAGES binding to throw returns 422 invalid_image (not 500).
+  const throwingImages = {
+    input: () => ({
+      output: async () => {
+        throw new Error("ERROR 9404: unable to decode image");
+      },
+    }),
+  } as unknown as ImagesBinding;
+  await assert.rejects(
+    () => normalizeSvgRasterInput({ IMAGES: throwingImages }, webpBuf),
+    (err: unknown) => err instanceof ApiError && err.status === 422 && err.code === "invalid_image",
+  );
+});
+
+test("recordSvgRenderUsage logs image:resvg with skipLedger=true and $0 cost", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  await recordSvgRenderUsage(
+    {
+      async settleUsage(input) {
+        calls.push(input);
+      },
+    },
+    42.7,
+    "POST /v2/images/render",
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.model, "image:resvg");
+  assert.equal(calls[0]!.costUsd, 0);
+  assert.equal(calls[0]!.vmMs, 43);
+  assert.equal(calls[0]!.skipLedger, true);
+  assert.equal(calls[0]!.note, "POST /v2/images/render");
 });

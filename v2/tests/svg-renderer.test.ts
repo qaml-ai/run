@@ -44,6 +44,17 @@ test("normalizes font aliases in CSS (including font shorthand) and handles miss
   assert.equal(normalizeMissingGlyphs("Officer 𝑱𝒐𝒌𝒆𝒓 🎉"), "Of\u200cf\u200cicer 𝑱𝒐𝒌𝒆𝒓 🎉");
   assert.equal(normalizeMissingGlyphs("★ ☆ ♡ ♛ ✓ ✗ ✿ ❀"), "★ ☆ ♡ ♛ ✓ ✗ ✿ ❀");
   assert.equal(normalizeMissingGlyphs("東京 🎉"), "?? 🎉");
+
+  // Flags, emoji ZWJ sequences, skin tones, keycaps, tag sequences, and decomposed combining accents.
+  assert.equal(normalizeMissingGlyphs("Ana 🇧🇷"), "Ana 🇧\u200c🇷");
+  assert.equal(normalizeMissingGlyphs("🇧🇷 Ana"), "🇧\u200c🇷 Ana");
+  assert.equal(normalizeMissingGlyphs("Lucas 👍🏽"), "Lucas 👍");
+  assert.equal(normalizeMissingGlyphs("Família 👨‍👩‍👧"), "Família 👨\u200c👩\u200c👧");
+  assert.equal(normalizeMissingGlyphs("João ❤️‍🔥"), "João ❤️\u200c🔥");
+  assert.equal(normalizeMissingGlyphs("Bia 🏳️‍🌈"), "Bia 🏳️\u200c🌈");
+  assert.equal(normalizeMissingGlyphs("Jose\u0301"), "José");
+  assert.equal(normalizeMissingGlyphs("1️⃣"), "1\uFE0F");
+  assert.equal(normalizeMissingGlyphs("🏴󠁧󠁢󠁥󠁮󠁧󠁿"), "🏴");
 });
 
 test("textbox inherits styles, locks layout style, passes through visual attributes, centers consistently, and formats helpful errors", () => {
@@ -84,7 +95,55 @@ test("textbox inherits styles, locks layout style, passes through visual attribu
   assert.match(prepared.svg, /text-decoration="underline"/);
   assert.match(prepared.svg, /paint-order="stroke"/);
   assert.match(prepared.svg, /fill="#123456"/);
-  assert.match(prepared.svg, /style="mix-blend-mode:multiply;font-size:24px;font-family:Noto Serif;font-weight:bold;font-style:normal;text-anchor:start;fill:#123456"/);
+  assert.match(
+    prepared.svg,
+    /style="mix-blend-mode:multiply;font-size:24px;font-family:Noto Serif;font-weight:bold;font-style:normal;text-anchor:start;letter-spacing:normal;dominant-baseline:auto;alignment-baseline:auto;word-spacing:0;writing-mode:horizontal-tb;fill:#123456"/,
+  );
+  assert.match(
+    prepared.svg,
+    /<tspan x="[^"]+" y="[^"]+" style="font-size:24px;font-family:Noto Serif;font-weight:bold;font-style:normal;text-anchor:start;letter-spacing:normal;dominant-baseline:auto;alignment-baseline:auto;word-spacing:0;writing-mode:horizontal-tb">Hello<\/tspan>/,
+  );
+
+  // CSS/inherited font-size is used as starting size when <textbox> omits explicit font-size,
+  // including when <style> appears after <textbox>.
+  const cssSize = prepareSvg(
+    '<svg width="400" height="160">' +
+      '<textbox class="value" x="20" y="20" width="300" height="52">Hello</textbox>' +
+      '<g font-size="26"><textbox x="20" y="90" width="300" height="52">Inherited</textbox></g>' +
+      "<style>.value { font-size: 28px; font-weight: bold; }</style>" +
+    "</svg>",
+    undefined,
+    mockMeasure,
+  );
+  assert.match(cssSize.svg, /font-size:28px;font-family:Noto Sans;font-weight:bold/);
+  assert.match(cssSize.svg, /font-size:26px;font-family:Noto Sans;font-weight:normal/);
+
+  // Explicit literal newlines inside <textbox> produce distinct lines.
+  const multiline = prepareSvg(
+    '<svg width="400" height="120"><textbox x="10" y="10" width="300" height="100" font-size="20">Line 1\nLine 2</textbox></svg>',
+    undefined,
+    mockMeasure,
+  );
+  const lineTexts = [...multiline.svg.matchAll(/<tspan [^>]+>([^<]+)<\/tspan>/g)].map(m => m[1]);
+  assert.deepEqual(lineTexts, ["Line 1", "Line 2"]);
+
+  // Measurement-budget error identifies the offending textbox by index, id, and coordinates.
+  let calls = 0;
+  assert.throws(
+    () =>
+      prepareSvg(
+        '<svg width="400" height="160">' +
+          '<textbox x="10" y="10" width="200" height="40" font-size="16">Ok</textbox>' +
+          '<textbox id="dense-box" x="10" y="70" width="200" height="40" font-size="16">Trigger budget</textbox>' +
+        "</svg>",
+        undefined,
+        (text, font, fontSize) => {
+          if (++calls > 2) throw new Error("SVG textbox layout exceeds the measurement budget");
+          return mockMeasure(text, font, fontSize);
+        },
+      ),
+    /measurement budget at textbox \(#2, id="dense-box", x=10, y=70, 200x40\) for "Trigger budget"/,
+  );
 
   // Consistent vertical centering: "ana" and "Ágata Jüngling" in identical boxes get the EXACT same baseline y.
   const row = prepareSvg(
@@ -95,7 +154,7 @@ test("textbox inherits styles, locks layout style, passes through visual attribu
     undefined,
     mockMeasure,
   );
-  const ys = [...row.svg.matchAll(/<tspan x="[^"]+" y="([^"]+)">/g)].map(m => m[1]);
+  const ys = [...row.svg.matchAll(/<tspan x="[^"]+" y="([^"]+)"/g)].map(m => m[1]);
   assert.equal(ys.length, 2);
   assert.equal(ys[0], ys[1], `Expected identical baseline y for "ana" and "Ágata Jüngling", got ${ys[0]} vs ${ys[1]}`);
 
@@ -183,6 +242,109 @@ test("the renderer Worker draws text, inherits styles, renders italic/symbols/em
       [20, 90, 300, 52],
       [20, 160, 260, 52],
       [20, 230, 260, 44],
+    ]);
+  });
+
+  await t.test("CSS targeting tspan/* and unlocked baseline/spacing/writing-mode properties cannot push <textbox> text out of box", async () => {
+    // Repro 1: tspan{font-size:40px} and *{font-size:40px}
+    const { buffer: tspanCss } = await renderPng(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="340" height="140">' +
+        "<style>tspan { font-size: 40px; letter-spacing: 8px; } * { font-size: 40px; }</style>" +
+        '<textbox x="20" y="20" width="260" height="44" font-size="24">CSS tspan{font-size:40px} blocked</textbox>' +
+        '<textbox x="20" y="80" width="260" height="44">Inherited wildcard shrinks to fit</textbox>' +
+      "</svg>",
+    );
+    await assertAllInkInsideBoxes(tspanCss, [
+      [20, 20, 260, 44],
+      [20, 80, 260, 44],
+    ]);
+
+    // Repro 2: .value with dominant-baseline:hanging, alignment-baseline:hanging, word-spacing, writing-mode
+    const { buffer: baselineCss } = await renderPng(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="380" height="160">' +
+        "<style>" +
+          ".value { font-size: 28px; font-weight: bold; dominant-baseline: hanging; alignment-baseline: hanging; word-spacing: 24px; writing-mode: tb; }" +
+          ".vert { writing-mode: vertical-rl; word-spacing: 30px; }" +
+        "</style>" +
+        '<textbox class="value" x="20" y="20" width="320" height="52">R$ 12.450,00</textbox>' +
+        '<textbox class="vert" x="20" y="90" width="320" height="52" font-size="24">Two Words Stay Horizontal</textbox>' +
+      "</svg>",
+    );
+    await assertAllInkInsideBoxes(baselineCss, [
+      [20, 20, 320, 52],
+      [20, 90, 320, 52],
+    ]);
+
+    // Verify .value actually rendered at 28px bold (substantially more ink than 16px normal)
+    const { buffer: default16 } = await renderPng(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="380" height="80">' +
+        '<textbox x="20" y="20" width="320" height="52">R$ 12.450,00</textbox>' +
+      "</svg>",
+    );
+    const { buffer: css28 } = await renderPng(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="380" height="80">' +
+        "<style>.value { font-size: 28px; font-weight: bold; }</style>" +
+        '<textbox class="value" x="20" y="20" width="320" height="52">R$ 12.450,00</textbox>' +
+      "</svg>",
+    );
+    const countInk = async (buf: Buffer) => {
+      const { data } = await sharp(buf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      let ink = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i]! > 0) ink++;
+      return ink;
+    };
+    const ink16 = await countInk(default16);
+    const ink28 = await countInk(css28);
+    assert.ok(ink28 > ink16 * 1.8, `Expected CSS .value 28px bold (${ink28}px) to render much larger than 16px default (${ink16}px)`);
+  });
+
+  await t.test("flags, emoji sequences, skin tones, and decomposed accents render without tofu boxes", async () => {
+    const renderLine = (text: string) =>
+      renderPng(`<svg width="480" height="80"><text x="10" y="55" font-family="Sans" font-size="32">${text}</text></svg>`);
+
+    // 1. Decomposed accent (e + U+0301) renders identically to NFC precomposed José
+    const [decomposed, precomposed] = await Promise.all([renderLine("Jose\u0301"), renderLine("José")]);
+    assert.equal(Buffer.compare(decomposed.buffer, precomposed.buffer), 0, "Decomposed Jose\\u0301 must match NFC José");
+
+    // 2. Skin tone modifier renders identically to base emoji (no trailing tofu box)
+    const [skinTone, baseEmoji] = await Promise.all([renderLine("Lucas 👍🏽"), renderLine("Lucas 👍")]);
+    assert.equal(Buffer.compare(skinTone.buffer, baseEmoji.buffer), 0, "Skin-tone emoji must render cleanly without box");
+
+    // 3. Flags & ZWJ emoji sequences render distinct component glyphs (not identical tofu boxes)
+    const distinctPairs: Array<[string, string, string]> = [
+      ["trailing flag BR vs US", "Ana 🇧🇷", "Ana 🇺🇸"],
+      ["leading flag BR vs US", "🇧🇷 Ana", "🇺🇸 Ana"],
+      ["ZWJ family vs fire", "Família 👨‍👩‍👧", "Família 🔥🔥🔥"],
+      ["ZWJ heart-fire vs plain heart", "João ❤️‍🔥", "João ❤️"],
+      ["ZWJ rainbow flag vs white flag", "Bia 🏳️‍🌈", "Bia 🏳️"],
+    ];
+    for (const [label, a, b] of distinctPairs) {
+      const [imgA, imgB] = await Promise.all([renderLine(a), renderLine(b)]);
+      assert.notEqual(
+        Buffer.compare(imgA.buffer, imgB.buffer),
+        0,
+        `${label}: "${a}" and "${b}" rendered identically (likely tofu boxes)`,
+      );
+    }
+
+    // 4. All repro strings inside <textbox> fit strictly inside their boxes (and multiline \n breaks cleanly)
+    const { buffer: reproBoxes } = await renderPng(
+      '<svg width="420" height="360">' +
+        '<textbox x="20" y="10" width="380" height="40" font-size="24">Ana 🇧🇷</textbox>' +
+        '<textbox x="20" y="60" width="380" height="40" font-size="24">🇧🇷 Ana</textbox>' +
+        '<textbox x="20" y="110" width="380" height="40" font-size="24">Lucas 👍🏽 · Jose\u0301</textbox>' +
+        '<textbox x="20" y="160" width="380" height="40" font-size="24">Família 👨‍👩‍👧</textbox>' +
+        '<textbox x="20" y="210" width="380" height="40" font-size="24">João ❤️‍🔥 · Bia 🏳️‍🌈</textbox>' +
+        '<textbox x="20" y="260" width="380" height="80" font-size="22">First Line\nSecond Line</textbox>' +
+      "</svg>",
+    );
+    await assertAllInkInsideBoxes(reproBoxes, [
+      [20, 10, 380, 40],
+      [20, 60, 380, 40],
+      [20, 110, 380, 40],
+      [20, 160, 380, 40],
+      [20, 210, 380, 40],
+      [20, 260, 380, 80],
     ]);
   });
 

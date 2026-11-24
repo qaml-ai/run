@@ -29,6 +29,9 @@ export default {
         case "settle": return Response.json(await tenant.settleUsage({
           refId: input.ref ?? "", costUsd: input.amount ?? 0, model: "fixture/model", inputTokens: 10, outputTokens: 20, vmMs: 0,
         }));
+        case "free-image": return Response.json(await tenant.settleUsage({
+          refId: input.ref ?? "", costUsd: 0, model: "image:resvg", inputTokens: 0, outputTokens: 0, vmMs: 55, note: "POST /v2/images/render", skipLedger: true,
+        }));
         case "grant": return Response.json(await tenant.addCredits({ refId: input.ref ?? "", amountUsd: input.amount ?? 0 }));
         case "collision": await tenant.reserveCollision(input.ref ?? ""); return Response.json(null);
         case "read": return Response.json({ billing: await tenant.getBillingSummary(), ledger: await tenant.ledger() });

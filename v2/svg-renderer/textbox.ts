@@ -4,6 +4,7 @@ export interface InheritedStyle {
   "font-family"?: string;
   "font-weight"?: string;
   "font-style"?: string;
+  "font-size"?: string;
   "letter-spacing"?: string;
   fill?: string;
 }
@@ -32,8 +33,6 @@ const PASS_THROUGH_VISUAL_ATTRS = [
   "clip-path",
   "mask",
   "visibility",
-  "word-spacing",
-  "writing-mode",
 ] as const;
 
 const LOCKED_STYLE_PROPS = new Set([
@@ -47,6 +46,8 @@ const LOCKED_STYLE_PROPS = new Set([
   "letter-spacing",
   "dominant-baseline",
   "alignment-baseline",
+  "word-spacing",
+  "writing-mode",
   "fill",
 ]);
 
@@ -122,10 +123,12 @@ export function extractInheritedFromDeclarations(declarations: Array<[string, st
       if (parsed["font-family"]) out["font-family"] = parsed["font-family"];
       if (parsed["font-weight"]) out["font-weight"] = parsed["font-weight"];
       if (parsed["font-style"]) out["font-style"] = parsed["font-style"];
+      if (parsed["font-size"]) out["font-size"] = parsed["font-size"];
     } else if (
       prop === "font-family" ||
       prop === "font-weight" ||
       prop === "font-style" ||
+      prop === "font-size" ||
       prop === "letter-spacing" ||
       prop === "fill"
     ) {
@@ -146,11 +149,20 @@ const setting = (attributes: Record<string, string>, name: string, preview: stri
   return value;
 };
 
+function parseNumericFontSize(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/\s*!important\s*$/i, "").trim();
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:px)?$/i.test(cleaned)) return undefined;
+  const value = Number.parseFloat(cleaned);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
 export function renderTextbox(
   attributes: Record<string, string>,
   text: string,
   measure: MeasureText,
   inherited?: InheritedStyle,
+  boxIndex?: number,
 ): string {
   const preview = cleanPreview(text);
   const x = setting(attributes, "x", preview, 0);
@@ -160,22 +172,12 @@ export function renderTextbox(
   const ownDecls = parseStyleDeclarations(attributes.style);
   const ownStyleInherited = extractInheritedFromDeclarations(ownDecls);
 
-  let styleFontSize: number | undefined;
-  if (attributes["font-size"] === undefined) {
-    for (const [prop, rawVal] of ownDecls) {
-      const val = rawVal.replace(/\s*!important\s*$/i, "").trim();
-      if (prop === "font-size" && /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:px)?$/.test(val)) {
-        styleFontSize = Number.parseFloat(val);
-      } else if (prop === "font") {
-        const parsed = extractFontShorthand(val);
-        if (parsed["font-size"] && /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:px)?$/.test(parsed["font-size"])) {
-          styleFontSize = Number.parseFloat(parsed["font-size"]);
-        }
-      }
-    }
-  }
+  const fallbackFontSize =
+    parseNumericFontSize(ownStyleInherited["font-size"]) ??
+    parseNumericFontSize(inherited?.["font-size"]) ??
+    16;
 
-  const maximum = setting(attributes, "font-size", preview, styleFontSize ?? 16);
+  const maximum = setting(attributes, "font-size", preview, fallbackFontSize);
   const floor = Math.min(8, maximum);
   const minimum = Math.max(floor, setting(attributes, "min-font-size", preview, maximum * 0.6));
   const lineHeight = setting(attributes, "line-height", preview, 1.2);
@@ -188,6 +190,23 @@ export function renderTextbox(
     );
   }
   if (!text.trim()) return "";
+
+  const boxRefParts = [
+    ...(boxIndex !== undefined ? [`#${boxIndex}`] : []),
+    ...(attributes.id ? [`id="${attributes.id}"`] : []),
+    `x=${x}, y=${y}, ${width}x${height}`,
+  ];
+  const boxLabel = `textbox (${boxRefParts.join(", ")})`;
+  const safeMeasure: MeasureText = (value, font, fontSize) => {
+    try {
+      return measure(value, font, fontSize);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("measurement budget")) {
+        throw new Error(`SVG textbox layout exceeds the measurement budget at ${boxLabel} for "${preview}"`);
+      }
+      throw err;
+    }
+  };
 
   const fontFamily = ownStyleInherited["font-family"] ?? attributes["font-family"] ?? inherited?.["font-family"] ?? "Noto Sans";
   const fontWeight = ownStyleInherited["font-weight"] ?? attributes["font-weight"] ?? inherited?.["font-weight"] ?? "normal";
@@ -216,14 +235,14 @@ export function renderTextbox(
       const key = `${rounded}\0${value}`;
       let box = cached.get(key);
       if (!box) {
-        box = measure(value, measureFontAttrs, rounded) ?? empty;
+        box = safeMeasure(value, measureFontAttrs, rounded) ?? empty;
         cached.set(key, box);
       }
       return box;
     }
     let box = cached.get(value);
     if (!box) {
-      box = measure(value, measureFontAttrs, referenceSize) ?? empty;
+      box = safeMeasure(value, measureFontAttrs, referenceSize) ?? empty;
       cached.set(value, box);
     }
     const scale = size / referenceSize;
@@ -231,7 +250,11 @@ export function renderTextbox(
   };
 
   const fits = (value: string, size: number) => boundsAt(value, size).width <= width * margin;
-  const tokens = text.match(/[^\s\-/,]*[\s\-/,]+|[^\s\-/,]+$/gu) ?? [text];
+  const paragraphs = text.replace(/\r\n?/g, "\n").split("\n");
+  const hasExplicitBreaks = paragraphs.length > 1;
+  const tokenize = (segment: string) =>
+    segment.length === 0 ? [] : (segment.match(/[^\s\-/,]*[\s\-/,]+|[^\s\-/,]+$/gu) ?? [segment]);
+  const paragraphTokens = paragraphs.map(tokenize);
 
   function wrap(size: number, units: string[]) {
     const lines: string[] = [];
@@ -249,20 +272,39 @@ export function renderTextbox(
     return lines;
   }
 
+  function wrapParagraphs(size: number, groupedUnits: string[][]) {
+    const lines: string[] = [];
+    for (const units of groupedUnits) {
+      if (units.length === 0) {
+        lines.push("");
+        continue;
+      }
+      const wrappedPara = wrap(size, units);
+      if (!wrappedPara) return;
+      lines.push(...wrappedPara);
+    }
+    return lines;
+  }
+
   function layout(lines: string[], size: number) {
     const boxes = lines.map((line, index) => {
+      if (!line.trim()) {
+        return { line, index, x: 0, width: 0, top: index * size * lineHeight, height: 0 };
+      }
       const box = boundsAt(line, size);
-      return { line, x: box.x, width: box.width, top: box.y + index * size * lineHeight, height: box.height };
+      return { line, index, x: box.x, width: box.width, top: box.y + index * size * lineHeight, height: box.height };
     });
-    const top = Math.min(...boxes.map(box => box.top));
-    const bottom = Math.max(...boxes.map(box => box.top + box.height));
+    const nonEmpty = boxes.filter(box => box.line.trim().length > 0);
+    const measured = nonEmpty.length > 0 ? nonEmpty : boxes;
+    const top = Math.min(...measured.map(box => box.top));
+    const bottom = Math.max(...measured.map(box => box.top + box.height));
     if (bottom - top > height * margin) return;
     return { boxes, top, height: bottom - top, size };
   }
 
-  function wrapped(units: string[], low: number, high: number) {
+  function wrapped(groupedUnits: string[][], low: number, high: number) {
     const at = (size: number) => {
-      const lines = wrap(size, units);
+      const lines = wrapParagraphs(size, groupedUnits);
       return lines && layout(lines, size);
     };
     let best = at(low);
@@ -281,20 +323,24 @@ export function renderTextbox(
   }
 
   let result: ReturnType<typeof layout>;
-  if (fixedPxLetterSpacing) {
-    result = wrapped([text], minimum, maximum) ?? wrapped(tokens, minimum, maximum);
+  if (hasExplicitBreaks) {
+    result = wrapped(paragraphTokens, minimum, maximum);
+  } else if (fixedPxLetterSpacing) {
+    result = wrapped([[text]], minimum, maximum) ?? wrapped(paragraphTokens, minimum, maximum);
   } else {
     const full = boundsAt(text, referenceSize);
     const single = Math.min(maximum, width * margin * referenceSize / (full.width || 1),
       height * margin * referenceSize / (full.height || 1));
-    result = single >= minimum ? layout([text], single) : wrapped(tokens, minimum, maximum);
+    result = single >= minimum ? layout([text], single) : wrapped(paragraphTokens, minimum, maximum);
   }
-  if (!result && floor < minimum) result = wrapped(tokens, floor, minimum);
+  if (!result && floor < minimum) result = wrapped(paragraphTokens, floor, minimum);
   if (!result) {
     const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-    const broken = tokens.flatMap(token => fits(token, floor) ? [token]
-      : Array.from(segmenter.segment(token), ({ segment }) => segment));
-    const lines = wrap(floor, broken);
+    const brokenParagraphs = paragraphTokens.map(units =>
+      units.flatMap(token => fits(token, floor) ? [token]
+        : Array.from(segmenter.segment(token), ({ segment }) => segment)),
+    );
+    const lines = wrapParagraphs(floor, brokenParagraphs);
     result = lines && layout(lines, floor);
   }
   if (!result) {
@@ -303,7 +349,7 @@ export function renderTextbox(
 
   const { boxes, size } = result;
   const valignFactor = valign === "top" ? 0 : valign === "bottom" ? 1 : 0.5;
-  const metricRef = measure(metricSample, baseFontAttrs, referenceSize);
+  const metricRef = safeMeasure(metricSample, baseFontAttrs, referenceSize);
   let top: number;
   if (metricRef && metricRef.height > 0) {
     const scale = size / referenceSize;
@@ -326,21 +372,29 @@ export function renderTextbox(
     .filter(([prop]) => !LOCKED_STYLE_PROPS.has(prop))
     .map(([prop, val]) => `${prop}:${val}`);
 
-  const lockedStyleDecls = [
+  const lockedLayoutDecls = [
     `font-size:${size}px`,
     `font-family:${fontFamily}`,
     `font-weight:${fontWeight}`,
     `font-style:${fontStyle}`,
     "text-anchor:start",
-    ...(letterSpacing !== undefined ? [`letter-spacing:${letterSpacing}`] : []),
-    ...(fill !== undefined ? [`fill:${fill}`] : []),
+    `letter-spacing:${letterSpacing ?? "normal"}`,
+    "dominant-baseline:auto",
+    "alignment-baseline:auto",
+    "word-spacing:0",
+    "writing-mode:horizontal-tb",
   ];
-  const mergedStyle = [...preservedStyleDecls, ...lockedStyleDecls].join(";");
+  const tspanLockedStyle = lockedLayoutDecls.join(";");
+  const mergedStyle = [
+    ...preservedStyleDecls,
+    ...lockedLayoutDecls,
+    ...(fill !== undefined ? [`fill:${fill}`] : []),
+  ].join(";");
   const fillAttr = fill === undefined ? "" : ` fill="${escapeXml(fill)}"`;
 
   return `<text${measureFontAttrs}${fillAttr} font-size="${size}" text-anchor="start"${extraAttrs} style="${escapeXml(mergedStyle)}" xml:space="preserve">` +
-    boxes.map((box, index) => {
+    boxes.filter(box => box.line.trim().length > 0).map(box => {
       const left = x - box.x + (width - box.width) * (align === "start" ? 0 : align === "end" ? 1 : 0.5);
-      return `<tspan x="${left}" y="${top + index * size * lineHeight}">${escapeXml(box.line)}</tspan>`;
+      return `<tspan x="${left}" y="${top + box.index * size * lineHeight}" style="${escapeXml(tspanLockedStyle)}">${escapeXml(box.line)}</tspan>`;
     }).join("") + "</text>";
 }
