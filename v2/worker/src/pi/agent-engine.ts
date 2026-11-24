@@ -1325,6 +1325,113 @@ export class PiAgentEngine {
     return { created };
   }
 
+  /**
+   * Imports v1 history messages directly into `pi-durable` (either creating the root
+   * conversation or appending to an existing root conversation for chunked imports).
+   * Splits large imports into memory-safe batches without breaking tool-call/result pairs.
+   */
+  async importV1Messages(
+    cfg: AgentConfig,
+    messages: readonly StoredMessage[],
+    opts?: { append?: boolean },
+  ): Promise<void> {
+    await this.ensureStarted();
+    await this.ensureExtensionsInstalled(cfg);
+    const modelRef = parsePiModelRef(cfg.model, this.host.env);
+
+    // Partition into memory-safe commits (<= 100 messages and <= 2 MiB per commit)
+    // without ever splitting an assistant toolCall message from its following tool results.
+    const MAX_BATCH_ROWS = 100;
+    const MAX_BATCH_BYTES = 2 * 1024 * 1024;
+    const batches: StoredMessage[][] = [];
+    let currentBatch: StoredMessage[] = [];
+    let currentBytes = 0;
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!;
+      const msgBytes = JSON.stringify(msg.content).length;
+      const shouldFlush =
+        currentBatch.length > 0 &&
+        msg.role !== "tool" &&
+        (currentBatch.length >= MAX_BATCH_ROWS || currentBytes + msgBytes > MAX_BATCH_BYTES);
+      if (shouldFlush) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentBytes = 0;
+      }
+      currentBatch.push(msg);
+      currentBytes += msgBytes;
+    }
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    const persistMeta = (
+      importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>,
+    ) => {
+      if (importedMeta.length === 0) return;
+      this.host.ctx.storage.transactionSync(() => {
+        for (const item of importedMeta) {
+          this.recordEntryMeta(item.entryId, item.runId, item.meta);
+        }
+      });
+    };
+
+    let startIndex = 0;
+    if (!this.rootReady && !this.hasPiRootConversation()) {
+      const hasLegacyRows =
+        opts?.append &&
+        this.host.ctx.storage.sql
+          .exec<{ x: number }>("SELECT 1 AS x FROM messages LIMIT 1")
+          .toArray().length > 0;
+      if (hasLegacyRows) {
+        // Seamless mid-deploy upgrade for a chunked import whose earlier chunks lived in `messages`.
+        await this.ensureRootMigrated(cfg);
+      } else {
+        const firstBatch = batches[0] ?? [];
+        const initialChange = this.buildAgentChange(cfg);
+        let importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }> = [];
+        const { created } = await this.harness.root({
+          agent: initialChange,
+          init: async (tx, convId) => {
+            if (firstBatch.length > 0) {
+              const res = await importLegacyTranscriptToPi(tx, convId, null, firstBatch, modelRef);
+              importedMeta = res.importedMeta;
+            }
+          },
+        });
+        if (created) {
+          this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
+          persistMeta(importedMeta);
+          startIndex = 1;
+        }
+        this.rootReady = true;
+      }
+    } else {
+      this.rootReady = true;
+    }
+
+    if (startIndex < batches.length) {
+      const pi = await this.harness.pi();
+      for (let i = startIndex; i < batches.length; i++) {
+        const batch = batches[i]!;
+        if (batch.length === 0) continue;
+        let importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }> = [];
+        await pi.commit(async (tx) => {
+          const res = await importLegacyTranscriptToPi(
+            tx,
+            ROOT_CONVERSATION_ID,
+            null,
+            batch,
+            modelRef,
+          );
+          importedMeta = res.importedMeta;
+        }, BG);
+        persistMeta(importedMeta);
+      }
+    }
+  }
+
   private async refreshModels(
     cfg: AgentConfig,
     opts?: {
@@ -2444,6 +2551,10 @@ export class PiAgentEngine {
     return { ok: true, upToSeq, summary };
   }
 
+  hasPiRoot(): boolean {
+    return this.rootReady || this.hasPiRootConversation();
+  }
+
   private hasPiRootConversation(): boolean {
     const hasTable = this.host.ctx.storage.sql
       .exec<{ name: string }>(
@@ -2571,7 +2682,7 @@ export class PiAgentEngine {
         .exec<{ cnt: number }>(
           `SELECT COUNT(*) AS cnt FROM pi_entries
            WHERE conversation_id = 1
-             AND kind IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')`,
+             AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')`,
         )
         .toArray()[0];
       if (row) return Number(row.cnt ?? 0);

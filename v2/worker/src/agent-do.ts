@@ -95,6 +95,84 @@ export class AgentDO extends DurableObject<Env> {
   private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
   private piEngine: PiAgentEngine | null = null;
   private periodicRanInAlarm = false;
+  private historyImportLock: Promise<void> = Promise.resolve();
+
+  private withHistoryImportLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.historyImportLock;
+    let release!: () => void;
+    this.historyImportLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return prev.then(fn, fn).finally(() => release());
+  }
+
+  private countPiContentEntries(): number {
+    const hasTable = this.ctx.storage.sql
+      .exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pi_entries' LIMIT 1",
+      )
+      .toArray();
+    if (hasTable.length === 0) return 0;
+    const row = this.ctx.storage.sql
+      .exec<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM pi_entries
+         WHERE conversation_id = 1
+           AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')`,
+      )
+      .toArray()[0];
+    return Number(row?.cnt ?? 0);
+  }
+
+  private hasPiContentEntries(): boolean {
+    const hasTable = this.ctx.storage.sql
+      .exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pi_entries' LIMIT 1",
+      )
+      .toArray();
+    if (hasTable.length === 0) return false;
+    const rows = this.ctx.storage.sql
+      .exec<{ id: number }>(
+        `SELECT id FROM pi_entries
+         WHERE conversation_id = 1
+           AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')
+         LIMIT 1`,
+      )
+      .toArray();
+    return rows.length > 0;
+  }
+
+  private async resetPiForHistoryReplace(): Promise<void> {
+    if (this.piEngine) {
+      await this.piEngine.dispose().catch(() => {});
+      this.piEngine = null;
+    }
+    this.ctx.storage.transactionSync(() => {
+      const piTables = this.ctx.storage.sql
+        .exec<{ name: string }>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'pi_%' AND name != 'pi_entry_meta'",
+        )
+        .toArray();
+      for (const { name } of piTables) {
+        if (/^pi_[A-Za-z0-9_]+$/.test(name)) {
+          this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+        }
+      }
+      this.ctx.storage.sql.exec("DELETE FROM pi_entry_meta");
+      this.ctx.storage.sql.exec("DELETE FROM messages");
+      this.ctx.storage.sql.exec("DELETE FROM compactions");
+      this.ctx.storage.sql.exec("DELETE FROM runtime_kv WHERE k IN ('pi_migrated_at', 'pi_legacy_seq')");
+    });
+  }
+
+  async migrateToPi(): Promise<{ status: "empty" | "already_pi" | "migrated" }> {
+    const cfg = this.readConfigOrNull();
+    if (!cfg) return { status: "empty" };
+    this.ensureSql();
+    const engine = this.ensurePiEngine();
+    if (engine.hasPiRoot()) return { status: "already_pi" };
+    const { created } = await engine.ensureRootMigrated(cfg);
+    return { status: created ? "migrated" : "already_pi" };
+  }
 
   private ensurePiEngine(): PiAgentEngine {
     if (!this.piEngine) {
@@ -2009,7 +2087,7 @@ export class AgentDO extends DurableObject<Env> {
         .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
         .toArray()[0];
       if (!current) throw new ApiError(409, "history_import_conflict", "The destination has no v1 import receipt");
-      let imported: { source?: unknown; receipt?: unknown } | null;
+      let imported: { source?: unknown; receipt?: unknown; count?: unknown } | null;
       try {
         imported = JSON.parse(current.v);
       } catch {
@@ -2035,12 +2113,19 @@ export class AgentDO extends DurableObject<Env> {
       if (state.used || this.activeRunId) {
         throw new ApiError(409, "history_import_conflict", "The destination already has activity");
       }
+      const legacyCount = Number(state.count);
+      const messageCount =
+        legacyCount > 0
+          ? legacyCount
+          : typeof imported.count === "number" && Number.isInteger(imported.count) && imported.count >= 0
+            ? imported.count
+            : this.countPiContentEntries();
       return {
         tenantId: config.tenantId,
         agentId: config.id,
         source: imported.source,
         receipt: imported.receipt,
-        messageCount: Number(state.count),
+        messageCount,
         model: config.model,
         repoId: config.repoId,
         lineage: config.lineage,
@@ -2097,67 +2182,97 @@ export class AgentDO extends DurableObject<Env> {
       }
       messages.push({ ...content, files });
     }
-    return this.ctx.storage.transactionSync(() => {
-      if (this.requireConfig().lineage !== config.lineage) {
-        throw new ApiError(409, "history_import_conflict", "The v2 destination repository changed during import");
-      }
-      const sql = this.ctx.storage.sql;
-      const current = sql
-        .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
-        .toArray()[0];
-      const imported = current
-        ? (JSON.parse(current.v) as { source: string; receipt: string; chunked?: true })
-        : undefined;
-      const used = sql
-        .exec<{ used: number }>(
-          `SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-           OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions)
-           OR EXISTS (SELECT 1 FROM schedules) AS used`,
-        )
-        .one();
-      if (used.used || (!imported && sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length)) {
-        throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
-      }
-      const offset = input.appendAfter ?? 0;
-      const count = offset + input.messages.length;
-      if (imported?.source === input.source && imported.receipt === receipt) return { receipt, count };
-      if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
-        throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
-      }
-      if (imported?.chunked && input.appendAfter === undefined) {
-        throw new ApiError(409, "history_import_conflict", "A chunked history cannot be replaced in one request");
-      }
-      if (input.appendAfter !== undefined) {
-        if (offset > 0 && imported?.chunked !== true) {
-          throw new ApiError(409, "history_import_conflict", "Start chunked history at the beginning");
+    return this.withHistoryImportLock(async () => {
+      const check = this.ctx.storage.transactionSync(() => {
+        if (this.requireConfig().lineage !== config.lineage) {
+          throw new ApiError(409, "history_import_conflict", "The v2 destination repository changed during import");
         }
-        const { last } = sql.exec<{ last: number }>("SELECT COALESCE(MAX(seq), 0) AS last FROM messages").one();
-        if (offset !== last) {
-          throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
+        const sql = this.ctx.storage.sql;
+        const current = sql
+          .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
+          .toArray()[0];
+        const imported = current
+          ? (JSON.parse(current.v) as { source: string; receipt: string; chunked?: true; count?: number })
+          : undefined;
+        const used = sql
+          .exec<{ used: number }>(
+            `SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+             OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions)
+             OR EXISTS (SELECT 1 FROM schedules) AS used`,
+          )
+          .one();
+        const hasLegacyMessages = sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length > 0;
+        const hasPiEntries = this.hasPiContentEntries();
+        if (used.used || this.activeRunId || (!imported && (hasLegacyMessages || hasPiEntries))) {
+          throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
         }
-      } else if (imported) {
-        sql.exec("DELETE FROM messages");
+        const offset = input.appendAfter ?? 0;
+        const count = offset + input.messages.length;
+        if (imported?.source === input.source && imported.receipt === receipt) {
+          return { idempotent: true as const, count, offset, replace: false };
+        }
+        if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
+          throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
+        }
+        if (imported?.chunked && input.appendAfter === undefined) {
+          throw new ApiError(409, "history_import_conflict", "A chunked history cannot be replaced in one request");
+        }
+        if (input.appendAfter !== undefined) {
+          if (offset > 0 && imported?.chunked !== true) {
+            throw new ApiError(409, "history_import_conflict", "Start chunked history at the beginning");
+          }
+          const last =
+            typeof imported?.count === "number"
+              ? imported.count
+              : hasLegacyMessages
+                ? sql.exec<{ last: number }>("SELECT COALESCE(MAX(seq), 0) AS last FROM messages").one().last
+                : this.countPiContentEntries();
+          if (offset !== last) {
+            throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
+          }
+        }
+        return {
+          idempotent: false as const,
+          count,
+          offset,
+          replace: Boolean(imported && input.appendAfter === undefined),
+        };
+      });
+
+      if (check.idempotent) {
+        return { receipt, count: check.count };
       }
-      for (const [index, message] of input.messages.entries()) {
+
+      if (check.replace) {
+        await this.resetPiForHistoryReplace();
+      }
+
+      const storedBatch: StoredMessage[] = input.messages.map((message, index) => {
         const content = messages[index]!;
-        sql.exec(
-          "INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-          offset + index + 1,
-          message.role,
-          JSON.stringify(content),
-          estimateTokens(content.text ?? ""),
-          message.createdAt,
-        );
-      }
-      sql.exec(
+        return {
+          seq: check.offset + index + 1,
+          runId: null,
+          role: message.role,
+          content,
+          tokensEst: estimateTokens(content.text ?? ""),
+          createdAt: message.createdAt,
+        };
+      });
+
+      await this.ensurePiEngine().importV1Messages(this.requireConfig(), storedBatch, {
+        append: input.appendAfter !== undefined,
+      });
+
+      this.ctx.storage.sql.exec(
         `INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
         JSON.stringify({
           source: input.source,
           receipt,
+          count: check.count,
           chunked: input.appendAfter === undefined ? undefined : true,
         }),
       );
-      return { receipt, count };
+      return { receipt, count: check.count };
     });
   }
 

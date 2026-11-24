@@ -1,9 +1,8 @@
 import type { Message as PiAiMessage } from "@earendil-works/pi-ai";
-import type { ConversationId, EntryId, Tx } from "@earendil-works/pi-durable";
+import type { EntryRecord } from "@earendil-works/pi-durable";
 import app, { AgentDO as RuntimeAgentDO, TenantDO } from "../../worker/src/index.ts";
-import { importLegacyTranscriptToPi } from "../../worker/src/pi/migrate.ts";
 import { parsePiModelRef, streamPiModel } from "../../worker/src/pi/models.ts";
-import { ApiError, toApiErrorResponse, type Env, type StoredMessage } from "../../worker/src/types.ts";
+import { ApiError, toApiErrorResponse, type Env } from "../../worker/src/types.ts";
 export { TenantDO };
 
 export class AgentDO extends RuntimeAgentDO {
@@ -22,28 +21,23 @@ export class AgentDO extends RuntimeAgentDO {
     if (config.key === "old-reader") throw new ApiError(503, "old_fixture_reader", "Old fixture lacks the new import capability");
   }
 
-  fixtureMessages(): StoredMessage[] {
-    return this.ctx.storage.sql.exec<{ seq: number; content_json: string; role: StoredMessage["role"]; run_id: string | null; created_at: number; tokens_est: number }>(
-      "SELECT seq,role,run_id,content_json,created_at,tokens_est FROM messages ORDER BY seq",
-    ).toArray().map(row => ({ seq: row.seq, role: row.role, runId: row.run_id,
-      content: JSON.parse(row.content_json), createdAt: row.created_at, tokensEst: row.tokens_est }));
+  fixturePiMessages(): PiAiMessage[] {
+    const legacyCount = this.ctx.storage.sql
+      .exec<{ cnt: number }>("SELECT COUNT(*) AS cnt FROM messages")
+      .one().cnt;
+    if (legacyCount !== 0) {
+      throw new Error(`Expected 0 rows in legacy messages table after direct pi-durable import, got ${legacyCount}`);
+    }
+    const rows = this.ctx.storage.sql
+      .exec<{ record: string }>("SELECT record FROM pi_entries WHERE conversation_id = 1 ORDER BY id ASC")
+      .toArray();
+    const out: PiAiMessage[] = [];
+    for (const row of rows) {
+      const entry = JSON.parse(row.record) as EntryRecord;
+      if (entry.model) out.push(...entry.model);
+    }
+    return out;
   }
-}
-
-async function projectStoredToPiMessages(stored: StoredMessage[], model: string, env: Env): Promise<PiAiMessage[]> {
-  const messages: PiAiMessage[] = [];
-  let seq = 0;
-  const fakeTx = {
-    async appendEntry(_kindOrConv: unknown, _convOrEntry: unknown, maybeEntry?: { model?: PiAiMessage[] }) {
-      const entry = maybeEntry ?? (_convOrEntry as { model?: PiAiMessage[] });
-      if (entry?.model) {
-        messages.push(...entry.model);
-      }
-      return { id: ++seq as EntryId };
-    },
-  } as unknown as Tx;
-  await importLegacyTranscriptToPi(fakeTx, 1 as ConversationId, null, stored, parsePiModelRef(model, env));
-  return messages;
 }
 
 export default {
@@ -63,7 +57,7 @@ export default {
       const targetModel = models[provider];
       if (!targetModel || !baseUrl.startsWith("http://127.0.0.1:")) return new Response(null, { status: 400 });
       const ref = parsePiModelRef(targetModel, env);
-      const messages = await projectStoredToPiMessages(await stub.fixtureMessages(), targetModel, env);
+      const messages = await stub.fixturePiMessages();
       for await (const _ of streamPiModel({
         env,
         tenantId: "fixture",

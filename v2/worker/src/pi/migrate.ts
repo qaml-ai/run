@@ -41,6 +41,7 @@ export interface CamelRunUserEntryData {
   requestId?: string | null;
   files?: StoredRunFile[];
   meta?: Record<string, unknown>;
+  legacyInlineImages?: boolean;
 }
 
 export const CamelRunUserEntry = defineEntry<JsonObject>("camelrun.user");
@@ -265,6 +266,9 @@ export async function importLegacyTranscriptToPi(
       }
       if (msg.content.meta && typeof msg.content.meta === "object") {
         entryData.meta = JSON.parse(JSON.stringify(msg.content.meta)) as JsonValue;
+      }
+      if (msg.content.legacyInlineImages) {
+        entryData.legacyInlineImages = true;
       }
       if (Object.keys(entryData).length > 0) {
         await tx.appendEntry(CamelRunUserEntry, conversationId, {
@@ -533,6 +537,7 @@ export function mapPiEntriesToHistory(
         content: {
           text,
           ...(attachedFiles ? { files: attachedFiles } : {}),
+          ...(nativeData?.legacyInlineImages ? { legacyInlineImages: true } : {}),
           ...(hasMeta ? { meta: rawMeta } : {}),
         },
         tokensEst: estimateTokens(text),

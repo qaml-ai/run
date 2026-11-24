@@ -1873,8 +1873,85 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
 
   app.get("/v2/admin/ops/tenants", async (c) => {
     requireAdmin(c.env, c.req.raw);
-    const tenants = await getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME).listOpsTenants();
+    const registered = await getTenantStub(c.env, CONSOLE_ACCOUNTS_DO_NAME).listOpsTenants();
+    const seen = new Set(registered.map((t) => t.tenantId));
+    const extraIds = [
+      ...(c.env.BUILDER_CUTOVER_CREDIT_TENANT_ID ? [c.env.BUILDER_CUTOVER_CREDIT_TENANT_ID.trim()] : []),
+      ...(c.env.APP_RUNTIME_CREDIT_TENANT_IDS ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ];
+    const tenants = [...registered];
+    for (const id of extraIds) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const profile = await getTenantStub(c.env, id).getProfile().catch(() => null);
+      tenants.push({
+        tenantId: id,
+        name: profile?.name ?? null,
+        kind: "operator",
+        signIn: null,
+        email: null,
+        login: null,
+        createdAt: profile?.createdAt ?? 0,
+        updatedAt: profile?.createdAt ?? 0,
+      });
+    }
     return c.json({ tenants }, 200, { "Cache-Control": "no-store" });
+  });
+
+  app.post("/v2/admin/tenants/:tenantId/migrate-pi", async (c) => {
+    requireAdmin(c.env, c.req.raw);
+    const tenantId = c.req.param("tenantId")?.trim() ?? "";
+    if (!tenantId || !/^[A-Za-z0-9_.:@-]{1,200}$/.test(tenantId)) {
+      throw new ApiError(400, "invalid_request", "`tenantId` is required");
+    }
+    const body = (await c.req.json().catch(() => ({}))) as {
+      after?: unknown;
+      limit?: unknown;
+      concurrency?: unknown;
+    };
+    const after = typeof body.after === "string" && body.after.length > 0 ? body.after : undefined;
+    const rawLimit = body.limit !== undefined ? Number(body.limit) : 50;
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, Math.floor(rawLimit))) : 50;
+    const rawConc = body.concurrency !== undefined ? Number(body.concurrency) : 10;
+    const concurrency = Number.isFinite(rawConc) ? Math.max(1, Math.min(50, Math.floor(rawConc))) : 10;
+
+    const { agentIds, nextAfter } = await getTenantStub(c.env, tenantId).listAgentIdsPage(after, limit);
+
+    let migrated = 0;
+    let alreadyPi = 0;
+    let empty = 0;
+    const errors: Array<{ agentId: string; error: string }> = [];
+
+    await mapWithConcurrency(agentIds, concurrency, async (agentId) => {
+      try {
+        const res = await getAgentStub(c.env, agentId).migrateToPi();
+        if (res.status === "migrated") migrated++;
+        else if (res.status === "already_pi") alreadyPi++;
+        else empty++;
+      } catch (err) {
+        errors.push({
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+
+    return c.json(
+      {
+        tenantId,
+        scanned: agentIds.length,
+        migrated,
+        alreadyPi,
+        empty,
+        errors,
+        nextAfter,
+      },
+      200,
+      { "Cache-Control": "no-store" },
+    );
   });
 
   app.post("/v2/admin/ops/register-tenant", async (c) => {

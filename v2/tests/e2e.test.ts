@@ -1386,7 +1386,9 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       await assert.rejects(agent.importV1History(initial), { status: 409 });
       await assert.rejects(agent.importV1History({ source, previous: tail.receipt, messages: [first] }), { status: 409 });
       const history = await agent.history();
-      assert.deepEqual(history.map(row => row.seq), [1, 2, 3]);
+      assert.equal(history.length, 3);
+      const seqs = history.map(row => row.seq ?? 0);
+      assert.ok(seqs[0]! > 0 && seqs[0]! < seqs[1]! && seqs[1]! < seqs[2]!);
       assert.deepEqual(history.map(row => (row.content as { meta: { v1: unknown } }).meta.v1), [first, call, result]);
 
       const largeAgent = await camel.agents.upsert("chunked-large-history", {});
