@@ -1710,11 +1710,12 @@ export class AgentDO extends DurableObject<Env> {
   async seedFork(payload: {
     config: AgentConfig;
     piEntries: EntryRecord[];
+    entryMeta?: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>;
   }): Promise<{ seeded: true }> {
     this.ensureSql();
     const cfg: AgentConfig = { ...payload.config, engine: "pi" };
     this.writeConfig(cfg);
-    await this.ensurePiEngine().seedForkEntries(cfg, payload.piEntries);
+    await this.ensurePiEngine().seedForkEntries(cfg, payload.piEntries, payload.entryMeta);
     return { seeded: true };
   }
 
@@ -2164,7 +2165,13 @@ export class AgentDO extends DurableObject<Env> {
     return this.ensurePiEngine().resetContext(body);
   }
 
-  async forkAgent(body?: { key?: string; atSeq?: number; forkRepo?: boolean }): Promise<{
+  async forkAgent(body?: {
+    key?: string;
+    atSeq?: number;
+    forkRepo?: boolean;
+    instructions?: string;
+    toolIdentity?: AgentConfig["toolIdentity"];
+  }): Promise<{
     id: string;
     key: string;
     agentToken: string;
@@ -2178,8 +2185,16 @@ export class AgentDO extends DurableObject<Env> {
     const sourceCfg = this.requireConfig();
     const tenantStub = getTenantStub(this.env, sourceCfg.tenantId);
 
-    const { entries: piEntries, targetSeq } = await this.ensurePiEngine().exportEntriesUpTo(
+    const activeRow = this.ctx.storage.sql
+      .exec<{ id: string }>(
+        "SELECT id FROM runs WHERE status IN ('running', 'input_required') ORDER BY started_at DESC LIMIT 1",
+      )
+      .toArray()[0];
+    const activeRunId = this.activeRunId ?? activeRow?.id ?? null;
+
+    const { entries: piEntries, targetSeq, entryMeta } = await this.ensurePiEngine().exportEntriesUpTo(
       body?.atSeq,
+      activeRunId,
     );
 
     const newKey =
@@ -2241,6 +2256,8 @@ export class AgentDO extends DurableObject<Env> {
       id: newAgentId,
       key: newKey,
       engine: "pi",
+      ...(body?.instructions !== undefined ? { instructions: body.instructions } : {}),
+      ...(body?.toolIdentity !== undefined ? { toolIdentity: body.toolIdentity } : {}),
       repoId: forkedRepoId,
       lineage: forkedLineage,
       branch: forkedBranch,
@@ -2251,6 +2268,7 @@ export class AgentDO extends DurableObject<Env> {
     await getAgentStub(this.env, newAgentId).seedFork({
       config: forkedConfig,
       piEntries,
+      entryMeta,
     });
 
     return {

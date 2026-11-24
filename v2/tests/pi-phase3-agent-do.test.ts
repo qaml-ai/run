@@ -663,10 +663,14 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     assert.equal(histAfterCompact.status, 200);
     assert.equal(histAfterCompact.json.compaction?.summary, "User discussed alpha and beta.");
 
-    // 4b. POST /fork preserves pi-durable entries & engine: "pi"
+    // 4b. POST /fork preserves pi-durable entries & engine: "pi", supports atSeq + overrides + validation
     const forkRes = await api("/v2/agents/pi-ops/fork", {
       method: "POST",
-      body: JSON.stringify({ key: "pi-ops-forked" }),
+      body: JSON.stringify({
+        key: "pi-ops-forked",
+        instructions: "You are the forked assistant.",
+        toolIdentity: { subject: "user-fork", context: { thread: "fork-thread" } },
+      }),
     });
     assert.equal(forkRes.status, 200, JSON.stringify(forkRes));
     const forkedState = await api("/v2/agents/pi-ops-forked");
@@ -674,6 +678,37 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     const forkedHist = await api("/v2/agents/pi-ops-forked/history");
     assert.ok(forkedHist.json.messages.length >= 4, `Expected forked history entries: ${JSON.stringify(forkedHist.json)}`);
     assert.equal(forkedHist.json.compaction?.summary, "User discussed alpha and beta.");
+
+    // Follow-up turn on the forked agent succeeds cleanly
+    const forkTurn = await api("/v2/agents/pi-ops-forked/runs", {
+      method: "POST",
+      body: JSON.stringify({ prompt: "Continue on the fork", wait: true }),
+    });
+    assert.equal(forkTurn.status, 200, JSON.stringify(forkTurn));
+    assert.equal(forkTurn.json.status, "completed");
+
+    // Fork at specific atSeq truncates history to that seq
+    const firstAssistant = histAfterCompact.json.messages.find((m: any) => m.role === "assistant");
+    assert.ok(firstAssistant, "Expected an assistant message in history");
+    const forkAtSeqRes = await api("/v2/agents/pi-ops/fork", {
+      method: "POST",
+      body: JSON.stringify({ key: "pi-ops-forked-seq", atSeq: firstAssistant.seq }),
+    });
+    assert.equal(forkAtSeqRes.status, 200, JSON.stringify(forkAtSeqRes));
+    assert.equal(forkAtSeqRes.json.forkedFrom.atSeq, firstAssistant.seq);
+    const forkAtSeqHist = await api("/v2/agents/pi-ops-forked-seq/history");
+    assert.equal(
+      forkAtSeqHist.json.messages.length,
+      histAfterCompact.json.messages.filter((m: any) => m.seq <= firstAssistant.seq).length,
+    );
+
+    // Invalid atSeq returns 404 fork_point_invalid
+    const invalidForkRes = await api("/v2/agents/pi-ops/fork", {
+      method: "POST",
+      body: JSON.stringify({ key: "pi-ops-forked-bad", atSeq: 999999 }),
+    });
+    assert.equal(invalidForkRes.status, 404, JSON.stringify(invalidForkRes));
+    assert.equal(invalidForkRes.json.error?.code, "fork_point_invalid");
 
     // 4c. POST /reset-context
     const resetRes = await api("/v2/agents/pi-ops/reset-context", {

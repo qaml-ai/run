@@ -2474,28 +2474,121 @@ export class PiAgentEngine {
     ).length;
   }
 
-  async exportEntriesUpTo(atSeq?: number): Promise<{ entries: EntryRecord[]; targetSeq: number }> {
+  async exportEntriesUpTo(
+    atSeq?: number,
+    activeRunId?: string | null,
+  ): Promise<{
+    entries: EntryRecord[];
+    targetSeq: number;
+    entryMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>;
+  }> {
     await this.ensureRootMigrated();
     const all = await this.listAllEntries();
-    const maxSeq = Number(all.at(-1)?.id ?? 0);
-    const targetSeq = typeof atSeq === "number" ? atSeq : maxSeq;
-    const entries = all.filter((e) => Number(e.id) <= targetSeq);
-    return { entries, targetSeq };
+    const metaMap = this.loadEntryMetaMap();
+    const isContent = (e: EntryRecord) =>
+      isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e);
+
+    let targetSeq: number;
+    let endIdx: number;
+    if (atSeq !== undefined) {
+      if (!Number.isInteger(atSeq) || atSeq < 0) {
+        throw new ApiError(404, "fork_point_invalid", `Fork target '${atSeq}' not found in agent history`);
+      }
+      const matchIdx = all.findIndex((e) => Number(e.id) === atSeq && isContent(e));
+      if (matchIdx < 0) {
+        throw new ApiError(404, "fork_point_invalid", `Fork target '${atSeq}' not found in agent history`);
+      }
+      targetSeq = atSeq;
+      endIdx = matchIdx;
+    } else {
+      targetSeq = Number(all.at(-1)?.id ?? 0);
+      endIdx = all.length - 1;
+    }
+
+    if (activeRunId) {
+      let activeRunStartSeq: number | null = null;
+      for (const e of all) {
+        const entryRunId =
+          (CamelRunUserEntry.is(e) ? ((e.data as { runId?: unknown } | undefined)?.runId as string | undefined) : undefined) ??
+          metaMap.get(Number(e.id))?.runId ??
+          null;
+        if (entryRunId === activeRunId) {
+          activeRunStartSeq = Number(e.id);
+          break;
+        }
+      }
+      if (atSeq === undefined || (activeRunStartSeq !== null && targetSeq >= activeRunStartSeq)) {
+        throw new ApiError(409, "fork_point_running", "Cannot fork a turn that is still running");
+      }
+    }
+
+    // Keep any matching tool results right after an assistant tool_call (or peer tool results in the same batch)
+    // so the forked conversation never ends with an unanswered tool call.
+    if (endIdx >= 0 && endIdx < all.length) {
+      let anchorIdx = endIdx;
+      while (anchorIdx > 0 && ToolResultEntry.is(all[anchorIdx]!)) {
+        anchorIdx--;
+      }
+      const anchor = all[anchorIdx];
+      if (anchor && AssistantEntry.is(anchor)) {
+        const msg = anchor.model?.[0];
+        const callIds = new Set<string>();
+        if (msg && msg.role === "assistant" && Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === "toolCall" && typeof block.id === "string" && block.id) {
+              callIds.add(block.id);
+            }
+          }
+        }
+        if (callIds.size > 0) {
+          while (endIdx + 1 < all.length && ToolResultEntry.is(all[endIdx + 1]!)) {
+            const tr = all[endIdx + 1]!.model?.[0];
+            if (tr && tr.role === "toolResult" && callIds.has(tr.toolCallId)) {
+              endIdx++;
+            } else {
+              break;
+            }
+          }
+          targetSeq = Number(all[endIdx]!.id);
+        }
+      }
+    }
+
+    const entries = endIdx >= 0 ? all.slice(0, endIdx + 1) : [];
+    const entryMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }> = [];
+    for (const e of entries) {
+      const m = metaMap.get(Number(e.id));
+      if (m) entryMeta.push({ entryId: Number(e.id), runId: m.runId, ...(m.meta ? { meta: m.meta } : {}) });
+    }
+    return { entries, targetSeq, entryMeta };
   }
 
-  async seedForkEntries(cfg: AgentConfig, entries: EntryRecord[]): Promise<void> {
+  async seedForkEntries(
+    cfg: AgentConfig,
+    entries: EntryRecord[],
+    entryMeta?: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>,
+  ): Promise<void> {
     await this.ensureStarted();
     await this.refreshModels(cfg);
     await this.ensureExtensionsInstalled(cfg);
     const initialChange = this.buildAgentChange(cfg);
+    let idMap = new Map<number, number>();
     await this.harness.root({
       agent: initialChange,
       init: async (tx, convId) => {
         if (entries.length > 0) {
-          await copyPiEntriesToConversation(tx, convId, entries);
+          idMap = await copyPiEntriesToConversation(tx, convId, entries);
         }
       },
     });
+    if (entryMeta?.length) {
+      for (const m of entryMeta) {
+        const mappedId = idMap.get(m.entryId);
+        if (mappedId !== undefined) {
+          this.recordEntryMeta(mappedId, m.runId, m.meta);
+        }
+      }
+    }
     this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
     this.rootReady = true;
   }

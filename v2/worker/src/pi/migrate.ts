@@ -386,8 +386,9 @@ export async function copyPiEntriesToConversation(
   tx: Tx,
   conversationId: ConversationId,
   entries: readonly EntryRecord[],
-): Promise<void> {
+): Promise<Map<number, number>> {
   const idMap = new Map<number, EntryId>();
+  const numIdMap = new Map<number, number>();
   for (const entry of entries) {
     let head: EntryId | "self" | undefined;
     if (entry.head !== undefined) {
@@ -405,7 +406,9 @@ export async function copyPiEntriesToConversation(
       ...(entry.edits !== undefined ? { edits: entry.edits } : {}),
     });
     idMap.set(Number(entry.id), appended.id);
+    numIdMap.set(Number(entry.id), Number(appended.id));
   }
+  return numIdMap;
 }
 
 function extractTextFromUserContent(

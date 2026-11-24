@@ -1374,7 +1374,24 @@ app.post("/v2/agents/:idOrKey/reset-context", async (c) => {
 
 app.post("/v2/agents/:idOrKey/fork", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
-  const body = (await c.req.json().catch(() => ({}))) as { key?: string; atSeq?: number; forkRepo?: boolean };
+  const body = (await c.req.json().catch(() => ({}))) as {
+    key?: string;
+    atSeq?: number;
+    forkRepo?: boolean;
+    instructions?: string;
+    toolIdentity?: AgentUpsertInput["toolIdentity"];
+  };
+  const identity = body.toolIdentity;
+  if (
+    identity !== undefined &&
+    (!identity ||
+      typeof identity.subject !== "string" ||
+      !identity.subject.trim() ||
+      (identity.context !== undefined &&
+        (!identity.context || typeof identity.context !== "object" || Array.isArray(identity.context))))
+  ) {
+    throw new ApiError(400, "invalid_tool_identity", "Tool identity needs a subject and optional context object");
+  }
   return c.json(await stub.forkAgent(body));
 });
 
