@@ -1193,7 +1193,8 @@ export class PiAgentEngine {
     const curCfg = cfg ?? this.host.getConfig();
     await this.ensureExtensionsInstalled(curCfg);
 
-    if (this.rootReady) {
+    if (this.rootReady || this.hasPiRootConversation()) {
+      this.rootReady = true;
       return { created: false };
     }
 
@@ -1213,25 +1214,67 @@ export class PiAgentEngine {
       : null;
 
     const afterSeq = legacyCompaction?.upToSeq ?? 0;
-    const legacyMsgRows = this.host.ctx.storage.sql
-      .exec<{
-        seq: number;
-        run_id: string | null;
-        role: StoredMessage["role"];
-        content_json: string;
-        tokens_est: number;
-        created_at: number;
-      }>(`SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC`, afterSeq)
-      .toArray();
+    // Stream from the newest legacy rows backward with strict row + byte caps so
+    // huge pre-Pi agents (thousands of messages / >64 MB JSON) never OOM a 128 MB DO isolate.
+    const MAX_LEGACY_MIGRATION_ROWS = 200;
+    const MAX_LEGACY_MIGRATION_BYTES = 2 * 1024 * 1024;
+    const legacyCursor = this.host.ctx.storage.sql.exec<{
+      seq: number;
+      run_id: string | null;
+      role: StoredMessage["role"];
+      content_json: string;
+      tokens_est: number;
+      created_at: number;
+    }>(
+      `SELECT seq, run_id, role, content_json, tokens_est, created_at
+       FROM messages
+       WHERE seq > ?1
+       ORDER BY seq DESC
+       LIMIT ?2`,
+      afterSeq,
+      MAX_LEGACY_MIGRATION_ROWS + 1,
+    );
 
-    const legacyMessages: StoredMessage[] = legacyMsgRows.map((r) => ({
-      seq: r.seq,
-      runId: r.run_id,
-      role: r.role,
-      content: JSON.parse(r.content_json) as StoredMessage["content"],
-      tokensEst: r.tokens_est,
-      createdAt: r.created_at,
-    }));
+    const reversedMessages: StoredMessage[] = [];
+    let totalBytes = 0;
+    let truncatedOlder = false;
+    for (const r of legacyCursor) {
+      if (reversedMessages.length >= MAX_LEGACY_MIGRATION_ROWS) {
+        truncatedOlder = true;
+        break;
+      }
+      const rowBytes = typeof r.content_json === "string" ? r.content_json.length : 0;
+      if (reversedMessages.length >= 4 && totalBytes + rowBytes > MAX_LEGACY_MIGRATION_BYTES) {
+        truncatedOlder = true;
+        break;
+      }
+      totalBytes += rowBytes;
+      reversedMessages.push({
+        seq: r.seq,
+        runId: r.run_id,
+        role: r.role,
+        content: JSON.parse(r.content_json) as StoredMessage["content"],
+        tokensEst: r.tokens_est,
+        createdAt: r.created_at,
+      });
+    }
+    const legacyMessages: StoredMessage[] = reversedMessages.reverse();
+    // Ensure we never start mid-tool-call after a truncation cut
+    while (legacyMessages.length > 0 && legacyMessages[0]!.role === "tool") {
+      legacyMessages.shift();
+      truncatedOlder = true;
+    }
+    const effectiveCompaction: LegacyCompactionRow | null =
+      legacyCompaction ??
+      (truncatedOlder
+        ? {
+            id: "legacy_window_trim",
+            upToSeq: legacyMessages[0] ? legacyMessages[0].seq - 1 : afterSeq,
+            summary:
+              "Earlier messages from this long-running conversation were archived during runtime upgrade; the most recent turns follow.",
+            createdAt: legacyMessages[0]?.createdAt ?? Date.now(),
+          }
+        : null);
 
     const modelRef = parsePiModelRef(curCfg.model, this.host.env);
     let migrationResult: {
@@ -1244,11 +1287,11 @@ export class PiAgentEngine {
     const { created } = await this.harness.root({
       agent: initialChange,
       init: async (tx, convId) => {
-        if (legacyCompaction || legacyMessages.length > 0) {
+        if (effectiveCompaction || legacyMessages.length > 0) {
           migrationResult = await importLegacyTranscriptToPi(
             tx,
             convId,
-            legacyCompaction,
+            effectiveCompaction,
             legacyMessages,
             modelRef,
           );
@@ -1259,7 +1302,7 @@ export class PiAgentEngine {
       this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
     }
 
-    if (created && (legacyCompaction || legacyMessages.length > 0)) {
+    if (created && (effectiveCompaction || legacyMessages.length > 0)) {
       const migratedAt = String(Date.now());
       this.host.ctx.storage.transactionSync(() => {
         for (const item of migrationResult.importedMeta) {
@@ -2523,10 +2566,32 @@ export class PiAgentEngine {
     if (!this.rootReady && !this.hasPiRootConversation()) {
       return null;
     }
-    const entries = await this.listAllEntries();
-    return entries.filter(
-      (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
-    ).length;
+    try {
+      const row = this.host.ctx.storage.sql
+        .exec<{ cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM pi_entries
+           WHERE conversation_id = 1
+             AND kind IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')`,
+        )
+        .toArray()[0];
+      if (row) return Number(row.cnt ?? 0);
+    } catch {
+      // Fallback to paginated count below if schema differs in a test harness
+    }
+    await this.ensureStarted();
+    const conv = await this.getRootConversation();
+    if (!conv) return 0;
+    let count = 0;
+    let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+    for (;;) {
+      const page = await conv.entries({ order: "ascending" }, 256, cursor, BG);
+      for (const e of page.items) {
+        if (isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e)) count++;
+      }
+      if (!page.next) break;
+      cursor = page.next;
+    }
+    return count;
   }
 
   async exportEntriesUpTo(
