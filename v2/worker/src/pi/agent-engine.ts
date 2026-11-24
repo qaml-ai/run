@@ -307,12 +307,15 @@ export class PiAgentEngine {
             settings: () => {
               const cur = this.host.readConfigOrNull();
               const modelName = cur?.model ?? cfg.model;
-              const contextWindow = getModelContextWindow(modelName);
+              const ref = parsePiModelRef(modelName, this.host.env);
+              const resolvedContextWindow =
+                this.currentModels?.getModel(ref.provider, ref.modelId)?.contextWindow ??
+                getModelContextWindow(modelName);
               const effectiveThreshold = getAutoCompactThreshold(
                 modelName,
                 cur?.compactThresholdTokens,
               );
-              const reserveTokens = Math.max(16_384, contextWindow - effectiveThreshold);
+              const reserveTokens = Math.max(16_384, resolvedContextWindow - effectiveThreshold);
               return {
                 compaction: {
                   enabled: true,
