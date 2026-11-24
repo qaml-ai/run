@@ -307,17 +307,21 @@ export class PiAgentEngine {
             onWake,
             settings: () => {
               const cur = this.host.readConfigOrNull();
-              const effectiveThreshold = getAutoCompactThreshold(
-                cur?.model ?? cfg.model,
-                cur?.compactThresholdTokens,
-              );
+              const override = cur?.compactThresholdTokens;
+              if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+                const effectiveThreshold = getAutoCompactThreshold(cur?.model ?? cfg.model, override);
+                return {
+                  compaction: {
+                    enabled: true,
+                    reserveTokens: PI_COMPACT_RESERVE_TOKENS,
+                    keepRecentTokens: Math.min(12_000, Math.floor(effectiveThreshold / 2)),
+                    backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
+                  },
+                  afterFailedRun: "keep",
+                };
+              }
               return {
-                compaction: {
-                  enabled: true,
-                  reserveTokens: PI_COMPACT_RESERVE_TOKENS,
-                  keepRecentTokens: Math.min(12_000, Math.floor(effectiveThreshold / 2)),
-                  backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
-                },
+                compaction: { enabled: true },
                 afterFailedRun: "keep",
               };
             },

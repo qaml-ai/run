@@ -176,7 +176,7 @@ export function getAutoCompactThreshold(model: string, override?: number | null)
     const maxThreshold = Math.max(minThreshold, Math.floor(ctxWindow * 0.8));
     return Math.min(maxThreshold, Math.max(minThreshold, Math.floor(override)));
   }
-  return Math.min(40_000, Math.floor(ctxWindow * 0.6));
+  return Math.max(8_000, ctxWindow - PI_COMPACT_RESERVE_TOKENS);
 }
 
 export function getProviderLookupCandidates(
@@ -1077,10 +1077,16 @@ function applyCompactionWindow<M extends Model<Api>>(
   model: M,
   compactThresholdTokens?: number | null,
 ): M {
-  const threshold = getAutoCompactThreshold(
-    `${model.provider}/${model.id}`,
-    compactThresholdTokens,
-  );
+  if (
+    typeof compactThresholdTokens !== "number" ||
+    !Number.isFinite(compactThresholdTokens) ||
+    compactThresholdTokens <= 0
+  ) {
+    return model;
+  }
+  const minThreshold = 8_000;
+  const maxThreshold = Math.max(minThreshold, Math.floor(model.contextWindow * 0.8));
+  const threshold = Math.min(maxThreshold, Math.max(minThreshold, Math.floor(compactThresholdTokens)));
   return { ...model, contextWindow: threshold + PI_COMPACT_RESERVE_TOKENS };
 }
 

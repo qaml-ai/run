@@ -1450,7 +1450,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
     try {
       await camel.providers.set("openrouter", { apiKey: "test-compaction-key", baseUrl: `${auxUrl}/v1` });
-      const agent = await camel.agents.upsert("imported-agent", { model: "openrouter/test/context-compaction" });
+      const agent = await camel.agents.upsert("imported-agent", {
+        model: "openrouter/test/context-compaction",
+        compactThresholdTokens: 40_000,
+      });
       const timestamp = Date.now();
       const textBlock = (text: string) => ({ type: "text", text });
       const assistant = (text: string) => ({ role: "assistant", content: [textBlock(text)], timestamp });

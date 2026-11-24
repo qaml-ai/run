@@ -303,7 +303,7 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     assert.equal(noCache.usage.cacheReadTokens, undefined);
   });
 
-  await t.test("getAutoCompactThreshold caps at 40_000 tokens and honors clamped compactThresholdTokens overrides", async () => {
+  await t.test("getAutoCompactThreshold defaults to native contextWindow - 16_384 and honors clamped compactThresholdTokens overrides", async () => {
     const check = async (model: string, expected: number, override?: number | null) => {
       const res = await worker.fetch(`${origin}/_test/compact-threshold`, {
         method: "POST",
@@ -312,18 +312,18 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       assert.equal(res.status, 200);
       assert.deepEqual(await res.json(), { threshold: expected });
     };
-    await check("azure/gpt-6.1-terra", 40_000);
-    await check("azure/gpt-6.2-sol", 40_000);
-    await check("openai/gpt-4.1", 40_000);
-    await check("anthropic/claude-sonnet-4-0", 40_000);
-    await check("gemini/gemini-2.5-pro", 40_000);
-    await check("openai/gpt-4o", 40_000);
+    await check("azure/gpt-6.1-terra", 272_000 - 16_384);
+    await check("azure/gpt-6.2-sol", 1_050_000 - 16_384);
+    await check("openai/gpt-4.1", 1_047_576 - 16_384);
+    await check("anthropic/claude-sonnet-4-0", 200_000 - 16_384);
+    await check("gemini/gemini-2.5-pro", 1_048_576 - 16_384);
+    await check("openai/gpt-4o", 128_000 - 16_384);
 
     // Custom per-agent compactThresholdTokens override (clamped to [8_000, Math.floor(ctx * 0.8)])
     await check("azure/gpt-6.2-sol", 24_000, 24_000);
     await check("azure/gpt-6.2-sol", 8_000, 2_500);
     await check("openai/gpt-4o", Math.floor(128_000 * 0.8), 500_000);
-    await check("azure/gpt-6.2-sol", 40_000, null);
+    await check("azure/gpt-6.2-sol", 1_050_000 - 16_384, null);
   });
 
   await t.test("protocol stream parsers extract cacheReadTokens accurately without double-counting", async () => {
