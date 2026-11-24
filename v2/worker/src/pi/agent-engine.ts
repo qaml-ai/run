@@ -146,6 +146,7 @@ interface ActiveRunTracker {
   emittedGenerationAttempt: number;
   emittedPartialTextLen: number;
   lastEmittedAssistantEntryId: number;
+  lastRepoCommit: string | null;
   accumulatedText: string;
   slotAcquired: boolean;
   settled: boolean;
@@ -443,6 +444,7 @@ export class PiAgentEngine {
       emittedGenerationAttempt: -1,
       emittedPartialTextLen: 0,
       lastEmittedAssistantEntryId: 0,
+      lastRepoCommit: null,
       accumulatedText: existingRec.text,
       slotAcquired: isRunning,
       settled: false,
@@ -492,6 +494,9 @@ export class PiAgentEngine {
   }
 
   private updateRepoCommit(tenantId: string, repoId: string, commit: string): Promise<void> {
+    if (commit && this.activeTracker && !this.activeTracker.settled) {
+      this.activeTracker.lastRepoCommit = commit;
+    }
     return getTenantStub(this.host.env, tenantId)
       .updateRepoCommit(repoId, commit)
       .then(() => undefined)
@@ -752,6 +757,8 @@ export class PiAgentEngine {
   private buildCodemodeFsGlobals(): CodemodeGlobal[] {
     const host = this.host;
     const onFilesChanged = (files: string[]) => this.recordFilesChanged(files);
+    const onRepoCommit = (tenantId: string, repoId: string, commit: string) =>
+      this.updateRepoCommit(tenantId, repoId, commit);
     return [
       {
         name: "fs.readFile",
@@ -784,9 +791,7 @@ export class PiAgentEngine {
             puts: [{ path: filePath, content, mode: 0o644 }],
           });
           onFilesChanged(out.changed);
-          await getTenantStub(host.env, cfg.tenantId)
-            .updateRepoCommit(repoId, out.commit)
-            .catch(() => {});
+          await onRepoCommit(cfg.tenantId, repoId, out.commit);
           return JSON.parse(JSON.stringify(out));
         },
       },
@@ -1406,6 +1411,9 @@ export class PiAgentEngine {
             tracker.emittedPartialTextLen = 0;
             tracker.emittedGenerationAttempt = -1;
             tracker.lastEmittedAssistantEntryId = entryNum;
+            if (tracker.lastRepoCommit) {
+              this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
+            }
 
             for (const tc of extractAssistantToolCalls(msg)) {
               if (!tracker.seenToolStarts.has(tc.id)) {
@@ -1419,6 +1427,9 @@ export class PiAgentEngine {
             }
           }
         } else if (ToolResultEntry.is(entry)) {
+          if (tracker.lastRepoCommit) {
+            this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
+          }
           const msg = entry.model?.[0];
           if (msg && msg.role === "toolResult") {
             if (!tracker.seenToolEnds.has(msg.toolCallId)) {
@@ -1517,6 +1528,8 @@ export class PiAgentEngine {
 
         if (tracker.settled) return;
         tracker.settled = true;
+
+        await this.recordRunRepoCommit(tracker, this.host.readConfigOrNull() ?? cfg);
 
         const now = Date.now();
         const postRunSpendError =
@@ -1829,6 +1842,7 @@ export class PiAgentEngine {
         emittedGenerationAttempt: -1,
         emittedPartialTextLen: 0,
         lastEmittedAssistantEntryId: 0,
+        lastRepoCommit: null,
         accumulatedText: "",
         slotAcquired,
         settled: false,
@@ -2088,6 +2102,7 @@ export class PiAgentEngine {
         emittedGenerationAttempt: -1,
         emittedPartialTextLen: 0,
         lastEmittedAssistantEntryId: 0,
+        lastRepoCommit: null,
         accumulatedText: existingRec.text,
         slotAcquired: false,
         settled: false,
@@ -2414,17 +2429,53 @@ export class PiAgentEngine {
     return all;
   }
 
+  private async recordRunRepoCommit(tracker: ActiveRunTracker, cfg: AgentConfig): Promise<void> {
+    let commit = tracker.lastRepoCommit;
+    if (!commit && cfg.repoId) {
+      commit =
+        (
+          await getTenantStub(this.host.env, cfg.tenantId)
+            .getRepo(cfg.repoId)
+            .catch(() => null)
+        )?.commit || null;
+    }
+    if (!commit) return;
+
+    let targetEntryId = 0;
+    const conv = await this.getRootConversation().catch(() => undefined);
+    if (conv) {
+      const page = await conv.entries({ order: "descending" }, 8, undefined, BG).catch(() => null);
+      const latest = page?.items.find(
+        (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
+      );
+      if (latest) targetEntryId = Number(latest.id);
+    }
+    if (!targetEntryId) {
+      targetEntryId = tracker.lastEmittedAssistantEntryId;
+    }
+    if (targetEntryId > 0) {
+      this.recordEntryMeta(targetEntryId, tracker.runId, undefined, commit);
+    }
+  }
+
   private recordEntryMeta(
     entryId: number,
     runId: string | null,
     meta?: Record<string, unknown>,
+    repoCommit?: string | null,
   ): void {
     try {
       this.host.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO pi_entry_meta (entry_id, run_id, meta_json) VALUES (?1, ?2, ?3)`,
+        `INSERT INTO pi_entry_meta (entry_id, run_id, meta_json, repo_commit)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(entry_id) DO UPDATE SET
+           run_id = COALESCE(pi_entry_meta.run_id, excluded.run_id),
+           meta_json = COALESCE(excluded.meta_json, pi_entry_meta.meta_json),
+           repo_commit = COALESCE(excluded.repo_commit, pi_entry_meta.repo_commit)`,
         entryId,
         runId,
         meta ? JSON.stringify(meta) : null,
+        repoCommit ?? null,
       );
     } catch {
       // Table may not exist in minimal unit harnesses
@@ -2435,14 +2486,18 @@ export class PiAgentEngine {
     const out = new Map<number, import("./migrate.ts").PiEntryMetadata>();
     try {
       const rows = this.host.ctx.storage.sql
-        .exec<{ entry_id: number; run_id: string | null; meta_json: string | null }>(
-          `SELECT entry_id, run_id, meta_json FROM pi_entry_meta`,
-        )
+        .exec<{
+          entry_id: number;
+          run_id: string | null;
+          meta_json: string | null;
+          repo_commit: string | null;
+        }>(`SELECT entry_id, run_id, meta_json, repo_commit FROM pi_entry_meta`)
         .toArray();
       for (const r of rows) {
         out.set(Number(r.entry_id), {
           runId: r.run_id,
           ...(r.meta_json ? { meta: JSON.parse(r.meta_json) as Record<string, unknown> } : {}),
+          ...(r.repo_commit ? { repoCommit: r.repo_commit } : {}),
         });
       }
     } catch {
@@ -2480,7 +2535,13 @@ export class PiAgentEngine {
   ): Promise<{
     entries: EntryRecord[];
     targetSeq: number;
-    entryMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>;
+    entryMeta: Array<{
+      entryId: number;
+      runId: string | null;
+      meta?: Record<string, unknown>;
+      repoCommit?: string | null;
+    }>;
+    repoCommit: string | null;
   }> {
     await this.ensureRootMigrated();
     const all = await this.listAllEntries();
@@ -2555,18 +2616,37 @@ export class PiAgentEngine {
     }
 
     const entries = endIdx >= 0 ? all.slice(0, endIdx + 1) : [];
-    const entryMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }> = [];
+    const entryMeta: Array<{
+      entryId: number;
+      runId: string | null;
+      meta?: Record<string, unknown>;
+      repoCommit?: string | null;
+    }> = [];
+    let repoCommit: string | null = null;
     for (const e of entries) {
       const m = metaMap.get(Number(e.id));
-      if (m) entryMeta.push({ entryId: Number(e.id), runId: m.runId, ...(m.meta ? { meta: m.meta } : {}) });
+      if (m) {
+        if (m.repoCommit) repoCommit = m.repoCommit;
+        entryMeta.push({
+          entryId: Number(e.id),
+          runId: m.runId,
+          ...(m.meta ? { meta: m.meta } : {}),
+          ...(m.repoCommit ? { repoCommit: m.repoCommit } : {}),
+        });
+      }
     }
-    return { entries, targetSeq, entryMeta };
+    return { entries, targetSeq, entryMeta, repoCommit };
   }
 
   async seedForkEntries(
     cfg: AgentConfig,
     entries: EntryRecord[],
-    entryMeta?: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>,
+    entryMeta?: Array<{
+      entryId: number;
+      runId: string | null;
+      meta?: Record<string, unknown>;
+      repoCommit?: string | null;
+    }>,
   ): Promise<void> {
     await this.ensureStarted();
     await this.refreshModels(cfg);
@@ -2585,7 +2665,7 @@ export class PiAgentEngine {
       for (const m of entryMeta) {
         const mappedId = idMap.get(m.entryId);
         if (mappedId !== undefined) {
-          this.recordEntryMeta(mappedId, m.runId, m.meta);
+          this.recordEntryMeta(mappedId, m.runId, m.meta, m.repoCommit);
         }
       }
     }

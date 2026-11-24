@@ -1377,10 +1377,14 @@ app.post("/v2/agents/:idOrKey/fork", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as {
     key?: string;
     atSeq?: number;
+    atCommit?: string;
     forkRepo?: boolean;
     instructions?: string;
     toolIdentity?: AgentUpsertInput["toolIdentity"];
   };
+  if (body.atCommit !== undefined && (typeof body.atCommit !== "string" || !body.atCommit.trim())) {
+    throw new ApiError(400, "invalid_at_commit", "`atCommit` must be a non-empty commit hash string");
+  }
   const identity = body.toolIdentity;
   if (
     identity !== undefined &&

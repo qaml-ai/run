@@ -163,7 +163,8 @@ export class AgentDO extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS pi_entry_meta (
         entry_id INTEGER PRIMARY KEY,
         run_id TEXT,
-        meta_json TEXT
+        meta_json TEXT,
+        repo_commit TEXT
       );
       CREATE TABLE IF NOT EXISTS runs (
         id TEXT PRIMARY KEY,
@@ -273,6 +274,12 @@ export class AgentDO extends DurableObject<Env> {
     }
     if (!runColumns.some((column) => column.name === "actor")) {
       this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN actor TEXT");
+    }
+    const metaColumns = this.ctx.storage.sql
+      .exec<{ name: string }>("PRAGMA table_info(pi_entry_meta)")
+      .toArray();
+    if (!metaColumns.some((column) => column.name === "repo_commit")) {
+      this.ctx.storage.sql.exec("ALTER TABLE pi_entry_meta ADD COLUMN repo_commit TEXT");
     }
     this.sqlReady = true;
 
@@ -1710,7 +1717,12 @@ export class AgentDO extends DurableObject<Env> {
   async seedFork(payload: {
     config: AgentConfig;
     piEntries: EntryRecord[];
-    entryMeta?: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>;
+    entryMeta?: Array<{
+      entryId: number;
+      runId: string | null;
+      meta?: Record<string, unknown>;
+      repoCommit?: string | null;
+    }>;
   }): Promise<{ seeded: true }> {
     this.ensureSql();
     const cfg: AgentConfig = { ...payload.config, engine: "pi" };
@@ -2168,6 +2180,7 @@ export class AgentDO extends DurableObject<Env> {
   async forkAgent(body?: {
     key?: string;
     atSeq?: number;
+    atCommit?: string;
     forkRepo?: boolean;
     instructions?: string;
     toolIdentity?: AgentConfig["toolIdentity"];
@@ -2179,7 +2192,7 @@ export class AgentDO extends DurableObject<Env> {
     lineage: string | null;
     branch: string;
     commit: string;
-    forkedFrom: { agentId: string; atSeq: number };
+    forkedFrom: { agentId: string; atSeq: number; atCommit?: string };
   }> {
     this.ensureSql();
     const sourceCfg = this.requireConfig();
@@ -2192,10 +2205,16 @@ export class AgentDO extends DurableObject<Env> {
       .toArray()[0];
     const activeRunId = this.activeRunId ?? activeRow?.id ?? null;
 
-    const { entries: piEntries, targetSeq, entryMeta } = await this.ensurePiEngine().exportEntriesUpTo(
-      body?.atSeq,
-      activeRunId,
-    );
+    const {
+      entries: piEntries,
+      targetSeq,
+      entryMeta,
+      repoCommit,
+    } = await this.ensurePiEngine().exportEntriesUpTo(body?.atSeq, activeRunId);
+
+    const explicitAtCommit = body?.atCommit?.trim() || undefined;
+    const resolvedAtCommit =
+      explicitAtCommit ?? (body?.atSeq !== undefined ? (repoCommit ?? undefined) : undefined);
 
     const newKey =
       body?.key?.trim() || `${sourceCfg.key}-fork-${randomId("f", 3).slice(2)}`;
@@ -2219,6 +2238,7 @@ export class AgentDO extends DurableObject<Env> {
       const cfs = new CamelFsClient(this.env, sourceCfg.tenantId);
       const forkedLin = await cfs.forkLineage(sourceLineage, {
         sourceRef: sourceCfg.branch,
+        ...(resolvedAtCommit ? { atCommit: resolvedAtCommit } : {}),
       });
       const repoRec = await tenantStub.createRepo({
         name: `${newKey}-repo`,
@@ -2282,6 +2302,7 @@ export class AgentDO extends DurableObject<Env> {
       forkedFrom: {
         agentId: sourceCfg.id,
         atSeq: targetSeq,
+        ...(resolvedAtCommit ? { atCommit: resolvedAtCommit } : {}),
       },
     };
   }

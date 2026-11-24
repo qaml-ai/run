@@ -449,6 +449,7 @@ export interface MappedHistoryResult {
 export interface PiEntryMetadata {
   runId: string | null;
   meta?: Record<string, unknown>;
+  repoCommit?: string | null;
 }
 
 /**

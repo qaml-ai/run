@@ -256,8 +256,12 @@ export class AgentHandle {
     return this.transport.requestJson("POST", `${this.basePath}/reset-context`, options ?? {});
   }
 
-  async fork(options?: { key?: string; atSeq?: number; tools?: LocalTool<any, any>[] }): Promise<AgentHandle> {
-    const summary = await this.transport.requestJson<AgentSummary>("POST", `${this.basePath}/fork`, { key: options?.key, atSeq: options?.atSeq });
+  async fork(options?: { key?: string; atSeq?: number; atCommit?: string; tools?: LocalTool<any, any>[] }): Promise<AgentHandle> {
+    const summary = await this.transport.requestJson<AgentSummary>("POST", `${this.basePath}/fork`, {
+      key: options?.key,
+      atSeq: options?.atSeq,
+      ...(options?.atCommit !== undefined ? { atCommit: options.atCommit } : {}),
+    });
     const tools = options?.tools ?? this.localTools;
     const handle = this.transport.createHandle(summary, tools);
     if (tools.length > 0) await handle.ensureToolSession();

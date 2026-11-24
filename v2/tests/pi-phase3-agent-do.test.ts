@@ -40,6 +40,8 @@ interface MockServers {
   webhookBaseUrl: string;
   llmBaseUrl: string;
   filesByLineage: Map<string, Map<string, string>>;
+  filesByCommit: Map<string, Map<string, string>>;
+  forkCalls: Array<{ sourceLineage: string; body: Record<string, unknown>; targetLineage: string; commit: string }>;
   webhookCalls: Array<{ path: string; body: Record<string, unknown> }>;
   capturedLlmRequests: Array<{
     messages: Array<{ role: string; content: unknown; tool_call_id?: string; tool_calls?: unknown[] }>;
@@ -50,6 +52,8 @@ interface MockServers {
 
 async function startMockServers(): Promise<MockServers> {
   const filesByLineage = new Map<string, Map<string, string>>();
+  const filesByCommit = new Map<string, Map<string, string>>();
+  const forkCalls: MockServers["forkCalls"] = [];
   let lineageSeq = 0;
   let commitSeq = 0;
   const webhookCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
@@ -78,23 +82,34 @@ async function startMockServers(): Promise<MockServers> {
       const body = await readJsonBody(req);
       const lineage = (typeof body.lineage === "string" && body.lineage) || `lin_${++lineageSeq}`;
       if (!filesByLineage.has(lineage)) filesByLineage.set(lineage, new Map());
+      const commit = `c_${++commitSeq}`;
+      filesByCommit.set(commit, new Map(filesByLineage.get(lineage)!));
       return send(200, {
         lineage,
         defaultRef: "refs/heads/main",
-        commit: `c_${++commitSeq}`,
+        commit,
         tree: `t_${commitSeq}`,
       });
     }
     const forkMatch = /^\/v1\/lineages\/([^/]+)\/fork$/.exec(url.pathname);
     if (method === "POST" && forkMatch) {
       const src = decodeURIComponent(forkMatch[1]!);
+      const body = await readJsonBody(req);
       const dst = `lin_${++lineageSeq}`;
-      const srcFiles = filesByLineage.get(src) ?? new Map<string, string>();
+      const requestedCommit = typeof body.atCommit === "string" && body.atCommit.trim() ? body.atCommit.trim() : null;
+      const srcFiles = requestedCommit
+        ? (filesByCommit.get(requestedCommit) ?? new Map<string, string>())
+        : (filesByLineage.get(src) ?? new Map<string, string>());
       filesByLineage.set(dst, new Map(srcFiles));
+      const commit = requestedCommit ?? `c_${++commitSeq}`;
+      if (!filesByCommit.has(commit)) {
+        filesByCommit.set(commit, new Map(srcFiles));
+      }
+      forkCalls.push({ sourceLineage: src, body, targetLineage: dst, commit });
       return send(200, {
         lineage: dst,
         ref: "refs/heads/main",
-        commit: `c_${++commitSeq}`,
+        commit,
         tree: `t_${commitSeq}`,
       });
     }
@@ -121,8 +136,10 @@ async function startMockServers(): Promise<MockServers> {
         files.delete(clean);
         changed.push(clean);
       }
+      const commit = `c_${++commitSeq}`;
+      filesByCommit.set(commit, new Map(files));
       return send(200, {
-        commit: `c_${++commitSeq}`,
+        commit,
         tree: `t_${commitSeq}`,
         changed,
         totalBytes: 0,
@@ -282,6 +299,8 @@ async function startMockServers(): Promise<MockServers> {
     webhookBaseUrl: `http://127.0.0.1:${auxAddr.port}/tools`,
     llmBaseUrl: `http://127.0.0.1:${auxAddr.port}/llm/v1`,
     filesByLineage,
+    filesByCommit,
+    forkCalls,
     webhookCalls,
     capturedLlmRequests,
     close: async () => {
@@ -975,5 +994,112 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     const histAfterCompact = await api("/v2/agents/pi-p6/history");
     assert.equal(histAfterCompact.status, 200);
     assert.equal(histAfterCompact.json.compaction?.summary, nativeCompact.json.summary);
+  });
+
+  // =========================================================================
+  // 7. Commit-pinned time-travel workspace forks on POST /v2/agents/:id/fork
+  // =========================================================================
+  await t.test("7. commit-pinned time-travel workspace forks rewind repo to turn commit at atSeq and honor explicit atCommit", async () => {
+    const upsert = await api("/v2/agents/pi-timetravel", {
+      method: "PUT",
+      body: JSON.stringify({
+        engine: "pi",
+        model: "mock/default",
+        builtins: ["files"],
+      }),
+    });
+    assert.equal(upsert.status, 201, JSON.stringify(upsert));
+
+    // Turn 1: write version.txt = "v1"
+    const run1 = await api("/v2/agents/pi-timetravel/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: '[CALL:write({"path":"version.txt","content":"v1"})] Written v1.',
+        wait: true,
+      }),
+    });
+    assert.equal(run1.status, 200, JSON.stringify(run1));
+    assert.equal(run1.json.status, "completed", JSON.stringify(run1.json));
+
+    const stateAfterT1 = await api("/v2/agents/pi-timetravel");
+    assert.equal(stateAfterT1.status, 200);
+    const repoAfterT1 = await api(`/v2/repos/${stateAfterT1.json.repoId}`);
+    assert.equal(repoAfterT1.status, 200);
+    const commitT1 = repoAfterT1.json.commit as string;
+    assert.ok(commitT1, `Expected Turn 1 commit hash, got: ${JSON.stringify(repoAfterT1.json)}`);
+
+    const histAfterT1 = await api("/v2/agents/pi-timetravel/history");
+    assert.equal(histAfterT1.status, 200);
+    const turn1EndSeq = (histAfterT1.json.messages as Array<{ seq: number }>).at(-1)!.seq;
+
+    // Turn 2: overwrite version.txt = "v2" and add later.txt = "turn2"
+    const run2 = await api("/v2/agents/pi-timetravel/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt:
+          '[CALL:write({"path":"version.txt","content":"v2"})] ' +
+          '[CALL:write({"path":"later.txt","content":"turn2"})] Written v2.',
+        wait: true,
+      }),
+    });
+    assert.equal(run2.status, 200, JSON.stringify(run2));
+    assert.equal(run2.json.status, "completed", JSON.stringify(run2.json));
+
+    const repoAfterT2 = await api(`/v2/repos/${stateAfterT1.json.repoId}`);
+    assert.equal(repoAfterT2.status, 200);
+    const commitT2 = repoAfterT2.json.commit as string;
+    assert.notEqual(commitT2, commitT1, "Turn 2 should advance workspace commit");
+
+    // 7a. Fork at Turn 1 atSeq (no explicit atCommit) -> rewinds workspace to Turn 1's commit!
+    const forkCountBefore = mocks.forkCalls.length;
+    const forkT1 = await api("/v2/agents/pi-timetravel/fork", {
+      method: "POST",
+      body: JSON.stringify({ key: "pi-timetravel-t1", atSeq: turn1EndSeq }),
+    });
+    assert.equal(forkT1.status, 200, JSON.stringify(forkT1));
+    assert.equal(forkT1.json.forkedFrom.atSeq, turn1EndSeq);
+    assert.equal(forkT1.json.forkedFrom.atCommit, commitT1);
+    assert.equal(forkT1.json.commit, commitT1);
+
+    const lastForkCall = mocks.forkCalls[forkCountBefore];
+    assert.ok(lastForkCall, "Expected CamelFS forkLineage call");
+    assert.equal(lastForkCall.body.atCommit, commitT1);
+
+    const forkedT1Files = mocks.filesByLineage.get(forkT1.json.lineage);
+    assert.equal(forkedT1Files?.get("version.txt"), "v1");
+    assert.equal(forkedT1Files?.has("later.txt"), false, "Turn 2 file must NOT exist in Turn 1 time-travel fork");
+
+    // Verify forked agent actually reads "v1" from its rewound workspace
+    const readOnFork = await api("/v2/agents/pi-timetravel-t1/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: '[CALL:read({"path":"version.txt"})] Report version.',
+        wait: true,
+      }),
+    });
+    assert.equal(readOnFork.status, 200, JSON.stringify(readOnFork));
+    assert.ok(readOnFork.json.text.includes("v1"), `Expected v1 in forked workspace read: ${readOnFork.json.text}`);
+    assert.ok(!readOnFork.json.text.includes("v2"), `Did not expect v2 in Turn 1 fork: ${readOnFork.json.text}`);
+
+    // 7b. Fork with explicit atCommit override (without atSeq) -> honors explicit atCommit!
+    const explicitFork = await api("/v2/agents/pi-timetravel/fork", {
+      method: "POST",
+      body: JSON.stringify({ key: "pi-timetravel-explicit", atCommit: commitT1 }),
+    });
+    assert.equal(explicitFork.status, 200, JSON.stringify(explicitFork));
+    assert.equal(explicitFork.json.forkedFrom.atCommit, commitT1);
+    assert.equal(mocks.forkCalls.at(-1)?.body.atCommit, commitT1);
+    assert.equal(mocks.filesByLineage.get(explicitFork.json.lineage)?.get("version.txt"), "v1");
+
+    // 7c. Fork without atSeq or atCommit -> falls back cleanly to HEAD (Turn 2 state)
+    const headFork = await api("/v2/agents/pi-timetravel/fork", {
+      method: "POST",
+      body: JSON.stringify({ key: "pi-timetravel-head" }),
+    });
+    assert.equal(headFork.status, 200, JSON.stringify(headFork));
+    assert.equal(headFork.json.forkedFrom.atCommit, undefined);
+    assert.equal(mocks.forkCalls.at(-1)?.body.atCommit, undefined);
+    assert.equal(mocks.filesByLineage.get(headFork.json.lineage)?.get("version.txt"), "v2");
+    assert.equal(mocks.filesByLineage.get(headFork.json.lineage)?.get("later.txt"), "turn2");
   });
 });

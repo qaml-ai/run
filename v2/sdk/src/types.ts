@@ -190,7 +190,7 @@ export interface AgentSummary {
   activeRunId?: string | null;
   messageCount?: number;
   lastRun?: RunRecord | null;
-  forkedFrom?: { agentId: string; atSeq: number };
+  forkedFrom?: { agentId: string; atSeq: number; atCommit?: string };
   created?: boolean;
   createdAt?: number;
   updatedAt?: number;
