@@ -666,22 +666,33 @@ export class PiAgentEngine {
       this.installedCustomFingerprint = customFp;
     }
 
-    const mcpFp = JSON.stringify(cfg.mcpServers ?? []);
-    if (mcpFp !== this.installedMcpFingerprint) {
-      if ((cfg.mcpServers ?? []).length > 0) {
-        const mcpExt = await createCamelRunMcpExtension({
-          env: this.host.env,
-          agent: cfg,
-          getRunId: () => this.activeTracker?.runId ?? "",
-          getActor: () => this.activeTracker?.actor,
-          onInputRequired: (ev) => this.handleInputRequired(ev),
-        });
-        this.registry.install(mcpExt);
-      } else {
-        this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
-      }
-      this.installedMcpFingerprint = mcpFp;
+    if (!snap.extension("camelrun-mcp")) {
+      this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
     }
+  }
+
+  /**
+   * Discover & install remote MCP tools lazily ONLY when starting or resuming a run.
+   * Never perform remote MCP HTTP calls during `PUT /v2/agents`, `scheduleNextAlarm`,
+   * `syncModelChange`, or `GET /history` — callers like `camel-bots` often upsert the
+   * agent before activating its ID in their tool-server ACL.
+   */
+  private async ensureMcpExtensionReady(cfg: AgentConfig): Promise<void> {
+    const mcpFp = JSON.stringify(cfg.mcpServers ?? []);
+    if (mcpFp === this.installedMcpFingerprint) return;
+    if ((cfg.mcpServers ?? []).length > 0) {
+      const mcpExt = await createCamelRunMcpExtension({
+        env: this.host.env,
+        agent: cfg,
+        getRunId: () => this.activeTracker?.runId ?? "",
+        getActor: () => this.activeTracker?.actor,
+        onInputRequired: (ev) => this.handleInputRequired(ev),
+      });
+      this.registry.install(mcpExt);
+    } else {
+      this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
+    }
+    this.installedMcpFingerprint = mcpFp;
   }
 
   private buildAgentChange(cfg: AgentConfig, maxTurns?: number): AgentChange {
@@ -1531,6 +1542,7 @@ export class PiAgentEngine {
     let slotAcquired = false;
     try {
       await this.refreshModels(cfg, { keyScope: body.keyScope, hints });
+      await this.ensureMcpExtensionReady(cfg);
       await this.ensureRootMigrated(cfg, maxSteps);
       const userInput = await this.prepareUserInput(cfg, prompt, files);
 
@@ -1707,6 +1719,7 @@ export class PiAgentEngine {
     await this.ensureStarted();
     const cfg = this.host.getConfig();
     await this.refreshModels(cfg);
+    await this.ensureMcpExtensionReady(cfg);
     await this.ensureRootMigrated(cfg);
 
     const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
