@@ -72,6 +72,8 @@ import { getSkillStore, normalizeSkillSelectors, type SkillUpsertInput } from ".
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
 import { VoiceCallDO } from "./voice-call-do.ts";
 import {
+  handleAdminElevenLabsDiagnostics,
+  handleAdminElevenLabsReset,
   handleCreateVoiceCall,
   handleElevenLabsPostCall,
   handleElevenLabsTool,
@@ -1517,6 +1519,8 @@ app.post("/v2/voice/calls/:id/end", (c) => handleEndVoiceCall(c, true));
 app.post("/v2/voice/calls/:id/transcript", (c) => handleVoiceCallTranscript(c));
 app.post("/v2/voice/providers/elevenlabs/post-call", (c) => handleElevenLabsPostCall(c));
 app.post("/v2/voice/providers/elevenlabs/tools/:tool", (c) => handleElevenLabsTool(c));
+app.get("/v2/admin/voice/elevenlabs", (c) => handleAdminElevenLabsDiagnostics(c));
+app.post("/v2/admin/voice/elevenlabs/reset", (c) => handleAdminElevenLabsReset(c));
 
 app.post("/v2/voice/sessions", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);

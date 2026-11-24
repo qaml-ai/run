@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { Context } from "hono";
-import { assertAgentAccess, assertTenantScope, authenticateRequest } from "./auth.ts";
+import { assertAgentAccess, assertTenantScope, authenticateRequest, verifyAdminHeader } from "./auth.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, type Env } from "./types.ts";
 import { equalVoiceSecret, getVoiceCallStub } from "./voice-call-do.ts";
@@ -197,4 +197,36 @@ export async function handleElevenLabsTool(c: Context<{ Bindings: Env }>): Promi
     }
   }
   return c.json({}, 404, NO_STORE);
+}
+
+export async function handleAdminElevenLabsDiagnostics(c: Context<{ Bindings: Env }>): Promise<Response> {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const conversationsParam = c.req.query("conversations") ?? c.req.query("pageSize");
+  const conversationsPageSize = conversationsParam ? Number(conversationsParam) : undefined;
+  const cursor = c.req.query("cursor") || undefined;
+  const provider = elevenlabsCalls(c.env, new URL(c.req.url).origin);
+  const report = await provider.diagnose(c.env.ELEVENLABS_API_KEY, {
+    conversationsPageSize,
+    cursor,
+  });
+  return c.json(report, 200, NO_STORE);
+}
+
+export async function handleAdminElevenLabsReset(c: Context<{ Bindings: Env }>): Promise<Response> {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await readJsonBody(c.req.raw, 16 * 1024, true)) as {
+    agentId?: unknown;
+    model?: unknown;
+    includeWebhooks?: unknown;
+  };
+  const agentId = typeof body?.agentId === "string" && body.agentId.trim() ? body.agentId.trim() : undefined;
+  const model = typeof body?.model === "string" && body.model.trim() ? body.model.trim() : undefined;
+  const includeWebhooks = body?.includeWebhooks === true;
+  const provider = elevenlabsCalls(c.env, new URL(c.req.url).origin);
+  const result = await provider.resetCache({ agentId, model, includeWebhooks });
+  return c.json({ ok: true, ...result }, 200, NO_STORE);
 }

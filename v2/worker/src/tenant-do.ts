@@ -2702,6 +2702,107 @@ export class TenantDO extends DurableObject<Env> {
     return row ? { keyHash: row.key_hash, sealedToolSecret: row.sealed_tool_secret } : null;
   }
 
+  async deleteElevenLabsAgent(agentId: string): Promise<boolean> {
+    this.ensureVoiceTables();
+    const existing = this.ctx.storage.sql
+      .exec<{ agent_id: string }>(`SELECT agent_id FROM elevenlabs_call_agents WHERE agent_id = ?1 LIMIT 1`, agentId)
+      .toArray();
+    if (existing.length === 0) return false;
+    this.ctx.storage.sql.exec(`DELETE FROM elevenlabs_call_agents WHERE agent_id = ?1`, agentId);
+    return true;
+  }
+
+  async listElevenLabsCache(): Promise<{
+    agents: Array<{
+      agentId: string;
+      keyHash: string;
+      model: string;
+      personaHash: string;
+      createdAt: number;
+      lastUsedAt: number;
+    }>;
+    webhooks: Array<{
+      keyHash: string;
+      webhookId: string;
+      createdAt: number;
+    }>;
+  }> {
+    this.ensureVoiceTables();
+    const agents = this.ctx.storage.sql
+      .exec<{
+        agent_id: string;
+        key_hash: string;
+        model: string;
+        persona_hash: string;
+        created_at: number;
+        last_used_at: number;
+      }>(
+        `SELECT agent_id, key_hash, model, persona_hash, created_at, last_used_at
+         FROM elevenlabs_call_agents
+         ORDER BY last_used_at DESC
+         LIMIT 100`,
+      )
+      .toArray()
+      .map((r) => ({
+        agentId: r.agent_id,
+        keyHash: r.key_hash,
+        model: r.model,
+        personaHash: r.persona_hash,
+        createdAt: Number(r.created_at),
+        lastUsedAt: Number(r.last_used_at),
+      }));
+    const webhooks = this.ctx.storage.sql
+      .exec<{ key_hash: string; webhook_id: string; created_at: number }>(
+        `SELECT key_hash, webhook_id, created_at FROM elevenlabs_call_webhooks ORDER BY created_at DESC LIMIT 50`,
+      )
+      .toArray()
+      .map((r) => ({
+        keyHash: r.key_hash,
+        webhookId: r.webhook_id,
+        createdAt: Number(r.created_at),
+      }));
+    return { agents, webhooks };
+  }
+
+  async clearElevenLabsCache(filter?: {
+    agentId?: string;
+    model?: string;
+    includeWebhooks?: boolean;
+  }): Promise<{ deletedAgents: number; deletedWebhooks: number }> {
+    this.ensureVoiceTables();
+    return this.ctx.storage.transactionSync(() => {
+      let deletedAgents = 0;
+      if (filter?.agentId) {
+        const count = this.ctx.storage.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM elevenlabs_call_agents WHERE agent_id = ?1`, filter.agentId)
+          .one().cnt;
+        this.ctx.storage.sql.exec(`DELETE FROM elevenlabs_call_agents WHERE agent_id = ?1`, filter.agentId);
+        deletedAgents = Number(count ?? 0);
+      } else if (filter?.model) {
+        const count = this.ctx.storage.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM elevenlabs_call_agents WHERE model = ?1`, filter.model)
+          .one().cnt;
+        this.ctx.storage.sql.exec(`DELETE FROM elevenlabs_call_agents WHERE model = ?1`, filter.model);
+        deletedAgents = Number(count ?? 0);
+      } else {
+        const count = this.ctx.storage.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM elevenlabs_call_agents`)
+          .one().cnt;
+        this.ctx.storage.sql.exec(`DELETE FROM elevenlabs_call_agents`);
+        deletedAgents = Number(count ?? 0);
+      }
+      let deletedWebhooks = 0;
+      if (filter?.includeWebhooks) {
+        const count = this.ctx.storage.sql
+          .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM elevenlabs_call_webhooks`)
+          .one().cnt;
+        this.ctx.storage.sql.exec(`DELETE FROM elevenlabs_call_webhooks`);
+        deletedWebhooks = Number(count ?? 0);
+      }
+      return { deletedAgents, deletedWebhooks };
+    });
+  }
+
   async upsertElevenLabsConversation(input: {
     providerCall: string;
     callId: string;

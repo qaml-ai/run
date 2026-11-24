@@ -717,3 +717,301 @@ export default {
   assert.equal(afterEndedCap.noteAt, undefined);
   assert.equal(afterEndedCap.alarm, null);
 });
+
+test("ElevenLabs admin diagnostics, cache reset, and stale-agent 404 auto-reprovision", async (t) => {
+  const elevenApiKey = "sk-test-elevenlabs-super-secret-key";
+  const elevenWebhookSecret = "whsec_diag_super_secret";
+  let lastToolSecret = "";
+  let agentSeq = 0;
+  let convSeq = 0;
+  const deletedRemoteAgents = new Set<string>();
+
+  const mockUpstream = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+      if (req.method === "GET" && url.pathname === "/v1/user/subscription") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            tier: "pro",
+            status: "active",
+            character_count: 600000,
+            character_limit: 600000,
+            can_extend_character_limit: false,
+            allowed_to_extend_character_limit: false,
+            next_character_count_reset_unix: 1797816239,
+            currency: "usd",
+            billing_period: "monthly_period",
+            character_refresh_period: "monthly_period",
+          }),
+        );
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/v1/convai/agents") {
+        res.setHeader("Content-Type", "application/json");
+        const agents = Array.from({ length: agentSeq }, (_, i) => `el_diag_agt_${i + 1}`)
+          .filter((id) => !deletedRemoteAgents.has(id))
+          .map((id) => ({ agent_id: id, name: `camelRun voice gemini-3.1-flash-lite ${id}`, archived: false }));
+        res.end(JSON.stringify({ agents, has_more: false }));
+        return;
+      }
+      if (req.method === "GET" && url.pathname.startsWith("/v1/convai/agents/")) {
+        const id = decodeURIComponent(url.pathname.slice("/v1/convai/agents/".length));
+        if (deletedRemoteAgents.has(id)) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ detail: { status: "not_found", message: "Agent not found" } }));
+          return;
+        }
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            agent_id: id,
+            name: `camelRun voice ${id}`,
+            archived: false,
+            conversation_config: {
+              agent: { prompt: { llm: "gemini-3.1-flash-lite", tool_ids: ["tool_a", "tool_b"] } },
+              tts: { model_id: "eleven_v4_turbo", voice_id: "cgSgspJ2msm6clMCkdW9" },
+            },
+            platform_settings: {
+              auth: { enable_auth: true },
+              workspace_overrides: { webhooks: { post_call_webhook_id: "wh_diag_1" } },
+            },
+          }),
+        );
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/v1/convai/conversations") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            conversations: [
+              {
+                conversation_id: "conv_failed_1",
+                agent_id: "el_diag_agt_1",
+                status: "failed",
+                call_successful: "unknown",
+                start_time_unix_secs: 1795559462,
+                call_duration_secs: 0,
+                message_count: 0,
+              },
+            ],
+            has_more: false,
+            next_cursor: null,
+          }),
+        );
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/v1/convai/conversations/conv_failed_1") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            conversation_id: "conv_failed_1",
+            status: "failed",
+            metadata: {
+              termination_reason: "",
+              error: {
+                code: 3000,
+                reason: "The AI agent you are trying to reach is not available.",
+                error_type: "call_initialization_error",
+              },
+            },
+          }),
+        );
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/workspace/webhooks") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ webhook_id: "wh_diag_1", webhook_secret: elevenWebhookSecret }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/convai/tools") {
+        const parsed = JSON.parse(raw) as {
+          tool_config?: { name?: string; api_schema?: { request_headers?: Record<string, string> } };
+        };
+        if (parsed.tool_config?.api_schema?.request_headers?.["X-Voice-Tool-Secret"]) {
+          lastToolSecret = parsed.tool_config.api_schema.request_headers["X-Voice-Tool-Secret"];
+        }
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ id: `tool_${parsed.tool_config?.name ?? "x"}` }));
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/v1/convai/agents/create") {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ agent_id: `el_diag_agt_${++agentSeq}` }));
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/v1/convai/conversation/get-signed-url") {
+        const agentId = url.searchParams.get("agent_id") ?? "";
+        if (deletedRemoteAgents.has(agentId)) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ detail: { status: "not_found", message: "Agent not found" } }));
+          return;
+        }
+        const convId = `conv_diag_${++convSeq}`;
+        res.setHeader("Content-Type", "application/json");
+        res.end(
+          JSON.stringify({
+            signed_url: `wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${agentId}&conversation_id=${convId}`,
+            conversation_id: convId,
+          }),
+        );
+        return;
+      }
+      res.writeHead(404);
+      res.end("not found");
+    });
+  });
+
+  await new Promise<void>((resolve) => mockUpstream.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    mockUpstream.closeAllConnections();
+    mockUpstream.close();
+  });
+  const port = (mockUpstream.address() as { port: number }).port;
+  const mockOrigin = `http://127.0.0.1:${port}`;
+
+  const dir = mkdtempSync(join(tmpdir(), "v2-voice-eleven-diag-"));
+  const config = join(dir, "wrangler.json");
+  const admin = "fixture-eleven-diag-admin";
+  writeFileSync(
+    config,
+    JSON.stringify({
+      name: "v2-voice-eleven-diag-test",
+      main: fileURLToPath(new URL("../worker/src/index.ts", import.meta.url)),
+      compatibility_date: "2026-03-01",
+      compatibility_flags: ["nodejs_compat", "enhanced_error_serialization"],
+      vars: {
+        ADMIN_SECRET: admin,
+        VAULT_SECRET: "fixture-voice-vault-32-bytes-minimum",
+        DEFAULT_MODEL: "mock/default",
+        ELEVENLABS_API_KEY: elevenApiKey,
+        VOICE_ELEVENLABS_BASE_URL: mockOrigin,
+        VOICE_PUBLIC_URL: "https://voice-diag.test",
+        AGENT_PRICE_ELEVENLABS_AGENTS_MINUTE_USD: "0.08",
+        AGENT_PRICE_ELEVENLABS_LLM_MINUTE_USD: "0.001",
+        AGENT_PRICE_ELEVENLABS_GEMINI_3_1_LLM_MINUTE_USD: "0.012",
+        AGENT_PRICE_ELEVENLABS_HAIKU_LLM_MINUTE_USD: "0.003",
+      },
+      durable_objects: {
+        bindings: [
+          { name: "TENANT_DO", class_name: "TenantDO" },
+          { name: "AGENT_DO", class_name: "AgentDO" },
+          { name: "VOICE_CALL_DO", class_name: "VoiceCallDO" },
+        ],
+      },
+      migrations: [
+        { tag: "v1", new_sqlite_classes: ["TenantDO", "AgentDO"] },
+        { tag: "v2", new_sqlite_classes: ["VoiceCallDO"] },
+      ],
+    }),
+  );
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const worker = await unstable_startWorker({ config, dev: { persist: false, logLevel: "none" } });
+  t.after(() => worker.dispose());
+  const origin = "https://voice-diag.test";
+
+  // Admin endpoints require X-Admin-Key
+  assert.equal((await worker.fetch(`${origin}/v2/admin/voice/elevenlabs`)).status, 401);
+  assert.equal((await worker.fetch(`${origin}/v2/admin/voice/elevenlabs/reset`, { method: "POST" })).status, 401);
+
+  const tenantRes = await worker.fetch(`${origin}/v2/tenants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Admin-Key": admin },
+    body: JSON.stringify({ name: "voice-diag-test", initialCreditsUsd: 50 }),
+  });
+  assert.equal(tenantRes.status, 201);
+  const { apiKey } = (await tenantRes.json()) as { apiKey: string };
+  const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+
+  const agtRes = await worker.fetch(`${origin}/v2/agents/diag-bot`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ model: "mock/default", instructions: "Diag bot." }),
+  });
+  assert.equal(agtRes.status, 201);
+  const { id: agentId } = (await agtRes.json()) as { id: string };
+
+  // Provision first ElevenLabs agent
+  const call1Res = await worker.fetch(`${origin}/v2/voice/calls`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: agentId, provider: "elevenlabs", subject: "u1" }),
+  });
+  assert.equal(call1Res.status, 201, await call1Res.clone().text());
+  assert.equal(agentSeq, 1);
+
+  // Inspect live diagnostics -> verifies subscription quota, conversations error, cache, and zero secret leaks
+  const diagRes = await worker.fetch(`${origin}/v2/admin/voice/elevenlabs`, {
+    headers: { "X-Admin-Key": admin },
+  });
+  assert.equal(diagRes.status, 200);
+  const diagRaw = await diagRes.text();
+  assert.ok(!diagRaw.includes(elevenApiKey), "Diagnostics must never leak ELEVENLABS_API_KEY");
+  assert.ok(!diagRaw.includes(elevenWebhookSecret), "Diagnostics must never leak webhook secret");
+  assert.ok(!diagRaw.includes(lastToolSecret), "Diagnostics must never leak tool secret");
+  assert.ok(!diagRaw.includes("sealedToolSecret"), "Diagnostics must never expose sealedToolSecret");
+  const diag = JSON.parse(diagRaw) as {
+    configured: boolean;
+    subscription: {
+      ok: boolean;
+      tier: string;
+      characterCount: number;
+      characterLimit: number;
+      charactersRemaining: number;
+      quotaExhausted: boolean;
+      nextCharacterCountResetAt: string;
+    };
+    conversations: { ok: boolean; items: Array<{ error?: { code?: number; reason?: string } }> };
+    cache: { ok: boolean; agents: Array<{ agentId: string; remoteStatus: string; remoteTtsModelId: string }> };
+  };
+  assert.equal(diag.configured, true);
+  assert.equal(diag.subscription.ok, true);
+  assert.equal(diag.subscription.tier, "pro");
+  assert.equal(diag.subscription.characterCount, 600000);
+  assert.equal(diag.subscription.characterLimit, 600000);
+  assert.equal(diag.subscription.charactersRemaining, 0);
+  assert.equal(diag.subscription.quotaExhausted, true);
+  assert.equal(diag.subscription.nextCharacterCountResetAt, "2026-12-21T01:23:59.000Z");
+  assert.equal(diag.conversations.items[0]?.error?.code, 3000);
+  assert.equal(diag.cache.agents.length, 1);
+  assert.equal(diag.cache.agents[0]?.agentId, "el_diag_agt_1");
+  assert.equal(diag.cache.agents[0]?.remoteStatus, "ok");
+  assert.equal(diag.cache.agents[0]?.remoteTtsModelId, "eleven_v4_turbo");
+
+  // Simulate cached agent deleted remotely on ElevenLabs -> next call auto-evicts and reprovisions el_diag_agt_2
+  deletedRemoteAgents.add("el_diag_agt_1");
+  const call2Res = await worker.fetch(`${origin}/v2/voice/calls`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: agentId, provider: "elevenlabs", subject: "u2" }),
+  });
+  assert.equal(call2Res.status, 201, await call2Res.clone().text());
+  const call2 = (await call2Res.json()) as { connect: { signedUrl: string } };
+  assert.equal(agentSeq, 2);
+  assert.ok(call2.connect.signedUrl.includes("agent_id=el_diag_agt_2"));
+
+  // Admin reset clears cached agents -> subsequent call reprovisions el_diag_agt_3
+  const resetRes = await worker.fetch(`${origin}/v2/admin/voice/elevenlabs/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Admin-Key": admin },
+    body: JSON.stringify({}),
+  });
+  assert.equal(resetRes.status, 200);
+  const resetOut = (await resetRes.json()) as { ok: boolean; deletedAgents: number; deletedWebhooks: number };
+  assert.equal(resetOut.ok, true);
+  assert.equal(resetOut.deletedAgents, 1);
+  assert.equal(resetOut.deletedWebhooks, 0);
+
+  const call3Res = await worker.fetch(`${origin}/v2/voice/calls`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ agent: agentId, provider: "elevenlabs", subject: "u3" }),
+  });
+  assert.equal(call3Res.status, 201, await call3Res.clone().text());
+  assert.equal(agentSeq, 3);
+});

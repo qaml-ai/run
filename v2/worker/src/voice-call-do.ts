@@ -361,17 +361,32 @@ export class VoiceCallDO extends DurableObject<Env> {
 
       try {
         if (eleven) {
-          const provisioned = await eleven.provision({
+          const provisionInput = {
             apiKey: key.apiKey,
             model,
             instructions,
             language: options.language,
             voiceId: voice,
-          });
-          const signed = await eleven.signedUrl({
-            apiKey: key.apiKey,
-            agentId: provisioned.agentId,
-          });
+          };
+          let provisioned = await eleven.provision(provisionInput);
+          let signed: { signedUrl: string; conversationId: string };
+          try {
+            signed = await eleven.signedUrl({
+              apiKey: key.apiKey,
+              agentId: provisioned.agentId,
+            });
+          } catch (err) {
+            if (provisioned.cached && /HTTP 404\b/.test(err instanceof Error ? err.message : String(err))) {
+              await eleven.evictAgent(provisioned.agentId);
+              provisioned = await eleven.provision(provisionInput);
+              signed = await eleven.signedUrl({
+                apiKey: key.apiKey,
+                agentId: provisioned.agentId,
+              });
+            } else {
+              throw err;
+            }
+          }
           row.providerAgent = provisioned.agentId;
           row.providerCall = signed.conversationId;
           row.call.state = "live";
