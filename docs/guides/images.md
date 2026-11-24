@@ -88,7 +88,7 @@ await writeFile("card.png", Buffer.from(card.data, "base64"));
 
 To avoid resending static template images with every render, upload them once:
 
-- `POST /v2/media`: accepts either raw image bytes (`Content-Type: image/png`, `image/jpeg`, `image/webp`, or `image/gif`) or JSON `{ "data": "<base64>", "contentType"?: "..." }`. WebP and GIF (first frame) are automatically converted to PNG. Returns `{ id, url, contentType, width, height, sizeBytes }`. Pass `id` (`img_...`) directly in `files` on `POST /v2/images/render`.
+- `POST /v2/media`: accepts either raw image bytes (`Content-Type: image/png`, `image/jpeg`, `image/webp`, or `image/gif`) or JSON `{ "data": "<base64>", "contentType"?: "..." }`. WebP and GIF (first frame) are automatically converted to PNG. Returns `{ id, url, expiresAt, contentType, width, height, sizeBytes }` where `url` is a short-lived (1-hour) HMAC-signed link (`/v2/images/:id?exp=...&sig=...`). Pass `id` (`img_...`) directly in `files` on `POST /v2/images/render`. Reading uploaded media via `GET /v2/images/:id` or `GET /v2/media/:id` requires either the owning tenant's bearer token or a valid signed URL and is served with `Cache-Control: private` (unauthenticated requests return `401`, cross-tenant requests return `404`).
 - `DELETE /v2/media/:id`: deletes a tenant-owned media object and returns `{ ok: true, id, deleted: true }`.
 - `POST /v2/moderations/images`: accepts raw `image/jpeg` or `image/png` up to 5 MiB, runs OpenAI `omni-moderation-latest` fail-closed, and returns `{ id, model, flagged, categories, category_scores, category_applied_input_types }`.
 
@@ -111,8 +111,8 @@ A `<textbox>` expands to plain `<text>` / `<tspan>` before rendering:
 
 Aliases work in `font-family` attributes, CSS `font-family:` lists, CSS `font:` shorthand, and `<style>` blocks. Fallback fonts loaded automatically across all styles: `Noto Sans Math`, `Noto Sans Symbols`, `Noto Sans Symbols 2` (covers `★ ☆ ♡ ♛ ✓ ✗ ✿ ❀` and enclosed alphanumerics), and monochrome `Noto Emoji`.
 
-- **Covered scripts**: Latin (extended/diacritics), Greek, Cyrillic, Mathematical Alphanumerics (`𝑱𝒐𝒌𝒆𝒓`), Enclosed Alphanumerics (`Ⓡⓘⓣⓐ`), Symbols/dingbats, and monochrome Emoji.
-- **Unsupported scripts**: characters not in any bundled font (e.g. CJK, Arabic, Hebrew, Devanagari, Thai) are normalized via Unicode NFKC (so e.g. `Ｗｉｄｅ` renders as `Wide`) or substituted with `?` so trailing symbols and emoji on the same line continue to render cleanly.
+- **Covered scripts**: Latin (extended/diacritics), Greek, Cyrillic, Arabic, Devanagari, Hebrew, Thai, Hiragana/Katakana, Georgian, Discord decorated name glyphs (`꧁ ꧂ ツ 彡 乂 ღ ꒰ ꒱ 𓆩 𓆪 ｡ ㅤ ༄`), Mathematical Alphanumerics (`𝑱𝒐𝒌𝒆𝒓`), Enclosed Alphanumerics (`Ⓡⓘⓣⓐ`), Symbols/dingbats, monochrome Emoji, and on-demand CJK Unified Ideographs & Hangul (`Noto Sans SC` / `Noto Sans KR`, fetched and cached only when present in the SVG).
+- **Unsupported scripts**: characters not covered by any bundled or loaded script font are normalized via Unicode NFKC (so e.g. `Ｗｉｄｅ` renders as `Wide`) or substituted with `?` so trailing symbols and emoji on the same line continue to render cleanly.
 
 ### Limits and usage
 

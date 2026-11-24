@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { SaxesParser } from "saxes";
 import { imageHeader, imageIntact } from "../worker/src/lib/image-header.ts";
 import { SVG_RENDER_LIMITS as LIMITS } from "./limits.ts";
-import { normalizeMissingGlyphs } from "./fonts/coverage.ts";
+import { normalizeMissingGlyphs, type OnDemandScriptId } from "./fonts/coverage.ts";
 import {
   escapeXml as escape,
   extractInheritedFromDeclarations,
@@ -196,7 +196,12 @@ function ownPresentationInherited(attributes: Record<string, string>): Inherited
   return out;
 }
 
-export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) {
+export function prepareSvg(
+  svg: unknown,
+  files: unknown,
+  measure?: MeasureText,
+  loadedOnDemand?: ReadonlySet<OnDemandScriptId>,
+) {
   if (typeof svg !== "string" || !svg.trim() || Buffer.byteLength(svg) > LIMITS.svgBytes) {
     throw new Error("Supply a non-empty SVG up to 1 MiB");
   }
@@ -306,7 +311,7 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
     styleStack.pop();
     if (textbox) {
       if (!measure) throw new Error("Textbox layout requires the SVG renderer");
-      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text), measure, textbox.inherited, textbox.index));
+      parts.push(renderTextbox(textbox.attributes, normalizeMissingGlyphs(textbox.text, loadedOnDemand), measure, textbox.inherited, textbox.index));
       textbox = undefined;
       return;
     }
@@ -316,7 +321,7 @@ export function prepareSvg(svg: unknown, files: unknown, measure?: MeasureText) 
     if (textbox) textbox.text += value;
     else if (stack.at(-1) === "style") {
       parts.push(escape(fontCss(value)));
-    } else parts.push(escape(stack.some(element => element === "text") ? normalizeMissingGlyphs(value) : value));
+    } else parts.push(escape(stack.some(element => element === "text") ? normalizeMissingGlyphs(value, loadedOnDemand) : value));
   };
   parser.on("text", text);
   parser.on("cdata", text);

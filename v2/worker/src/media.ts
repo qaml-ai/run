@@ -1,4 +1,5 @@
 import { randomId } from "./crypto.ts";
+import { MEDIA_SIGNED_URL_TTL_SECONDS, verifyMediaUrlSignature } from "./svg-render.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, jsonResponse, type Env } from "./types.ts";
 
@@ -601,6 +602,7 @@ export async function handleImageGetRequest(
   env: Env,
   imageId: string,
   tenantId?: string,
+  signed?: { exp?: string | null; sig?: string | null },
 ): Promise<Response> {
   if (!env.MEDIA_BUCKET) {
     throw new ApiError(501, "media_bucket_unconfigured", "MEDIA_BUCKET R2 binding is not configured");
@@ -610,10 +612,36 @@ export async function handleImageGetRequest(
     throw new ApiError(404, "image_not_found", `Image '${imageId}' not found`);
   }
   const ownerTenant = obj.customMetadata?.tenantId;
+  const contentType = obj.httpMetadata?.contentType || "image/png";
+
+  if (obj.customMetadata?.source === "upload") {
+    let maxAge = MEDIA_SIGNED_URL_TTL_SECONDS;
+    if (tenantId) {
+      if (!ownerTenant || ownerTenant !== tenantId) {
+        throw new ApiError(404, "media_not_found", `Media '${imageId}' not found`);
+      }
+    } else {
+      const verified = ownerTenant
+        ? await verifyMediaUrlSignature(env, imageId, ownerTenant, signed?.exp, signed?.sig)
+        : { valid: false, remainingSeconds: 0 };
+      if (!verified.valid) {
+        throw new ApiError(401, "unauthorized", "Authentication or valid signed URL required for uploaded media");
+      }
+      maxAge = Math.min(MEDIA_SIGNED_URL_TTL_SECONDS, verified.remainingSeconds);
+    }
+    return new Response(obj.body, {
+      status: 200,
+      headers: {
+        "Content-Type": contentType,
+        "Cache-Control": `private, max-age=${maxAge}`,
+        Vary: "Authorization",
+      },
+    });
+  }
+
   if (tenantId && ownerTenant && ownerTenant !== tenantId) {
     throw new ApiError(403, "forbidden", "Image belongs to a different tenant");
   }
-  const contentType = obj.httpMetadata?.contentType || "image/png";
   return new Response(obj.body, {
     status: 200,
     headers: {

@@ -1699,14 +1699,23 @@ app.post("/v2/images/render", async (c) => {
   return c.json(rendered);
 });
 
-app.get("/v2/images/:id", async (c) => {
+const getImageHandler = async (c: {
+  env: Env;
+  req: { raw: Request; header: (name: string) => string | undefined; param: (name: string) => string; query: (name: string) => string | undefined };
+}) => {
   let tenantId: string | undefined;
   if (c.req.header("Authorization")) {
     const auth = await authenticateRequest(c.env, c.req.raw);
     tenantId = auth.tenantId;
   }
-  return handleImageGetRequest(c.env, c.req.param("id"), tenantId);
-});
+  return handleImageGetRequest(c.env, c.req.param("id"), tenantId, {
+    exp: c.req.query("exp"),
+    sig: c.req.query("sig"),
+  });
+};
+
+app.get("/v2/images/:id", getImageHandler);
+app.get("/v2/media/:id", getImageHandler);
 
 app.post("/v2/webhooks", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);

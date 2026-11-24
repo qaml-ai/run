@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { unstable_startWorker } from "wrangler";
-import { normalizeMissingGlyphs } from "../svg-renderer/fonts/coverage.ts";
+import { detectExtraScripts, normalizeMissingGlyphs } from "../svg-renderer/fonts/coverage.ts";
 import { prepareSvg } from "../svg-renderer/source.ts";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAD0lEQVQImWP4z8Dwn4EBAAj+Af/KOtJRAAAAAElFTkSuQmCC";
@@ -39,11 +39,30 @@ test("normalizes font aliases in CSS (including font shorthand) and handles miss
   assert.match(input.svg, /font: 700 18px\/1\.2 Noto Serif/);
   assert.match(input.svg, /𝑱𝒐𝒌𝒆𝒓 Ⓡⓘⓣⓐ Wide/);
 
-  // Ligature breaking for resvg 2.6.2 fallback bug + Symbols2 + uncovered CJK substitution.
+  // Ligature breaking for resvg 2.6.2 fallback bug + Symbols2 + script/decorated coverage + unloaded fallback.
   assert.equal(normalizeMissingGlyphs("Staff 🎉"), "Staf\u200cf 🎉");
   assert.equal(normalizeMissingGlyphs("Officer 𝑱𝒐𝒌𝒆𝒓 🎉"), "Of\u200cf\u200cicer 𝑱𝒐𝒌𝒆𝒓 🎉");
   assert.equal(normalizeMissingGlyphs("★ ☆ ♡ ♛ ✓ ✗ ✿ ❀"), "★ ☆ ♡ ♛ ✓ ✗ ✿ ❀");
   assert.equal(normalizeMissingGlyphs("東京 🎉"), "?? 🎉");
+  assert.equal(normalizeMissingGlyphs("東京 🎉", new Set(["cjk-sc"])), "東京 🎉");
+  assert.equal(normalizeMissingGlyphs("李小龙", new Set(["cjk-sc"])), "李小龙");
+  assert.equal(normalizeMissingGlyphs("김철수", new Set(["cjk-kr"])), "김철수");
+  assert.equal(normalizeMissingGlyphs("محمد علي"), "محمد علي");
+  assert.equal(normalizeMissingGlyphs("अर्जुन शर्मा"), "अर्जुन शर्मा");
+  assert.equal(normalizeMissingGlyphs("שלום · สวัสดี"), "שלום · สวัสดี");
+  assert.equal(normalizeMissingGlyphs("꧁Luna꧂ · Shadowツ"), "꧁Luna꧂ · Shadowツ");
+  assert.equal(normalizeMissingGlyphs("꧁ ꧂ ツ 彡 乂 ღ ꒰ ꒱ 𓆩 𓆪 ｡ ㅤ ༄"), "꧁ ꧂ ツ 彡 乂 ღ ꒰ ꒱ 𓆩 𓆪 ｡ ㅤ ༄");
+  assert.equal(normalizeMissingGlyphs("አማርኛ 🎉"), "???? 🎉");
+
+  // Extra script detection keeps Latin/emoji/fullwidth overhead at zero and routes decorated names locally.
+  assert.deepEqual(detectExtraScripts("Maria da Conceição 𝑱𝒐𝒌𝒆𝒓 Ｗｉｄｅ 🎉"), { bundled: [], onDemand: [] });
+  assert.deepEqual(detectExtraScripts("꧁Luna꧂ Shadowツ ꧁ ꧂ ツ 彡 乂 ღ ꒰ ꒱ 𓆩 𓆪 ｡ ㅤ ༄"), { bundled: ["decorated"], onDemand: [] });
+  assert.deepEqual(detectExtraScripts("محمد علي"), { bundled: ["arabic"], onDemand: [] });
+  assert.deepEqual(detectExtraScripts("अर्जुन शर्मा"), { bundled: ["devanagari"], onDemand: [] });
+  assert.deepEqual(detectExtraScripts("שלום สวัสดี"), { bundled: ["hebrew", "thai"], onDemand: [] });
+  assert.deepEqual(detectExtraScripts("李小龙"), { bundled: [], onDemand: ["cjk-sc"] });
+  assert.deepEqual(detectExtraScripts("&#x674E;&#x5C0F;&#x9F99;"), { bundled: [], onDemand: ["cjk-sc"] });
+  assert.deepEqual(detectExtraScripts("김철수"), { bundled: [], onDemand: ["cjk-kr"] });
 
   // Flags, emoji ZWJ sequences, skin tones, keycaps, tag sequences, and decomposed combining accents.
   assert.equal(normalizeMissingGlyphs("Ana 🇧🇷"), "Ana 🇧\u200c🇷");
@@ -354,7 +373,8 @@ test("the renderer Worker draws text, inherits styles, renders italic/symbols/em
       ["ffi ligature + math + emoji", "Officer 𝑱𝒐𝒌𝒆𝒓 🎉", "Officer 𝑱𝒐𝒌𝒆𝒓 🌙"],
       ["Symbols 2 check + math", "✓ 𝑱𝒐𝒌𝒆𝒓", "✓ 𝑨𝑩𝑪𝑫𝑬"],
       ["Symbols 2 heart + emoji", "♡ Luna 🌙", "♡ Luna 🎉"],
-      ["uncovered CJK + trailing emoji", "東京 🎉", "東京 🌙"],
+      ["CJK + trailing emoji", "東京 🎉", "東京 🌙"],
+      ["uncovered Ethiopic + trailing emoji", "አማርኛ 🎉", "አማርኛ 🌙"],
       ["Symbols 2 distinct glyphs", "★ ☆ ♡ ♛ ✓ ✗ ✿ ❀", "❀ ✿ ✗ ✓ ♛ ♡ ☆ ★"],
     ];
     for (const [label, a, b] of pairs) {
@@ -368,6 +388,72 @@ test("the renderer Worker draws text, inherits styles, renders italic/symbols/em
         `${label}: "${a}" and "${b}" rendered identically (likely fallback tofu boxes)`,
       );
     }
+  });
+
+  await t.test("non-Latin scripts (CJK, Hangul, Arabic, Devanagari, Hebrew, Thai) and Discord decorated names render real glyphs instead of ?", async () => {
+    const renderLine = (text: string) => renderPng(
+      `<svg width="560" height="80"><text x="10" y="56" font-family="Sans" font-size="32">${text}</text></svg>`,
+    );
+
+    // Every sample must render visibly different from its '?' fallback string.
+    const notQuestionMarkCases: Array<[string, string, string]> = [
+      ["CJK Chinese name", "李小龙", "???"],
+      ["CJK Japanese city", "東京", "??"],
+      ["Korean Hangul name", "김철수", "???"],
+      ["Arabic name", "محمد علي", "???? ???"],
+      ["Devanagari name", "अर्जुन शर्मा", "?????? ?????"],
+      ["Hebrew greeting", "שלום", "????"],
+      ["Thai greeting", "สวัสดี", "??????"],
+      ["Decorated Javanese name", "꧁Luna꧂", "?Luna?"],
+      ["Decorated Katakana name", "Shadowツ", "Shadow?"],
+      ["Discord decorated symbols", "꧁ ꧂ ツ 彡 乂 ღ ꒰ ꒱ 𓆩 𓆪 ｡ ༄", "? ? ? ? ? ? ? ? ? ? ? ?"],
+    ];
+    for (const [label, realText, fallbackText] of notQuestionMarkCases) {
+      const [realImg, qImg] = await Promise.all([renderLine(realText), renderLine(fallbackText)]);
+      assert.notEqual(
+        Buffer.compare(realImg.buffer, qImg.buffer),
+        0,
+        `${label}: "${realText}" rendered identically to "${fallbackText}"`,
+      );
+    }
+
+    // Distinct same-length strings in each script must produce distinct PNGs (proving real glyphs, not identical tofu boxes).
+    const distinctScriptPairs: Array<[string, string, string]> = [
+      ["CJK distinct names", "李小龙", "张伟明"],
+      ["Hangul distinct names", "김철수", "박영희"],
+      ["Arabic distinct names", "محمد علي", "أحمد حسن"],
+      ["Devanagari distinct names", "अर्जुन शर्मा", "कविता वर्मा"],
+      ["Decorated distinct ornaments", "꧁Luna꧂", "𓆩Luna𓆪"],
+      ["Decorated distinct pairs", "꒰Luna꒱", "༄Lunaღ"],
+    ];
+    for (const [label, a, b] of distinctScriptPairs) {
+      const [imgA, imgB] = await Promise.all([renderLine(a), renderLine(b)]);
+      assert.notEqual(
+        Buffer.compare(imgA.buffer, imgB.buffer),
+        0,
+        `${label}: "${a}" and "${b}" rendered identically (likely tofu boxes)`,
+      );
+    }
+
+    // All target names inside <textbox> fit strictly inside their bounding boxes (including bold).
+    const { buffer: scriptBoxes } = await renderPng(
+      '<svg width="460" height="360">' +
+        '<textbox x="20" y="10" width="420" height="44" font-size="28" font-weight="bold">李小龙 · 김철수</textbox>' +
+        '<textbox x="20" y="68" width="420" height="44" font-size="28" font-weight="bold">محمد علي</textbox>' +
+        '<textbox x="20" y="126" width="420" height="44" font-size="28" font-weight="bold">अर्जुन शर्मा</textbox>' +
+        '<textbox x="20" y="184" width="420" height="44" font-size="28" font-weight="bold">꧁Luna꧂ · Shadowツ</textbox>' +
+        '<textbox x="20" y="242" width="420" height="44" font-size="24">꧁ ꧂ ツ 彡 乂 ღ ꒰ ꒱ 𓆩 𓆪 ｡ ㅤ ༄</textbox>' +
+        '<textbox x="20" y="300" width="420" height="44" font-size="26">שלום · สวัสดี</textbox>' +
+      "</svg>",
+    );
+    await assertAllInkInsideBoxes(scriptBoxes, [
+      [20, 10, 420, 44],
+      [20, 68, 420, 44],
+      [20, 126, 420, 44],
+      [20, 184, 420, 44],
+      [20, 242, 420, 44],
+      [20, 300, 420, 44],
+    ]);
   });
 
   await t.test("NotoSerif-Italic renders visually distinct from NotoSerif-Regular", async () => {

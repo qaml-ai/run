@@ -421,11 +421,10 @@ test("POST /v2/transcriptions and POST /v2/images harden OpenAI media handling",
     assert.equal(data.sizeBytes, GENERATED_IMAGE_BYTES.byteLength);
     assert.equal(data.costUsd, 0.04);
 
-    // Verify exact decoded bytes stored in R2
-    const getRes = await worker.fetch(`${origin}/v2/images/${data.id}`, {
-      headers: { authorization: `Bearer ${withKey.apiKey}` },
-    });
+    // Verify exact decoded bytes stored in R2 (generated images remain public & immutable)
+    const getRes = await worker.fetch(`${origin}/v2/images/${data.id}`);
     assert.equal(getRes.status, 200);
+    assert.equal(getRes.headers.get("cache-control"), "public, max-age=31536000, immutable");
     assert.deepEqual(new Uint8Array(await getRes.arrayBuffer()), GENERATED_IMAGE_BYTES);
 
     const gptReq = captured[start]!;
@@ -625,24 +624,68 @@ test("POST /v2/transcriptions and POST /v2/images harden OpenAI media handling",
     const rawMedia = (await rawRes.json()) as {
       id: string;
       url: string;
+      expiresAt: string;
       contentType: string;
       width: number;
       height: number;
       sizeBytes: number;
     };
     assert.match(rawMedia.id, /^img_/);
-    assert.equal(rawMedia.url, `/v2/images/${rawMedia.id}`);
+    const signedUrl = new URL(rawMedia.url, origin);
+    assert.equal(signedUrl.pathname, `/v2/images/${rawMedia.id}`);
+    assert.match(signedUrl.searchParams.get("exp") ?? "", /^\d+$/);
+    assert.match(signedUrl.searchParams.get("sig") ?? "", /^[0-9a-f]{64}$/);
+    assert.ok(Date.parse(rawMedia.expiresAt) > Date.now());
     assert.equal(rawMedia.contentType, "image/png");
     assert.equal(rawMedia.width, 1);
     assert.equal(rawMedia.height, 1);
     assert.equal(rawMedia.sizeBytes, PNG_1X1_BYTES.byteLength);
 
-    // Retrievable via GET /v2/images/:id
-    const fetched = await worker.fetch(`${origin}${rawMedia.url}`, {
+    // Unauthenticated GET without signed params returns 401
+    const unauthImg = await worker.fetch(`${origin}/v2/images/${rawMedia.id}`);
+    assert.equal(unauthImg.status, 401);
+    const unauthMedia = await worker.fetch(`${origin}/v2/media/${rawMedia.id}`);
+    assert.equal(unauthMedia.status, 401);
+
+    // Tampered or expired signed URL returns 401
+    const tamperedSig = await worker.fetch(`${origin}/v2/images/${rawMedia.id}?exp=${signedUrl.searchParams.get("exp")}&sig=${"0".repeat(64)}`);
+    assert.equal(tamperedSig.status, 401);
+    const expiredSig = await worker.fetch(`${origin}/v2/images/${rawMedia.id}?exp=1&sig=${signedUrl.searchParams.get("sig")}`);
+    assert.equal(expiredSig.status, 401);
+
+    // Unauthenticated GET with returned short-lived signed URL succeeds with private Cache-Control
+    const signedFetch = await worker.fetch(`${origin}${rawMedia.url}`);
+    assert.equal(signedFetch.status, 200);
+    assert.match(signedFetch.headers.get("cache-control") ?? "", /^private, max-age=\d+$/);
+    assert.equal(signedFetch.headers.get("vary"), "Authorization");
+    assert.deepEqual(new Uint8Array(await signedFetch.arrayBuffer()), PNG_1X1_BYTES);
+
+    // Authenticated owner GET on bare /v2/images/:id and /v2/media/:id succeeds with private Cache-Control
+    const fetched = await worker.fetch(`${origin}/v2/images/${rawMedia.id}`, {
       headers: { authorization: `Bearer ${withKey.apiKey}` },
     });
     assert.equal(fetched.status, 200);
+    assert.equal(fetched.headers.get("cache-control"), "private, max-age=3600");
+    assert.equal(fetched.headers.get("vary"), "Authorization");
     assert.deepEqual(new Uint8Array(await fetched.arrayBuffer()), PNG_1X1_BYTES);
+
+    const fetchedMediaRoute = await worker.fetch(`${origin}/v2/media/${rawMedia.id}`, {
+      headers: { authorization: `Bearer ${withKey.apiKey}` },
+    });
+    assert.equal(fetchedMediaRoute.status, 200);
+    assert.deepEqual(new Uint8Array(await fetchedMediaRoute.arrayBuffer()), PNG_1X1_BYTES);
+
+    // Cross-tenant authenticated GET returns 404 media_not_found (even with signed URL params)
+    const crossGet = await worker.fetch(`${origin}/v2/images/${rawMedia.id}`, {
+      headers: { authorization: `Bearer ${noKey.apiKey}` },
+    });
+    assert.equal(crossGet.status, 404);
+    assert.equal(((await crossGet.json()) as { error: { code: string } }).error.code, "media_not_found");
+
+    const crossGetSigned = await worker.fetch(`${origin}${rawMedia.url}`, {
+      headers: { authorization: `Bearer ${noKey.apiKey}` },
+    });
+    assert.equal(crossGetSigned.status, 404);
 
     // 2. JSON base64 upload
     const jsonRes = await worker.fetch(`${origin}/v2/media`, {

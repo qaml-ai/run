@@ -1,12 +1,50 @@
 import { Buffer } from "node:buffer";
 import { SVG_RENDER_LIMITS as LIMITS } from "../../svg-renderer/limits.ts";
-import { randomId } from "./crypto.ts";
+import { computeRawHmacHex, constantTimeEqual, randomId } from "./crypto.ts";
 import { imageHeader, imageIntact } from "./lib/image-header.ts";
 import { ApiError, jsonResponse, type Env } from "./types.ts";
 
 const MEDIA_ID_RE = /^img_[A-Za-z0-9_-]{1,64}$/;
 const ALLOWED_UPLOAD_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+export const MEDIA_SIGNED_URL_TTL_SECONDS = 3600;
+
+function mediaSigningSecret(env: Pick<Env, "VAULT_SECRET">): string {
+  return env.VAULT_SECRET || "default-dev-vault-secret";
+}
+
+export async function signMediaUrlParams(
+  env: Pick<Env, "VAULT_SECRET">,
+  mediaId: string,
+  tenantId: string,
+  ttlSeconds = MEDIA_SIGNED_URL_TTL_SECONDS,
+): Promise<{ exp: number; sig: string; expiresAt: string }> {
+  const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const sig = await computeRawHmacHex(`camelrun-media-v2:${mediaId}:${tenantId}:${exp}`, mediaSigningSecret(env));
+  return { exp, sig, expiresAt: new Date(exp * 1000).toISOString() };
+}
+
+export async function verifyMediaUrlSignature(
+  env: Pick<Env, "VAULT_SECRET">,
+  mediaId: string,
+  tenantId: string,
+  expParam: string | null | undefined,
+  sigParam: string | null | undefined,
+): Promise<{ valid: boolean; remainingSeconds: number }> {
+  if (!expParam || !sigParam || !/^\d+$/.test(expParam) || !/^[0-9a-f]{64}$/i.test(sigParam)) {
+    return { valid: false, remainingSeconds: 0 };
+  }
+  const exp = Number(expParam);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(exp) || exp < nowSec) {
+    return { valid: false, remainingSeconds: 0 };
+  }
+  const expected = await computeRawHmacHex(`camelrun-media-v2:${mediaId}:${tenantId}:${exp}`, mediaSigningSecret(env));
+  if (!constantTimeEqual(sigParam.toLowerCase(), expected)) {
+    return { valid: false, remainingSeconds: 0 };
+  }
+  return { valid: true, remainingSeconds: Math.max(1, exp - nowSec) };
+}
 
 async function readStreamWithLimit(
   request: Request,
@@ -183,15 +221,18 @@ export async function handleMediaUploadRequest(
     httpMetadata: { contentType: normalized.contentType },
     customMetadata: {
       tenantId,
+      source: "upload",
       width: String(normalized.width),
       height: String(normalized.height),
       createdAt: String(Date.now()),
     },
   });
 
+  const signed = await signMediaUrlParams(env, id, tenantId);
   return jsonResponse({
     id,
-    url: `/v2/images/${id}`,
+    url: `/v2/images/${id}?exp=${signed.exp}&sig=${signed.sig}`,
+    expiresAt: signed.expiresAt,
     contentType: normalized.contentType,
     width: normalized.width,
     height: normalized.height,

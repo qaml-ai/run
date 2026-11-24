@@ -1,3 +1,6 @@
 Noto font sources at https://github.com/notofonts/noto-fonts/tree/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf (including NotoSansSymbols2-Regular.ttf)
 NotoSerif-Italic.ttf (with OS/2 italic fsSelection 0x0181 and head macStyle 0x0002) from https://github.com/notofonts/notofonts.github.io/blob/main/fonts/NotoSerif/hinted/ttf/NotoSerif-Italic.ttf
+NotoSansArabic-Regular.ttf, NotoSansDevanagari-Regular.ttf, NotoSansHebrew-Regular.ttf, and NotoSansThai-Regular.ttf from https://github.com/notofonts/notofonts.github.io/tree/main/fonts (OFL-1.1)
+NotoDecorated-Subset.ttf: merged OFL-1.1 subset of NotoSansJavanese (꧁꧂), NotoSansGeorgian (ღ), NotoSansYi (꒰꒱), NotoSerifTibetan (༄), NotoSansEgyptianHieroglyphs (𓆩𓆪), and NotoSansKR wght=400 (Hiragana, Katakana, CJK punctuation, Hangul filler ㅤ, ツ 彡 乂 ｡)
 Monochrome Noto Emoji at https://github.com/google/fonts/tree/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji
+On-demand CJK fonts (loaded from R2 svg-fonts/ or pinned notofonts/noto-cjk@f8d157532fbfaeda587e826d4cd5b21a49186f7c SubsetOTF): NotoSansSC-Regular.otf and NotoSansKR-Regular.otf
