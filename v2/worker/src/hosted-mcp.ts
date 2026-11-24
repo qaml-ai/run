@@ -347,25 +347,6 @@ export function mcpProtectedResourceMetadata(
   );
 }
 
-export function mcpAuthorizationServerMetadata(request: Request, _env: Env): Response {
-  if (request.method === "OPTIONS") return mcpPreflight();
-  return Response.json(
-    {
-      error: "oauth_not_enabled",
-      error_description:
-        "Interactive OAuth 2.1 token issuance is not enabled on CamelRun v2; authenticate with Authorization: Bearer <cr_live_... or agt_tok_...>.",
-      service_documentation: "https://camelai.com/docs/camelrun/overview",
-    },
-    {
-      status: 404,
-      headers: {
-        ...AGENT_MCP_CORS,
-        "Cache-Control": "no-store",
-      },
-    },
-  );
-}
-
 function tooLargeResponse(): Response {
   return Response.json(
     {

@@ -12,7 +12,6 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { Miniflare } from "miniflare";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool, parseSSE, type SSEMessage } from "../sdk/src/index.ts";
-import { importHistoryInChunks } from "../scripts/chunk-history.ts";
 
 function loadDirModules(dir: string) {
   const modules: Record<
@@ -1352,113 +1351,6 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(afterReset.status, "completed");
 
     await camel.close();
-  });
-
-  it("appends v1 history chunks once, in order, with the previous receipt", async () => {
-    const { apiKey } = await CamelRun.createTenant({
-      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "chunked-history-tenant",
-    });
-    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
-    try {
-      const agent = await camel.agents.upsert("chunked-history", {});
-      const source = "imported-v1-chunks";
-      const timestamp = Date.now();
-      const first = { role: "user", timestamp, content: "First message" };
-      const call = {
-        role: "assistant", timestamp,
-        content: [{ type: "toolCall", id: "lookup_call", name: "lookup", arguments: {} }],
-      };
-      const result = {
-        role: "toolResult", timestamp, toolCallId: "lookup_call", toolName: "lookup",
-        content: [{ type: "text", text: "Result" }],
-      };
-      const initial = { source, appendAfter: 0, messages: [first] };
-      const head = await agent.importV1History(initial);
-      assert.equal(head.count, 1);
-      assert.deepEqual(await agent.importV1History(initial), head);
-      const next = { source, previous: head.receipt, appendAfter: 1, messages: [call, result] };
-      await assert.rejects(agent.importV1History({ ...next, appendAfter: 2 }), { status: 409 });
-      await assert.rejects(agent.importV1History({ ...next, previous: "wrong" }), { status: 409 });
-      await assert.rejects(agent.importV1History({ ...next, messages: [call] }), { status: 422 });
-      const tail = await agent.importV1History(next);
-      assert.equal(tail.count, 3);
-      assert.deepEqual(await agent.importV1History(next), tail);
-      await assert.rejects(agent.importV1History(initial), { status: 409 });
-      await assert.rejects(agent.importV1History({ source, previous: tail.receipt, messages: [first] }), { status: 409 });
-      const history = await agent.history();
-      assert.equal(history.length, 3);
-      const seqs = history.map(row => row.seq ?? 0);
-      assert.ok(seqs[0]! > 0 && seqs[0]! < seqs[1]! && seqs[1]! < seqs[2]!);
-      assert.deepEqual(history.map(row => (row.content as { meta: { v1: unknown } }).meta.v1), [first, call, result]);
-
-      const largeAgent = await camel.agents.upsert("chunked-large-history", {});
-      const chunkBytes = 850 * 1024;
-      const largeMessages = Array.from({ length: 3 }, (_, sequence) => ({
-        role: "user", timestamp, content: String(sequence).repeat(chunkBytes),
-      }));
-      await assert.rejects(largeAgent.importV1History({
-        source, appendAfter: 0, messages: largeMessages.slice(0, 2),
-      }), { status: 413 });
-      assert.deepEqual(await largeAgent.history(), []);
-      const uploaded = await importHistoryInChunks(largeAgent, { source, messages: [...largeMessages, call, result] });
-      assert.equal(uploaded.count, 5);
-      const largeHistory = await largeAgent.history();
-      assert.deepEqual(largeHistory.map(row => (row.content as { meta: { v1: unknown } }).meta.v1),
-        [...largeMessages, call, result]);
-    } finally {
-      await camel.close();
-    }
-  });
-
-  it("auto-compacts imported history without splitting a tool call from any of its results", async () => {
-    const { apiKey } = await CamelRun.createTenant({
-      baseUrl: workerUrl, adminKey: ADMIN_SECRET, name: "compaction-tenant", initialCreditsUsd: 1,
-    });
-    const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
-    try {
-      await camel.providers.set("openrouter", { apiKey: "test-compaction-key", baseUrl: `${auxUrl}/v1` });
-      const agent = await camel.agents.upsert("imported-agent", {
-        model: "openrouter/test/context-compaction",
-        compactThresholdTokens: 40_000,
-      });
-      const timestamp = Date.now();
-      const textBlock = (text: string) => ({ type: "text", text });
-      const assistant = (text: string) => ({ role: "assistant", content: [textBlock(text)], timestamp });
-      const user = (content: string) => ({ role: "user", content, timestamp });
-      const toolResult = (id: string) => ({
-        role: "toolResult", content: [textBlock(id)], toolCallId: id, toolName: "lookup", timestamp,
-      });
-      const messages = [
-        user("Earlier context. ".repeat(21_000)), assistant("Prior reply"), user("Use both lookups"),
-        {
-          role: "assistant",
-          content: ["call_one", "call_two"].map((id, idx) => ({
-            type: "toolCall",
-            id,
-            name: "lookup",
-            arguments: idx === 0 ? { query: "recent ".repeat(7_000) } : {},
-          })),
-          timestamp,
-        },
-        toolResult("call_one"), toolResult("call_two"), assistant("Both found"), user("Thanks"), assistant("Of course"),
-      ];
-      await agent.importV1History({ source: "imported-v1", messages });
-
-      const run = await agent.run("Continue from my history");
-      assert.equal(run.status, "completed");
-      assert.deepEqual(lastProviderMessages?.map(message => message.role), [
-        "system", "user", "assistant", "tool", "tool", "assistant", "user", "assistant", "user",
-      ]);
-      assert.deepEqual(lastProviderMessages?.filter(message => message.role === "tool").map(message => message.tool_call_id),
-        ["call_one", "call_two"]);
-      assert.match(JSON.stringify(lastProviderMessages?.[1]?.content), /compacted into the following summary:/);
-      assert.equal(lastProviderMessages?.at(-1)?.content, "Continue from my history");
-      const history = (await agent.history()).map(row => row.content as { text?: string; meta?: { v1?: unknown } });
-      assert.deepEqual(history.slice(0, messages.length).map(content => content.meta?.v1), messages);
-      assert.equal(history[messages.length]?.text, "Continue from my history");
-    } finally {
-      await camel.close();
-    }
   });
 
   it("6. sub-agent delegation and deterministic replay-cached QuickJS workflows", async () => {

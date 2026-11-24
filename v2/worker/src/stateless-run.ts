@@ -1,7 +1,6 @@
 import type { ImageContent, Message as PiAiMessage, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import { randomId } from "./crypto.ts";
 import { DEFAULT_MODEL_ID, addModelUsage, streamPiModel } from "./pi/models.ts";
-import type { ModelImage } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
@@ -18,12 +17,17 @@ export interface StatelessRunImage {
   data: string;
 }
 
+export interface ParsedStatelessRunImage {
+  contentType: string;
+  base64: string;
+}
+
 export const MAX_STATELESS_RUN_IMAGES = 8;
 export const MAX_STATELESS_RUN_IMAGES_BASE64_BYTES = 20 * 1024 * 1024;
 const IMAGE_MEDIA_TYPE_RE = /^image\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
-export function parseStatelessRunImages(raw: unknown): ModelImage[] | undefined {
+export function parseStatelessRunImages(raw: unknown): ParsedStatelessRunImage[] | undefined {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw)) {
     throw new ApiError(400, "invalid_request", "`images` must be an array of { mediaType, data } objects");
@@ -34,7 +38,7 @@ export function parseStatelessRunImages(raw: unknown): ModelImage[] | undefined 
   }
 
   let totalBase64Bytes = 0;
-  const parsed: ModelImage[] = [];
+  const parsed: ParsedStatelessRunImage[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new ApiError(400, "invalid_request", "Each image must be an object with `mediaType` and `data`");

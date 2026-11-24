@@ -3,7 +3,7 @@ import { ToolSession, type ToolEventSubscriber } from "./tools.ts";
 import {
   CamelRunError, type AgentEvent, type AgentSchedule, type AgentSummary, type HistoryMessage,
   type LocalTool, type ResponseLike, type RunOptions, type RunRecord, type ScheduleCreateInput,
-  type V1HistoryImport, type WebSocketConstructorLike, type WorkflowRunResult,
+  type WebSocketConstructorLike, type WorkflowRunResult,
 } from "./types.ts";
 
 export interface AgentTransport {
@@ -232,11 +232,6 @@ export class AgentHandle {
   async history(options?: { after?: number; before?: number | "latest"; limit?: number }): Promise<HistoryMessage[]> {
     const res = await this.transport.requestJson("GET", `${this.basePath}/history${buildQuery({ after: options?.after, before: options?.before, limit: options?.limit })}`);
     return unwrapArray<HistoryMessage>(res, "messages", "history");
-  }
-
-  importV1History(input: V1HistoryImport): Promise<{ receipt: string; count: number }> {
-    const endpoint = input.appendAfter === undefined ? "import" : "import/chunk";
-    return this.transport.requestJson("PUT", `${this.basePath}/history/${endpoint}`, input);
   }
 
   async events(options?: { after?: number; runId?: string }): Promise<AgentEvent[]> {

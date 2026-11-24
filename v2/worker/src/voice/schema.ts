@@ -20,7 +20,7 @@ const callSpeakers = z
 
 export const VoiceCallInput = z
   .strictObject({
-    agent: z.string().regex(/^(?:agt_[a-zA-Z0-9_-]{4,64}|client_[a-f0-9]{40})$/, "agent must be a valid agent id"),
+    agent: z.string().regex(/^agt_[a-zA-Z0-9_-]{4,64}$/, "agent must be a valid agent id"),
     provider: z.enum(["openai", "elevenlabs"]),
     model: z.string().optional(),
     voice: z.string().optional(),

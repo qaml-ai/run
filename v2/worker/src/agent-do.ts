@@ -2,15 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
-import type { parseV1History } from "./history-import.ts";
 import { PiAgentEngine, type LifecycleJobContext } from "./pi/agent-engine.ts";
 import { DEFAULT_MODEL_ID } from "./pi/models.ts";
-import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
+import { parseRunFiles } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
   emptyUsage,
-  estimateTokens,
   extractApiError,
   toApiErrorResponse,
   type AgentConfig,
@@ -27,7 +25,6 @@ import {
   type StartRunHints,
   type StartRunInput,
   type StoredMessage,
-  type StoredMessageContent,
   type ToolCallSummary,
 } from "./types.ts";
 import { deliverWebhookMessage, enqueueWebhookEvent } from "./webhooks.ts";
@@ -95,71 +92,6 @@ export class AgentDO extends DurableObject<Env> {
   private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
   private piEngine: PiAgentEngine | null = null;
   private periodicRanInAlarm = false;
-  private historyImportLock: Promise<void> = Promise.resolve();
-
-  private withHistoryImportLock<T>(fn: () => Promise<T>): Promise<T> {
-    const prev = this.historyImportLock;
-    let release!: () => void;
-    this.historyImportLock = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    return prev.then(fn, fn).finally(() => release());
-  }
-
-  private countPiContentEntries(): number {
-    const hasTable = this.ctx.storage.sql
-      .exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pi_entries' LIMIT 1",
-      )
-      .toArray();
-    if (hasTable.length === 0) return 0;
-    const row = this.ctx.storage.sql
-      .exec<{ cnt: number }>(
-        `SELECT COUNT(*) AS cnt FROM pi_entries
-         WHERE conversation_id = 1
-           AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')`,
-      )
-      .toArray()[0];
-    return Number(row?.cnt ?? 0);
-  }
-
-  private hasPiContentEntries(): boolean {
-    const hasTable = this.ctx.storage.sql
-      .exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pi_entries' LIMIT 1",
-      )
-      .toArray();
-    if (hasTable.length === 0) return false;
-    const rows = this.ctx.storage.sql
-      .exec<{ id: number }>(
-        `SELECT id FROM pi_entries
-         WHERE conversation_id = 1
-           AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')
-         LIMIT 1`,
-      )
-      .toArray();
-    return rows.length > 0;
-  }
-
-  private async resetPiForHistoryReplace(): Promise<void> {
-    if (this.piEngine) {
-      await this.piEngine.dispose().catch(() => {});
-      this.piEngine = null;
-    }
-    this.ctx.storage.transactionSync(() => {
-      const piTables = this.ctx.storage.sql
-        .exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'pi_%' AND name != 'pi_entry_meta'",
-        )
-        .toArray();
-      for (const { name } of piTables) {
-        if (/^pi_[A-Za-z0-9_]+$/.test(name)) {
-          this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
-        }
-      }
-      this.ctx.storage.sql.exec("DELETE FROM pi_entry_meta");
-    });
-  }
 
   private ensurePiEngine(): PiAgentEngine {
     if (!this.piEngine) {
@@ -1985,212 +1917,6 @@ export class AgentDO extends DurableObject<Env> {
       nextAfter: after,
       ...(opts?.before !== undefined ? { nextBefore: null } : {}),
     };
-  }
-
-  getV1HistoryImportProof(scope: { tenantId: string; agentId: string }) {
-    const tables = this.ctx.storage.sql
-      .exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runtime_kv')",
-      )
-      .toArray();
-    if (tables.length !== 2) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
-    return this.ctx.storage.transactionSync(() => {
-      const config = this.ctx.storage.sql
-        .exec<Pick<AgentConfig, "id" | "tenantId" | "model" | "repoId" | "lineage" | "branch">>(
-          `SELECT json_extract(config_json, '$.id') AS id, json_extract(config_json, '$.tenantId') AS tenantId,
-            json_extract(config_json, '$.model') AS model, json_extract(config_json, '$.repoId') AS repoId,
-            json_extract(config_json, '$.lineage') AS lineage, json_extract(config_json, '$.branch') AS branch
-            FROM config WHERE id = 1`,
-        )
-        .toArray()[0];
-      if (!config) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
-      if (config.tenantId !== scope.tenantId || config.id !== scope.agentId) {
-        throw new ApiError(404, "not_found", "Agent not found");
-      }
-      const current = this.ctx.storage.sql
-        .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
-        .toArray()[0];
-      if (!current) throw new ApiError(409, "history_import_conflict", "The destination has no v1 import receipt");
-      let imported: { source?: unknown; receipt?: unknown; count?: unknown } | null;
-      try {
-        imported = JSON.parse(current.v);
-      } catch {
-        throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable");
-      }
-      if (
-        !imported ||
-        typeof imported.source !== "string" ||
-        !imported.source ||
-        typeof imported.receipt !== "string" ||
-        !/^[0-9a-f]{64}$/.test(imported.receipt)
-      ) {
-        throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable");
-      }
-      const state = this.ctx.storage.sql
-        .exec<{ used: number }>(`
-          SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-            OR EXISTS (SELECT 1 FROM inputs)
-            OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used
-        `)
-        .one();
-      if (state.used || this.activeRunId) {
-        throw new ApiError(409, "history_import_conflict", "The destination already has activity");
-      }
-      const messageCount =
-        typeof imported.count === "number" && Number.isInteger(imported.count) && imported.count >= 0
-          ? imported.count
-          : this.countPiContentEntries();
-      return {
-        tenantId: config.tenantId,
-        agentId: config.id,
-        source: imported.source,
-        receipt: imported.receipt,
-        messageCount,
-        model: config.model,
-        repoId: config.repoId,
-        lineage: config.lineage,
-        branch: config.branch,
-      };
-    });
-  }
-
-  async importV1HistoryWithInlineImages(input: ReturnType<typeof parseV1History>, receipt: string) {
-    return this.importV1History(input, receipt);
-  }
-
-  async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
-    if (input.appendAfter !== undefined) {
-      throw new ApiError(400, "invalid_history", "Use the chunked history import");
-    }
-    return this.storeV1History(input, receipt);
-  }
-
-  async appendV1HistoryChunk(input: ReturnType<typeof parseV1History>, receipt: string) {
-    if (
-      input.appendAfter === undefined ||
-      input.messages.some((message) => message.content.legacyInlineImages)
-    ) {
-      throw new ApiError(400, "invalid_history", "Expected a non-image history chunk");
-    }
-    return this.storeV1History(input, receipt);
-  }
-
-  private async storeV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
-    this.ensureSql();
-    const config = this.requireConfig();
-    const messages: StoredMessageContent[] = [];
-    const cfs = new CamelFsClient(this.env, config.tenantId);
-    for (const { content, attachments, sourceFileSizes } of input.messages) {
-      if (!attachments) {
-        messages.push(content);
-        continue;
-      }
-      const lineage = config.lineage;
-      if (!lineage) {
-        throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
-      }
-      const files = await verifyRunFiles(
-        cfs,
-        attachments.map((file) => ({ lineage, file })),
-        {
-          env: this.env,
-          tenantId: config.tenantId,
-        },
-      );
-      if (files.some((file) => sourceFileSizes?.has(file.path) && sourceFileSizes.get(file.path) !== file.size)) {
-        throw new ApiError(422, "invalid_history", "A pinned attachment differs in size from its v1 workspace file");
-      }
-      messages.push({ ...content, files });
-    }
-    return this.withHistoryImportLock(async () => {
-      const check = this.ctx.storage.transactionSync(() => {
-        if (this.requireConfig().lineage !== config.lineage) {
-          throw new ApiError(409, "history_import_conflict", "The v2 destination repository changed during import");
-        }
-        const sql = this.ctx.storage.sql;
-        const current = sql
-          .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
-          .toArray()[0];
-        const imported = current
-          ? (JSON.parse(current.v) as { source: string; receipt: string; chunked?: true; count?: number })
-          : undefined;
-        const used = sql
-          .exec<{ used: number }>(
-            `SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-             OR EXISTS (SELECT 1 FROM voice_sessions)
-             OR EXISTS (SELECT 1 FROM schedules) AS used`,
-          )
-          .one();
-        const hasPiEntries = this.hasPiContentEntries();
-        if (used.used || this.activeRunId || (!imported && hasPiEntries)) {
-          throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
-        }
-        const offset = input.appendAfter ?? 0;
-        const count = offset + input.messages.length;
-        if (imported?.source === input.source && imported.receipt === receipt) {
-          return { idempotent: true as const, count, offset, replace: false };
-        }
-        if ((imported && imported.source !== input.source) || input.previous !== imported?.receipt) {
-          throw new ApiError(409, "history_import_conflict", "The v2 history import has changed");
-        }
-        if (imported?.chunked && input.appendAfter === undefined) {
-          throw new ApiError(409, "history_import_conflict", "A chunked history cannot be replaced in one request");
-        }
-        if (input.appendAfter !== undefined) {
-          if (offset > 0 && imported?.chunked !== true) {
-            throw new ApiError(409, "history_import_conflict", "Start chunked history at the beginning");
-          }
-          const last =
-            typeof imported?.count === "number"
-              ? imported.count
-              : this.countPiContentEntries();
-          if (offset !== last) {
-            throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
-          }
-        }
-        return {
-          idempotent: false as const,
-          count,
-          offset,
-          replace: Boolean(imported && input.appendAfter === undefined),
-        };
-      });
-
-      if (check.idempotent) {
-        return { receipt, count: check.count };
-      }
-
-      if (check.replace) {
-        await this.resetPiForHistoryReplace();
-      }
-
-      const storedBatch: StoredMessage[] = input.messages.map((message, index) => {
-        const content = messages[index]!;
-        return {
-          seq: check.offset + index + 1,
-          runId: null,
-          role: message.role,
-          content,
-          tokensEst: estimateTokens(content.text ?? ""),
-          createdAt: message.createdAt,
-        };
-      });
-
-      await this.ensurePiEngine().importV1Messages(this.requireConfig(), storedBatch, {
-        append: input.appendAfter !== undefined,
-      });
-
-      this.ctx.storage.sql.exec(
-        `INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
-        JSON.stringify({
-          source: input.source,
-          receipt,
-          count: check.count,
-          chunked: input.appendAfter === undefined ? undefined : true,
-        }),
-      );
-      return { receipt, count: check.count };
-    });
   }
 
   async compactHistory(body?: {

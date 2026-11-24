@@ -77,7 +77,6 @@ import {
 import {
   CamelRunUserEntry,
   copyPiEntriesToConversation,
-  importLegacyTranscriptToPi,
   isUserContentEntry,
   mapPiEntriesToHistory,
   unwrapCompactionSummary,
@@ -98,7 +97,7 @@ import {
 const BG = BACKGROUND_CONTEXT;
 
 export interface PiPendingInputMetadata {
-  engine: "pi";
+  engine?: "pi";
   piTaskId: number;
   piConversationId: number;
   toolName: string;
@@ -248,17 +247,15 @@ function isPiPendingInputMetadata(value: unknown): value is PiPendingInputMetada
   return Boolean(
     value &&
       typeof value === "object" &&
-      (value as { engine?: unknown }).engine === "pi" &&
       typeof (value as { piTaskId?: unknown }).piTaskId === "number",
   );
 }
 
 /**
- * Dual-engine Pi adapter owned lazily by `AgentDO`.
+ * Pi durable agent engine owned lazily by `AgentDO`.
  *
  * Composes `Lifecycle` (`agents/lifecycle`) + `PiHarness` (`agents/harness/pi`) over
- * `openPiSessionStore(ctx.storage, { prefix: "pi_" })` so `pi_*` and `cf_agents_jobs`
- * never collide with CamelRun's legacy SQLite tables.
+ * `openPiSessionStore(ctx.storage, { prefix: "pi_" })`.
  */
 export class PiAgentEngine {
   readonly lifecycle: Lifecycle<Env>;
@@ -1206,103 +1203,6 @@ export class PiAgentEngine {
 
     this.rootReady = true;
     return { created };
-  }
-
-  /**
-   * Imports v1 history messages directly into `pi-durable` (either creating the root
-   * conversation or appending to an existing root conversation for chunked imports).
-   * Splits large imports into memory-safe batches without breaking tool-call/result pairs.
-   */
-  async importV1Messages(
-    cfg: AgentConfig,
-    messages: readonly StoredMessage[],
-    opts?: { append?: boolean },
-  ): Promise<void> {
-    await this.ensureStarted();
-    await this.ensureExtensionsInstalled(cfg);
-    const modelRef = parsePiModelRef(cfg.model, this.host.env);
-
-    // Partition into memory-safe commits (<= 100 messages and <= 2 MiB per commit)
-    // without ever splitting an assistant toolCall message from its following tool results.
-    const MAX_BATCH_ROWS = 100;
-    const MAX_BATCH_BYTES = 2 * 1024 * 1024;
-    const batches: StoredMessage[][] = [];
-    let currentBatch: StoredMessage[] = [];
-    let currentBytes = 0;
-
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i]!;
-      const msgBytes = JSON.stringify(msg.content).length;
-      const shouldFlush =
-        currentBatch.length > 0 &&
-        msg.role !== "tool" &&
-        (currentBatch.length >= MAX_BATCH_ROWS || currentBytes + msgBytes > MAX_BATCH_BYTES);
-      if (shouldFlush) {
-        batches.push(currentBatch);
-        currentBatch = [];
-        currentBytes = 0;
-      }
-      currentBatch.push(msg);
-      currentBytes += msgBytes;
-    }
-    if (currentBatch.length > 0) {
-      batches.push(currentBatch);
-    }
-
-    const persistMeta = (
-      importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>,
-    ) => {
-      if (importedMeta.length === 0) return;
-      this.host.ctx.storage.transactionSync(() => {
-        for (const item of importedMeta) {
-          this.recordEntryMeta(item.entryId, item.runId, item.meta);
-        }
-      });
-    };
-
-    let startIndex = 0;
-    if (!this.rootReady && !this.hasPiRootConversation()) {
-      const firstBatch = batches[0] ?? [];
-      const initialChange = this.buildAgentChange(cfg);
-      let importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }> = [];
-      const { created } = await this.harness.root({
-        agent: initialChange,
-        init: async (tx, convId) => {
-          if (firstBatch.length > 0) {
-            const res = await importLegacyTranscriptToPi(tx, convId, null, firstBatch, modelRef);
-            importedMeta = res.importedMeta;
-          }
-        },
-      });
-      if (created) {
-        this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
-        persistMeta(importedMeta);
-        startIndex = 1;
-      }
-      this.rootReady = true;
-    } else {
-      this.rootReady = true;
-    }
-
-    if (startIndex < batches.length) {
-      const pi = await this.harness.pi();
-      for (let i = startIndex; i < batches.length; i++) {
-        const batch = batches[i]!;
-        if (batch.length === 0) continue;
-        let importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }> = [];
-        await pi.commit(async (tx) => {
-          const res = await importLegacyTranscriptToPi(
-            tx,
-            ROOT_CONVERSATION_ID,
-            null,
-            batch,
-            modelRef,
-          );
-          importedMeta = res.importedMeta;
-        }, BG);
-        persistMeta(importedMeta);
-      }
-    }
   }
 
   private async refreshModels(
@@ -2424,10 +2324,6 @@ export class PiAgentEngine {
     return { ok: true, upToSeq, summary };
   }
 
-  hasPiRoot(): boolean {
-    return this.rootReady || this.hasPiRootConversation();
-  }
-
   private hasPiRootConversation(): boolean {
     const hasTable = this.host.ctx.storage.sql
       .exec<{ name: string }>(
@@ -2539,7 +2435,6 @@ export class PiAgentEngine {
     limit?: number;
   }): Promise<MappedHistoryResult | null> {
     if (!this.rootReady && !this.hasPiRootConversation()) {
-      // Root not yet migrated — let AgentDO serve legacy SQLite history read-only!
       return null;
     }
     const entries = await this.listAllEntries();

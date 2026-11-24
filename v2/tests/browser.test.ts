@@ -18,7 +18,8 @@ import {
   type BrowserEnv,
 } from "../worker/src/browser.ts";
 import { CamelFsClient, normalizeRepoPath } from "../worker/src/camelfs.ts";
-import { storeToolImages } from "../worker/src/tool-images.ts";
+import { imageHeader } from "../worker/src/lib/image-header.ts";
+import { toolImageContent } from "../worker/src/tool-images.ts";
 
 // Valid 2x1 PNG fixture (same verified fixture used in svg-renderer.test.ts)
 const VALID_PNG_BASE64 =
@@ -481,16 +482,8 @@ test("builtins: ['browser'] schemas, inline image storage, and CamelFS screensho
       },
     } as unknown as BrowserRun;
 
-    const r2Writes = new Map<string, Uint8Array>();
-    const mockBucket = {
-      put: async (key: string, data: Uint8Array) => {
-        r2Writes.set(key, data);
-      },
-    } as unknown as R2Bucket;
-
     const env = {
       BROWSER: mockBrowser,
-      MEDIA_BUCKET: mockBucket,
       CAMELFS_URL: camelfsUrl,
       CAMELFS_DEV_TOKEN: "dev-token",
     };
@@ -502,7 +495,7 @@ test("builtins: ['browser'] schemas, inline image storage, and CamelFS screensho
     assert.equal(mdResult.markdown, "# Catalog Page");
     assert.equal(mdResult.engine, "kitesurf");
 
-    // 2. browser_screenshot saves to CamelFS AND returns storeToolImages-compatible inline image
+    // 2. browser_screenshot saves to CamelFS AND returns toolImageContent-compatible inline image
     const saveScreenshot = async ({
       path: rawPath,
       contentType,
@@ -536,21 +529,22 @@ test("builtins: ['browser'] schemas, inline image storage, and CamelFS screensho
     assert.equal(writtenPuts[0]?.path, "screenshots/example.png");
     assert.equal(writtenPuts[0]?.base64, VALID_PNG_BASE64);
 
-    const stored = await storeToolImages({ MEDIA_BUCKET: mockBucket }, "ten_test", shotResult);
-    assert.equal(stored.images?.length, 1);
-    assert.equal(stored.images?.[0]?.contentType, "image/png");
-    assert.equal(stored.images?.[0]?.width, 2);
-    assert.match(String(stored.result), /screenshots\/example\.png/);
-    assert.equal(r2Writes.size, 1);
+    const shotContent = toolImageContent(shotResult) as Array<{ type: string; data?: string; mimeType?: string; text?: string }> | undefined;
+    assert.ok(shotContent);
+    const shotImage = shotContent.find((b) => b.type === "image");
+    assert.equal(shotImage?.mimeType, "image/png");
+    assert.equal(imageHeader(Buffer.from(shotImage!.data!, "base64"))?.width, 2);
+    assert.match(shotContent.filter((b) => b.type === "text").map((b) => b.text).join("\n"), /screenshots\/example\.png/);
 
     // 3. browser_snapshot with screenshot also produces inline image + JSON text
     const snapResult = await executeBrowserTool(env, "browser_snapshot", {
       url: "https://example.com",
       formats: ["markdown", "screenshot"],
     });
-    const storedSnap = await storeToolImages({ MEDIA_BUCKET: mockBucket }, "ten_test", snapResult);
-    assert.equal(storedSnap.images?.length, 1);
-    assert.match(String(storedSnap.result), /# Visual Snap/);
+    const snapContent = toolImageContent(snapResult) as Array<{ type: string; data?: string; mimeType?: string; text?: string }> | undefined;
+    assert.ok(snapContent);
+    assert.equal(snapContent.filter((b) => b.type === "image").length, 1);
+    assert.match(snapContent.filter((b) => b.type === "text").map((b) => b.text).join("\n"), /# Visual Snap/);
 
     // 4. Rejects mismatched screenshot file extension when saving to repo
     await assert.rejects(

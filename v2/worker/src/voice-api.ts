@@ -53,13 +53,7 @@ export async function handleCreateVoiceCall(c: Context<{ Bindings: Env }>): Prom
   const options = parseSchema(VoiceCallInput, raw);
 
   const tenantStub = getTenantStub(c.env, auth.tenantId);
-  let agentRow = await tenantStub.resolveAgent(options.agent);
-  if (!agentRow && options.agent.startsWith("client_")) {
-    const bridged = await tenantStub.getLegacyBridgeMeta<{ v2AgentId?: string }>("agent", options.agent);
-    if (bridged?.v2AgentId) {
-      agentRow = await tenantStub.resolveAgent(bridged.v2AgentId);
-    }
-  }
+  const agentRow = await tenantStub.resolveAgent(options.agent);
   if (!agentRow) {
     throw new ApiError(404, "agent_not_found", `Unknown agent: ${options.agent}`);
   }

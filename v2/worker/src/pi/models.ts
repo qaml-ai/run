@@ -209,16 +209,6 @@ export function getModelContextWindow(rawModel: string): number {
   return 128_000;
 }
 
-export function getAutoCompactThreshold(model: string, override?: number | null): number {
-  const ctxWindow = getModelContextWindow(model);
-  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
-    const minThreshold = 8_000;
-    const maxThreshold = Math.max(minThreshold, Math.floor(ctxWindow * 0.8));
-    return Math.min(maxThreshold, Math.max(minThreshold, Math.floor(override)));
-  }
-  return Math.max(8_000, ctxWindow - PI_COMPACT_RESERVE_TOKENS);
-}
-
 export function getProviderLookupCandidates(
   env: Env,
   rawModel: string,

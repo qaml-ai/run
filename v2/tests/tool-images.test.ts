@@ -1,115 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import sharp from "sharp";
-import { FILE_LIMITS } from "../worker/src/lib/limits.ts";
-import { loadConversationImages } from "../worker/src/run-files.ts";
 import { normalizeSvgRasterInput, resolveRenderFiles } from "../worker/src/svg-render.ts";
-import { storeToolImages, toolImageKey, type ToolImageRef } from "../worker/src/tool-images.ts";
-import type { CamelFsClient } from "../worker/src/camelfs.ts";
+import { toolImageContent, toolImageKey, type ToolImageRef } from "../worker/src/tool-images.ts";
 import type { Env } from "../worker/src/types.ts";
 
-const png = (width: number) => sharp({ create: { width, height: 1, channels: 3, background: "red" } }).png().toBuffer();
-const imageBlock = (data: Buffer) => ({ type: "image", data: data.toString("base64"), mimeType: "image/png" });
-
-test("image tools validate all blocks before writing and preserve ordinary results", async () => {
-  const writes = new Map<string, Uint8Array>();
-  const bucket = { put: async (key: string, data: Uint8Array) => { writes.set(key, data); } } as unknown as R2Bucket;
-  const env = { MEDIA_BUCKET: bucket };
+test("toolImageContent detects image blocks and toolImageKey scopes R2 paths by tenant", () => {
   const ordinary = { content: [{ type: "text", text: "hello" }], info: 1 };
-  assert.equal((await storeToolImages(env, "tenant", ordinary)).result, ordinary);
+  assert.equal(toolImageContent(ordinary), undefined);
 
-  const image = imageBlock(await png(2));
-  const damaged = { ...image, data: image.data.slice(0, -12) };
-  await assert.rejects(storeToolImages(env, "tenant", { content: [image, damaged] }), /invalid or unsupported/);
-  await assert.rejects(storeToolImages(env, "tenant", { content: Array(FILE_LIMITS.requestImages + 1).fill(image) }), /too many/);
-  assert.equal(writes.size, 0);
+  const image = { type: "image", data: "abc", mimeType: "image/png" };
+  const mixed = { content: [{ type: "text", text: "ok" }, image] };
+  assert.deepEqual(toolImageContent(mixed), mixed.content);
 
-  const saved = await storeToolImages(env, "tenant", { content: [image, image] });
-  assert.equal(saved.result, "[image 2×1]\n[image 2×1]");
-  assert.equal(saved.images?.length, 2);
-  assert.equal(writes.size, 1);
-  assert.ok([...writes.keys()][0]?.startsWith("tenant/tool-images/"));
-});
-
-test("large raster tool images are resized by the Images binding before storage", async () => {
-  const oversized = imageBlock(await png(FILE_LIMITS.requestImageSide + 1));
-  const fitted = await png(FILE_LIMITS.requestImageSide);
-  const writes: Uint8Array[] = [];
-  const bucket = { put: async (_: string, data: Uint8Array) => { writes.push(data); } } as unknown as R2Bucket;
-  await assert.rejects(storeToolImages({ MEDIA_BUCKET: bucket }, "tenant", { content: [oversized] }), /resizing is unavailable/);
-  const images = {
-    input: () => ({
-      transform: (options: ImageTransform) => {
-        assert.deepEqual(options, { width: FILE_LIMITS.requestImageSide, height: FILE_LIMITS.requestImageSide, fit: "scale-down" });
-        return { output: async () => ({ response: () => new Response(new Uint8Array(fitted)) }) };
-      },
-    }),
-  } as unknown as ImagesBinding;
-  const saved = await storeToolImages({ MEDIA_BUCKET: bucket, IMAGES: images }, "tenant", { content: [oversized] });
-  assert.equal(saved.images?.[0]?.width, FILE_LIMITS.requestImageSide);
-  assert.deepEqual(writes.map(data => Buffer.from(data)), [fitted]);
-});
-
-test("loadConversationImages gracefully skips missing or corrupted R2 tool images without throwing 502", async () => {
-  const validBuf = await png(4);
-  const validRef: ToolImageRef = {
-    digest: "valid-digest",
+  const ref: ToolImageRef = {
+    digest: "deadbeef",
     contentType: "image/png",
-    size: validBuf.length,
-    width: 4,
+    size: 42,
+    width: 2,
     height: 1,
   };
-  const missingRef: ToolImageRef = {
-    digest: "deleted-digest",
-    contentType: "image/png",
-    size: 123,
-    width: 100,
-    height: 50,
-  };
-  const wrongSizeRef: ToolImageRef = {
-    digest: "wrong-size-digest",
-    contentType: "image/png",
-    size: 999,
-    width: 10,
-    height: 10,
-  };
-
-  const store = new Map<string, Buffer>([
-    [toolImageKey("t1", validRef), validBuf],
-    [toolImageKey("t1", wrongSizeRef), validBuf],
-  ]);
-  const bucket = {
-    get: async (key: string) => {
-      const data = store.get(key);
-      if (!data) return null;
-      return {
-        size: data.length,
-        arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-      };
-    },
-  } as unknown as R2Bucket;
-
-  const warnings: string[] = [];
-  const origWarn = console.warn;
-  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
-  try {
-    const loaded = await loadConversationImages(
-      {} as CamelFsClient,
-      [
-        { toolImages: [validRef] },
-        { toolImages: [missingRef, wrongSizeRef] },
-      ],
-      FILE_LIMITS.requestImages,
-      { tenantId: "t1", bucket },
-    );
-    assert.equal(loaded.get(1), undefined, "missing/corrupt images on message 1 are skipped");
-    assert.equal(loaded.get(0)?.length, 1, "older valid tool images still load cleanly");
-    assert.equal(loaded.get(0)?.[0]?.base64, validBuf.toString("base64"));
-    assert.equal(warnings.length, 2);
-    assert.match(warnings[0]!, /tool_image_missing/);
-  } finally {
-    console.warn = origWarn;
-  }
+  assert.equal(toolImageKey("t1", ref), "t1/tool-images/deadbeef");
 });
 
 test("normalizeSvgRasterInput and resolveRenderFiles auto-convert WebP and GIF inputs to PNG via IMAGES binding", async () => {

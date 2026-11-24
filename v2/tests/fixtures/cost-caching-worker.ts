@@ -2,7 +2,6 @@ import runtime, { AgentDO, TenantDO } from "../../worker/src/index.ts";
 import {
   addModelUsage,
   calculateCostUsd,
-  getAutoCompactThreshold,
   parsePiModelRef,
   streamPiModel,
 } from "../../worker/src/pi/models.ts";
@@ -31,10 +30,6 @@ export default {
       const usage = emptyUsage();
       addModelUsage(usage, body.model, body.inputTokens, body.outputTokens, body.cacheReadTokens ?? 0);
       return Response.json({ costUsd, usage });
-    }
-    if (url.pathname === "/_test/compact-threshold" && request.method === "POST") {
-      const { model, override } = await request.json<{ model: string; override?: number | null }>();
-      return Response.json({ threshold: getAutoCompactThreshold(model, override) });
     }
     if (url.pathname === "/_test/stream" && request.method === "POST") {
       const body = await request.json<{

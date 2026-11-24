@@ -110,7 +110,7 @@ export interface LocalTool<TArgs = Record<string, unknown>, TResult = unknown> e
 export interface QueueConfig { mode: "each" | "batch"; windowMs?: number; }
 export interface DreamingConfig { enabled: boolean; idleSeconds?: number; }
 
-export type AgentEngine = "legacy" | "pi";
+export type AgentEngine = "pi";
 
 export interface AgentConfig {
   engine?: AgentEngine;
@@ -203,17 +203,6 @@ export interface RunFile {
   path: string;
   commit: string;
   contentType: string;
-}
-
-export interface V1HistoryImport {
-  source: string;
-  messages: unknown[];
-  previous?: string;
-  /** Append after this many imported messages, using the previous chunk receipt. */
-  appendAfter?: number;
-  attachments?: Array<{ messageIndex: number; files: RunFile[] }>;
-  /** Preserve raw meta.v1 while tolerating historical v1 anomalies (unpinned files, interrupted tool calls, oversized inline images). */
-  repair?: boolean;
 }
 
 export interface RunOptions {

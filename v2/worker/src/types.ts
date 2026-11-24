@@ -108,7 +108,7 @@ export interface DreamingConfig {
   idleSeconds: number;
 }
 
-export type AgentEngine = "legacy" | "pi";
+export type AgentEngine = "pi";
 
 export interface AgentConfig {
   id: string;
@@ -264,8 +264,6 @@ export interface ToolCallInvocation {
 
 export interface StoredMessageContent {
   toolImages?: ToolImageRef[];
-  /** Validated raster blocks remain in meta.v1, without duplicating their bytes. */
-  legacyInlineImages?: true;
   text?: string;
   files?: StoredRunFile[];
   toolCalls?: ToolCallInvocation[];

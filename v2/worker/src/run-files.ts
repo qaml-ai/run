@@ -6,7 +6,6 @@ import { z } from "zod";
 import { FILE_LIMITS } from "./lib/limits.ts";
 import { CamelFsClient, normalizeRepoPath } from "./camelfs.ts";
 import { ApiError, type Env, type RunFile, type StoredRunFile } from "./types.ts";
-import type { LegacyInlineBlock } from "./legacy-inline-images.ts";
 
 const runFilesSchema = z.array(z.object({
   path: z.string().transform(normalizeRepoPath).refine(
@@ -138,97 +137,4 @@ export async function verifyRunFiles(
     results.push({ ...file, lineage, size: entry.size, ...(resized ? { resized } : {}) });
   }
   return results;
-}
-
-export interface ModelImage {
-  contentType: string;
-  base64: string;
-  inlineBlockIndex?: number;
-}
-
-export async function loadConversationImages(
-  cfs: CamelFsClient,
-  messages: Array<{ files?: StoredRunFile[]; legacyInlineContent?: LegacyInlineBlock[]; toolImages?: ToolImageRef[] }>,
-  imageLimit: number = FILE_LIMITS.requestImages,
-  media?: { tenantId: string; bucket?: R2Bucket },
-): Promise<Map<number, ModelImage[]>> {
-  const images = new Map<number, ModelImage[]>();
-  let remaining = FILE_LIMITS.requestImageBase64Bytes;
-  let count = 0;
-  // Older images outside the provider request budget remain explicit file references in the prompt.
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const inline = messages[index]?.legacyInlineContent;
-    if (inline) {
-      for (let blockIndex = inline.length - 1; blockIndex >= 0; blockIndex--) {
-        const block = inline[blockIndex]!;
-        if (block.type !== "image") continue;
-        remaining -= block.data.length;
-        if (remaining < 0 || ++count > imageLimit) return images;
-        const image = { contentType: block.mimeType, base64: block.data, inlineBlockIndex: blockIndex };
-        const atIndex = images.get(index);
-        if (atIndex) atIndex.push(image);
-        else images.set(index, [image]);
-      }
-    }
-    // Walk newest messages first, while keeping each tool's original image order.
-    const toolImages = messages[index]?.toolImages ?? [];
-    const selected: ModelImage[] = [];
-    let toolBudgetExhausted = false;
-    for (const ref of toolImages) {
-      const refBase64Size = imageBase64Size(ref.size);
-      remaining -= refBase64Size;
-      if (remaining < 0 || ++count > imageLimit) {
-        toolBudgetExhausted = true;
-        break;
-      }
-      const key = media ? toolImageKey(media.tenantId, ref) : undefined;
-      const image = media && key ? await media.bucket?.get(key) : undefined;
-      if (!image || image.size !== ref.size) {
-        // Restore budget and continue gracefully so a missing/deleted R2 object never bricks future turns.
-        // The tool message text already carries the [image W×H] summary placeholder.
-        remaining += refBase64Size;
-        count--;
-        console.warn(JSON.stringify({
-          event: "tool_image_missing",
-          tenantId: media?.tenantId ?? null,
-          key: key ?? null,
-          expectedSize: ref.size,
-          actualSize: image?.size ?? null,
-          width: ref.width,
-          height: ref.height,
-        }));
-        continue;
-      }
-      selected.push({ contentType: ref.contentType, base64: Buffer.from(await image.arrayBuffer()).toString("base64") });
-    }
-    if (selected.length) images.set(index, [...(images.get(index) ?? []), ...selected]);
-    if (toolBudgetExhausted) return images;
-    for (const file of messages[index]?.files ?? []) {
-      if (!isImageAttachment(file)) continue;
-      if (file.resized) {
-        remaining -= imageBase64Size(file.resized.size);
-        if (remaining < 0 || ++count > imageLimit) return images;
-        const stored = media && await media.bucket?.get(toolImageKey(media.tenantId, file.resized));
-        if (!stored || stored.size !== file.resized.size) {
-          throw new ApiError(422, "attachment_invalid", `Attachment ${file.path} could not be read as an image`);
-        }
-        const image = { contentType: file.resized.contentType, base64: Buffer.from(await stored.arrayBuffer()).toString("base64") };
-        const atIndex = images.get(index);
-        if (atIndex) atIndex.push(image);
-        else images.set(index, [image]);
-        continue;
-      }
-      remaining -= imageBase64Size(file.size);
-      if (remaining < 0 || ++count > imageLimit) return images;
-      const read = await cfs.read(file.lineage, { at: file.commit, path: file.path, limit: file.size + 1 });
-      if (read.commit !== file.commit || read.size !== file.size || read.base64?.length !== imageBase64Size(file.size)) {
-        throw new ApiError(422, "attachment_invalid", `Attachment ${file.path} could not be read as an image`);
-      }
-      const image = { contentType: file.contentType, base64: read.base64 };
-      const atIndex = images.get(index);
-      if (atIndex) atIndex.push(image);
-      else images.set(index, [image]);
-    }
-  }
-  return images;
 }
