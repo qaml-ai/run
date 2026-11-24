@@ -659,43 +659,6 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal((await call("native-text-fixture", 2000)).status, 200, "the timed out run releases its slot");
   });
 
-  it("replays a legacy gateway text receipt without another provider call or debit", async t => {
-    const seed = await fetch(workerUrl + "/test-legacy-text-tenant", { method: "POST" });
-    assert.equal(seed.status, 200, await seed.clone().text());
-    const { apiKey } = await seed.json() as { apiKey: string };
-    const client = new CamelRun({ baseUrl: workerUrl, apiKey });
-    t.after(() => client.close());
-    const run = {
-      runId: "run_" + "1".repeat(40), fingerprint: "a".repeat(64),
-      input: "native-text-fixture", instructions: "Be brief.", json: true, timeoutMs: 2000,
-    };
-    const send = (body = run) => fetch(workerUrl + "/test-legacy-gateway-text", { method: "POST", body: JSON.stringify(body) });
-    const before = azureRequests.length;
-    const duplicate = await Promise.all([send(), send()]);
-    for (const reply of duplicate) assert.ok(reply.status === 200 || reply.status === 202, await reply.clone().text());
-    const first = await duplicate.find(reply => reply.status === 200)!.json() as { id: string; output: unknown };
-    assert.equal(first.id, run.runId);
-    assert.deepEqual(first.output, { ok: 1 });
-    assert.deepEqual(await (await send()).json(), first);
-    assert.deepEqual(await (await fetch(workerUrl + "/test-legacy-gateway-text?id=" + run.runId)).json(), first);
-    assert.equal((await send({ ...run, fingerprint: "b".repeat(64) })).status, 409);
-    const receiptUrl = workerUrl + "/test-legacy-gateway-text?id=" + run.runId;
-    const billingUrl = receiptUrl + "&fingerprint=" + run.fingerprint;
-    assert.equal((await fetch(receiptUrl, { method: "DELETE" })).status, 204);
-    assert.equal((await fetch(receiptUrl)).status, 404);
-    assert.equal((await send()).status, 404);
-    const due = await (await fetch(billingUrl)).json() as { state: string; input: number; output: number };
-    assert.equal(due.state, "due");
-    assert.ok(due.input > 0 && due.output > 0);
-    assert.equal(await (await fetch(receiptUrl + "&fingerprint=" + "b".repeat(64))).json(), null);
-    assert.equal((await fetch(billingUrl, { method: "PATCH" })).status, 204);
-    assert.deepEqual(await (await fetch(billingUrl)).json(), { state: "settled" });
-
-    assert.equal(azureRequests.length, before + 1);
-    const billing = await client.billing.get();
-    assert.equal(billing.usage.reduce((sum, usage) => sum + usage.runsCount!, 0), 1);
-  });
-
   it("runs Chiridion chat at zero shared balance and records usage", async t => {
     const seed = await fetch(workerUrl + "/test-chiridion-tenant", { method: "POST" });
     assert.equal(seed.status, 200);

@@ -1,4 +1,4 @@
-import app, { AgentDO as RuntimeAgentDO, LegacyGatewayTextExecution, TenantDO as RuntimeTenantDO } from "../../worker/src/index.ts";
+import app, { AgentDO as RuntimeAgentDO, TenantDO as RuntimeTenantDO } from "../../worker/src/index.ts";
 export { VoiceCallDO } from "../../worker/src/index.ts";
 import type { Env } from "../../worker/src/types.ts";
 import { mintTenantApiKey } from "../../worker/src/crypto.ts";
@@ -6,16 +6,11 @@ import { getTenantStub } from "../../worker/src/tenant-do.ts";
 
 const textTestTenant = "tnt_0000000000000001";
 const chiridionTestTenant = "tnt_0000000000000002";
-const legacyTextTestTenant = "tnt_0000000000000003";
 
 export class TenantDO extends RuntimeTenantDO {
   private modelIndexUpdatesEnabled = true;
   private failTextSettlement = false;
   private legacyTextRpc = false;
-
-  expireLegacyTextFixture(): void {
-    this.ctx.storage.sql.exec("UPDATE legacy_text_receipts SET expires_at = 1");
-  }
 
   useLegacyTextRpc(): void {
     this.legacyTextRpc = true;
@@ -91,31 +86,6 @@ export default {
   ...app,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/test-legacy-gateway-text") {
-      const entry = new LegacyGatewayTextExecution(ctx, { ...env, BUILDER_CUTOVER_CREDIT_TENANT_ID: legacyTextTestTenant });
-      const id = url.searchParams.get("id") ?? "";
-      const fingerprint = url.searchParams.get("fingerprint") ?? "";
-      if (request.method === "DELETE") {
-        const name = `camelrun:legacy-text-receipts:${legacyTextTestTenant}`;
-        const stub = env.TENANT_DO.get(env.TENANT_DO.idFromName(name)) as unknown as TenantDO;
-        await stub.expireLegacyTextFixture();
-        return new Response(null, { status: 204 });
-      }
-      if (request.method === "PATCH") {
-        await entry.ackBilling(id, fingerprint);
-        return new Response(null, { status: 204 });
-      }
-      if (fingerprint) return Response.json(await entry.billing(id, fingerprint));
-      return request.method === "POST" ? entry.run(await request.json()) : entry.read(id);
-    }
-    if (url.pathname === "/test-legacy-text-tenant" && request.method === "POST") {
-      const minted = await mintTenantApiKey(legacyTextTestTenant);
-      await getTenantStub(env, legacyTextTestTenant).initTenant({
-        tenantId: legacyTextTestTenant, name: "legacy text test", initialCreditsUsd: 10, concurrencyLimit: 1,
-        keyId: minted.id, keyPrefix: minted.prefix, keyHash: minted.keyHash,
-      });
-      return Response.json({ apiKey: minted.token });
-    }
     if (url.pathname === "/test-text-tenant" && request.method === "POST") {
       const stub = env.TENANT_DO.get(env.TENANT_DO.idFromName(textTestTenant)) as unknown as TenantDO;
       if (url.searchParams.has("failSettlement")) {

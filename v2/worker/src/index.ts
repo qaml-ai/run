@@ -102,10 +102,8 @@ import {
   listWebhookRecords,
   processEventsQueueBatch,
 } from "./webhooks.ts";
-import { signed as signLegacyWebhook, verifySignature as verifyLegacyWebhookSignature, webhookInbound, webhookSettings } from "./lib/webhook.ts";
 
 export { TenantDO, AgentDO, VoiceCallDO };
-export { LegacyGatewayTextExecution } from "./legacy-gateway-text-execution.ts";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -1777,8 +1775,6 @@ app.delete("/v2/webhooks/:id", async (c) => {
   return c.json({ deleted: true });
 });
 
-const LEGACY_CHANNELS_DO_NAME = "camelrun:legacy-webhook-channels";
-
 async function legacyBridgeTenantId(v1Tenant: string): Promise<string> {
   return `tnt_${(await sha256Hex(`legacy-v1-tenant:${v1Tenant}`)).slice(0, 16)}`;
 }
@@ -1798,63 +1794,6 @@ async function ensureLegacyBridgeToken(env: Env, v1Tenant: string, initialCredit
   });
   return { tenantId, token: await openSecret(res.sealedToken, env.VAULT_SECRET) };
 }
-
-app.post("/v2/admin/legacy-channels", async (c) => {
-  if (!verifyAdminHeader(c.env, c.req.raw)) {
-    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
-  }
-  const body = (await c.req.json()) as {
-    id?: string;
-    v1Tenant?: string;
-    channelType?: string;
-    name?: string;
-    definitionId?: string | null;
-    settings?: Record<string, unknown>;
-    secret?: string;
-    replyUrl?: string | null;
-    initialCreditsUsd?: number;
-  };
-  if (!body.id?.trim() || !body.v1Tenant?.trim() || !body.secret?.trim()) {
-    throw new ApiError(400, "invalid_request", "`id`, `v1Tenant`, and `secret` are required");
-  }
-  const { tenantId: v2TenantId } = await ensureLegacyBridgeToken(
-    c.env,
-    body.v1Tenant.trim(),
-    body.initialCreditsUsd ?? 25,
-  );
-  const sealedSecret = await sealSecret(body.secret, c.env.VAULT_SECRET);
-  const sealedReplyUrl = body.replyUrl?.trim()
-    ? await sealSecret(body.replyUrl.trim(), c.env.VAULT_SECRET)
-    : null;
-  await getTenantStub(c.env, LEGACY_CHANNELS_DO_NAME).upsertLegacyWebhookChannel({
-    id: body.id.trim(),
-    v1Tenant: body.v1Tenant.trim(),
-    v2TenantId,
-    channelType: body.channelType?.trim() || "webhook",
-    name: body.name?.trim() || body.id.trim(),
-    definitionId: body.definitionId?.trim() || null,
-    settingsJson: JSON.stringify(body.settings ?? {}),
-    sealedSecret,
-    sealedReplyUrl,
-  });
-  return c.json({ ok: true, id: body.id.trim(), v1Tenant: body.v1Tenant.trim(), v2TenantId });
-});
-
-app.post("/v2/admin/legacy-bridge-token", async (c) => {
-  if (!verifyAdminHeader(c.env, c.req.raw)) {
-    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
-  }
-  const body = (await c.req.json()) as { v1Tenant?: string; initialCreditsUsd?: number };
-  if (!body.v1Tenant?.trim()) {
-    throw new ApiError(400, "invalid_request", "`v1Tenant` is required");
-  }
-  const { tenantId, token } = await ensureLegacyBridgeToken(
-    c.env,
-    body.v1Tenant.trim(),
-    body.initialCreditsUsd ?? 25,
-  );
-  return c.json({ v1Tenant: body.v1Tenant.trim(), v2TenantId: tenantId, apiKey: token });
-});
 
 app.post("/v2/admin/voice-agent-token", async (c) => {
   if (!verifyAdminHeader(c.env, c.req.raw)) {
@@ -2328,109 +2267,6 @@ export class LegacyAgentRuns extends WorkerEntrypoint<Env> {
     const stub = getTenantStub(this.env, tenantId);
     if (!(await stub.getProfile())) return false;
     return stub.deleteLegacyBridgeMeta(kind, id);
-  }
-
-  async legacyChannelWebhook(type: string, channelId: string, request: Request): Promise<Response | null> {
-    try {
-      if (type !== "webhook") return null;
-      const row = await getTenantStub(this.env, LEGACY_CHANNELS_DO_NAME).getLegacyWebhookChannel(channelId);
-      if (!row || row.channelType !== type) return null;
-
-      const rawBody = await request.text();
-      if (rawBody.length > 1024 * 1024) {
-        return errorResponse(413, "payload_too_large", "Webhook body exceeds 1 MB");
-      }
-      const secret = await openSecret(row.sealedSecret, this.env.VAULT_SECRET);
-      const parsedSettings = webhookSettings(JSON.parse(row.settingsJson || "{}"));
-      const verified = await verifyLegacyWebhookSignature(parsedSettings.signature, secret, request.headers, rawBody);
-      if (!verified) {
-        return errorResponse(401, "invalid_signature", "Invalid webhook signature");
-      }
-
-      let payload: unknown;
-      try {
-        payload = rawBody ? JSON.parse(rawBody) : {};
-      } catch {
-        return errorResponse(400, "invalid_json", "Expected JSON webhook payload");
-      }
-      const inbound = webhookInbound(payload, request.headers, parsedSettings);
-      if (!inbound) {
-        return Response.json({ accepted: true, filtered: true }, { status: 200, headers: { "Cache-Control": "no-store" } });
-      }
-
-      const tenantStub = getTenantStub(this.env, row.v2TenantId);
-      const defEntry = row.definitionId ? await tenantStub.getDefinition(row.definitionId) : null;
-      const defCfg = defEntry?.config ?? null;
-      const safeConv = inbound.conversationId.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 64) || "default";
-      const agentKey = `ch_${row.id}_${safeConv}`;
-      const existing = await tenantStub.resolveAgent(agentKey);
-      const agentId = existing?.id ?? randomId("agt", 8);
-      const mergedModel = defCfg?.model ?? this.env.DEFAULT_MODEL ?? DEFAULT_MODEL_ID;
-      const mergedInstructions = defCfg?.instructions ?? `Channel agent for ${row.name}.`;
-
-      if (!existing) {
-        const { token, tokenHash } = await mintAgentToken(row.v2TenantId, agentId);
-        const sealedToken = await sealSecret(token, this.env.VAULT_SECRET);
-        await tenantStub.upsertAgentIndex({
-          id: agentId,
-          key: agentKey,
-          tokenHash,
-          sealedToken,
-          model: mergedModel,
-          repoId: defCfg?.repoId ?? null,
-          branch: defCfg?.branch ?? "refs/heads/main",
-          definitionSlug: row.definitionId,
-        });
-      }
-
-      const agentStub = getAgentStub(this.env, agentId);
-      await agentStub.initAgent({
-        id: agentId,
-        tenantId: row.v2TenantId,
-        key: agentKey,
-        model: mergedModel,
-        instructions: mergedInstructions,
-        definition: row.definitionId ?? undefined,
-        tools: defCfg?.tools ?? [],
-        mcpServers: defCfg?.mcpServers ?? [],
-        builtins: defCfg?.builtins ?? [],
-        skills: defCfg?.skills ?? [],
-        ...(defCfg?.compactThresholdTokens !== undefined
-          ? { compactThresholdTokens: defCfg.compactThresholdTokens }
-          : {}),
-      });
-
-      const replyUrl = row.sealedReplyUrl ? await openSecret(row.sealedReplyUrl, this.env.VAULT_SECRET) : null;
-      const runWork = (async () => {
-        const runRecord = await agentStub.startRun({
-          prompt: inbound.text,
-          idempotencyKey: `ch:${row.id}:${inbound.messageId}`,
-          wait: true,
-        });
-        if (replyUrl && runRecord.text) {
-          const msgId = `msg_${crypto.randomUUID().replaceAll("-", "")}`;
-          const outJson = JSON.stringify({
-            type: "message",
-            conversationId: inbound.conversationId,
-            text: runRecord.text,
-          });
-          const sigHeaders = await signLegacyWebhook(msgId, outJson, secret);
-          await fetch(replyUrl, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...sigHeaders },
-            body: outJson,
-          }).catch(() => {});
-        }
-      })();
-      this.ctx.waitUntil(runWork);
-
-      return Response.json(
-        { accepted: true, channelId: row.id, conversationId: inbound.conversationId, agentId },
-        { status: 202, headers: { "Cache-Control": "no-store" } },
-      );
-    } catch (error) {
-      return toApiErrorResponse(error);
-    }
   }
 }
 

@@ -243,7 +243,6 @@ export function getTenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
 export class TenantDO extends DurableObject<Env> {
   private schemaReady = false;
   private textRunSchemaReady = false;
-  private legacyTextSchemaReady = false;
   private voiceSchemaReady = false;
   private consoleAccountsSchemaReady = false;
   private lastKeyTouchAt = new Map<string, number>();
@@ -1183,90 +1182,6 @@ export class TenantDO extends DurableObject<Env> {
       key, now + 120_000,
     ).toArray();
     if (rows.length === 0) throw new ApiError(409, "duplicate_request", "This text run has already been requested");
-  }
-
-  private prepareLegacyTextReceipts() {
-    if (!this.legacyTextSchemaReady) {
-      this.ctx.storage.sql.exec(`
-        CREATE TABLE IF NOT EXISTS legacy_text_receipts (
-          id TEXT PRIMARY KEY,
-          fingerprint TEXT NOT NULL,
-          started_at INTEGER NOT NULL,
-          expires_at INTEGER NOT NULL,
-          body TEXT,
-          billing TEXT
-        )
-      `);
-      this.ctx.storage.sql.exec(`
-        CREATE INDEX IF NOT EXISTS legacy_text_expiry ON legacy_text_receipts(expires_at) WHERE expires_at > 0
-      `);
-      this.legacyTextSchemaReady = true;
-    }
-    // The response can expire while the routing record still owns this key. Keep the claim and any unsettled charge.
-    this.ctx.storage.sql.exec(`UPDATE legacy_text_receipts SET body = NULL, expires_at = 0 WHERE expires_at > 0 AND expires_at <= ?1`, Date.now());
-  }
-
-  private async scheduleLegacyTextExpiry() {
-    const [{ expires_at }] = this.ctx.storage.sql.exec<{ expires_at: number | null }>(
-      `SELECT MIN(expires_at) AS expires_at FROM legacy_text_receipts WHERE expires_at > 0`,
-    ).toArray();
-    if (expires_at === null) await this.ctx.storage.deleteAlarm();
-    else await this.ctx.storage.setAlarm(expires_at);
-  }
-
-  async alarm() {
-    this.prepareLegacyTextReceipts();
-    await this.scheduleLegacyTextExpiry();
-  }
-
-  private legacyTextReceipt(id: string) {
-    return this.ctx.storage.sql.exec<{ fingerprint: string; started_at: number; expires_at: number; body: string | null }>(
-      `SELECT fingerprint, started_at, expires_at, body FROM legacy_text_receipts WHERE id = ?1`, id,
-    ).toArray()[0] ?? null;
-  }
-
-  async readLegacyTextReceipt(id: string) {
-    this.prepareLegacyTextReceipts();
-    return this.legacyTextReceipt(id);
-  }
-
-  async claimLegacyTextReceipt(id: string, fingerprint: string) {
-    this.prepareLegacyTextReceipts();
-    const now = Date.now();
-    const inserted = this.ctx.storage.sql.exec(
-      `INSERT INTO legacy_text_receipts (id, fingerprint, started_at, expires_at) VALUES (?1, ?2, ?3, ?4)
-       ON CONFLICT DO NOTHING RETURNING id`, id, fingerprint, now, now + 120_000,
-    ).toArray().length === 1;
-    const receipt = this.legacyTextReceipt(id);
-    if (!receipt) throw new Error("Legacy text receipt was not reserved");
-    if (inserted) await this.scheduleLegacyTextExpiry();
-    return { inserted, ...receipt };
-  }
-
-  async finishLegacyTextReceipt(id: string, fingerprint: string, startedAt: number, body: string, expiresAt: number, billing: string | null) {
-    this.prepareLegacyTextReceipts();
-    const saved = this.ctx.storage.sql.exec(
-      `UPDATE legacy_text_receipts SET body = ?4, expires_at = ?5, billing = ?6
-       WHERE id = ?1 AND fingerprint = ?2 AND started_at = ?3 AND body IS NULL AND expires_at > 0 RETURNING id`,
-      id, fingerprint, startedAt, body, expiresAt, billing,
-    ).toArray();
-    if (!saved.length) throw new Error("Legacy text receipt is no longer owned by this execution");
-    await this.scheduleLegacyTextExpiry();
-  }
-
-  async readLegacyTextBilling(id: string, fingerprint: string) {
-    this.prepareLegacyTextReceipts();
-    return this.ctx.storage.sql.exec<{ billing: string | null }>(
-      `SELECT billing FROM legacy_text_receipts WHERE id = ?1 AND fingerprint = ?2`, id, fingerprint,
-    ).toArray()[0]?.billing ?? null;
-  }
-
-  async ackLegacyTextBilling(id: string, fingerprint: string) {
-    this.prepareLegacyTextReceipts();
-    this.ctx.storage.sql.exec(
-      `UPDATE legacy_text_receipts SET billing = '{"state":"settled"}'
-       WHERE id = ?1 AND fingerprint = ?2 AND billing IS NOT NULL`, id, fingerprint,
-    );
   }
 
   async checkRateLimit(bucketKey = "api", cost = 1): Promise<void> {
@@ -2554,18 +2469,6 @@ export class TenantDO extends DurableObject<Env> {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (kind, id)
       );
-      CREATE TABLE IF NOT EXISTS legacy_webhook_channels (
-        id TEXT PRIMARY KEY,
-        v1_tenant TEXT NOT NULL,
-        v2_tenant_id TEXT NOT NULL,
-        channel_type TEXT NOT NULL,
-        name TEXT NOT NULL,
-        definition_id TEXT,
-        settings_json TEXT NOT NULL DEFAULT '{}',
-        sealed_secret TEXT NOT NULL,
-        sealed_reply_url TEXT,
-        updated_at INTEGER NOT NULL
-      );
     `);
   }
 
@@ -2667,74 +2570,6 @@ export class TenantDO extends DurableObject<Env> {
     if (!exists.length) return false;
     this.ctx.storage.sql.exec(`DELETE FROM legacy_bridge_meta WHERE kind = ?1 AND id = ?2`, kind, id);
     return true;
-  }
-
-  async upsertLegacyWebhookChannel(input: {
-    id: string;
-    v1Tenant: string;
-    v2TenantId: string;
-    channelType: string;
-    name: string;
-    definitionId: string | null;
-    settingsJson: string;
-    sealedSecret: string;
-    sealedReplyUrl: string | null;
-  }): Promise<void> {
-    this.ensureLegacyBridgeTables();
-    this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO legacy_webhook_channels
-         (id, v1_tenant, v2_tenant_id, channel_type, name, definition_id, settings_json, sealed_secret, sealed_reply_url, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
-      input.id,
-      input.v1Tenant,
-      input.v2TenantId,
-      input.channelType,
-      input.name,
-      input.definitionId,
-      input.settingsJson,
-      input.sealedSecret,
-      input.sealedReplyUrl,
-      Date.now(),
-    );
-  }
-
-  async getLegacyWebhookChannel(id: string): Promise<{
-    id: string;
-    v1Tenant: string;
-    v2TenantId: string;
-    channelType: string;
-    name: string;
-    definitionId: string | null;
-    settingsJson: string;
-    sealedSecret: string;
-    sealedReplyUrl: string | null;
-  } | null> {
-    this.ensureLegacyBridgeTables();
-    const row = this.ctx.storage.sql
-      .exec<{
-        id: string;
-        v1_tenant: string;
-        v2_tenant_id: string;
-        channel_type: string;
-        name: string;
-        definition_id: string | null;
-        settings_json: string;
-        sealed_secret: string;
-        sealed_reply_url: string | null;
-      }>(`SELECT * FROM legacy_webhook_channels WHERE id = ?1 LIMIT 1`, id)
-      .toArray()[0];
-    if (!row) return null;
-    return {
-      id: row.id,
-      v1Tenant: row.v1_tenant,
-      v2TenantId: row.v2_tenant_id,
-      channelType: row.channel_type,
-      name: row.name,
-      definitionId: row.definition_id,
-      settingsJson: row.settings_json,
-      sealedSecret: row.sealed_secret,
-      sealedReplyUrl: row.sealed_reply_url,
-    };
   }
 
   // ---- Voice Calls Index & ElevenLabs Provisioning Index ----
