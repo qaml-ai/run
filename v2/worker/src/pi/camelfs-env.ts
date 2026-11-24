@@ -150,6 +150,12 @@ export interface CamelFsClientLike {
   execVm(vmId: string, lineage: string, req: CamelFsVmExecRequest): Promise<CamelFsVmExecResult>;
 }
 
+export interface TmpScratchEntry {
+  kind: "file" | "directory";
+  bytes: Uint8Array;
+  mtimeMs: number;
+}
+
 export interface CamelFsExecutionEnvOptions {
   env: Pick<Env, "CAMELFS_URL" | "CAMELFS_SIGNING_KEY" | "CAMELFS_DEV_TOKEN" | "MEDIA_BUCKET" | "IMAGES">;
   tenantId: string;
@@ -160,6 +166,8 @@ export interface CamelFsExecutionEnvOptions {
   getResolvedSkills?: () => Promise<SkillRecord[]>;
   /** Optional pre-built or mocked CamelFS client (defaults to `new CamelFsClient(env, tenantId)`). */
   client?: CamelFsClientLike;
+  /** Optional shared `/tmp` scratch store persisted across tool invocations within a DO isolate. */
+  tmpEntries?: Map<string, TmpScratchEntry>;
   onFilesChanged?: (files: string[]) => void;
   onRepoCommit?: (repoId: string, commit: string) => void | Promise<void>;
   getVmSession?: (branch: string) => { vmId: string; leaseExpiresAt: number } | null;
@@ -342,9 +350,11 @@ export function createCamelFsExecutionEnv(opts: CamelFsExecutionEnvOptions): Exe
   let repoInfoPromise: Promise<{ repoId: string; lineage: string; branch: string }> | null = null;
   let cwd = WORKSPACE_ROOT;
 
-  // Ephemeral `/tmp/...` scratch store
-  const tmpEntries = new Map<string, { kind: "file" | "directory"; bytes: Uint8Array; mtimeMs: number }>();
-  tmpEntries.set(TMP_ROOT, { kind: "directory", bytes: new Uint8Array(0), mtimeMs: Date.now() });
+  // Ephemeral `/tmp/...` scratch store (shared across tool calls when provided by PiAgentEngine)
+  const tmpEntries = opts.tmpEntries ?? new Map<string, TmpScratchEntry>();
+  if (!tmpEntries.has(TMP_ROOT)) {
+    tmpEntries.set(TMP_ROOT, { kind: "directory", bytes: new Uint8Array(0), mtimeMs: Date.now() });
+  }
 
   const getRepoInfo = () => {
     repoInfoPromise ??= opts.ensureRepo();
@@ -1246,8 +1256,10 @@ export function createCamelFsExecutionEnv(opts: CamelFsExecutionEnvOptions): Exe
     },
 
     async cleanup(_context: Context): Promise<void> {
-      tmpEntries.clear();
-      tmpEntries.set(TMP_ROOT, { kind: "directory", bytes: new Uint8Array(0), mtimeMs: Date.now() });
+      if (!opts.tmpEntries) {
+        tmpEntries.clear();
+        tmpEntries.set(TMP_ROOT, { kind: "directory", bytes: new Uint8Array(0), mtimeMs: Date.now() });
+      }
     },
   };
 

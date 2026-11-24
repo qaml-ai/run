@@ -420,8 +420,11 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
 
     const azureCalls = recordedRequests.slice(beforeReqs).filter((r) => r.path === "/openai/v1/responses");
     assert.equal(azureCalls.length, 2);
+    const cacheKey = azureCalls[0]!.body.prompt_cache_key;
+    assert.equal(typeof cacheKey, "string");
+    assert.ok((cacheKey as string).length > 0 && (cacheKey as string).length <= 64);
     for (const call of azureCalls) {
-      assert.equal(call.body.prompt_cache_key, agent.id);
+      assert.equal(call.body.prompt_cache_key, cacheKey);
     }
 
     // Verify TenantDO usage_daily stored cacheReadTokens and discounted costUsd

@@ -1,10 +1,7 @@
 import { Buffer } from "node:buffer";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, ImageContent, TextContent, ToolCall } from "@earendil-works/pi-ai";
-import {
-  estimateMessageTokens,
-  estimateTextAndImageContentTokens,
-} from "@earendil-works/pi-ai/utils/estimate";
+import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import {
   AssistantEntry,
   CompactionEntry,
@@ -16,7 +13,6 @@ import {
   ROOT_CONVERSATION_ID,
   ToolResultEntry,
   type AgentChange,
-  type CompactionSettings,
   type Conversation,
   type ConversationWatch,
   type EntryId,
@@ -63,7 +59,7 @@ import {
   type StoredRunFile,
   type ToolCallSummary,
 } from "../types.ts";
-import { createCamelFsExecutionEnv } from "./camelfs-env.ts";
+import { createCamelFsExecutionEnv, type TmpScratchEntry } from "./camelfs-env.ts";
 import { createCamelRunCodemodeExtension } from "./codemode-extension.ts";
 import {
   createCamelRunBillingExtension,
@@ -94,7 +90,7 @@ import {
   calculatePiCostUsd,
   completePiModel,
   createProviderRequestExtension,
-  getAutoCompactThreshold,
+  getModelContextWindow,
   parsePiModelRef,
   PI_COMPACT_RESERVE_TOKENS,
   resolveTenantByokProvider,
@@ -276,7 +272,8 @@ export class PiAgentEngine {
   private rootReady = false;
   private installedCustomFingerprint = "";
   private installedMcpFingerprint = "";
-  private toolResultTextOverrides = new Map<string, string>();
+  private lastAppliedAgentConfigFp = "";
+  private readonly tmpEntries = new Map<string, TmpScratchEntry>();
   private resolvedSkillsCache: { key: string; skills: SkillRecord[]; expiresAt: number } | null = null;
 
   constructor(host: PiAgentHost) {
@@ -292,8 +289,7 @@ export class PiAgentEngine {
             tenantId: cfg.tenantId,
             keyScope: cfg.keyScope ?? null,
             rawModel: cfg.model,
-            compactThresholdTokens: cfg.compactThresholdTokens,
-            getOutputSchema: () => this.activeTracker?.outputSchema ?? null,
+            getOutputSchema: () => this.getOrRehydrateActiveTracker()?.outputSchema ?? null,
           });
         }
 
@@ -309,11 +305,24 @@ export class PiAgentEngine {
               const cur = this.host.readConfigOrNull();
               const override = cur?.compactThresholdTokens;
               if (typeof override === "number" && Number.isFinite(override) && override > 0) {
-                const effectiveThreshold = getAutoCompactThreshold(cur?.model ?? cfg.model, override);
+                const modelStr = cur?.model ?? cfg.model;
+                const ref = parsePiModelRef(modelStr, this.host.env);
+                const realContextWindow =
+                  this.currentModels?.getModel(ref.provider, ref.modelId)?.contextWindow ??
+                  getModelContextWindow(modelStr);
+                const minThreshold = 8_000;
+                const maxThreshold = Math.max(minThreshold, Math.floor(realContextWindow * 0.8));
+                const effectiveThreshold = Math.min(
+                  maxThreshold,
+                  Math.max(minThreshold, Math.floor(override)),
+                );
                 return {
                   compaction: {
                     enabled: true,
-                    reserveTokens: PI_COMPACT_RESERVE_TOKENS,
+                    reserveTokens: Math.max(
+                      PI_COMPACT_RESERVE_TOKENS,
+                      realContextWindow - effectiveThreshold,
+                    ),
                     keepRecentTokens: Math.min(12_000, Math.floor(effectiveThreshold / 2)),
                     backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
                   },
@@ -339,12 +348,18 @@ export class PiAgentEngine {
   }
 
   async ensureStarted(): Promise<void> {
-    if (this.lifecycle.isStarted()) return;
-    this.startPromise ??= this.lifecycle.start().catch((err) => {
-      this.startPromise = null;
-      throw err;
-    });
-    await this.startPromise;
+    if (!this.lifecycle.isStarted()) {
+      this.startPromise ??= this.lifecycle.start().catch((err) => {
+        this.startPromise = null;
+        throw err;
+      });
+      await this.startPromise;
+    }
+    // If the DO was evicted mid-run and woken by `pi-wake`, rehydrate the active run tracker
+    // so post-eviction billing, spend limits, outputSchema, and terminal settlement continue.
+    if (!this.activeTracker) {
+      this.getOrRehydrateActiveTracker();
+    }
   }
 
   private async getRootConversation(): Promise<Conversation | undefined> {
@@ -376,6 +391,77 @@ export class PiAgentEngine {
     });
   }
 
+  private getOrRehydrateActiveTracker(): ActiveRunTracker | null {
+    if (this.activeTracker && !this.activeTracker.settled) {
+      return this.activeTracker;
+    }
+    if (!this.host.readConfigOrNull()) return null;
+
+    let row:
+      | {
+          id: string;
+          status: string;
+          actor: string | null;
+          output_schema_json: string | null;
+          spend_limit_usd: number | null;
+        }
+      | undefined;
+    try {
+      row = this.host.ctx.storage.sql
+        .exec<{
+          id: string;
+          status: string;
+          actor: string | null;
+          output_schema_json: string | null;
+          spend_limit_usd: number | null;
+        }>(
+          `SELECT id, status, actor, output_schema_json, spend_limit_usd
+           FROM runs
+           WHERE status IN ('running', 'input_required') AND batched_into IS NULL
+           ORDER BY started_at DESC
+           LIMIT 1`,
+        )
+        .toArray()[0];
+    } catch {
+      return null;
+    }
+    if (!row) return null;
+
+    const existingRec = this.host.materializeRunRecord(row.id);
+    const isRunning = row.status === "running";
+    const tracker: ActiveRunTracker = {
+      runId: row.id,
+      actor: row.actor ?? undefined,
+      outputSchema: row.output_schema_json ? JSON.parse(row.output_schema_json) : null,
+      spendLimitUsd: row.spend_limit_usd ?? null,
+      usage: { ...existingRec.usage },
+      filesChanged: new Set(existingRec.filesChanged),
+      toolCalls: [...existingRec.toolCalls],
+      seenToolStarts: new Set(existingRec.toolCalls.map((t) => t.id)),
+      seenToolEnds: new Set(existingRec.toolCalls.map((t) => t.id)),
+      seenEntryIds: new Set(),
+      emittedGenerationAttempt: -1,
+      emittedPartialTextLen: 0,
+      lastEmittedAssistantEntryId: 0,
+      accumulatedText: existingRec.text,
+      slotAcquired: isRunning,
+      settled: false,
+      pausedForInput: !isRunning,
+      spendLimitError: null,
+      aborted: false,
+      watchHandle: null,
+      watchPromise: null,
+    };
+    this.activeTracker = tracker;
+    if (isRunning) {
+      this.host.setActiveRunId(row.id);
+      if (this.lifecycle.isStarted()) {
+        this.trackSubmissionSettlement(tracker, true);
+      }
+    }
+    return tracker;
+  }
+
   async dispose(): Promise<void> {
     if (this.activeTracker?.watchHandle) {
       await this.activeTracker.watchHandle.stop().catch(() => {});
@@ -383,6 +469,10 @@ export class PiAgentEngine {
     }
     this.activeTracker = null;
     this.rootReady = false;
+    this.lastAppliedAgentConfigFp = "";
+    this.installedMcpFingerprint = "";
+    this.installedCustomFingerprint = "";
+    this.tmpEntries.clear();
     await this.harness.dispose().catch(() => {});
     await this.lifecycle.dispose().catch(() => {});
   }
@@ -415,6 +505,7 @@ export class PiAgentEngine {
       env: this.host.env,
       tenantId: cfg.tenantId,
       agentId: cfg.id,
+      tmpEntries: this.tmpEntries,
       ensureRepo: () => this.host.ensureAgentRepository(),
       getResolvedSkills: () => this.getResolvedSkills(),
       onFilesChanged: (files) => this.recordFilesChanged(files),
@@ -447,14 +538,14 @@ export class PiAgentEngine {
   }
 
   private recordFilesChanged(files: string[]): void {
-    const tracker = this.activeTracker;
+    const tracker = this.getOrRehydrateActiveTracker();
     if (!tracker) return;
     for (const f of files) tracker.filesChanged.add(f);
     this.persistTrackerProgress(tracker);
   }
 
   private recordVmBillableMs(billableMs: number): void {
-    const tracker = this.activeTracker;
+    const tracker = this.getOrRehydrateActiveTracker();
     if (!tracker || !billableMs) return;
     const cfg = this.host.getConfig();
     tracker.usage.vmMs += billableMs;
@@ -564,7 +655,7 @@ export class PiAgentEngine {
     );
 
     const host = this.host;
-    const getActiveRunId = () => this.activeTracker?.runId;
+    const getActiveRunId = () => this.getOrRehydrateActiveTracker()?.runId;
     for (const custom of cfg.tools ?? []) {
       const spec = custom;
       tools.push(
@@ -721,9 +812,7 @@ export class PiAgentEngine {
     if (!snap.extension("camelrun-provider-request")) {
       this.registry.install(
         createProviderRequestExtension({
-          getOutputSchema: () => this.activeTracker?.outputSchema ?? null,
-          getPromptCacheKey: () => this.host.readConfigOrNull()?.id,
-          getToolResultOverride: (callId) => this.toolResultTextOverrides.get(callId),
+          getOutputSchema: () => this.getOrRehydrateActiveTracker()?.outputSchema ?? null,
         }),
       );
     }
@@ -732,13 +821,14 @@ export class PiAgentEngine {
       this.registry.install(
         createCamelRunBillingExtension({
           getSpendLimitUsd: () => {
-            const limit = this.activeTracker?.spendLimitUsd;
+            const limit = this.getOrRehydrateActiveTracker()?.spendLimitUsd;
             return limit === null || limit === undefined ? undefined : limit;
           },
-          getSpentUsd: () => this.activeTracker?.usage.costUsd ?? 0,
+          getSpentUsd: () => this.getOrRehydrateActiveTracker()?.usage.costUsd ?? 0,
           onSpendLimitExceeded: (ev) => {
-            if (this.activeTracker) {
-              this.activeTracker.spendLimitError = {
+            const tracker = this.getOrRehydrateActiveTracker();
+            if (tracker) {
+              tracker.spendLimitError = {
                 code: "spend_limit_exceeded",
                 message: `Run spend limit exceeded ($${ev.spentUsd.toFixed(6)} >= $${ev.spendLimitUsd.toFixed(6)})`,
               };
@@ -901,72 +991,35 @@ export class PiAgentEngine {
     const mcpFp = JSON.stringify({ servers: cfg.mcpServers ?? [], deferByDefault });
     if (mcpFp === this.installedMcpFingerprint) return;
     if ((cfg.mcpServers ?? []).length > 0) {
+      let hadDiscoveryError = false;
       const mcpExt = await createCamelRunMcpExtension({
         env: this.host.env,
         agent: cfg,
-        getRunId: () => this.activeTracker?.runId ?? "",
-        getActor: () => this.activeTracker?.actor,
+        getRunId: () => this.getOrRehydrateActiveTracker()?.runId ?? "",
+        getActor: () => this.getOrRehydrateActiveTracker()?.actor,
         onInputRequired: (ev) => this.handleInputRequired(ev),
+        onDiscoveryError: () => {
+          hadDiscoveryError = true;
+        },
         deferByDefault,
       });
-      this.registry.install(mcpExt);
+      const existingToolsCount =
+        this.registry.snapshot().extension("camelrun-mcp")?.tools?.length ?? 0;
+      if (!hadDiscoveryError || (mcpExt.tools?.length ?? 0) > 0 || existingToolsCount === 0) {
+        this.registry.install(mcpExt);
+      }
+      if (!hadDiscoveryError) {
+        this.installedMcpFingerprint = mcpFp;
+      }
     } else {
       this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
+      this.installedMcpFingerprint = mcpFp;
     }
-    this.installedMcpFingerprint = mcpFp;
-  }
-
-  /**
-   * Calibrates `keepRecentTokens` only when the active context already exceeds the
-   * compaction threshold yet a single huge early message leaves the recent tail smaller
-   * than default `keepRecentTokens` (so native `CompactionTask`'s `selectCut()` still
-   * finds a clean boundary without splitting tool calls from their results).
-   */
-  private async computeCompactionOverride(
-    conv: Conversation,
-    cfg: AgentConfig,
-    nextInput: UserInput,
-  ): Promise<CompactionSettings | null> {
-    const threshold = getAutoCompactThreshold(cfg.model, cfg.compactThresholdTokens);
-    const defaultKeepRecent = Math.min(20_000, Math.floor(threshold / 2));
-    const view = await conv.context(BG);
-    const contentEntries = view.entries.filter(
-      (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
-    );
-    if (contentEntries.length <= 6) return null;
-
-    const totalTokens =
-      view.messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0) +
-      estimateTextAndImageContentTokens(nextInput);
-    if (totalTokens <= threshold) return null;
-
-    // Check whether the recent tail (entries after index 0) is smaller than defaultKeepRecent
-    const tailEntries = contentEntries.slice(1);
-    const tailTokens =
-      tailEntries.reduce(
-        (sum, e) => sum + (e.model ?? []).reduce((s, m) => s + estimateMessageTokens(m), 0),
-        0,
-      ) + estimateTextAndImageContentTokens(nextInput);
-    if (tailTokens >= defaultKeepRecent) return null;
-
-    let cutIdx = Math.max(1, contentEntries.length - 6);
-    while (cutIdx > 1 && ToolResultEntry.is(contentEntries[cutIdx]!)) {
-      cutIdx--;
-    }
-    const keptTokens =
-      contentEntries
-        .slice(cutIdx)
-        .reduce(
-          (sum, e) => sum + (e.model ?? []).reduce((s, m) => s + estimateMessageTokens(m), 0),
-          0,
-        ) + estimateTextAndImageContentTokens(nextInput);
-    return { keepRecentTokens: Math.max(1, keptTokens) };
   }
 
   private buildAgentChange(
     cfg: AgentConfig,
     maxTurns?: number,
-    compaction?: CompactionSettings | null,
   ): AgentChange {
     const builtins = new Set(cfg.builtins ?? []);
     const customNames = new Set((cfg.tools ?? []).map((t) => t.name));
@@ -1000,17 +1053,33 @@ export class PiAgentEngine {
       ...(toolSearchEntry ? [toolSearchEntry.tool] : []),
     ];
 
+    const modelRef = parsePiModelRef(cfg.model, this.host.env);
+    const resolvedModel = this.currentModels?.getModel(modelRef.provider, modelRef.modelId);
+    const thinkingLevel: AgentChange["thinkingLevel"] =
+      modelRef.provider === "azure" && resolvedModel?.reasoning ? "low" : null;
+
     return {
-      model: parsePiModelRef(cfg.model, this.host.env),
+      model: modelRef,
+      thinkingLevel,
       instructions: cfg.instructions ? cfg.instructions : null,
       tools: enabledTools,
       ...(maxTurns !== undefined ? { maxTurns } : {}),
-      ...(compaction !== undefined ? { compaction } : {}),
     };
   }
 
+  private agentChangeFingerprint(change: AgentChange): string {
+    const toolNames = Array.isArray(change.tools) ? change.tools.map((t) => t.name) : change.tools;
+    return JSON.stringify({
+      model: change.model,
+      thinkingLevel: change.thinkingLevel,
+      instructions: change.instructions,
+      tools: toolNames,
+      maxTurns: change.maxTurns,
+    });
+  }
+
   private handleBillingUsage(ev: BillingUsageEvent): void {
-    const tracker = this.activeTracker;
+    const tracker = this.getOrRehydrateActiveTracker();
     if (!tracker) return;
     const cfg = this.host.getConfig();
     tracker.usage.inputTokens += ev.inputTokens;
@@ -1166,8 +1235,9 @@ export class PiAgentEngine {
       importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>;
     } = { importedEntries: 0, maxLegacySeq: afterSeq, importedMeta: [] };
 
+    const initialChange = this.buildAgentChange(curCfg, maxTurns);
     const { created } = await this.harness.root({
-      agent: this.buildAgentChange(curCfg, maxTurns),
+      agent: initialChange,
       init: async (tx, convId) => {
         if (legacyCompaction || legacyMessages.length > 0) {
           migrationResult = await importLegacyTranscriptToPi(
@@ -1180,6 +1250,9 @@ export class PiAgentEngine {
         }
       },
     });
+    if (created) {
+      this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
+    }
 
     if (created && (legacyCompaction || legacyMessages.length > 0)) {
       const migratedAt = String(Date.now());
@@ -1222,9 +1295,8 @@ export class PiAgentEngine {
       tenantId: cfg.tenantId,
       keyScope,
       rawModel: cfg.model,
-      compactThresholdTokens: cfg.compactThresholdTokens,
       prefetchedCredentials: Object.keys(prefetchedCredentials).length > 0 ? prefetchedCredentials : undefined,
-      getOutputSchema: () => this.activeTracker?.outputSchema ?? null,
+      getOutputSchema: () => this.getOrRehydrateActiveTracker()?.outputSchema ?? null,
     });
   }
 
@@ -1421,12 +1493,19 @@ export class PiAgentEngine {
     });
   }
 
-  private trackSubmissionSettlement(tracker: ActiveRunTracker): Promise<void> {
+  private trackSubmissionSettlement(
+    tracker: ActiveRunTracker,
+    attachWatch = false,
+  ): Promise<void> {
+    if (tracker.watchPromise) return tracker.watchPromise;
     const work = (async () => {
       const cfg = this.host.getConfig();
       const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
 
       try {
+        if (attachWatch && !tracker.watchHandle) {
+          await this.startWatchForTracker(tracker).catch(() => {});
+        }
         const result = await this.harness.wait(tracker.runId, { session: ROOT_SESSION });
 
         // Give any final watch microtask a chance to flush last entry deltas
@@ -1718,8 +1797,12 @@ export class PiAgentEngine {
 
       const conv = await this.getRootConversation();
       if (conv) {
-        const compactionOverride = await this.computeCompactionOverride(conv, cfg, userInput);
-        await conv.configure(this.buildAgentChange(cfg, maxSteps, compactionOverride), BG);
+        const nextChange = this.buildAgentChange(cfg, maxSteps);
+        const nextFp = this.agentChangeFingerprint(nextChange);
+        if (nextFp !== this.lastAppliedAgentConfigFp) {
+          await conv.configure(nextChange, BG);
+          this.lastAppliedAgentConfigFp = nextFp;
+        }
       }
 
       const runRow = this.host.ctx.storage.sql
@@ -1809,16 +1892,7 @@ export class PiAgentEngine {
     inputs: Array<{ id: string; tool_call_id: string; prompt_json: string | null }>,
     reasonText: string,
   ): Promise<void> {
-    if (inputs.length === 0) return;
-    let entries: EntryRecord[] = [];
-    try {
-      entries = await this.harness.session(ROOT_SESSION).messages();
-    } catch {
-      entries = [];
-    }
-
     for (const inp of inputs) {
-      this.toolResultTextOverrides.set(inp.tool_call_id, reasonText);
       let toolName = "ask_human";
       if (inp.prompt_json) {
         try {
@@ -1827,30 +1901,6 @@ export class PiAgentEngine {
         } catch {
           // ignore
         }
-      }
-
-      // Find the ToolResultEntry written by pi-durable during abort for this callId
-      let matchedEntry: EntryRecord | undefined;
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const entry = entries[i]!;
-        if (ToolResultEntry.is(entry)) {
-          const msg = entry.model?.[0];
-          if (msg && msg.role === "toolResult" && msg.toolCallId === inp.tool_call_id) {
-            matchedEntry = entry;
-            if (msg.toolName) toolName = msg.toolName;
-            break;
-          }
-        }
-      }
-
-      if (matchedEntry) {
-        this.host.ctx.storage.sql.exec(
-          `INSERT INTO pi_entry_meta (entry_id, run_id, meta_json) VALUES (?1, ?2, ?3)
-           ON CONFLICT(entry_id) DO UPDATE SET run_id = excluded.run_id, meta_json = excluded.meta_json`,
-          Number(matchedEntry.id),
-          runId,
-          JSON.stringify({ _overrideToolText: reasonText }),
-        );
       }
 
       this.host.recordAndBroadcastEvent(runId, "tool_call_end", {
@@ -2007,10 +2057,6 @@ export class PiAgentEngine {
     await this.refreshModels(cfg);
     await this.ensureRootMigrated(cfg);
     await this.ensureMcpExtensionReady(cfg);
-    const conv = await this.getRootConversation();
-    if (conv) {
-      await conv.configure(this.buildAgentChange(cfg), BG);
-    }
 
     const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
 
@@ -2053,6 +2099,12 @@ export class PiAgentEngine {
       this.trackSubmissionSettlement(tracker);
     } else {
       tracker.pausedForInput = false;
+      if (!tracker.watchHandle) {
+        await this.startWatchForTracker(tracker);
+      }
+      if (!tracker.watchPromise) {
+        this.trackSubmissionSettlement(tracker);
+      }
     }
 
     if (!tracker.slotAcquired) {
@@ -2425,14 +2477,16 @@ export class PiAgentEngine {
     await this.ensureStarted();
     await this.refreshModels(cfg);
     await this.ensureExtensionsInstalled(cfg);
+    const initialChange = this.buildAgentChange(cfg);
     await this.harness.root({
-      agent: this.buildAgentChange(cfg),
+      agent: initialChange,
       init: async (tx, convId) => {
         if (entries.length > 0) {
           await copyPiEntriesToConversation(tx, convId, entries);
         }
       },
     });
+    this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
     this.rootReady = true;
   }
 
@@ -2445,6 +2499,7 @@ export class PiAgentEngine {
       provider: modelRef.provider,
       id: modelRef.modelId,
     });
+    this.lastAppliedAgentConfigFp = "";
   }
 
   async appendPassiveNote(text: string, meta?: Record<string, unknown>): Promise<void> {

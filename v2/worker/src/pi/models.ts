@@ -1068,35 +1068,12 @@ export type ProviderCredentialLookup = (
 
 export const PI_COMPACT_RESERVE_TOKENS = 16_384;
 
-function applyCompactionWindow<M extends Model<Api>>(
-  model: M,
-  compactThresholdTokens?: number | null,
-): M {
-  if (
-    typeof compactThresholdTokens !== "number" ||
-    !Number.isFinite(compactThresholdTokens) ||
-    compactThresholdTokens <= 0
-  ) {
-    return model;
-  }
-  const minThreshold = 8_000;
-  const maxThreshold = Math.max(minThreshold, Math.floor(model.contextWindow * 0.8));
-  const threshold = Math.min(maxThreshold, Math.max(minThreshold, Math.floor(compactThresholdTokens)));
-  return { ...model, contextWindow: threshold + PI_COMPACT_RESERVE_TOKENS };
-}
-
 export interface BuildPiModelsOptions {
   env: Env;
   tenantId: string;
   keyScope?: string | null;
   /** Optional model string being requested so dynamic/custom BYOK models are guaranteed registered. */
   rawModel?: string;
-  /**
-   * Optional per-agent compaction threshold override. Each registered model's `contextWindow` is set
-   * to `effectiveThreshold + PI_COMPACT_RESERVE_TOKENS` so pi-durable's native threshold compaction
-   * triggers cleanly at the desired token limit with standard `reserveTokens`.
-   */
-  compactThresholdTokens?: number | null;
   /** Pre-fetched BYOK provider secrets keyed by provider name (avoids redundant TenantDO RPC). */
   prefetchedCredentials?: Record<string, ProviderCredentials | null>;
   /** Override secret lookup (defaults to `getTenantStub(env, tenantId).getProviderSecret`). */
@@ -1152,22 +1129,6 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
   );
 
   const models = createModels();
-  const capModel = <T>(m: T): T =>
-    m && typeof m === "object" && "contextWindow" in m && "provider" in m && "id" in m
-      ? (applyCompactionWindow(
-          m as unknown as Model<Api>,
-          options.compactThresholdTokens,
-        ) as unknown as T)
-      : m;
-  const origSetProvider = models.setProvider.bind(models);
-  models.setProvider = (provider) =>
-    origSetProvider({
-      ...provider,
-      getModels: () => provider.getModels().map(capModel),
-      ...(provider.getAllModels
-        ? { getAllModels: () => provider.getAllModels!().map(capModel) }
-        : {}),
-    });
 
   // 1. Mock provider (always registered for tests)
   models.setProvider(
@@ -1484,27 +1445,16 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
   return models;
 }
 
-// ---- `beforeProviderRequest` Hook (outputSchema, OpenRouter privacy, Azure default reasoning) ----
+// ---- `beforeProviderRequest` Hook (outputSchema, OpenRouter privacy) ----
 
 export interface ProviderRequestHookOptions {
   /** Returns the active run's JSON Schema for structured output, if any. */
   getOutputSchema?: () => Record<string, unknown> | null | undefined;
-  /** Returns a stable prompt cache key (clamped to 64 chars for OpenAI/Azure Responses). */
-  getPromptCacheKey?: () => string | null | undefined;
-  /** Default reasoning effort for platform Azure models when unset (default `"low"`). */
-  defaultAzureReasoningEffort?: "none" | "low" | "medium" | "high" | null;
-  /** Optional override text for synthetic tool results (e.g. superseded/expired/cancelled human inputs). */
-  getToolResultOverride?: (toolCallId: string) => string | undefined;
 }
 
 export function createProviderRequestHook(
   options?: ProviderRequestHookOptions,
 ): NonNullable<GenerationHooks["beforeProviderRequest"]> {
-  const defaultAzureEffort =
-    options?.defaultAzureReasoningEffort === undefined
-      ? "low"
-      : options.defaultAzureReasoningEffort;
-
   return ({ model, payload }) => {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return undefined;
@@ -1578,83 +1528,6 @@ export function createProviderRequestHook(
       };
     }
 
-    // 3. Platform Azure default reasoning effort when unset or defaulted to "none"
-    const existingReasoningEffort =
-      next.reasoning && typeof next.reasoning === "object" && !Array.isArray(next.reasoning)
-        ? (next.reasoning as { effort?: unknown }).effort
-        : undefined;
-    if (
-      defaultAzureEffort !== null &&
-      model.provider === "azure" &&
-      PLATFORM_AZURE_MODELS.has(model.id) &&
-      model.api === "azure-openai-responses" &&
-      (next.reasoning === undefined || existingReasoningEffort === "none")
-    ) {
-      ensureClone();
-      next.reasoning = { effort: defaultAzureEffort };
-    }
-
-    // 4. Strip unsupported temperature for OpenAI/Azure reasoning models
-    if (
-      model.reasoning &&
-      next.temperature !== undefined &&
-      (model.api === "azure-openai-responses" ||
-        model.api === "openai-responses" ||
-        (model.api === "openai-completions" && model.provider === "openai"))
-    ) {
-      ensureClone();
-      delete next.temperature;
-    }
-
-    // 5. Prompt cache routing key (clamped to 64 chars)
-    const rawCacheKey = options?.getPromptCacheKey?.()?.trim();
-    if (
-      rawCacheKey &&
-      (model.api === "azure-openai-responses" || model.api === "openai-responses")
-    ) {
-      ensureClone();
-      next.prompt_cache_key = rawCacheKey.slice(0, 64);
-    }
-
-    // 6. Override aborted human-input synthetic tool results with exact application reason text
-    if (options?.getToolResultOverride) {
-      const lookup = options.getToolResultOverride;
-      if (Array.isArray(next.messages)) {
-        let changed = false;
-        const mapped = (next.messages as Array<Record<string, unknown>>).map((m) => {
-          if (m && m.role === "tool" && typeof m.tool_call_id === "string") {
-            const override = lookup(m.tool_call_id);
-            if (override !== undefined) {
-              changed = true;
-              return { ...m, content: override };
-            }
-          }
-          return m;
-        });
-        if (changed) {
-          ensureClone();
-          next.messages = mapped;
-        }
-      }
-      if (Array.isArray(next.input)) {
-        let changed = false;
-        const mapped = (next.input as Array<Record<string, unknown>>).map((item) => {
-          if (item && item.type === "function_call_output" && typeof item.call_id === "string") {
-            const override = lookup(item.call_id);
-            if (override !== undefined) {
-              changed = true;
-              return { ...item, output: override };
-            }
-          }
-          return item;
-        });
-        if (changed) {
-          ensureClone();
-          next.input = mapped;
-        }
-      }
-    }
-
     return mutated ? { payload: next } : undefined;
   };
 }
@@ -1699,51 +1572,6 @@ export type PiModelStreamChunk =
       message: AssistantMessage;
     };
 
-function fnv1a64Hex(input: string): string {
-  let h1 = 0x811c9dc5;
-  let h2 = 0x811c9dc5 ^ 0x9e3779b9;
-  for (let i = 0; i < input.length; i++) {
-    const ch = input.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 0x01000193) >>> 0;
-    h2 = Math.imul(h2 ^ (ch + i), 0x01000193) >>> 0;
-  }
-  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
-}
-
-function normalizeSingleResponsesCallId(rawId: string, emptyFallbackIndex: number): string {
-  if (!rawId) return `call_${emptyFallbackIndex}`;
-  if (rawId.length <= 64) return rawId;
-  const suffix = fnv1a64Hex(rawId);
-  return `${rawId.slice(0, 64 - 1 - suffix.length)}_${suffix}`;
-}
-
-function normalizePiResponsesToolCallIds(messages: PiAiMessage[]): PiAiMessage[] {
-  let emptyCallIdx = 0;
-  let emptyResultIdx = 0;
-  return messages.map((msg) => {
-    if (msg.role === "assistant") {
-      let changed = false;
-      const nextContent = msg.content.map((block) => {
-        if (block.type !== "toolCall") return block;
-        const normalized = normalizeSingleResponsesCallId(block.id, block.id ? 0 : emptyCallIdx++);
-        if (normalized === block.id) return block;
-        changed = true;
-        return { ...block, id: normalized };
-      });
-      return changed ? { ...msg, content: nextContent } : msg;
-    }
-    if (msg.role === "toolResult") {
-      const normalized = normalizeSingleResponsesCallId(
-        msg.toolCallId,
-        msg.toolCallId ? 0 : emptyResultIdx++,
-      );
-      if (normalized === msg.toolCallId) return msg;
-      return { ...msg, toolCallId: normalized };
-    }
-    return msg;
-  });
-}
-
 export async function* streamPiModel(
   req: StreamPiModelRequest,
 ): AsyncGenerator<PiModelStreamChunk, void, unknown> {
@@ -1776,7 +1604,6 @@ export async function* streamPiModel(
 
   const requestHook = createProviderRequestHook({
     getOutputSchema: () => req.outputSchema ?? null,
-    getPromptCacheKey: () => req.promptCacheKey,
   });
 
   const piTools: PiAiTool[] | undefined =
@@ -1788,22 +1615,28 @@ export async function* streamPiModel(
         }))
       : undefined;
 
-  const normalizedMessages =
-    model.api === "azure-openai-responses" || model.api === "openai-responses"
-      ? normalizePiResponsesToolCallIds(req.messages)
-      : req.messages;
-
   const piContext: PiAiContext = {
     ...(req.instructions ? { systemPrompt: req.instructions } : {}),
-    messages: normalizedMessages,
+    messages: req.messages,
     ...(piTools ? { tools: piTools } : {}),
   };
 
+  const omitTemperature =
+    model.reasoning &&
+    (model.api === "azure-openai-responses" ||
+      model.api === "openai-responses" ||
+      (model.api === "openai-completions" && model.provider === "openai"));
+  const defaultAzureReasoning =
+    model.provider === "azure" && model.reasoning && model.api === "azure-openai-responses"
+      ? ("low" as const)
+      : undefined;
+
   const eventStream = models.streamSimple(model, piContext, {
     ...(req.signal ? { signal: req.signal } : {}),
-    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    ...(req.temperature !== undefined && !omitTemperature ? { temperature: req.temperature } : {}),
     ...(req.maxOutputTokens !== undefined ? { maxTokens: req.maxOutputTokens } : {}),
     ...(req.promptCacheKey ? { sessionId: req.promptCacheKey.slice(0, 64) } : {}),
+    ...(defaultAzureReasoning ? { reasoning: defaultAzureReasoning } : {}),
     onPayload: async (payload, payloadModel) => {
       const res = await requestHook(
         { model: payloadModel, payload } as Parameters<typeof requestHook>[0],

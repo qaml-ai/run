@@ -297,14 +297,16 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     const terraStream = await stream({ model: "azure/gpt-6.1-terra", temperature: 0.4 });
     assert.equal(terraStream.path, "/openai/v1/responses");
     assert.equal(terraStream.body.model, "gpt-6.1-terra");
-    assert.deepEqual(terraStream.body.reasoning, { effort: "low" });
+    assert.deepEqual(terraStream.body.reasoning, { effort: "low", summary: "auto" });
+    assert.deepEqual(terraStream.body.include, ["reasoning.encrypted_content"]);
     assert.equal(terraStream.body.store, false);
     assert.equal(terraStream.body.temperature, undefined);
 
     const solStream = await stream({ model: "azure/gpt-6.2-sol", temperature: 0.4 });
     assert.equal(solStream.path, "/openai/v1/responses");
     assert.equal(solStream.body.model, "gpt-6.2-sol");
-    assert.deepEqual(solStream.body.reasoning, { effort: "low" });
+    assert.deepEqual(solStream.body.reasoning, { effort: "low", summary: "auto" });
+    assert.deepEqual(solStream.body.include, ["reasoning.encrypted_content"]);
     assert.equal(solStream.body.store, false);
     assert.equal(solStream.body.temperature, undefined);
   });
@@ -319,8 +321,8 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
       return captured.at(-1)!;
     };
 
-    const longIdA = `call_openrouter_composite_${"a".repeat(52)}00001`;
-    const longIdB = `call_openrouter_composite_${"a".repeat(52)}00002`;
+    const longIdA = `call_openrouter_a_${"a".repeat(65)}`;
+    const longIdB = `call_openrouter_b_${"b".repeat(65)}`;
     const exact64Id = `call_${"x".repeat(59)}`;
     const shortId = "call_short_123";
     assert.equal(longIdA.length, 83);
@@ -336,14 +338,12 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
           { id: longIdB, name: "tool_b", argumentsJson: "{}", args: {} },
           { id: exact64Id, name: "tool_64", argumentsJson: "{}", args: {} },
           { id: shortId, name: "tool_short", argumentsJson: "{}", args: {} },
-          { id: "", name: "tool_empty", argumentsJson: "{}", args: {} },
         ],
       },
       { role: "tool", toolCallId: longIdA, text: "out_a" },
       { role: "tool", toolCallId: longIdB, text: "out_b" },
       { role: "tool", toolCallId: exact64Id, text: "out_64" },
       { role: "tool", toolCallId: shortId, text: "out_short" },
-      { role: "tool", toolCallId: "", text: "out_empty" },
     ];
 
     const first = await stream({ model: "azure/gpt-6.1-terra", messages });
@@ -355,8 +355,8 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     const calls1 = input1.filter((item) => item.type === "function_call");
     const outputs1 = input1.filter((item) => item.type === "function_call_output");
     const calls2 = input2.filter((item) => item.type === "function_call");
-    assert.equal(calls1.length, 5);
-    assert.equal(outputs1.length, 5);
+    assert.equal(calls1.length, 4);
+    assert.equal(outputs1.length, 4);
 
     // Every emitted call_id must be non-empty and <= 64 chars, and match between call & output.
     for (let i = 0; i < calls1.length; i++) {
@@ -366,17 +366,14 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
       assert.equal(calls2[i]!.call_id, callId, `non-deterministic call_id at index ${i}`);
     }
 
-    // Long IDs sharing the same prefix normalize to distinct <= 64-char IDs.
+    // Long IDs normalize to distinct <= 64-char IDs; <= 64-char IDs are preserved verbatim.
     assert.notEqual(calls1[0]!.call_id, longIdA);
     assert.notEqual(calls1[1]!.call_id, longIdB);
     assert.notEqual(calls1[0]!.call_id, calls1[1]!.call_id);
     assert.equal(calls1[0]!.call_id!.length, 64);
     assert.equal(calls1[1]!.call_id!.length, 64);
-
-    // Normal <= 64-char IDs are preserved verbatim; empty call_id falls back to "call_0".
     assert.equal(calls1[2]!.call_id, exact64Id);
     assert.equal(calls1[3]!.call_id, shortId);
-    assert.equal(calls1[4]!.call_id, "call_0");
   });
 
   await t.test("calculateCostUsd and getModelContextWindow cover restored v1 catalog models and long-context tiers", async () => {

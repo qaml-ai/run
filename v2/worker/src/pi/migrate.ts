@@ -581,14 +581,8 @@ export function mapPiEntriesToHistory(
       const msg = entry.model?.[0];
       if (!msg || msg.role !== "toolResult") continue;
       const em = entryMeta?.get(seq);
-      const rawMeta = em?.meta ? { ...em.meta } : undefined;
-      const overrideText =
-        rawMeta && typeof rawMeta._overrideToolText === "string"
-          ? rawMeta._overrideToolText
-          : undefined;
-      if (rawMeta && "_overrideToolText" in rawMeta) delete rawMeta._overrideToolText;
-      const hasMeta = rawMeta && Object.keys(rawMeta).length > 0;
-      const text = overrideText ?? extractTextFromToolContent(msg.content);
+      const hasMeta = Boolean(em?.meta && Object.keys(em.meta).length > 0);
+      const text = extractTextFromToolContent(msg.content);
       const imageBlocks = msg.content.filter(
         (b): b is ImageContent => b.type === "image" && typeof b.mimeType === "string",
       );
@@ -608,7 +602,7 @@ export function mapPiEntriesToHistory(
               }
             : {}),
           ...(msg.isError ? { isError: true } : {}),
-          ...(hasMeta ? { meta: rawMeta } : {}),
+          ...(hasMeta ? { meta: em!.meta } : {}),
         },
         tokensEst: estimateTokens(text),
         createdAt: msg.timestamp || 0,

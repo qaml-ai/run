@@ -1064,18 +1064,24 @@ async function computeTotalSpentUsd(
   return total;
 }
 
-function waitForAbort(signal: AbortSignal | undefined, maxMs = 250): Promise<void> {
+function waitForAbortOrSettle(
+  signal: AbortSignal | undefined,
+  abortPromise: Promise<unknown>,
+  maxMs = 10_000,
+): Promise<void> {
   if (!signal || signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, maxMs);
-    const onAbort = () => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      signal.removeEventListener("abort", done);
       resolve();
     };
-    signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(done, maxMs);
+    signal.addEventListener("abort", done, { once: true });
+    void abortPromise.finally(done);
   });
 }
 
@@ -1111,10 +1117,12 @@ export function createCamelRunBillingExtension(
           });
 
           if (options.abortTask) {
-            // Fire-and-forget to avoid deadlocking `abortTask()` joining this invocation;
-            // wait briefly for the Session commit to flip `context.abortSignal` before throwing.
-            void Promise.resolve(options.abortTask(api.taskId)).catch(() => {});
-            await waitForAbort(context.abortSignal, 250);
+            // `abortTask` commits the abort mark (which aborts `context.abortSignal`) and then
+            // awaits this invocation's completion. Wait until `context.abortSignal` actually flips
+            // to `aborted` (so `runtime.hooks.each` rethrows instead of swallowing the error) or
+            // `abortTask` settles early, without deadlocking on `abortTask`'s join.
+            const abortPromise = Promise.resolve(options.abortTask(api.taskId)).catch(() => {});
+            await waitForAbortOrSettle(context.abortSignal, abortPromise, 10_000);
           }
 
           throw new SpendLimitExceededError(check.spentUsd, check.spendLimitUsd);
@@ -1169,6 +1177,8 @@ export interface CamelRunMcpExtensionOptions {
   getActor?: () => string | undefined;
   defaultInputTimeoutMs?: number;
   onInputRequired?: (event: HumanInputRequiredEvent) => void | Promise<void>;
+  /** Called if MCP tool discovery fails for any server (so callers do not cache an empty toolset). */
+  onDiscoveryError?: (serverName: string, error: unknown) => void;
   fetch?: typeof globalThis.fetch;
   /** Default `deferred` flag for MCP tools (when `tool_search` builtin is enabled). */
   deferByDefault?: boolean;
@@ -1292,7 +1302,7 @@ async function discoverStandardMcpTools(
     }
 
     return tools;
-  } catch {
+  } catch (streamableErr) {
     // Fallback to stateless JSON-RPC discovery/invocation for lightweight HTTP MCP servers
     try {
       const discovered = await discoverMcpTools(
@@ -1300,6 +1310,11 @@ async function discoverStandardMcpTools(
         { ...options.agent, mcpServers: [server] },
         signal,
       );
+      if (discovered.length === 0) {
+        // Note: `discoverMcpTools` swallows errors for non-auth servers and returns `[]`.
+        // Verify reachability or report discovery failure when streamable transport already failed.
+        options.onDiscoveryError?.(server.name, streamableErr);
+      }
       const deferred = server.deferred ?? options.deferByDefault ?? false;
       return discovered.map((d) =>
         defineTool({
@@ -1324,7 +1339,8 @@ async function discoverStandardMcpTools(
           },
         }) as unknown as ToolRegistration,
       );
-    } catch {
+    } catch (fallbackErr) {
+      options.onDiscoveryError?.(server.name, fallbackErr);
       return [];
     }
   } finally {

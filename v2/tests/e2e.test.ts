@@ -1463,7 +1463,16 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       });
       const messages = [
         user("Earlier context. ".repeat(21_000)), assistant("Prior reply"), user("Use both lookups"),
-        { role: "assistant", content: ["call_one", "call_two"].map(id => ({ type: "toolCall", id, name: "lookup", arguments: {} })), timestamp },
+        {
+          role: "assistant",
+          content: ["call_one", "call_two"].map((id, idx) => ({
+            type: "toolCall",
+            id,
+            name: "lookup",
+            arguments: idx === 0 ? { query: "recent ".repeat(7_000) } : {},
+          })),
+          timestamp,
+        },
         toolResult("call_one"), toolResult("call_two"), assistant("Both found"), user("Thanks"), assistant("Of course"),
       ];
       await agent.importV1History({ source: "imported-v1", messages });

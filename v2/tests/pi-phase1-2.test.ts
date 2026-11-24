@@ -606,7 +606,7 @@ test("Phase 2: pi/models.ts resolves Azure Luna vs Sol endpoints, BYOK overrides
   assert.equal(solModel.baseUrl, "https://sol-resource.openai.azure.com/openai/v1");
   assert.equal(terraModel.contextWindow, 1_050_000);
 
-  // `beforeProviderRequest` hook: Azure default reasoning + outputSchema + OpenRouter privacy
+  // `beforeProviderRequest` hook: outputSchema + OpenRouter privacy
   const schema = {
     type: "object",
     properties: { status: { type: "string" } },
@@ -621,7 +621,7 @@ test("Phase 2: pi/models.ts resolves Azure Luna vs Sol endpoints, BYOK overrides
   );
   assert.ok(azureHookRes);
   const azurePayload = azureHookRes.payload as Record<string, unknown>;
-  assert.deepEqual(azurePayload.reasoning, { effort: "low" });
+  assert.equal(azurePayload.reasoning, undefined);
   assert.deepEqual((azurePayload.text as Record<string, unknown>).format, {
     type: "json_schema",
     name: "structured_output",
