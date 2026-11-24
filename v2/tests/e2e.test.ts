@@ -1475,7 +1475,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       ]);
       assert.deepEqual(lastProviderMessages?.filter(message => message.role === "tool").map(message => message.tool_call_id),
         ["call_one", "call_two"]);
-      assert.match(String(lastProviderMessages?.[1]?.content), /summary \(up to message #3\)/);
+      assert.match(JSON.stringify(lastProviderMessages?.[1]?.content), /compacted into the following summary:/);
       assert.equal(lastProviderMessages?.at(-1)?.content, "Continue from my history");
       const history = (await agent.history()).map(row => row.content as { text?: string; meta?: { v1?: unknown } });
       assert.deepEqual(history.slice(0, messages.length).map(content => content.meta?.v1), messages);

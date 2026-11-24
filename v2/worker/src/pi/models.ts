@@ -37,14 +37,9 @@ import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_CODEX_MODELS } from "@earendil-works/pi-ai/providers/openai-codex.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import {
-  AssistantEntry,
-  CompactionEntry,
   defineExtension,
   GenerationTask,
   hook,
-  ResetEntry,
-  SystemEntry,
-  ToolResultEntry,
   type Extension,
   type GenerationHooks,
   type JsonObject,
@@ -1664,53 +1659,11 @@ export function createProviderRequestHook(
   };
 }
 
-const NATIVE_COMPACTION_HEADER =
-  "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
-
 export function createProviderRequestExtension(options?: ProviderRequestHookOptions): Extension {
   return defineExtension({
     name: "camelrun-provider-request",
     hooks: [
       hook(GenerationTask, {
-        async beforeRequest({ messages }, api, context) {
-          const idx = messages.findIndex((m) => m.role !== "system");
-          if (idx < 0) return undefined;
-          const first = messages[idx]!;
-          if (first.role !== "user") return undefined;
-          const firstText =
-            typeof first.content === "string"
-              ? first.content
-              : first.content.length === 1 && first.content[0]?.type === "text"
-                ? first.content[0].text
-                : undefined;
-          if (!firstText || !firstText.startsWith(NATIVE_COMPACTION_HEADER)) return undefined;
-
-          // Count compacted content entries preceding the newest CompactionEntry's head
-          const page = await api.entries({ order: "descending" }, 100, undefined, context);
-          const compEntry = page.items.find((e) => CompactionEntry.is(e));
-          if (!compEntry || compEntry.head === undefined) return undefined;
-          const headId = Number(compEntry.head);
-          const compactedCount = page.items.filter(
-            (e) =>
-              Number(e.id) < headId &&
-              !SystemEntry.is(e) &&
-              !CompactionEntry.is(e) &&
-              !ResetEntry.is(e) &&
-              (AssistantEntry.is(e) || ToolResultEntry.is(e) || e.model?.[0]?.role === "user"),
-          ).length;
-          if (compactedCount <= 0) return undefined;
-
-          const annotated = firstText.replace(
-            NATIVE_COMPACTION_HEADER,
-            `The conversation history before this point was compacted into the following summary (up to message #${compactedCount}):\n\n<summary>\n`,
-          );
-          const nextMessages = [...messages];
-          nextMessages[idx] = {
-            ...first,
-            content: annotated,
-          };
-          return { messages: nextMessages };
-        },
         beforeProviderRequest: createProviderRequestHook(options),
       }),
     ],
