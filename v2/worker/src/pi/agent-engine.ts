@@ -29,7 +29,7 @@ import type { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "../camelfs.ts";
 import { randomId } from "../crypto.ts";
 import { consumeInfraCredit } from "../ops-metadata.ts";
-import { resolveTenantByokProvider } from "../providers.ts";
+import { getModelContextWindow, resolveTenantByokProvider } from "../providers.ts";
 import { verifyRunFiles } from "../run-files.ts";
 import { getSkillStore, type SkillRecord } from "../skills.ts";
 import { getTenantStub, platformCreditReserve } from "../tenant-do.ts";
@@ -260,12 +260,16 @@ export class PiAgentEngine {
             onWake,
             settings: () => {
               const cur = this.host.readConfigOrNull();
-              const threshold = cur?.compactThresholdTokens;
+              const contextWindow = getModelContextWindow(cur?.model ?? cfg.model);
+              const threshold = cur?.compactThresholdTokens ?? 40_000;
+              const effectiveThreshold = Math.max(8_000, Math.min(threshold, contextWindow - 16_384));
+              const reserveTokens = Math.max(16_384, contextWindow - effectiveThreshold);
               return {
                 compaction: {
                   enabled: true,
-                  keepRecentTokens: threshold ? Math.min(20_000, Math.floor(threshold / 2)) : 20_000,
-                  reserveTokens: 16_384,
+                  keepRecentTokens: Math.min(20_000, Math.floor(effectiveThreshold / 2)),
+                  reserveTokens,
+                  backgroundTokens: Math.min(Math.max(reserveTokens, contextWindow - 4_096), reserveTokens + 4_096),
                 },
                 afterFailedRun: "keep",
               };
