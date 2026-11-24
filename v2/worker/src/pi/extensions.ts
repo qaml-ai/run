@@ -39,6 +39,7 @@ import { CamelFsClient, normalizeRepoPath } from "../camelfs.ts";
 import { mintAgentToken, openSecret, randomId, sealSecret } from "../crypto.ts";
 import { imageHeader } from "../lib/image-header.ts";
 import { FILE_LIMITS } from "../lib/limits.ts";
+import { computeRepoDiff } from "../lib/repo-diff.ts";
 import { lookupCatalogModel } from "../model-catalog-data.ts";
 import {
   discoverMcpTools,
@@ -370,6 +371,7 @@ export function createCamelRunRepoExtension(options: CamelRunRepoExtensionOption
     parameters: obj(
       {
         targetCommit: str({ description: "Target commit hash to restore" }),
+        expectedCommit: opt(str({ description: "Optional CAS expected current HEAD commit" })),
         message: opt(str({ description: "Optional restore commit message" })),
       },
       { open: true },
@@ -379,6 +381,7 @@ export function createCamelRunRepoExtension(options: CamelRunRepoExtensionOption
       const out = await getCfs().restore(lineage, {
         ref: branch,
         targetCommit: args.targetCommit,
+        ...(args.expectedCommit ? { expectedCommit: args.expectedCommit } : {}),
         holder: options.agentId,
         author: `agent:${options.agentId}`,
         message: args.message ?? "restore checkpoint",
@@ -402,6 +405,36 @@ export function createCamelRunRepoExtension(options: CamelRunRepoExtensionOption
       const out = await getCfs().history(lineage, {
         ref: branch,
         limit: args.limit ?? 20,
+      });
+      return textOutput(out);
+    },
+  });
+
+  const diffTool = defineTool({
+    name: "repo_diff",
+    description:
+      "Compute a unified diff between two commits or refs in the agent repository (defaults `to` to the current branch).",
+    parameters: obj(
+      {
+        from: str({ description: "Base commit SHA or ref" }),
+        to: opt(str({ description: "Target commit SHA or ref (default: current branch HEAD)" })),
+        path: opt(str({ description: "Optional single file path filter" })),
+        statOnly: opt(bool({ description: "Return file list and stats without patches" })),
+        maxBytes: opt(num({ description: "Maximum total patch bytes (default 65536)" })),
+        contextLines: opt(num({ description: "Unified diff context lines (default 3)" })),
+      },
+      { open: true },
+    ),
+    async execute(args) {
+      const { lineage, branch } = await options.ensureRepo();
+      const out = await computeRepoDiff(getCfs(), lineage, {
+        from: args.from,
+        to: args.to || branch,
+        defaultRef: branch,
+        path: args.path,
+        statOnly: args.statOnly === true,
+        maxBytes: args.maxBytes,
+        contextLines: args.contextLines,
       });
       return textOutput(out);
     },
@@ -529,6 +562,7 @@ export function createCamelRunRepoExtension(options: CamelRunRepoExtensionOption
       checkpointTool as ToolRegistration,
       restoreTool as ToolRegistration,
       historyTool as ToolRegistration,
+      diffTool as ToolRegistration,
       viewImageTool as ToolRegistration,
       renderImageTool as ToolRegistration,
     ],

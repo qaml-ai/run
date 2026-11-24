@@ -170,6 +170,7 @@ const FILES_TOOL_NAMES = new Set([
   "repo_checkpoint",
   "repo_restore",
   "repo_history",
+  "repo_diff",
   "view_image",
 ]);
 
