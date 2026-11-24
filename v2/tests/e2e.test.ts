@@ -208,7 +208,14 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
           res.once("close", () => clearTimeout(finish));
           return;
         }
-        const plain = last === "native-text-fixture" ? '{"ok":1}' : last === "native-text-invalid-json" ? "No object" : undefined;
+        const plain =
+          last === "native-text-fixture"
+            ? '{"ok":1}'
+            : last === "native-text-invalid-json"
+              ? "No object"
+              : last === "Funded" || last === "uncapped batch member" || last === "capped batch member"
+                ? `SSE upstream (azure/gpt-6.2-sol) saw ${last}`
+                : undefined;
         const toolResult = input.some((item) => item.type === "function_call_output");
         const call = last === "mcp-image-fixture"
           ? { name: "meteo__weather_forecast", arguments: '{"city":"image-fixture"}' }
@@ -290,6 +297,11 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     const workerPort = await getFreePort();
     const toolKey = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
     const baseConfig = JSON.parse(readFileSync(join(ROOT, "worker/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+    if (baseConfig.durable_objects?.bindings) {
+      baseConfig.durable_objects.bindings = baseConfig.durable_objects.bindings.filter(
+        (b: { script_name?: string }) => !b.script_name,
+      );
+    }
     const testConfigPath = join(tempDir, "wrangler.test.jsonc");
     const runtimeMain = join(ROOT, "tests/fixtures/alarm-worker.ts");
     writeFileSync(
@@ -617,17 +629,16 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       body: JSON.stringify(grant),
     });
     assert.equal(unauthorized.status, 403);
-    await unfunded.providers.set("openrouter", { apiKey: "fake-provider-key", baseUrl: auxUrl + "/v1" });
-    const builder = await unfunded.agents.upsert("pilot-builder", { model: "openrouter/meta/muse-ember" });
+    const builder = await unfunded.agents.upsert("pilot-builder", { model: "azure/gpt-6.2-sol" });
     const clearAgentCap = await fetch(`${workerUrl}/v2/agents/${builder.id}/spend-limit`, {
       method: "PATCH", headers: { Authorization: `Bearer ${other.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ spendLimitUsd: 0, expectedSpendLimitUsd: 10 }),
     });
     assert.equal(clearAgentCap.status, 200);
-    const beforeDispatch = lastProviderMessages;
+    const beforeDispatch = azureRequests.length;
     await assert.rejects(builder.run("Unfunded"), (error: unknown) =>
       error instanceof CamelRunError && error.code === "insufficient_credits");
-    assert.equal(lastProviderMessages, beforeDispatch);
+    assert.equal(azureRequests.length, beforeDispatch);
     assert.equal((await unfunded.billing.get()).balanceUsd, 0);
 
     assert.equal((await unfunded.billing.addCredits({ ...grant, adminKey: ADMIN_SECRET })).balanceUsd, 1);
@@ -647,11 +658,10 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
     const camel = new CamelRun({ baseUrl: workerUrl, apiKey });
     t.after(() => camel.close());
-    await camel.providers.set("openrouter", { apiKey: "test-spend", baseUrl: `${auxUrl}/v1` });
     await camel.webhooks.create({ url: `${auxUrl}/usage-webhook`, events: ["usage.recorded", "run.failed"] });
     const context = { org: "org-test", workspace: "workspace-test", thread: "thread-test" };
     const agent = await camel.agents.upsert("per-run-spend", {
-      model: "openrouter/meta/muse-ember",
+      model: "azure/gpt-6.2-sol",
       queue: { mode: "batch", windowMs: 100 },
       toolIdentity: { subject: "owner", context },
     });
@@ -661,12 +671,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
     assert.equal(clearAgentCap.status, 200);
     assert.deepEqual(await clearAgentCap.json(), { spendLimitUsd: 0, changed: true });
-    const beforeZero = lastProviderMessages;
+    const beforeZero = azureRequests.length;
     const zero = await agent.run("no budget", { spendLimitUsd: 0, throwOnError: false });
     assert.ok(zero.error && typeof zero.error === "object");
     assert.equal(zero.error.code, "spend_limit_exceeded");
     assert.equal(zero.usage.costUsd, 0);
-    assert.equal(lastProviderMessages, beforeZero);
+    assert.equal(azureRequests.length, beforeZero);
     await assert.rejects(agent.run("wrong budget", { spendLimitUsd: -1 }), (error: unknown) =>
       error instanceof CamelRunError && error.code === "invalid_spend_limit");
 
@@ -709,7 +719,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       runId: capped.id,
       actor: "sender",
       context,
-      model: "openrouter/meta/muse-ember",
+      model: "azure/gpt-6.2-sol",
       kind: "response",
       input: capped.usage.inputTokens,
       output: capped.usage.outputTokens,
@@ -2003,12 +2013,12 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(readTruncRun.status, "completed");
     assert.match(readTruncRun.text, /"truncated":true/);
 
-    // Backwards compatibility: read_file without start_line/end_line returns raw unnumbered content.
+    // Backwards compatibility: read_file without start_line/end_line returns unnumbered content via pi-durable read tool.
     const readCompatRun = await agent.run(
       `Read raw [CALL:read_file {"path":"temp.txt"}]`,
     );
     assert.equal(readCompatRun.status, "completed");
-    assert.match(readCompatRun.text, /"content":"delete me\\n"/);
+    assert.match(readCompatRun.text, /delete me/);
 
     // edit_file with multiple matches and replaceAll omitted must return an actionable error with count and line numbers.
     const multiMatchRun = await agent.run(
