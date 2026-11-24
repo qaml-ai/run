@@ -454,7 +454,7 @@ export async function handleImageGenerateRequest(
   }
 
   const prompt = body.prompt;
-  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : "gpt-image-1";
+  const requestedModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : "";
   const size = typeof body.size === "string" && body.size.trim() ? body.size.trim() : "1024x1024";
   const quality = typeof body.quality === "string" && body.quality.trim() ? body.quality.trim() : undefined;
   const background = typeof body.background === "string" && body.background.trim() ? body.background.trim() : undefined;
@@ -464,6 +464,11 @@ export async function handleImageGenerateRequest(
   const tenantStub = getTenantStub(env, tenantId);
   const cred = await tenantStub.getProviderSecret("openai");
   const apiKey = cred?.apiKey || env.OPENAI_API_KEY;
+  const isCustomBaseUrl = Boolean(cred?.baseUrl);
+  const model =
+    !requestedModel || (!isCustomBaseUrl && requestedModel === "gpt-image-1")
+      ? "gpt-image-2.5-flare"
+      : requestedModel;
 
   let imageBytes: Uint8Array = MINIMAL_PNG_BYTES;
   let contentType = "image/png";
