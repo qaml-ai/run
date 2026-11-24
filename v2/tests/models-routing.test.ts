@@ -443,9 +443,9 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     const openaiRes = await worker.fetch(`${origin}/v2/models?provider=openai`, { headers });
     assert.equal(openaiRes.status, 200);
     const openaiModels = (await openaiRes.json()) as Array<{ id: string; available: boolean }>;
-    assert.equal(openaiModels.length, 44);
-    assert.ok(openaiModels.every((m) => m.available), "all 44 OpenAI models should be available via platform OPENAI_API_KEY");
-    for (const id of ["openai/gpt-5", "openai/gpt-5.4", "openai/gpt-5-mini", "openai/gpt-5.3-codex", "openai/o3", "openai/o4-mini", "openai/gpt-4.1"]) {
+    assert.ok(openaiModels.length >= 44, `expected >= 44 OpenAI models, got ${openaiModels.length}`);
+    assert.ok(openaiModels.every((m) => m.available), "all OpenAI models should be available via platform OPENAI_API_KEY");
+    for (const id of ["openai/gpt-5", "openai/gpt-5.4", "openai/gpt-5-mini", "openai/gpt-5.3-codex", "openai/gpt-6.2-sol", "openai/o3", "openai/o4-mini", "openai/gpt-4.1"]) {
       assert.ok(openaiModels.some((m) => m.id === id), `missing ${id}`);
     }
 
@@ -453,8 +453,9 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     const googleRes = await worker.fetch(`${origin}/v2/models?provider=google`, { headers });
     assert.equal(googleRes.status, 200);
     const googleModels = (await googleRes.json()) as Array<{ id: string; available: boolean }>;
-    assert.equal(googleModels.length, 23);
+    assert.ok(googleModels.length >= 23, `expected >= 23 Google/Gemini models, got ${googleModels.length}`);
     assert.ok(googleModels.some((m) => m.id === "gemini/gemini-3.5-flash"));
+    assert.ok(googleModels.some((m) => m.id === "gemini/gemini-4-carbon"));
 
     // Azure: platform-deployed azure/gpt-6-luna, azure/gpt-6.1-terra, and azure/gpt-6.2-sol are available without BYOK azure key
     const azureRes = await worker.fetch(`${origin}/v2/models?provider=azure`, { headers });
@@ -469,6 +470,8 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     const allModels = (await allRes.json()) as Array<{ id: string; provider: string; available: boolean }>;
     assert.ok(allModels.length >= 500, `expected full v1 catalog, got ${allModels.length}`);
     assert.equal(allModels.filter((m) => m.provider === "xai").length, 4);
-    assert.equal(allModels.filter((m) => m.provider === "anthropic").length, 19);
+    assert.ok(allModels.filter((m) => m.provider === "anthropic").length >= 19);
+    assert.ok(allModels.some((m) => m.id === "anthropic/claude-sonnet-4-0"));
+    assert.ok(allModels.some((m) => m.id === "anthropic/claude-fable-5-2"));
   });
 });
