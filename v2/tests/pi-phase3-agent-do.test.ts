@@ -846,4 +846,100 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     assert.ok(histStr.includes("BRAVO-LEGACY-2"), "GET /history should contain Turn 2");
     assert.ok(histStr.includes("Turn 3: verify prior legacy turns"), "GET /history should contain Turn 3");
   });
+
+  // =========================================================================
+  // 6. Native `tool_search` deferred tool discovery, native `CompactionTask`
+  //    manual `/compact`, and native `CamelRunUserEntry` per-turn metadata
+  // =========================================================================
+  await t.test("6. native tool_search deferred discovery + native CompactionTask /compact + CamelRunUserEntry metadata", async () => {
+    const upsert = await api("/v2/agents/pi-p6", {
+      method: "PUT",
+      body: JSON.stringify({
+        model: "mock/default",
+        builtins: ["tool_search"],
+        tools: [
+          {
+            name: "calc_double",
+            description: "Multiply a number by two for math calculations",
+            parameters: { type: "object", properties: { n: { type: "number" } } },
+            url: `${mocks.webhookBaseUrl}/calc_double`,
+            deferred: true,
+          },
+          {
+            name: "lookup_fact",
+            description: "Lookup encyclopedia trivia facts by topic",
+            parameters: { type: "object", properties: { topic: { type: "string" } } },
+            url: `${mocks.webhookBaseUrl}/lookup_fact`,
+            deferred: true,
+          },
+        ],
+      }),
+    });
+    assert.equal(upsert.status, 201, JSON.stringify(upsert));
+
+    // Step 1: calling a deferred tool directly before tool_search is NOT offered to the model.
+    const beforeDiscovery = await api("/v2/agents/pi-p6/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: '[CALL:calc_double({"n":9})] Try before discovery',
+        actor: "usr_p6",
+        idempotencyKey: "req-p6-1",
+        wait: true,
+      }),
+    });
+    assert.equal(beforeDiscovery.status, 200, JSON.stringify(beforeDiscovery));
+    assert.equal(beforeDiscovery.json.status, "completed");
+    assert.equal(
+      beforeDiscovery.json.toolCalls.length,
+      0,
+      `Deferred tool should not be offered before tool_search: ${JSON.stringify(beforeDiscovery.json)}`,
+    );
+
+    // Step 2: invoke native `tool_search` to load `calc_double`, then call `calc_double` in the next step!
+    const withDiscovery = await api("/v2/agents/pi-p6/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: '[CALL:tool_search({"query":"multiply number math"})] [CALL:calc_double({"n":21})] Compute double',
+        actor: "usr_p6",
+        idempotencyKey: "req-p6-2",
+        wait: true,
+      }),
+    });
+    assert.equal(withDiscovery.status, 200, JSON.stringify(withDiscovery));
+    assert.equal(withDiscovery.json.status, "completed", JSON.stringify(withDiscovery.json));
+    assert.ok(
+      withDiscovery.json.text.includes("42"),
+      `Expected discovered calc_double(21) -> 42 in reply: ${withDiscovery.json.text}`,
+    );
+    const toolNames = withDiscovery.json.toolCalls.map((tc: { name: string }) => tc.name);
+    assert.ok(toolNames.includes("tool_search"), `Expected tool_search call: ${JSON.stringify(toolNames)}`);
+    assert.ok(toolNames.includes("calc_double"), `Expected calc_double call after discovery: ${JSON.stringify(toolNames)}`);
+
+    // Step 3: verify native `CamelRunUserEntry` stored runId + actor + requestId in history
+    const histBeforeCompact = await api("/v2/agents/pi-p6/history");
+    assert.equal(histBeforeCompact.status, 200);
+    const firstUser = histBeforeCompact.json.messages.find((m: { role: string }) => m.role === "user");
+    assert.equal(firstUser?.runId, beforeDiscovery.json.id);
+    assert.equal(firstUser?.content?.meta?.actor, "usr_p6");
+    assert.equal(firstUser?.content?.meta?.requestId, "req-p6-1");
+    const firstAssistant = histBeforeCompact.json.messages.find((m: { role: string }) => m.role === "assistant");
+    assert.equal(firstAssistant?.runId, beforeDiscovery.json.id);
+
+    // Step 4: native `CompactionTask` manual POST /compact WITHOUT custom summary returns real summary + upToSeq!
+    const nativeCompact = await api("/v2/agents/pi-p6/compact", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    assert.equal(nativeCompact.status, 200, JSON.stringify(nativeCompact));
+    assert.ok(
+      typeof nativeCompact.json.summary === "string" && nativeCompact.json.summary.length > 0,
+      `Expected native CompactionTask summary, got: ${JSON.stringify(nativeCompact.json)}`,
+    );
+    assert.ok(nativeCompact.json.upToSeq > 0, JSON.stringify(nativeCompact.json));
+    assert.ok(nativeCompact.json.compactedCount > 0, JSON.stringify(nativeCompact.json));
+
+    const histAfterCompact = await api("/v2/agents/pi-p6/history");
+    assert.equal(histAfterCompact.status, 200);
+    assert.equal(histAfterCompact.json.compaction?.summary, nativeCompact.json.summary);
+  });
 });

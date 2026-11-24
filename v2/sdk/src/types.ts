@@ -81,7 +81,7 @@ export interface BillingInfo { balanceUsd: number; monthlyCapUsd: number | null;
 export interface AddCreditsInput { amountUsd: number; refId?: string; note?: string; adminKey: string; }
 
 export type BuiltinCategory =
-  | "files" | "images" | "browser" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human" | "skills"
+  | "files" | "images" | "browser" | "bash" | "codemode" | "delegate" | "workflows" | "web_search" | "web_fetch" | "human" | "skills" | "tool_search"
   | (string & {});
 
 export interface McpServerConfig {
@@ -91,6 +91,7 @@ export interface McpServerConfig {
   auth?: { type: "runtime" };
   audience?: string;
   allowTools?: string[];
+  deferred?: boolean;
 }
 
 export interface ToolDefinition {
@@ -100,6 +101,7 @@ export interface ToolDefinition {
   url?: string;
   headers?: Record<string, string>;
   requiresApproval?: boolean;
+  deferred?: boolean;
 }
 export interface LocalTool<TArgs = Record<string, unknown>, TResult = unknown> extends Omit<ToolDefinition, "url"> {
   execute: (args: TArgs) => TResult | Promise<TResult>;

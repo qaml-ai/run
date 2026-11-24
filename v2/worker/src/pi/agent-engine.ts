@@ -2,6 +2,10 @@ import { Buffer } from "node:buffer";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, ImageContent, TextContent, ToolCall } from "@earendil-works/pi-ai";
 import {
+  estimateMessageTokens,
+  estimateTextAndImageContentTokens,
+} from "@earendil-works/pi-ai/utils/estimate";
+import {
   AssistantEntry,
   CompactionEntry,
   createRegistry,
@@ -9,31 +13,38 @@ import {
   defineTool,
   Harness,
   LiveDoc,
-  ResetEntry,
+  ROOT_CONVERSATION_ID,
   ToolResultEntry,
-  UserEntry,
   type AgentChange,
+  type CompactionSettings,
+  type Conversation,
   type ConversationWatch,
   type EntryId,
   type EntryRecord,
   type Extension,
+  type JsonObject,
   type LiveState,
   type Registry,
+  type SubmissionId,
   type TaskId,
   type ToolExecutionResult,
   type ToolRegistration,
   type UserInput,
 } from "@earendil-works/pi-durable";
 import type { CodemodeGlobal } from "@earendil-works/pi-durable/codemode";
+import {
+  createToolSearchExtension,
+  TOOL_SEARCH_TOOL_NAME,
+} from "@earendil-works/pi-durable/tool-search";
 import { num, obj, opt, str } from "@earendil-works/pi-schema";
-import { openPiSessionStore, PiHarness, ROOT_SESSION } from "agents/harness/pi";
+import { PiHarness, ROOT_SESSION } from "agents/harness/pi";
 import { Lifecycle, type LifecycleJobContext } from "agents/lifecycle";
 import type { DurableObject } from "cloudflare:workers";
 import { CamelFsClient, normalizeRepoPath } from "../camelfs.ts";
 import { randomId } from "../crypto.ts";
 import { imageHeader } from "../lib/image-header.ts";
 import { consumeInfraCredit } from "../ops-metadata.ts";
-import { isImageAttachment, parseRunFiles, verifyRunFiles } from "../run-files.ts";
+import { isImageAttachment, verifyRunFiles } from "../run-files.ts";
 import { toolImageKey } from "../tool-images.ts";
 import { getSkillStore, type SkillRecord } from "../skills.ts";
 import { getTenantStub, platformCreditReserve } from "../tenant-do.ts";
@@ -48,7 +59,6 @@ import {
   type RunRecord,
   type RunUsage,
   type StartRunHints,
-  type StartRunInput,
   type StoredMessage,
   type StoredRunFile,
   type ToolCallSummary,
@@ -69,8 +79,10 @@ import {
   type HumanInputRequiredEvent,
 } from "./extensions.ts";
 import {
+  CamelRunUserEntry,
   copyPiEntriesToConversation,
   importLegacyTranscriptToPi,
+  isUserContentEntry,
   mapPiEntriesToHistory,
   unwrapCompactionSummary,
   wrapCompactionSummary,
@@ -106,24 +118,6 @@ export interface PiAgentHost {
   readConfigOrNull(): AgentConfig | null;
   isDestroying(): boolean;
   ensureAgentRepository(): Promise<{ repoId: string; lineage: string; branch: string }>;
-  getVmSession(branch: string): { vmId: string; leaseExpiresAt: number } | null;
-  saveVmSession(branch: string, vmId: string, leaseExpiresAt: number): void;
-  clearVmSession(branch: string, vmId: string): void;
-  recordChildAgent(entry: {
-    id: string;
-    childAgentId: string;
-    childAgentKey: string;
-    parentRunId: string;
-    status: string;
-    result: unknown;
-  }): void;
-  getChildAgent(idOrAgentId: string): {
-    id: string;
-    childAgentId: string;
-    childAgentKey: string;
-    status: string;
-    result: unknown;
-  } | null;
   hasWebSocketTool(name: string): boolean;
   invokeWebSocketTool(name: string, args: Record<string, unknown>, callId: string): Promise<unknown>;
   recordAndBroadcastEvent(
@@ -136,7 +130,6 @@ export interface PiAgentHost {
   materializeRunRecord(runId: string): RunRecord;
   waitForRunSettlement(runId: string): Promise<RunRecord>;
   notifyRunWaiters(runId: string): void;
-  releaseUnusedPreacquiredHint(tenantId: string, hints?: StartRunHints): void;
   setActiveRunId(runId: string | null): void;
   getActiveRunId(): string | null;
   onRunSettled?(runId: string): void;
@@ -146,8 +139,6 @@ export interface PiAgentHost {
 interface ActiveRunTracker {
   runId: string;
   actor?: string;
-  requestId?: string | null;
-  verifiedFiles?: StoredRunFile[];
   outputSchema: Record<string, unknown> | null;
   spendLimitUsd: number | null;
   usage: RunUsage;
@@ -315,16 +306,19 @@ export class PiAgentEngine {
             onWake,
             settings: () => {
               const cur = this.host.readConfigOrNull();
-              const contextWindow = getModelContextWindow(cur?.model ?? cfg.model);
-              const threshold = cur?.compactThresholdTokens ?? 40_000;
-              const effectiveThreshold = Math.max(8_000, Math.min(threshold, contextWindow - 16_384));
+              const modelName = cur?.model ?? cfg.model;
+              const contextWindow = getModelContextWindow(modelName);
+              const effectiveThreshold = getAutoCompactThreshold(
+                modelName,
+                cur?.compactThresholdTokens,
+              );
               const reserveTokens = Math.max(16_384, contextWindow - effectiveThreshold);
               return {
                 compaction: {
                   enabled: true,
                   keepRecentTokens: Math.min(20_000, Math.floor(effectiveThreshold / 2)),
                   reserveTokens,
-                  backgroundTokens: Math.min(Math.max(reserveTokens, contextWindow - 4_096), reserveTokens + 4_096),
+                  backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
                 },
                 afterFailedRun: "keep",
               };
@@ -351,9 +345,9 @@ export class PiAgentEngine {
     await this.startPromise;
   }
 
-  isBusy(): boolean {
-    if (this.activeTracker && !this.activeTracker.settled) return true;
-    return false;
+  private async getRootConversation(): Promise<Conversation | undefined> {
+    const pi = await this.harness.pi();
+    return pi.conversation(ROOT_CONVERSATION_ID, BG);
   }
 
   getActiveActor(): string | undefined {
@@ -369,9 +363,15 @@ export class PiAgentEngine {
     );
   }
 
-  async steerActiveRun(prompt: string, steerRunId: string): Promise<void> {
+  async steerActiveRun(prompt: string, steerRunId: string, actor?: string): Promise<void> {
     await this.ensureStarted();
-    await this.harness.session(ROOT_SESSION).steer(prompt, { operationId: steerRunId });
+    await this.harness.session(ROOT_SESSION).steer(prompt, {
+      operationId: steerRunId,
+      entry: {
+        kind: CamelRunUserEntry.kind,
+        data: { runId: steerRunId, ...(actor ? { actor } : {}) },
+      },
+    });
   }
 
   async dispose(): Promise<void> {
@@ -399,8 +399,16 @@ export class PiAgentEngine {
     return skills;
   }
 
+  private updateRepoCommit(tenantId: string, repoId: string, commit: string): Promise<void> {
+    return getTenantStub(this.host.env, tenantId)
+      .updateRepoCommit(repoId, commit)
+      .then(() => undefined)
+      .catch(() => undefined);
+  }
+
   private buildExecutionEnv() {
     const cfg = this.host.getConfig();
+    const sql = this.host.ctx.storage.sql;
     return createCamelFsExecutionEnv({
       env: this.host.env,
       tenantId: cfg.tenantId,
@@ -408,15 +416,30 @@ export class PiAgentEngine {
       ensureRepo: () => this.host.ensureAgentRepository(),
       getResolvedSkills: () => this.getResolvedSkills(),
       onFilesChanged: (files) => this.recordFilesChanged(files),
-      onRepoCommit: async (repoId, commit) => {
-        await getTenantStub(this.host.env, cfg.tenantId)
-          .updateRepoCommit(repoId, commit)
-          .catch(() => {});
+      onRepoCommit: (repoId, commit) => this.updateRepoCommit(cfg.tenantId, repoId, commit),
+      getVmSession: (branch) => {
+        const row = sql
+          .exec<{ vm_id: string; lease_expires_at: number }>(
+            `SELECT vm_id, lease_expires_at FROM vm_session WHERE branch = ?1 LIMIT 1`,
+            branch,
+          )
+          .toArray()[0];
+        return row ? { vmId: row.vm_id, leaseExpiresAt: row.lease_expires_at } : null;
       },
-      getVmSession: (branch) => this.host.getVmSession(branch),
-      saveVmSession: (branch, vmId, leaseExpiresAt) =>
-        this.host.saveVmSession(branch, vmId, leaseExpiresAt),
-      clearVmSession: (branch, vmId) => this.host.clearVmSession(branch, vmId),
+      saveVmSession: (branch, vmId, leaseExpiresAt) => {
+        sql.exec(
+          `INSERT INTO vm_session (branch, vm_id, lease_expires_at)
+           VALUES (?1, ?2, ?3)
+           ON CONFLICT(branch) DO UPDATE SET vm_id = excluded.vm_id, lease_expires_at = excluded.lease_expires_at`,
+          branch,
+          vmId,
+          leaseExpiresAt,
+        );
+        void this.host.scheduleNextAlarm();
+      },
+      clearVmSession: (branch, vmId) => {
+        sql.exec("DELETE FROM vm_session WHERE branch = ?1 AND vm_id = ?2", branch, vmId);
+      },
       onVmBillableMs: (billableMs) => this.recordVmBillableMs(billableMs),
     });
   }
@@ -549,6 +572,7 @@ export class PiAgentEngine {
           parameters: (spec.parameters && typeof spec.parameters === "object"
             ? spec.parameters
             : { type: "object", properties: {} }) as Record<string, unknown>,
+          ...(spec.deferred ? { deferred: true as const } : {}),
           async execute(args, api, context) {
             const curCfg = host.getConfig();
             const runId = getActiveRunId() ?? `run_${api.conversationId}`;
@@ -766,11 +790,7 @@ export class PiAgentEngine {
           agentId: cfg.id,
           ensureRepo: () => this.host.ensureAgentRepository(),
           onFilesChanged: (files) => this.recordFilesChanged(files),
-          onRepoCommit: async (repoId, commit) => {
-            await getTenantStub(this.host.env, cfg.tenantId)
-              .updateRepoCommit(repoId, commit)
-              .catch(() => {});
-          },
+          onRepoCommit: (repoId, commit) => this.updateRepoCommit(cfg.tenantId, repoId, commit),
         }),
       );
     }
@@ -793,23 +813,54 @@ export class PiAgentEngine {
           agentId: cfg.id,
           ensureRepo: () => this.host.ensureAgentRepository(),
           onFilesChanged: (files) => this.recordFilesChanged(files),
-          onRepoCommit: async (repoId, commit) => {
-            await getTenantStub(this.host.env, cfg.tenantId)
-              .updateRepoCommit(repoId, commit)
-              .catch(() => {});
-          },
+          onRepoCommit: (repoId, commit) => this.updateRepoCommit(cfg.tenantId, repoId, commit),
         }),
       );
     }
 
     if (!snap.extension("camelrun-delegate")) {
+      const sql = this.host.ctx.storage.sql;
       this.registry.install(
         createCamelRunDelegateExtension({
           env: this.host.env,
           config: cfg,
           getRunId: () => this.activeTracker?.runId ?? "",
-          recordChildAgent: (entry) => this.host.recordChildAgent(entry),
-          getChildAgent: (id) => this.host.getChildAgent(id),
+          recordChildAgent: (entry) => {
+            sql.exec(
+              `INSERT INTO children (id, child_agent_id, child_agent_key, parent_run_id, status, result_json)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+               ON CONFLICT(id) DO UPDATE SET status = excluded.status, result_json = excluded.result_json`,
+              entry.id,
+              entry.childAgentId,
+              entry.childAgentKey,
+              entry.parentRunId,
+              entry.status,
+              JSON.stringify(entry.result ?? null),
+            );
+          },
+          getChildAgent: (idOrAgentId) => {
+            const r = sql
+              .exec<{
+                id: string;
+                child_agent_id: string;
+                child_agent_key: string;
+                status: string;
+                result_json: string | null;
+              }>(
+                `SELECT * FROM children WHERE id = ?1 OR child_agent_id = ?1 OR child_agent_key = ?1 LIMIT 1`,
+                idOrAgentId,
+              )
+              .toArray()[0];
+            return r
+              ? {
+                  id: r.id,
+                  childAgentId: r.child_agent_id,
+                  childAgentKey: r.child_agent_key,
+                  status: r.status,
+                  result: r.result_json ? JSON.parse(r.result_json) : null,
+                }
+              : null;
+          },
         }),
       );
     }
@@ -825,6 +876,10 @@ export class PiAgentEngine {
       );
     }
 
+    if (!snap.extension("tool-search")) {
+      this.registry.install(createToolSearchExtension());
+    }
+
     const customFp = JSON.stringify(cfg.tools ?? []);
     if (customFp !== this.installedCustomFingerprint || !snap.extension("camelrun-custom-and-web")) {
       this.registry.install(this.buildCustomAndWebExtension(cfg));
@@ -833,14 +888,15 @@ export class PiAgentEngine {
 
     // Install placeholder MCP extension without eager network discovery (callers like camel-bots
     // upsert agents before activating signed MCP ACLs). Real MCP discovery happens lazily in
-    // `ensureMcpExtensionReady()` right before `startRun`, `executeRun`, or `respondToInput`.
+    // `ensureMcpExtensionReady()` right before `executeRun` or `respondToInput`.
     if (!snap.extension("camelrun-mcp")) {
       this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
     }
   }
 
   private async ensureMcpExtensionReady(cfg: AgentConfig): Promise<void> {
-    const mcpFp = JSON.stringify(cfg.mcpServers ?? []);
+    const deferByDefault = (cfg.builtins ?? []).includes("tool_search");
+    const mcpFp = JSON.stringify({ servers: cfg.mcpServers ?? [], deferByDefault });
     if (mcpFp === this.installedMcpFingerprint) return;
     if ((cfg.mcpServers ?? []).length > 0) {
       const mcpExt = await createCamelRunMcpExtension({
@@ -849,6 +905,7 @@ export class PiAgentEngine {
         getRunId: () => this.activeTracker?.runId ?? "",
         getActor: () => this.activeTracker?.actor,
         onInputRequired: (ev) => this.handleInputRequired(ev),
+        deferByDefault,
       });
       this.registry.install(mcpExt);
     } else {
@@ -857,179 +914,90 @@ export class PiAgentEngine {
     this.installedMcpFingerprint = mcpFp;
   }
 
-  private async maybeAutoCompact(cfg: AgentConfig): Promise<void> {
+  /**
+   * Calibrates `keepRecentTokens` only when the active context already exceeds the
+   * compaction threshold yet a single huge early message leaves the recent tail smaller
+   * than default `keepRecentTokens` (so native `CompactionTask`'s `selectCut()` still
+   * finds a clean boundary without splitting tool calls from their results).
+   */
+  private async computeCompactionOverride(
+    conv: Conversation,
+    cfg: AgentConfig,
+    nextInput: UserInput,
+  ): Promise<CompactionSettings | null> {
     const threshold = getAutoCompactThreshold(cfg.model, cfg.compactThresholdTokens);
-    const activeEntries = await this.harness.session(ROOT_SESSION).messages();
-    const contentEntries = activeEntries.filter(
-      (e) => UserEntry.is(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
+    const defaultKeepRecent = Math.min(20_000, Math.floor(threshold / 2));
+    const view = await conv.context(BG);
+    const contentEntries = view.entries.filter(
+      (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
     );
-    if (contentEntries.length <= 6) return;
+    if (contentEntries.length <= 6) return null;
 
-    let totalChars = 0;
-    for (const e of contentEntries) {
-      totalChars += JSON.stringify(e.model ?? "").length;
-    }
-    const estTokens = Math.ceil(totalChars / 4);
-    if (estTokens <= threshold) return;
+    const totalTokens =
+      view.messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0) +
+      estimateTextAndImageContentTokens(nextInput);
+    if (totalTokens <= threshold) return null;
 
-    let cutIdx = Math.max(0, contentEntries.length - 6);
-    // Never split a tool call from any of its tool results
-    while (cutIdx > 0 && ToolResultEntry.is(contentEntries[cutIdx])) {
+    // Check whether the recent tail (entries after index 0) is smaller than defaultKeepRecent
+    const tailEntries = contentEntries.slice(1);
+    const tailTokens =
+      tailEntries.reduce(
+        (sum, e) => sum + (e.model ?? []).reduce((s, m) => s + estimateMessageTokens(m), 0),
+        0,
+      ) + estimateTextAndImageContentTokens(nextInput);
+    if (tailTokens >= defaultKeepRecent) return null;
+
+    let cutIdx = Math.max(1, contentEntries.length - 6);
+    while (cutIdx > 1 && ToolResultEntry.is(contentEntries[cutIdx]!)) {
       cutIdx--;
     }
-    if (cutIdx <= 0) return;
-
-    const firstKept = contentEntries[cutIdx]!;
-    const upToSeq = cutIdx;
-
-    const transcriptLines: string[] = [];
-    for (const entry of contentEntries.slice(0, cutIdx)) {
-      const m = entry.model?.[0];
-      if (!m) continue;
-      if (m.role === "user") {
-        const txt =
-          typeof m.content === "string"
-            ? m.content
-            : m.content
-                .filter((c): c is TextContent => c.type === "text")
-                .map((c) => c.text)
-                .join("\n");
-        transcriptLines.push(`user: ${txt.slice(0, 600)}`);
-      } else if (m.role === "assistant") {
-        const txt = extractAssistantText(m);
-        transcriptLines.push(`assistant: ${txt.slice(0, 600)}`);
-      } else if (m.role === "toolResult") {
-        const txt = m.content
-          .filter((c): c is TextContent => c.type === "text")
-          .map((c) => c.text)
-          .join("\n");
-        transcriptLines.push(`tool(${m.toolName}): ${txt.slice(0, 400)}`);
-      }
-    }
-
-    let summary = `Previous conversation summary (up to message #${upToSeq}):\n${transcriptLines.join("\n").slice(0, 1200)}`;
-    try {
-      const res = await completePiModel({
-        env: this.host.env,
-        tenantId: cfg.tenantId,
-        keyScope: cfg.keyScope ?? null,
-        model: cfg.model,
-        instructions:
-          "Summarize the prior conversation concisely, preserving key facts, decisions, file paths, and tool results.",
-        messages: [
-          {
-            role: "user",
-            content: `Summarize these ${cutIdx} messages:\n\n${transcriptLines.join("\n").slice(0, 16_000)}`,
-            timestamp: Date.now(),
-          },
-        ],
-      });
-      if (res.text.trim()) {
-        summary = `Previous conversation summary (up to message #${upToSeq}):\n${res.text.trim()}`;
-      }
-    } catch {
-      // Keep deterministic transcript-snippet summary fallback
-    }
-
-    const pi = await this.harness.pi();
-    const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
-    if (!conv) return;
-
-    const sub = await conv.submit(
-      {
-        type: "write",
-        entry: {
-          kind: CompactionEntry.kind,
-          head: firstKept.id,
-          model: [
-            {
-              role: "user",
-              content: wrapCompactionSummary(summary),
-              timestamp: Date.now(),
-            },
-          ],
-          data: { reason: "auto" },
-        },
-      },
-      BG,
-    );
-    await sub.wait(BG);
-
-    this.host.recordAndBroadcastEvent(null, "context_compacted", {
-      upToSeq,
-      compactedCount: cutIdx,
-    });
+    const keptTokens =
+      contentEntries
+        .slice(cutIdx)
+        .reduce(
+          (sum, e) => sum + (e.model ?? []).reduce((s, m) => s + estimateMessageTokens(m), 0),
+          0,
+        ) + estimateTextAndImageContentTokens(nextInput);
+    return { keepRecentTokens: Math.max(1, keptTokens) };
   }
 
-  private buildAgentChange(cfg: AgentConfig, maxTurns?: number): AgentChange {
+  private buildAgentChange(
+    cfg: AgentConfig,
+    maxTurns?: number,
+    compaction?: CompactionSettings | null,
+  ): AgentChange {
     const builtins = new Set(cfg.builtins ?? []);
     const customNames = new Set((cfg.tools ?? []).map((t) => t.name));
     const hasSkills = builtins.has("skills") || (cfg.skills?.length ?? 0) > 0;
     const hasMcp = (cfg.mcpServers?.length ?? 0) > 0;
 
-    const enabledTools: ToolRegistration[] = [];
-    for (const { extension, tool } of this.registry.snapshot().tools()) {
-      const name = tool.name;
-      if (customNames.has(name)) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (extension.name === "camelrun-mcp" && hasMcp) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (FILES_TOOL_NAMES.has(name) && builtins.has("files")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "render_image" && builtins.has("images")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "bash" && builtins.has("bash")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "codemode" && builtins.has("codemode") && this.host.env.CODEMODE_SANDBOX) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "ask_human" && builtins.has("human")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if ((name === "read_skill" || name === "search_skills") && hasSkills) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (extension.name === "camelrun-browser" && builtins.has("browser")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (extension.name === "camelrun-delegate" && builtins.has("delegate")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "web_fetch" && builtins.has("web_fetch")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "web_search" && builtins.has("web_search")) {
-        enabledTools.push(tool);
-        continue;
-      }
-      if (name === "run_workflow" && builtins.has("workflows")) {
-        enabledTools.push(tool);
-        continue;
-      }
-    }
+    const enabledTools = this.registry
+      .snapshot()
+      .tools()
+      .filter(({ extension, tool: { name } }) =>
+        customNames.has(name) ||
+        (extension.name === "camelrun-mcp" && hasMcp) ||
+        (name === TOOL_SEARCH_TOOL_NAME && builtins.has("tool_search")) ||
+        (FILES_TOOL_NAMES.has(name) && builtins.has("files")) ||
+        (name === "render_image" && builtins.has("images")) ||
+        (name === "bash" && builtins.has("bash")) ||
+        (name === "codemode" && builtins.has("codemode") && Boolean(this.host.env.CODEMODE_SANDBOX)) ||
+        (name === "ask_human" && builtins.has("human")) ||
+        ((name === "read_skill" || name === "search_skills") && hasSkills) ||
+        (extension.name === "camelrun-browser" && builtins.has("browser")) ||
+        (extension.name === "camelrun-delegate" && builtins.has("delegate")) ||
+        (name === "web_fetch" && builtins.has("web_fetch")) ||
+        (name === "web_search" && builtins.has("web_search")) ||
+        (name === "run_workflow" && builtins.has("workflows")),
+      )
+      .map(({ tool }) => tool);
 
-    const modelRef = parsePiModelRef(cfg.model, this.host.env);
     return {
-      model: modelRef,
+      model: parsePiModelRef(cfg.model, this.host.env),
       instructions: cfg.instructions ? cfg.instructions : null,
       tools: enabledTools,
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(compaction !== undefined ? { compaction } : {}),
     };
   }
 
@@ -1302,24 +1270,6 @@ export class PiAgentEngine {
     return { userInput: blocks, verifiedFiles: verified };
   }
 
-  private async prepareUserInput(
-    cfg: AgentConfig,
-    prompt: string,
-    files: RunFile[],
-  ): Promise<{ userInput: UserInput; verifiedFiles: StoredRunFile[] }> {
-    if (files.length === 0) {
-      return { userInput: prompt, verifiedFiles: [] };
-    }
-    if (!cfg.lineage) {
-      throw new ApiError(400, "invalid_attachments", "Attachments require a configured repository");
-    }
-    return this.buildUserInputWithFiles(
-      cfg,
-      prompt,
-      files.map((file) => ({ lineage: cfg.lineage!, file })),
-    );
-  }
-
   private async startWatchForTracker(tracker: ActiveRunTracker): Promise<void> {
     if (tracker.watchHandle) return;
     const watch = await this.harness.session(ROOT_SESSION).watch();
@@ -1358,22 +1308,12 @@ export class PiAgentEngine {
         if (tracker.seenEntryIds.has(entryNum)) continue;
         tracker.seenEntryIds.add(entryNum);
 
-        if (UserEntry.is(entry)) {
-          const userMeta: Record<string, unknown> = {};
-          if (tracker.actor) {
-            userMeta.actor = tracker.actor;
-            userMeta.requestId = tracker.requestId ?? null;
-          }
-          if (tracker.verifiedFiles && tracker.verifiedFiles.length > 0) {
-            userMeta._files = tracker.verifiedFiles;
-          }
-          this.recordEntryMeta(
-            entryNum,
-            tracker.runId,
-            Object.keys(userMeta).length > 0 ? userMeta : undefined,
-          );
+        if (CompactionEntry.is(entry)) {
+          this.host.recordAndBroadcastEvent(null, "context_compacted", {
+            upToSeq: entry.head !== undefined ? Number(entry.head) : entryNum,
+            reason: (entry.data as { reason?: string } | undefined)?.reason ?? "auto",
+          });
         } else if (AssistantEntry.is(entry)) {
-          this.recordEntryMeta(entryNum, tracker.runId);
           const msg = entry.model?.[0];
           if (msg && msg.role === "assistant") {
             const text = extractAssistantText(msg);
@@ -1398,7 +1338,6 @@ export class PiAgentEngine {
             }
           }
         } else if (ToolResultEntry.is(entry)) {
-          this.recordEntryMeta(entryNum, tracker.runId);
           const msg = entry.model?.[0];
           if (msg && msg.role === "toolResult") {
             if (!tracker.seenToolEnds.has(msg.toolCallId)) {
@@ -1481,37 +1420,6 @@ export class PiAgentEngine {
       try {
         const result = await this.harness.wait(tracker.runId, { session: ROOT_SESSION });
 
-        // Flush any newly committed entries not yet observed by the async watch (e.g. fast mock turns)
-        if (!tracker.aborted) {
-          try {
-            const finalEntries = await this.harness.session(ROOT_SESSION).messages();
-            for (const entry of finalEntries) {
-              const entryNum = Number(entry.id);
-              if (tracker.seenEntryIds.has(entryNum)) continue;
-              tracker.seenEntryIds.add(entryNum);
-              if (UserEntry.is(entry)) {
-                const userMeta: Record<string, unknown> = {};
-                if (tracker.actor) {
-                  userMeta.actor = tracker.actor;
-                  userMeta.requestId = tracker.requestId ?? null;
-                }
-                if (tracker.verifiedFiles && tracker.verifiedFiles.length > 0) {
-                  userMeta._files = tracker.verifiedFiles;
-                }
-                this.recordEntryMeta(
-                  entryNum,
-                  tracker.runId,
-                  Object.keys(userMeta).length > 0 ? userMeta : undefined,
-                );
-              } else if (AssistantEntry.is(entry) || ToolResultEntry.is(entry)) {
-                this.recordEntryMeta(entryNum, tracker.runId);
-              }
-            }
-          } catch {
-            // Best-effort metadata flush
-          }
-        }
-
         // Give any final watch microtask a chance to flush last entry deltas
         if (tracker.watchHandle) {
           await new Promise((r) => setTimeout(r, 0));
@@ -1566,70 +1474,38 @@ export class PiAgentEngine {
           });
         } else {
           // Unanswered or post-step spend limit exceeded: spend limit, abort, input expired, or model error
-          if (postRunSpendError) {
-            const errObj = postRunSpendError;
-            const res = this.host.ctx.storage.sql.exec(
-              `UPDATE runs
-               SET status = 'failed', text = ?1, tool_calls_json = ?2, files_changed_json = ?3,
-                   usage_json = ?4, error_json = ?5, ended_at = ?6
-               WHERE id = ?7 AND status NOT IN ('completed', 'failed', 'cancelled')`,
-              tracker.accumulatedText,
-              JSON.stringify(tracker.toolCalls),
-              JSON.stringify([...tracker.filesChanged]),
-              JSON.stringify(tracker.usage),
-              JSON.stringify(errObj),
-              now,
+          const isCancelled =
+            !postRunSpendError &&
+            (tracker.aborted || (result.status !== "done" && result.reason === "aborted"));
+          const status = isCancelled ? "cancelled" : "failed";
+          const errObj = postRunSpendError
+            ? postRunSpendError
+            : isCancelled
+              ? { code: "cancelled", message: "Cancelled via abort" }
+              : (() => {
+                  const code = (result.status !== "done" ? result.reason : null) || "run_failed";
+                  return { code, message: `Run ended unanswered (${code})` };
+                })();
+          const res = this.host.ctx.storage.sql.exec(
+            `UPDATE runs
+             SET status = ?1, text = ?2, tool_calls_json = ?3, files_changed_json = ?4,
+                 usage_json = ?5, error_json = ?6, ended_at = ?7
+             WHERE id = ?8 AND status NOT IN ('completed', 'failed', 'cancelled')`,
+            status,
+            tracker.accumulatedText,
+            JSON.stringify(tracker.toolCalls),
+            JSON.stringify([...tracker.filesChanged]),
+            JSON.stringify(tracker.usage),
+            JSON.stringify(errObj),
+            now,
+            tracker.runId,
+          );
+          if (res.rowsWritten > 0) {
+            this.host.recordAndBroadcastEvent(
               tracker.runId,
+              isCancelled ? "run_cancelled" : "run_failed",
+              isCancelled ? { runId: tracker.runId } : { runId: tracker.runId, error: errObj },
             );
-            if (res.rowsWritten > 0) {
-              this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
-                runId: tracker.runId,
-                error: errObj,
-              });
-            }
-          } else if (tracker.aborted || (result.status !== "done" && result.reason === "aborted")) {
-            const errObj = { code: "cancelled", message: "Cancelled via abort" };
-            const res = this.host.ctx.storage.sql.exec(
-              `UPDATE runs
-               SET status = 'cancelled', text = ?1, tool_calls_json = ?2, files_changed_json = ?3,
-                   usage_json = ?4, error_json = ?5, ended_at = ?6
-               WHERE id = ?7 AND status NOT IN ('completed', 'failed', 'cancelled')`,
-              tracker.accumulatedText,
-              JSON.stringify(tracker.toolCalls),
-              JSON.stringify([...tracker.filesChanged]),
-              JSON.stringify(tracker.usage),
-              JSON.stringify(errObj),
-              now,
-              tracker.runId,
-            );
-            if (res.rowsWritten > 0) {
-              this.host.recordAndBroadcastEvent(tracker.runId, "run_cancelled", {
-                runId: tracker.runId,
-              });
-            }
-          } else {
-            const code = (result.status !== "done" ? result.reason : null) || "run_failed";
-            const message = `Run ended unanswered (${code})`;
-            const errObj = { code, message };
-            const res = this.host.ctx.storage.sql.exec(
-              `UPDATE runs
-               SET status = 'failed', text = ?1, tool_calls_json = ?2, files_changed_json = ?3,
-                   usage_json = ?4, error_json = ?5, ended_at = ?6
-               WHERE id = ?7 AND status NOT IN ('completed', 'failed', 'cancelled')`,
-              tracker.accumulatedText,
-              JSON.stringify(tracker.toolCalls),
-              JSON.stringify([...tracker.filesChanged]),
-              JSON.stringify(tracker.usage),
-              JSON.stringify(errObj),
-              now,
-              tracker.runId,
-            );
-            if (res.rowsWritten > 0) {
-              this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
-                runId: tracker.runId,
-                error: errObj,
-              });
-            }
           }
         }
 
@@ -1730,301 +1606,6 @@ export class PiAgentEngine {
     return work;
   }
 
-  async startRun(body: StartRunInput, hints?: StartRunHints): Promise<RunRecord> {
-    if (this.host.isDestroying()) {
-      throw new ApiError(409, "agent_deleting", "Agent deletion is in progress");
-    }
-    const cfg = this.host.getConfig();
-    const prompt = String(body.prompt ?? "");
-    const whileRunning = body.whileRunning === "steer" ? "steer" : "queue";
-    const wait = body.wait !== undefined ? Boolean(body.wait) : true;
-    const maxSteps = Math.max(1, Math.min(100, Number(body.maxSteps ?? 25)));
-    const spendLimitUsd = body.spendLimitUsd;
-    if (spendLimitUsd !== undefined && (!Number.isFinite(spendLimitUsd) || spendLimitUsd < 0)) {
-      throw new ApiError(
-        400,
-        "invalid_spend_limit",
-        "spendLimitUsd must be a finite non-negative number",
-      );
-    }
-    if (spendLimitUsd !== undefined && whileRunning === "steer") {
-      throw new ApiError(
-        400,
-        "invalid_spend_limit",
-        "A run with a spend limit must use whileRunning: queue",
-      );
-    }
-    const actor = body.actor;
-    if (actor !== undefined && (typeof actor !== "string" || !actor.trim() || actor.length > 200)) {
-      throw new ApiError(
-        400,
-        "invalid_actor",
-        "actor must be a non-empty string of at most 200 characters",
-      );
-    }
-    const idempotencyKey = body.idempotencyKey?.trim() || null;
-
-    // 1. Idempotency deduplication
-    if (idempotencyKey) {
-      const existing = this.host.ctx.storage.sql
-        .exec<{ id: string }>(`SELECT id FROM runs WHERE idempotency_key = ?1 LIMIT 1`, idempotencyKey)
-        .toArray();
-      if (existing[0]) {
-        this.host.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
-        if (wait) return this.host.waitForRunSettlement(existing[0].id);
-        return this.host.materializeRunRecord(existing[0].id);
-      }
-    }
-
-    const files = parseRunFiles(body.files);
-    if (files.length > 0 && (whileRunning === "steer" || !cfg.lineage)) {
-      throw new ApiError(
-        400,
-        "invalid_attachments",
-        "Attachments require a queued turn and a configured repository",
-      );
-    }
-
-    await this.ensureStarted();
-
-    // 2. Mid-turn steer when a run is currently executing
-    const busy = this.activeTracker && !this.activeTracker.settled && !this.activeTracker.pausedForInput;
-    if (whileRunning === "steer" && busy && this.activeTracker && actor === this.activeTracker.actor) {
-      this.host.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
-      const targetRunId = this.activeTracker.runId;
-      const steerRunId = randomId("run", 8);
-      const now = Date.now();
-
-      this.host.ctx.storage.sql.exec(
-        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, batched_into, text, usage_json, max_steps, started_at, ended_at, spend_limit_usd, actor)
-         VALUES (?1, ?2, ?3, 'steer', ?4, ?5, '', ?6, ?7, ?8, ?9, ?10, ?11)`,
-        steerRunId,
-        idempotencyKey,
-        wait ? "running" : "completed",
-        prompt,
-        targetRunId,
-        JSON.stringify(emptyUsage()),
-        maxSteps,
-        now,
-        wait ? null : now,
-        null,
-        actor ?? null,
-      );
-
-      await this.harness.session(ROOT_SESSION).steer(prompt, { operationId: steerRunId });
-
-      if (!wait) {
-        return this.host.materializeRunRecord(steerRunId);
-      }
-
-      const settledTarget = await this.host.waitForRunSettlement(targetRunId);
-      this.host.ctx.storage.sql.exec(
-        `UPDATE runs SET status = ?1, text = ?2, output_json = ?3, ended_at = ?4 WHERE id = ?5`,
-        settledTarget.status,
-        settledTarget.text,
-        JSON.stringify(settledTarget.output),
-        Date.now(),
-        steerRunId,
-      );
-      return this.host.materializeRunRecord(steerRunId);
-    }
-
-    // 3. Supersede any parked input_required runs if requested
-    if (body.supersedeInputs !== false) {
-      await this.supersedePendingInputRuns(actor);
-    }
-
-    const runId = hints?.runId ?? randomId("run", 8);
-    const now = Date.now();
-    const effectiveSpendLimit = spendLimitUsd !== undefined ? spendLimitUsd : null;
-
-    this.host.ctx.storage.transactionSync(() => {
-      this.host.ctx.storage.sql.exec(
-        `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, output_schema_json, text, usage_json, max_steps, started_at, spend_limit_usd, actor)
-         VALUES (?1, ?2, 'queued', ?3, ?4, ?5, '', ?6, ?7, ?8, ?9, ?10)`,
-        runId,
-        idempotencyKey,
-        whileRunning,
-        prompt,
-        body.outputSchema ? JSON.stringify(body.outputSchema) : null,
-        JSON.stringify(emptyUsage()),
-        maxSteps,
-        now,
-        effectiveSpendLimit,
-        actor ?? null,
-      );
-      if (files.length > 0) {
-        this.host.ctx.storage.sql.exec(
-          `INSERT INTO run_files (run_id, files_json) VALUES (?1, ?2)`,
-          runId,
-          JSON.stringify({ lineage: cfg.lineage, files }),
-        );
-      }
-    });
-
-    this.host.recordAndBroadcastEvent(runId, "run_queued", {
-      runId,
-      queueMode: cfg.queue.mode,
-    });
-
-    const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
-
-    // 4. Enforce immediate spend limit = 0 or insufficient credits BEFORE submitting
-    const failImmediately = (code: string, message: string): RunRecord => {
-      this.host.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
-      this.host.ctx.storage.sql.exec(
-        `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
-        JSON.stringify({ code, message }),
-        Date.now(),
-        runId,
-      );
-      this.host.recordAndBroadcastEvent(runId, "run_failed", {
-        runId,
-        error: { code, message },
-      });
-      this.host.notifyRunWaiters(runId);
-      return this.host.materializeRunRecord(runId);
-    };
-
-    if (effectiveSpendLimit !== null && effectiveSpendLimit <= 0) {
-      return failImmediately(
-        "spend_limit_exceeded",
-        `Run spend limit exceeded ($0.000000 >= $${effectiveSpendLimit.toFixed(6)})`,
-      );
-    }
-
-    const effectiveScope =
-      hints?.prefetchedProvider?.keyScope !== undefined
-        ? (hints.prefetchedProvider.keyScope ?? null)
-        : (body.keyScope ?? cfg.keyScope ?? null);
-    const { isByok } = await resolveTenantByokProvider(
-      this.host.env,
-      cfg.tenantId,
-      cfg.model,
-      hints?.prefetchedProvider,
-      effectiveScope,
-    );
-
-    if (!cfg.model.startsWith("mock") && !isByok && !platformCreditReserve(this.host.env, cfg.tenantId)) {
-      const balanceUsd =
-        hints?.prefetchedBalanceUsd !== undefined
-          ? hints.prefetchedBalanceUsd
-          : (await tenantStub.getProfile())?.balanceUsd;
-      if (balanceUsd !== undefined && balanceUsd <= 0) {
-        return failImmediately(
-          "insufficient_credits",
-          "Tenant balance is exhausted. Top up credits or add a BYOK provider key.",
-        );
-      }
-    }
-
-    // 5. Refresh models, ensure lazy migration, sync agent config, and acquire TenantDO slot
-    let slotAcquired = false;
-    try {
-      await this.refreshModels(cfg, { keyScope: body.keyScope, hints });
-      if (!cfg.model.startsWith("mock")) {
-        const ref = parsePiModelRef(cfg.model, this.host.env);
-        const providerObj = this.currentModels?.getProvider(ref.provider);
-        const resolvedAuth = providerObj?.auth?.apiKey
-          ? await providerObj.auth.apiKey.resolve({
-              ctx: {},
-              signal: new AbortController().signal,
-            } as never)
-          : undefined;
-        if (!resolvedAuth) {
-          return failImmediately(
-            "missing_provider_key",
-            `No API key configured for provider '${ref.provider}'`,
-          );
-        }
-      }
-      await this.ensureRootMigrated(cfg, maxSteps);
-      await this.ensureMcpExtensionReady(cfg);
-      await this.maybeAutoCompact(cfg);
-      const { userInput, verifiedFiles } = await this.prepareUserInput(cfg, prompt, files);
-
-      // Sync latest config (model, instructions, enabled tools, maxTurns) onto root conversation
-      const pi = await this.harness.pi();
-      const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
-      if (conv) {
-        await conv.configure(this.buildAgentChange(cfg, maxSteps), BG);
-      }
-
-      if (hints?.preacquiredSlot) {
-        slotAcquired = true;
-      } else {
-        await tenantStub.acquireSlot(runId, cfg.id);
-        slotAcquired = true;
-      }
-
-      const tracker: ActiveRunTracker = {
-        runId,
-        actor,
-        verifiedFiles,
-        outputSchema: body.outputSchema ?? null,
-        spendLimitUsd: effectiveSpendLimit,
-        usage: isByok ? { ...emptyUsage(), byok: true } : emptyUsage(),
-        filesChanged: new Set(),
-        toolCalls: [],
-        seenToolStarts: new Set(),
-        seenToolEnds: new Set(),
-        seenEntryIds: new Set(),
-        emittedGenerationAttempt: -1,
-        emittedPartialTextLen: 0,
-        lastEmittedAssistantEntryId: 0,
-        accumulatedText: "",
-        slotAcquired,
-        settled: false,
-        pausedForInput: false,
-        spendLimitError: null,
-        aborted: false,
-        watchHandle: null,
-        watchPromise: null,
-      };
-      this.activeTracker = tracker;
-      this.host.setActiveRunId(runId);
-
-      this.host.ctx.storage.sql.exec(`UPDATE runs SET status = 'running' WHERE id = ?1`, runId);
-      this.host.recordAndBroadcastEvent(runId, "run_started", {
-        runId,
-        prompt,
-        ...(actor ? { actor } : {}),
-      });
-
-      await this.startWatchForTracker(tracker);
-
-      // Submit durably to PiHarness!
-      await this.harness.submit(userInput, {
-        session: ROOT_SESSION,
-        operationId: runId,
-        whenBusy: "followUp",
-      });
-
-      const settlement = wait ? this.host.waitForRunSettlement(runId) : undefined;
-      this.trackSubmissionSettlement(tracker);
-
-      return settlement ? await settlement : this.host.materializeRunRecord(runId);
-    } catch (err) {
-      if (slotAcquired) {
-        await tenantStub.releaseSlot(runId).catch(() => {});
-      }
-      if (this.activeTracker?.runId === runId) {
-        if (this.activeTracker.watchHandle) {
-          await this.activeTracker.watchHandle.stop().catch(() => {});
-        }
-        this.activeTracker = null;
-      }
-      if (this.host.getActiveRunId() === runId) {
-        this.host.setActiveRunId(null);
-      }
-      const apiErr = extractApiError(err);
-      return failImmediately(
-        apiErr?.code ?? "run_failed",
-        apiErr?.message ?? (err instanceof Error ? err.message : String(err)),
-      );
-    }
-  }
-
   /**
    * Executes a single already-admitted queued run (owned by `AgentDO.drainRunQueue`)
    * with full Pi durability, billing, spend-limit enforcement, and streaming events.
@@ -2119,7 +1700,6 @@ export class PiAgentEngine {
       }
       await this.ensureRootMigrated(cfg, maxSteps);
       await this.ensureMcpExtensionReady(cfg);
-      await this.maybeAutoCompact(cfg);
 
       const { userInput, verifiedFiles } = await this.buildUserInputWithFiles(
         cfg,
@@ -2127,10 +1707,10 @@ export class PiAgentEngine {
         params.files,
       );
 
-      const pi = await this.harness.pi();
-      const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+      const conv = await this.getRootConversation();
       if (conv) {
-        await conv.configure(this.buildAgentChange(cfg, maxSteps), BG);
+        const compactionOverride = await this.computeCompactionOverride(conv, cfg, userInput);
+        await conv.configure(this.buildAgentChange(cfg, maxSteps, compactionOverride), BG);
       }
 
       const runRow = this.host.ctx.storage.sql
@@ -2143,8 +1723,6 @@ export class PiAgentEngine {
       const tracker: ActiveRunTracker = {
         runId,
         actor,
-        requestId: runRow?.idempotency_key ?? null,
-        verifiedFiles,
         outputSchema,
         spendLimitUsd,
         usage: isByok ? { ...emptyUsage(), byok: true } : emptyUsage(),
@@ -2178,10 +1756,18 @@ export class PiAgentEngine {
 
       await this.startWatchForTracker(tracker);
 
+      const entryData: JsonObject = {
+        runId,
+        ...(actor ? { actor, requestId: runRow?.idempotency_key ?? null } : {}),
+        ...(verifiedFiles.length > 0
+          ? { files: JSON.parse(JSON.stringify(verifiedFiles)) }
+          : {}),
+      };
       await this.harness.submit(userInput, {
         session: ROOT_SESSION,
         operationId: runId,
         whenBusy: "followUp",
+        entry: { kind: CamelRunUserEntry.kind, data: entryData },
       });
 
       const waitPromise = this.host.waitForRunSettlement(runId);
@@ -2267,20 +1853,27 @@ export class PiAgentEngine {
     }
   }
 
+  private async stopActiveTrackerForAbort(runId?: string): Promise<string | null> {
+    const tracker = this.activeTracker;
+    if (!tracker || tracker.settled || (runId !== undefined && tracker.runId !== runId)) {
+      return null;
+    }
+    tracker.aborted = true;
+    if (tracker.watchHandle) {
+      const handle = tracker.watchHandle;
+      tracker.watchHandle = null;
+      await handle.stop().catch(() => {});
+    }
+    return tracker.runId;
+  }
+
   async abortExpiredInput(inp: {
     id: string;
     run_id: string;
     tool_call_id: string;
     prompt_json: string | null;
   }): Promise<void> {
-    if (this.activeTracker && this.activeTracker.runId === inp.run_id && !this.activeTracker.settled) {
-      this.activeTracker.aborted = true;
-      if (this.activeTracker.watchHandle) {
-        const handle = this.activeTracker.watchHandle;
-        this.activeTracker.watchHandle = null;
-        await handle.stop().catch(() => {});
-      }
-    }
+    await this.stopActiveTrackerForAbort(inp.run_id);
     await this.ensureStarted();
     await this.harness.abort({ session: ROOT_SESSION, operationId: inp.run_id }).catch(() => {});
     await this.finalizeAbortedInputs(
@@ -2318,14 +1911,7 @@ export class PiAgentEngine {
         `UPDATE inputs SET status = 'superseded' WHERE run_id = ?1 AND status = 'pending'`,
         paused.id,
       );
-      if (this.activeTracker && this.activeTracker.runId === paused.id && !this.activeTracker.settled) {
-        this.activeTracker.aborted = true;
-        if (this.activeTracker.watchHandle) {
-          const handle = this.activeTracker.watchHandle;
-          this.activeTracker.watchHandle = null;
-          await handle.stop().catch(() => {});
-        }
-      }
+      await this.stopActiveTrackerForAbort(paused.id);
     }
 
     await this.ensureStarted();
@@ -2412,12 +1998,9 @@ export class PiAgentEngine {
     await this.refreshModels(cfg);
     await this.ensureRootMigrated(cfg);
     await this.ensureMcpExtensionReady(cfg);
-    {
-      const pi = await this.harness.pi();
-      const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
-      if (conv) {
-        await conv.configure(this.buildAgentChange(cfg), BG);
-      }
+    const conv = await this.getRootConversation();
+    if (conv) {
+      await conv.configure(this.buildAgentChange(cfg), BG);
     }
 
     const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
@@ -2537,15 +2120,8 @@ export class PiAgentEngine {
       );
     }
 
-    if (this.activeTracker && !this.activeTracker.settled) {
-      this.activeTracker.aborted = true;
-      if (this.activeTracker.watchHandle) {
-        const handle = this.activeTracker.watchHandle;
-        this.activeTracker.watchHandle = null;
-        await handle.stop().catch(() => {});
-      }
-      cancelledRunIds.push(this.activeTracker.runId);
-    }
+    const stoppedRunId = await this.stopActiveTrackerForAbort();
+    if (stoppedRunId) cancelledRunIds.push(stoppedRunId);
 
     await this.ensureStarted();
     if (body?.keepQueued && this.activeTracker) {
@@ -2606,23 +2182,21 @@ export class PiAgentEngine {
     await this.ensureRootMigrated(cfg);
 
     const pi = await this.harness.pi();
-    const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+    const conv = await this.getRootConversation();
     if (!conv) {
       return { summary: "", upToSeq: 0, compactedCount: 0 };
     }
 
     const activeEntries = await this.harness.session(ROOT_SESSION).messages();
     const contentEntries = activeEntries.filter(
-      (e) => UserEntry.is(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
+      (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
     );
     const keepLast = Math.max(0, Math.trunc(body?.keepLast ?? 0));
 
     if (body?.summary?.trim()) {
       const summary = body.summary.trim();
-      const cutIdx = Math.max(0, contentEntries.length - keepLast);
-      // Avoid splitting a tool result from its assistant call
-      let safeCutIdx = cutIdx;
-      while (safeCutIdx > 0 && ToolResultEntry.is(contentEntries[safeCutIdx])) {
+      let safeCutIdx = Math.max(0, contentEntries.length - keepLast);
+      while (safeCutIdx > 0 && ToolResultEntry.is(contentEntries[safeCutIdx]!)) {
         safeCutIdx--;
       }
       const firstKept = contentEntries[safeCutIdx];
@@ -2663,38 +2237,65 @@ export class PiAgentEngine {
       return { summary: "", upToSeq: 0, compactedCount: 0 };
     }
 
-    // Run native pi-durable CompactionTask (temporarily setting keepRecentTokens = 0 if keepLast === 0 so manual /compact always summarizes!)
-    const prevCompactionSetting = keepLast === 0 ? { enabled: true, keepRecentTokens: 0 } : undefined;
-    if (prevCompactionSetting) {
-      await conv.configure({ compaction: prevCompactionSetting }, BG);
+    // Run native pi-durable CompactionTask, computing keepRecentTokens from `keepLast`
+    let keepRecentTokens = 0;
+    if (keepLast > 0) {
+      let cutIdx = Math.max(0, contentEntries.length - keepLast);
+      while (cutIdx > 0 && ToolResultEntry.is(contentEntries[cutIdx]!)) {
+        cutIdx--;
+      }
+      keepRecentTokens = contentEntries
+        .slice(cutIdx)
+        .reduce(
+          (sum, e) => sum + (e.model ?? []).reduce((s, m) => s + estimateMessageTokens(m), 0),
+          0,
+        );
     }
+    await conv.configure({ compaction: { enabled: true, keepRecentTokens } }, BG);
 
     try {
       const taskId = await conv.compact(undefined, BG);
-      // Drive the compaction task to completion
       const settled = await pi.waitForTask(taskId, BG);
       if (settled.state.status === "terminal" && settled.state.outcome.status === "completed") {
-        const result = settled.state.outcome.result as { entryId?: EntryId } | undefined;
-        if (result?.entryId !== undefined) {
+        const result = settled.state.outcome.result as
+          | { entryId?: EntryId; submissionId?: SubmissionId }
+          | undefined;
+        if (result?.submissionId !== undefined) {
+          const sub = await pi.submission(result.submissionId, BG);
+          await sub?.wait(BG);
+        }
+        if (result?.entryId !== undefined || result?.submissionId !== undefined) {
           const allAfter = await this.listAllEntries();
-          const compEntry = allAfter.find((e) => Number(e.id) === Number(result.entryId));
-          const msg = compEntry?.model?.[0];
-          const rawText =
-            msg && msg.role === "user" && typeof msg.content === "string" ? msg.content : "";
-          const summary = unwrapCompactionSummary(rawText);
-          const upToSeq = Number(compEntry?.head ?? result.entryId);
-          this.host.recordAndBroadcastEvent(null, "context_compacted", {
-            upToSeq,
-            compactedCount: contentEntries.length,
-          });
-          return { summary, upToSeq, compactedCount: contentEntries.length };
+          const compEntry =
+            result?.entryId !== undefined
+              ? allAfter.find((e) => Number(e.id) === Number(result.entryId))
+              : [...allAfter].reverse().find((e) => CompactionEntry.is(e));
+          if (compEntry) {
+            const msg = compEntry.model?.[0];
+            const rawText =
+              msg && msg.role === "user"
+                ? typeof msg.content === "string"
+                  ? msg.content
+                  : msg.content
+                      .filter((c): c is TextContent => c.type === "text")
+                      .map((c) => c.text)
+                      .join("\n")
+                : "";
+            const summary = unwrapCompactionSummary(rawText);
+            const headId = Number(compEntry.head ?? compEntry.id);
+            const compactedCount = contentEntries.filter((e) => Number(e.id) < headId).length;
+            const upToSeq = headId;
+            this.host.recordAndBroadcastEvent(null, "context_compacted", {
+              upToSeq,
+              compactedCount,
+            });
+            return { summary, upToSeq, compactedCount };
+          }
         }
       }
       return { summary: "", upToSeq: 0, compactedCount: 0 };
     } finally {
-      if (prevCompactionSetting) {
-        await conv.configure({ compaction: null }, BG).catch(() => {});
-      }
+      await conv.configure({ compaction: null }, BG).catch(() => {});
     }
   }
 
@@ -2729,8 +2330,7 @@ export class PiAgentEngine {
 
   async listAllEntries(): Promise<EntryRecord[]> {
     await this.ensureStarted();
-    const pi = await this.harness.pi();
-    const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+    const conv = await this.getRootConversation();
     if (!conv) return [];
     const all: EntryRecord[] = [];
     let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
@@ -2799,7 +2399,7 @@ export class PiAgentEngine {
     }
     const entries = await this.listAllEntries();
     return entries.filter(
-      (e) => UserEntry.is(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
+      (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
     ).length;
   }
 
@@ -2838,26 +2438,26 @@ export class PiAgentEngine {
     });
   }
 
-  async appendPassiveNote(text: string): Promise<boolean> {
-    if (!this.rootReady && !this.hasPiRootConversation()) {
-      return false;
-    }
-    await this.ensureStarted();
-    const pi = await this.harness.pi();
-    const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
-    if (!conv) return false;
+  async appendPassiveNote(text: string, meta?: Record<string, unknown>): Promise<void> {
+    await this.ensureRootMigrated();
+    const conv = await this.getRootConversation();
+    if (!conv) return;
+    const data: JsonObject = {
+      runId: null,
+      ...(meta ? { meta: JSON.parse(JSON.stringify(meta)) } : {}),
+    };
     const sub = await conv.submit(
       {
         type: "write",
         entry: {
-          kind: UserEntry.kind,
+          kind: CamelRunUserEntry.kind,
           model: [{ role: "user", content: text, timestamp: Date.now() }],
+          data,
         },
       },
       BG,
     );
     await sub.wait(BG);
-    return true;
   }
 
   async getLatestMessageMeta(): Promise<{ seq: number; createdAt: number } | null> {
@@ -2865,7 +2465,7 @@ export class PiAgentEngine {
       const entries = await this.listAllEntries();
       for (let i = entries.length - 1; i >= 0; i--) {
         const e = entries[i]!;
-        if (UserEntry.is(e) || AssistantEntry.is(e) || ToolResultEntry.is(e)) {
+        if (isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e)) {
           const msg = e.model?.[0] as { timestamp?: number } | undefined;
           return { seq: Number(e.id), createdAt: msg?.timestamp || Date.now() };
         }
@@ -2948,7 +2548,7 @@ export class PiAgentEngine {
     const execEnv = this.buildExecutionEnv();
     const fakeApi = {
       callId,
-      conversationId: 1 as import("@earendil-works/pi-durable").ConversationId,
+      conversationId: ROOT_CONVERSATION_ID,
       taskId: 0 as TaskId,
       env: execEnv,
       now: () => Date.now(),
@@ -3052,16 +2652,6 @@ export class PiAgentEngine {
       commit: writeOut.commit,
       summary: finalDoc,
     };
-  }
-
-  /** Helper so AgentDO can check if a pending `inputs` row belongs to Pi. */
-  static isPiInputRow(pendingTurnJson: string | null): boolean {
-    if (!pendingTurnJson) return false;
-    try {
-      return isPiPendingInputMetadata(JSON.parse(pendingTurnJson));
-    } catch {
-      return false;
-    }
   }
 }
 

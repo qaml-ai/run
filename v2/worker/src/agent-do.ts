@@ -106,70 +106,6 @@ export class AgentDO extends DurableObject<Env> {
         readConfigOrNull: () => this.readConfigOrNull(),
         isDestroying: () => this.destroying,
         ensureAgentRepository: () => this.ensureAgentRepository(),
-        getVmSession: (branch: string) => {
-          const rows = this.ctx.storage.sql
-            .exec<{ vm_id: string; lease_expires_at: number }>(
-              `SELECT vm_id, lease_expires_at FROM vm_session WHERE branch = ?1 LIMIT 1`,
-              branch,
-            )
-            .toArray();
-          if (!rows[0]) return null;
-          return { vmId: rows[0].vm_id, leaseExpiresAt: rows[0].lease_expires_at };
-        },
-        saveVmSession: (branch: string, vmId: string, leaseExpiresAt: number) => {
-          this.ctx.storage.sql.exec(
-            `INSERT INTO vm_session (branch, vm_id, lease_expires_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(branch) DO UPDATE SET vm_id = excluded.vm_id, lease_expires_at = excluded.lease_expires_at`,
-            branch,
-            vmId,
-            leaseExpiresAt,
-          );
-          void this.scheduleNextAlarm();
-        },
-        clearVmSession: (branch: string, vmId: string) => {
-          this.ctx.storage.sql.exec(
-            "DELETE FROM vm_session WHERE branch = ?1 AND vm_id = ?2",
-            branch,
-            vmId,
-          );
-        },
-        recordChildAgent: (entry) => {
-          this.ctx.storage.sql.exec(
-            `INSERT INTO children (id, child_agent_id, child_agent_key, parent_run_id, status, result_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET status = excluded.status, result_json = excluded.result_json`,
-            entry.id,
-            entry.childAgentId,
-            entry.childAgentKey,
-            entry.parentRunId,
-            entry.status,
-            JSON.stringify(entry.result ?? null),
-          );
-        },
-        getChildAgent: (idOrAgentId: string) => {
-          const rows = this.ctx.storage.sql
-            .exec<{
-              id: string;
-              child_agent_id: string;
-              child_agent_key: string;
-              status: string;
-              result_json: string | null;
-            }>(
-              `SELECT * FROM children WHERE id = ?1 OR child_agent_id = ?1 OR child_agent_key = ?1 LIMIT 1`,
-              idOrAgentId,
-            )
-            .toArray();
-          const r = rows[0];
-          if (!r) return null;
-          return {
-            id: r.id,
-            childAgentId: r.child_agent_id,
-            childAgentKey: r.child_agent_key,
-            status: r.status,
-            result: r.result_json ? JSON.parse(r.result_json) : null,
-          };
-        },
         hasWebSocketTool: (name: string) => this.findSocketForTool(name) !== null,
         invokeWebSocketTool: (name, args, callId) => this.dispatchWebSocketTool(name, args, callId),
         recordAndBroadcastEvent: (runId, type, data) =>
@@ -180,8 +116,6 @@ export class AgentDO extends DurableObject<Env> {
         materializeRunRecord: (runId) => this.materializeRunRecord(runId),
         waitForRunSettlement: (runId) => this.waitForRunSettlement(runId),
         notifyRunWaiters: (runId) => this.notifyRunWaiters(runId),
-        releaseUnusedPreacquiredHint: (tenantId, hints) =>
-          this.releaseUnusedPreacquiredHint(tenantId, hints),
         setActiveRunId: (runId) => {
           this.activeRunId = runId;
         },
@@ -962,7 +896,7 @@ export class AgentDO extends DurableObject<Env> {
       );
       this.logRunLifecycle(steerRunId, "run_queued");
 
-      await engine.steerActiveRun(prompt, steerRunId);
+      await engine.steerActiveRun(prompt, steerRunId, actor);
 
       if (!wait) {
         this.logRunLifecycle(steerRunId, "run_completed");
@@ -1765,10 +1699,13 @@ export class AgentDO extends DurableObject<Env> {
     const latestRunRow = this.ctx.storage.sql
       .exec<{ id: string }>(`SELECT id FROM runs ORDER BY started_at DESC LIMIT 1`)
       .toArray()[0];
-    const msgCountRow = this.ctx.storage.sql
-      .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM messages`)
-      .one();
     const piMsgCount = await this.ensurePiEngine().getMessageCount();
+    const messageCount =
+      piMsgCount ??
+      Number(
+        this.ctx.storage.sql.exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM messages`).one()
+          .cnt ?? 0,
+      );
     return {
       id: cfg.id,
       key: cfg.key,
@@ -1795,7 +1732,7 @@ export class AgentDO extends DurableObject<Env> {
       dreaming: cfg.dreaming,
       status: this.activeRunId ? "running" : "idle",
       activeRunId: this.activeRunId,
-      messageCount: piMsgCount ?? Number(msgCountRow.cnt ?? 0),
+      messageCount,
       lastRun: latestRunRow ? this.materializeRunRecord(latestRunRow.id) : null,
       createdAt: cfg.createdAt,
       updatedAt: cfg.updatedAt,
@@ -1813,17 +1750,7 @@ export class AgentDO extends DurableObject<Env> {
   async appendPassiveNote(text: string, meta?: Record<string, unknown>): Promise<{ ok: true }> {
     this.ensureSql();
     this.requireConfig();
-    const appendedToPi = await this.ensurePiEngine().appendPassiveNote(text);
-    if (!appendedToPi) {
-      const content: StoredMessageContent = { text, ...(meta ? { meta } : {}) };
-      this.ctx.storage.sql.exec(
-        `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
-         VALUES (NULL, 'user', ?1, ?2, ?3)`,
-        JSON.stringify(content),
-        estimateTokens(text),
-        Date.now(),
-      );
-    }
+    await this.ensurePiEngine().appendPassiveNote(text, meta);
     return { ok: true };
   }
 

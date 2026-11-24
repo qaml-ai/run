@@ -11,6 +11,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import {
   AssistantEntry,
   CompactionEntry,
+  defineEntry,
   ResetEntry,
   SystemEntry,
   ToolResultEntry,
@@ -23,7 +24,34 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { readLegacyInlineContent } from "../legacy-inline-images.ts";
-import { estimateTokens, type StoredMessage, type ToolCallInvocation } from "../types.ts";
+import {
+  estimateTokens,
+  type StoredMessage,
+  type StoredRunFile,
+  type ToolCallInvocation,
+} from "../types.ts";
+
+/**
+ * Custom Pi user entry carrying CamelRun per-turn metadata directly inside Pi's
+ * transcript (submitted via `PiSubmitOptions.entry` instead of a sidecar table).
+ */
+export interface CamelRunUserEntryData {
+  runId?: string | null;
+  actor?: string;
+  requestId?: string | null;
+  files?: StoredRunFile[];
+  meta?: Record<string, unknown>;
+}
+
+export const CamelRunUserEntry = defineEntry<JsonObject>("camelrun.user");
+
+export function isUserContentEntry(entry: EntryRecord): boolean {
+  return (
+    UserEntry.is(entry) ||
+    CamelRunUserEntry.is(entry) ||
+    (entry.model?.[0]?.role === "user" && !CompactionEntry.is(entry) && !ResetEntry.is(entry))
+  );
+}
 
 export interface LegacyCompactionRow {
   id: string;
@@ -230,10 +258,24 @@ export async function importLegacyTranscriptToPi(
         content: formatUserMessageContent(msg),
         timestamp: msg.createdAt || Date.now(),
       };
-      const appended = await tx.appendEntry(UserEntry, conversationId, {
-        model: [userMsg],
-      });
-      recordMeta(appended.id, msg);
+      const entryData: JsonObject = {};
+      if (msg.runId) entryData.runId = msg.runId;
+      if (msg.content.files?.length) {
+        entryData.files = JSON.parse(JSON.stringify(msg.content.files)) as JsonValue;
+      }
+      if (msg.content.meta && typeof msg.content.meta === "object") {
+        entryData.meta = JSON.parse(JSON.stringify(msg.content.meta)) as JsonValue;
+      }
+      if (Object.keys(entryData).length > 0) {
+        await tx.appendEntry(CamelRunUserEntry, conversationId, {
+          model: [userMsg],
+          data: entryData,
+        });
+      } else {
+        await tx.appendEntry(UserEntry, conversationId, {
+          model: [userMsg],
+        });
+      }
       importedEntries++;
       continue;
     }
@@ -417,6 +459,7 @@ export function mapPiEntriesToHistory(
 ): MappedHistoryResult {
   const allMessages: MappedHistoryMessage[] = [];
   let latestCompaction: { id: string; upToSeq: number; summary: string } | null = null;
+  let currentRunId: string | null = null;
 
   for (const entry of entries) {
     const seq = Number(entry.id);
@@ -431,6 +474,7 @@ export function mapPiEntriesToHistory(
         upToSeq: entry.head !== undefined ? Number(entry.head) : seq,
         summary: unwrapCompactionSummary(rawText),
       };
+      currentRunId = null;
       continue;
     }
 
@@ -447,21 +491,40 @@ export function mapPiEntriesToHistory(
       } else {
         latestCompaction = null;
       }
+      currentRunId = null;
       continue;
     }
 
-    if (UserEntry.is(entry) || (entry.model?.[0]?.role === "user" && !CompactionEntry.is(entry))) {
+    if (isUserContentEntry(entry)) {
       const msg = entry.model?.[0];
       if (!msg || msg.role !== "user") continue;
       const text = extractTextFromUserContent(msg.content);
       const em = entryMeta?.get(seq);
-      const rawMeta = em?.meta ? { ...em.meta } : undefined;
-      const attachedFiles = rawMeta && Array.isArray(rawMeta._files) ? rawMeta._files : undefined;
-      if (rawMeta && "_files" in rawMeta) delete rawMeta._files;
-      const hasMeta = rawMeta && Object.keys(rawMeta).length > 0;
+      const nativeData = CamelRunUserEntry.is(entry)
+        ? (entry.data as CamelRunUserEntryData | undefined)
+        : undefined;
+      const runId = nativeData?.runId !== undefined ? nativeData.runId : (em?.runId ?? null);
+      currentRunId = runId;
+
+      const rawMeta: Record<string, unknown> = {
+        ...(em?.meta ?? {}),
+        ...(nativeData?.meta ?? {}),
+      };
+      if (nativeData?.actor) {
+        rawMeta.actor = nativeData.actor;
+        rawMeta.requestId = nativeData.requestId ?? null;
+      }
+      const attachedFiles =
+        nativeData?.files && nativeData.files.length > 0
+          ? nativeData.files
+          : Array.isArray(rawMeta._files)
+            ? rawMeta._files
+            : undefined;
+      if ("_files" in rawMeta) delete rawMeta._files;
+      const hasMeta = Object.keys(rawMeta).length > 0;
       allMessages.push({
         seq,
-        runId: em?.runId ?? null,
+        runId,
         role: "user",
         content: {
           text,
@@ -505,7 +568,7 @@ export function mapPiEntriesToHistory(
       }
       allMessages.push({
         seq,
-        runId: em?.runId ?? null,
+        runId: em?.runId ?? currentRunId,
         role: "assistant",
         content,
         tokensEst: estimateTokens(text || JSON.stringify(content)),
@@ -531,7 +594,7 @@ export function mapPiEntriesToHistory(
       );
       allMessages.push({
         seq,
-        runId: em?.runId ?? null,
+        runId: em?.runId ?? currentRunId,
         role: "tool",
         content: {
           toolCallId: msg.toolCallId,

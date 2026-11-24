@@ -68,6 +68,7 @@ const BUILTIN_SUITES = [
   "web_fetch",
   "human",
   "skills",
+  "tool_search",
 ] as const satisfies readonly BuiltinSuite[];
 
 const customToolSchema = z.object({
@@ -77,12 +78,14 @@ const customToolSchema = z.object({
   url: z.string().url().optional(),
   headers: z.record(z.string(), z.string()).optional(),
   requiresApproval: z.boolean().optional(),
+  deferred: z.boolean().optional(),
 });
 
 const mcpServerSchema = z.object({
   name: z.string().min(1),
   url: z.string().url(),
   headers: z.record(z.string(), z.string()).optional(),
+  deferred: z.boolean().optional(),
   auth: z.object({ type: z.literal("runtime") }).optional(),
   audience: z.string().optional(),
   allowTools: z.array(z.string()).optional(),

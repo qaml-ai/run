@@ -71,7 +71,8 @@ export type BuiltinSuite =
   | "web_search"
   | "web_fetch"
   | "human"
-  | "skills";
+  | "skills"
+  | "tool_search";
 
 export interface CustomToolSpec {
   name: string;
@@ -80,6 +81,7 @@ export interface CustomToolSpec {
   url?: string;
   headers?: Record<string, string>;
   requiresApproval?: boolean;
+  deferred?: boolean;
 }
 
 export interface McpServerSpec {
@@ -89,6 +91,7 @@ export interface McpServerSpec {
   auth?: { type: "runtime" };
   audience?: string;
   allowTools?: string[];
+  deferred?: boolean;
 }
 
 export interface ToolIdentity {
