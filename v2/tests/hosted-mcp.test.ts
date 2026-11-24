@@ -74,89 +74,42 @@ test("v2 hosted tenant MCP (/v2/mcp) and per-agent MCP (/v2/agents/:idOrKey/mcp)
       const isResponsesApi = (req.url ?? "").includes("/responses") || Array.isArray(body.input);
 
       const respond = (kind: "reply" | "tool_result" | "ask_human", text: string) => {
-        res.setHeader("Content-Type", "application/json");
+        res.setHeader("Content-Type", "text/event-stream");
         if (isResponsesApi) {
           if (kind === "ask_human") {
+            const argsStr = JSON.stringify({
+              question: "Which environment should I deploy to?",
+              options: ["staging", "production"],
+            });
             res.end(
-              JSON.stringify({
-                id: "resp_mock_human",
-                object: "response",
-                status: "completed",
-                output: [
-                  {
-                    type: "function_call",
-                    call_id: "call_human_1",
-                    name: "ask_human",
-                    arguments: JSON.stringify({
-                      question: "Which environment should I deploy to?",
-                      options: ["staging", "production"],
-                    }),
-                  },
-                ],
-                usage: { input_tokens: 15, output_tokens: 10 },
-              }),
+              `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "fc_human_1", call_id: "call_human_1", name: "ask_human", arguments: "" } })}\n\n` +
+              `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "function_call", id: "fc_human_1", call_id: "call_human_1", name: "ask_human", arguments: argsStr } })}\n\n` +
+              `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_mock_human", status: "completed", usage: { input_tokens: 15, output_tokens: 10, total_tokens: 25 } } })}\n\n`,
             );
             return;
           }
           res.end(
-            JSON.stringify({
-              id: "resp_mock_text",
-              object: "response",
-              status: "completed",
-              output: [
-                {
-                  type: "message",
-                  role: "assistant",
-                  content: [{ type: "output_text", text }],
-                },
-              ],
-              usage: { input_tokens: 12, output_tokens: 8 },
-            }),
+            `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_mock", role: "assistant", status: "in_progress", content: [] } })}\n\n` +
+            `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text })}\n\n` +
+            `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_mock", role: "assistant", status: "completed", content: [{ type: "output_text", text }] } })}\n\n` +
+            `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_mock_text", status: "completed", usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 } } })}\n\n`,
           );
           return;
         }
 
         if (kind === "ask_human") {
+          const argsStr = JSON.stringify({
+            question: "Which environment should I deploy to?",
+            options: ["staging", "production"],
+          });
           res.end(
-            JSON.stringify({
-              choices: [
-                {
-                  finish_reason: "tool_calls",
-                  message: {
-                    role: "assistant",
-                    content: null,
-                    tool_calls: [
-                      {
-                        id: "call_human_1",
-                        type: "function",
-                        function: {
-                          name: "ask_human",
-                          arguments: JSON.stringify({
-                            question: "Which environment should I deploy to?",
-                            options: ["staging", "production"],
-                          }),
-                        },
-                      },
-                    ],
-                  },
-                },
-              ],
-              usage: { prompt_tokens: 15, completion_tokens: 10 },
-            }),
+            `data: ${JSON.stringify({ id: "chatcmpl_h", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_human_1", type: "function", function: { name: "ask_human", arguments: argsStr } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 15, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`,
           );
           return;
         }
 
         res.end(
-          JSON.stringify({
-            choices: [
-              {
-                finish_reason: "stop",
-                message: { role: "assistant", content: text },
-              },
-            ],
-            usage: { prompt_tokens: 12, completion_tokens: 8 },
-          }),
+          `data: ${JSON.stringify({ id: "chatcmpl_t", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 8 } })}\n\ndata: [DONE]\n\n`,
         );
       };
 

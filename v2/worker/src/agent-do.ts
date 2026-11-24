@@ -4,23 +4,9 @@ import { CamelFsClient } from "./camelfs.ts";
 import { mintAgentToken, randomId, sealSecret } from "./crypto.ts";
 import type { parseV1History } from "./history-import.ts";
 import { PiAgentEngine, type LifecycleJobContext } from "./pi/agent-engine.ts";
-import { DEFAULT_MODEL_ID, calculateCostUsd } from "./providers.ts";
-import { consumeInfraCredit } from "./ops-metadata.ts";
+import { DEFAULT_MODEL_ID } from "./pi/models.ts";
+import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
-import {
-  buildToolCatalog,
-  executeToolCall,
-  type ToolExecutionContext,
-} from "./tools.ts";
-import {
-  contextCutoff,
-  performCompaction,
-  performDreamConsolidation,
-  resumePausedTurn,
-  runAgentTurn,
-  type PausedTurnState,
-  type TurnStorageAdapter,
-} from "./turn-loop.ts";
 import {
   ApiError,
   emptyUsage,
@@ -28,15 +14,14 @@ import {
   extractApiError,
   toApiErrorResponse,
   type AgentConfig,
-  type AgentEngine,
   type AgentEventRecord,
   type Env,
   type PendingInputView,
   type QueueMessagePayload,
   type RpcStub,
+  type RunFile,
   type RunRecord,
   type RunStatus,
-  type RunFile,
   type RunUsage,
   type ScheduleRecord,
   type StartRunHints,
@@ -45,7 +30,6 @@ import {
   type StoredMessageContent,
   type ToolCallSummary,
 } from "./types.ts";
-import { parseRunFiles, verifyRunFiles } from "./run-files.ts";
 import { deliverWebhookMessage, enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
@@ -98,8 +82,8 @@ export class AgentDO extends DurableObject<Env> {
   private sqlReady = false;
   private cachedConfig: AgentConfig | null = null;
   private preRunHints = new Map<string, StartRunHints>();
+  private runKeyScopes = new Map<string, string | null>();
   private activeRunId: string | null = null;
-  private activeAbortController: AbortController | null = null;
   private queueDrain: Promise<void> | null = null;
   private inputResumeWork: Promise<RunRecord> | null = null;
   private destroying = false;
@@ -110,19 +94,7 @@ export class AgentDO extends DurableObject<Env> {
   private lastDreamedSeq = 0;
   private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
   private piEngine: PiAgentEngine | null = null;
-
-  private isPiEngine(cfg?: AgentConfig | null): boolean {
-    return (cfg ?? this.readConfigOrNull())?.engine === "pi";
-  }
-
-  private hasLifecycleJobsTable(): boolean {
-    const rows = this.ctx.storage.sql
-      .exec<{ name: string }>(
-        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cf_agents_jobs' LIMIT 1`,
-      )
-      .toArray();
-    return rows.length > 0;
-  }
+  private periodicRanInAlarm = false;
 
   private ensurePiEngine(): PiAgentEngine {
     if (!this.piEngine) {
@@ -214,6 +186,18 @@ export class AgentDO extends DurableObject<Env> {
           this.activeRunId = runId;
         },
         getActiveRunId: () => this.activeRunId,
+        onRunSettled: (runId) => {
+          const rec = this.materializeRunRecord(runId);
+          const followerIds = this.followerIdsFor(runId);
+          if (followerIds.length > 0) {
+            this.finalizeFollowers(rec, followerIds);
+            for (const fid of followerIds) this.notifyRunWaiters(fid);
+          }
+          if (!this.destroying && this.sqlReady) {
+            this.ctx.waitUntil(this.drainRunQueue());
+          }
+        },
+        runWorkflow: (body) => this.runWorkflow(body),
       });
     }
     return this.piEngine;
@@ -242,6 +226,11 @@ export class AgentDO extends DurableObject<Env> {
         summary TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS pi_entry_meta (
+        entry_id INTEGER PRIMARY KEY,
+        run_id TEXT,
+        meta_json TEXT
+      );
       CREATE TABLE IF NOT EXISTS runs (
         id TEXT PRIMARY KEY,
         idempotency_key TEXT UNIQUE,
@@ -264,13 +253,6 @@ export class AgentDO extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS run_files (
         run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
         files_json TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS steers (
-        id TEXT PRIMARY KEY,
-        run_id TEXT,
-        text TEXT NOT NULL,
-        taken INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,8 +342,6 @@ export class AgentDO extends DurableObject<Env> {
     }
     this.sqlReady = true;
 
-    // Recover from isolate eviction/restart: load persisted dream watermark
-    // and re-queue any run that was interrupted in 'running' state when the previous isolate died.
     const dreamRow = this.ctx.storage.sql
       .exec<{ v: string }>(`SELECT v FROM runtime_kv WHERE k = 'last_dreamed_seq' LIMIT 1`)
       .toArray()[0];
@@ -369,20 +349,12 @@ export class AgentDO extends DurableObject<Env> {
       this.lastDreamedSeq = Number(dreamRow.v) || 0;
     }
 
-    if (!this.activeRunId && !this.isPiEngine()) {
-      const orphaned = this.ctx.storage.sql
-        .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'running'`)
-        .toArray();
-      if (orphaned.length > 0) {
-        this.ctx.storage.sql.exec(
-          `UPDATE runs SET status = 'queued', batched_into = NULL WHERE status = 'running'`,
-        );
-        for (const { id } of orphaned) this.logRunLifecycle(id, "run_recovered");
-      }
+    // Recover queued runs persisted before an isolate restart.
+    if (!this.activeRunId && this.readConfigOrNull()) {
       const hasQueued = this.ctx.storage.sql
         .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'queued' LIMIT 1`)
         .toArray();
-      if (hasQueued.length > 0 && this.readConfigOrNull()) {
+      if (hasQueued.length > 0) {
         this.ctx.waitUntil(this.drainRunQueue());
       }
     }
@@ -400,7 +372,9 @@ export class AgentDO extends DurableObject<Env> {
       .exec<{ config_json: string }>(`SELECT config_json FROM config WHERE id = 1`)
       .toArray();
     if (!rows[0]) return null;
-    this.cachedConfig = JSON.parse(rows[0].config_json) as AgentConfig;
+    const parsed = JSON.parse(rows[0].config_json) as AgentConfig;
+    // Normalize legacy config rows transparently onto Pi without rejecting existing prod agents
+    this.cachedConfig = { ...parsed, engine: "pi" };
     return this.cachedConfig;
   }
 
@@ -414,245 +388,15 @@ export class AgentDO extends DurableObject<Env> {
 
   private writeConfig(cfg: AgentConfig): void {
     const now = Math.max(Date.now(), (this.cachedConfig?.updatedAt ?? 0) + 1);
-    cfg.updatedAt = now;
+    const normalized: AgentConfig = { ...cfg, engine: "pi", updatedAt: now };
     this.ctx.storage.sql.exec(
       `INSERT INTO config (id, config_json, updated_at)
        VALUES (1, ?1, ?2)
        ON CONFLICT(id) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
-      JSON.stringify(cfg),
+      JSON.stringify(normalized),
       now,
     );
-    this.cachedConfig = cfg;
-  }
-
-  private appendStoredMessage(
-    runId: string | null,
-    role: StoredMessage["role"],
-    content: StoredMessageContent,
-  ): StoredMessage {
-    const contentJson = JSON.stringify(content);
-    const tokensEst = estimateTokens(content.text ?? contentJson);
-    const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5)`,
-      runId,
-      role,
-      contentJson,
-      tokensEst,
-      now,
-    );
-    const seqRow = this.ctx.storage.sql
-      .exec<{ seq: number }>(`SELECT last_insert_rowid() AS seq`)
-      .one();
-    return {
-      seq: Number(seqRow.seq),
-      runId,
-      role,
-      content,
-      tokensEst,
-      createdAt: now,
-    };
-  }
-
-  private buildAdapter(): TurnStorageAdapter {
-    return {
-      env: this.env,
-      getConfig: () => this.requireConfig(),
-      getLatestCompaction: () => {
-        const rows = this.ctx.storage.sql
-          .exec<{ id: string; up_to_seq: number; summary: string }>(
-            `SELECT id, up_to_seq, summary FROM compactions ORDER BY up_to_seq DESC, created_at DESC LIMIT 1`,
-          )
-          .toArray();
-        if (!rows[0]) return null;
-        return {
-          id: rows[0].id,
-          upToSeq: rows[0].up_to_seq,
-          summary: rows[0].summary,
-        };
-      },
-      insertCompaction: (upToSeq: number, summary: string) => {
-        const id = randomId("cmp", 6);
-        this.ctx.storage.sql.exec(
-          `INSERT INTO compactions (id, up_to_seq, summary, created_at) VALUES (?1, ?2, ?3, ?4)`,
-          id,
-          upToSeq,
-          summary,
-          Date.now(),
-        );
-        return { id, upToSeq, summary };
-      },
-      measureMessagesAfter: (seq: number) => {
-        const row = this.ctx.storage.sql
-          .exec<{ cnt: number; total_tokens: number; last_tokens: number }>(
-            `SELECT COUNT(*) AS cnt,
-                    COALESCE(SUM(tokens_est), 0) AS total_tokens,
-                    COALESCE((SELECT tokens_est FROM messages WHERE seq > ?1 ORDER BY seq DESC LIMIT 1), 0) AS last_tokens
-             FROM messages WHERE seq > ?1`,
-            seq,
-          )
-          .one();
-        return {
-          count: Number(row.cnt ?? 0),
-          tokensEst: Number(row.total_tokens ?? 0),
-          lastTokensEst: Number(row.last_tokens ?? 0),
-        };
-      },
-      listRecentMessagesAfter: (seq: number, limit: number): StoredMessage[] => {
-        const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit) || 120));
-        const rows = this.ctx.storage.sql
-          .exec<{
-            seq: number;
-            run_id: string | null;
-            role: StoredMessage["role"];
-            content_json: string;
-            tokens_est: number;
-            created_at: number;
-          }>(
-            `SELECT * FROM (
-               SELECT * FROM messages WHERE seq > ?1 ORDER BY seq DESC LIMIT ?2
-             ) ORDER BY seq ASC`,
-            seq,
-            safeLimit,
-          )
-          .toArray();
-        return rows.map((r) => ({
-          seq: r.seq,
-          runId: r.run_id,
-          role: r.role,
-          content: JSON.parse(r.content_json) as StoredMessage["content"],
-          tokensEst: r.tokens_est,
-          createdAt: r.created_at,
-        }));
-      },
-      listMessagesAfter: (seq: number): StoredMessage[] => {
-        const rows = this.ctx.storage.sql
-          .exec<{
-            seq: number;
-            run_id: string | null;
-            role: StoredMessage["role"];
-            content_json: string;
-            tokens_est: number;
-            created_at: number;
-          }>(`SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC`, seq)
-          .toArray();
-        return rows.map((r) => ({
-          seq: r.seq,
-          runId: r.run_id,
-          role: r.role,
-          content: JSON.parse(r.content_json) as StoredMessage["content"],
-          tokensEst: r.tokens_est,
-          createdAt: r.created_at,
-        }));
-      },
-      appendMessage: (runId, role, content) => this.appendStoredMessage(runId, role, content),
-      drainSteers: (runId: string) => {
-        const rows = this.ctx.storage.sql
-          .exec<{ id: string; text: string }>(
-            `SELECT id, text FROM steers WHERE taken = 0 ORDER BY created_at ASC`,
-          )
-          .toArray();
-        if (rows.length > 0) {
-          this.ctx.storage.sql.exec(
-            `UPDATE steers SET taken = 1, run_id = COALESCE(run_id, ?1) WHERE taken = 0`,
-            runId,
-          );
-        }
-        return rows;
-      },
-      emitEvent: (runId, type, data) => {
-        this.recordAndBroadcastEvent(runId, type, data);
-      },
-      createPendingInput: (entry) => {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO inputs (id, run_id, tool_call_id, kind, prompt_json, status, answer_json, pending_turn_json, expires_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, 'pending', NULL, ?6, ?7)`,
-          entry.id,
-          entry.runId,
-          entry.toolCallId,
-          entry.kind,
-          JSON.stringify(entry.prompt),
-          JSON.stringify(entry.pendingTurn),
-          entry.expiresAt,
-        );
-        void this.scheduleNextAlarm();
-        return {
-          id: entry.id,
-          runId: entry.runId,
-          toolCallId: entry.toolCallId,
-          kind: entry.kind,
-          prompt: entry.prompt,
-          status: "pending",
-          expiresAt: entry.expiresAt,
-        };
-      },
-      updateRunState: (runId, patch) => {
-        const cur = this.readRunRowOrThrow(runId);
-        const status = patch.status ?? (cur.status as RunStatus);
-        const text = patch.text !== undefined ? patch.text : cur.text;
-        const outputJson =
-          patch.output !== undefined ? JSON.stringify(patch.output) : cur.output_json;
-        const toolCallsJson =
-          patch.toolCalls !== undefined
-            ? JSON.stringify(patch.toolCalls)
-            : cur.tool_calls_json;
-        const filesChangedJson =
-          patch.filesChanged !== undefined
-            ? JSON.stringify(patch.filesChanged)
-            : cur.files_changed_json;
-        const usageJson =
-          patch.usage !== undefined ? JSON.stringify(patch.usage) : cur.usage_json;
-        const errorJson =
-          patch.error !== undefined
-            ? patch.error
-              ? JSON.stringify(patch.error)
-              : null
-            : cur.error_json;
-        const endedAt = patch.ended ? Date.now() : cur.ended_at;
-
-        this.ctx.storage.sql.exec(
-          `UPDATE runs
-           SET status = ?1, text = ?2, output_json = ?3, tool_calls_json = ?4,
-               files_changed_json = ?5, usage_json = ?6, error_json = ?7, ended_at = ?8
-           WHERE id = ?9`,
-          status,
-          text,
-          outputJson,
-          toolCallsJson,
-          filesChangedJson,
-          usageJson,
-          errorJson,
-          endedAt,
-          runId,
-        );
-      },
-      getRunRecord: (runId) => this.materializeRunRecord(runId),
-      getRunSpendLimit: (runId) => this.runSpendLimit(runId),
-      recordModelUsage: async (runId, kind, input, output, usage, cacheRead = 0) => {
-        const actor = this.runActor(runId);
-        if (!actor) return;
-        const cfg = this.requireConfig();
-        this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec("UPDATE runs SET usage_json = ? WHERE id = ?", JSON.stringify(usage), runId);
-          this.enqueueAppWebhook(cfg.tenantId, "usage.recorded", {
-            agentId: cfg.id,
-            runId,
-            actor,
-            context: cfg.toolIdentity?.context,
-            model: cfg.model,
-            kind,
-            input,
-            output,
-            cacheRead,
-            cost: { usd: calculateCostUsd(cfg.model, input, output, 0, cacheRead), source: "catalog" },
-          });
-        });
-        await this.scheduleNextAlarm();
-      },
-      makeToolContext: (runId, approvedSet, onFilesChanged, onVmMs, signal) =>
-        this.createToolExecutionContext(runId, approvedSet, onFilesChanged, onVmMs, signal),
-    };
+    this.cachedConfig = normalized;
   }
 
   private enqueueAppWebhook(tenantId: string, eventType: string, payload: Record<string, unknown>): void {
@@ -663,126 +407,6 @@ export class AgentDO extends DurableObject<Env> {
       "INSERT INTO app_webhook_deliveries (id, message_json, next_attempt_at) VALUES (?, ?, ?)",
       event.eventId, JSON.stringify(event), event.createdAt,
     );
-  }
-
-  private createToolExecutionContext(
-    runId: string,
-    approvedToolCallIds: Set<string>,
-    onFilesChanged: (files: string[]) => void,
-    onVmMs: (ms: number) => void,
-    signal?: AbortSignal,
-  ): ToolExecutionContext {
-    const actor = this.runActor(runId);
-    return {
-      env: this.env,
-      config: this.requireConfig(),
-      runId,
-      actor,
-      approvedToolCallIds,
-      signal,
-      ensureAgentRepo: async () => this.ensureAgentRepository(),
-      getVmSession: (branch: string) => {
-        const rows = this.ctx.storage.sql
-          .exec<{ vm_id: string; lease_expires_at: number }>(
-            `SELECT vm_id, lease_expires_at FROM vm_session WHERE branch = ?1 LIMIT 1`,
-            branch,
-          )
-          .toArray();
-        if (!rows[0]) return null;
-        return { vmId: rows[0].vm_id, leaseExpiresAt: rows[0].lease_expires_at };
-      },
-      saveVmSession: (branch: string, vmId: string, leaseExpiresAt: number) => {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO vm_session (branch, vm_id, lease_expires_at)
-           VALUES (?1, ?2, ?3)
-           ON CONFLICT(branch) DO UPDATE SET vm_id = excluded.vm_id, lease_expires_at = excluded.lease_expires_at`,
-          branch,
-          vmId,
-          leaseExpiresAt,
-        );
-        void this.scheduleNextAlarm();
-      },
-      clearVmSession: (branch, vmId) => {
-        this.ctx.storage.sql.exec("DELETE FROM vm_session WHERE branch = ?1 AND vm_id = ?2", branch, vmId);
-      },
-      recordFilesChanged: onFilesChanged,
-      recordVmMs: onVmMs,
-      hasWebSocketTool: (name: string) => this.findSocketForTool(name) !== null,
-      invokeWebSocketTool: (name, args, callId) => this.dispatchWebSocketTool(name, args, callId),
-      recordChildAgent: (entry) => {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO children (id, child_agent_id, child_agent_key, parent_run_id, status, result_json)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-           ON CONFLICT(id) DO UPDATE SET status = excluded.status, result_json = excluded.result_json`,
-          entry.id,
-          entry.childAgentId,
-          entry.childAgentKey,
-          entry.parentRunId,
-          entry.status,
-          JSON.stringify(entry.result ?? null),
-        );
-      },
-      getChildAgent: (idOrAgentId: string) => {
-        const rows = this.ctx.storage.sql
-          .exec<{
-            id: string;
-            child_agent_id: string;
-            child_agent_key: string;
-            status: string;
-            result_json: string | null;
-          }>(
-            `SELECT * FROM children WHERE id = ?1 OR child_agent_id = ?1 OR child_agent_key = ?1 LIMIT 1`,
-            idOrAgentId,
-          )
-          .toArray();
-        const r = rows[0];
-        if (!r) return null;
-        return {
-          id: r.id,
-          childAgentId: r.child_agent_id,
-          childAgentKey: r.child_agent_key,
-          status: r.status,
-          result: r.result_json ? JSON.parse(r.result_json) : null,
-        };
-      },
-      getCachedWorkflowStep: (scope: string, stepKey: string) => {
-        const rows = this.ctx.storage.sql
-          .exec<{ result_json: string }>(
-            `SELECT result_json FROM step_cache WHERE scope = ?1 AND step_key = ?2 LIMIT 1`,
-            scope,
-            stepKey,
-          )
-          .toArray();
-        if (!rows[0]) return undefined;
-        return JSON.parse(rows[0].result_json) as unknown;
-      },
-      putCachedWorkflowStep: (scope: string, stepKey: string, value: unknown) => {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO step_cache (scope, step_key, result_json, created_at)
-           VALUES (?1, ?2, ?3, ?4)
-           ON CONFLICT(scope, step_key) DO UPDATE SET result_json = excluded.result_json`,
-          scope,
-          stepKey,
-          JSON.stringify(value ?? null),
-          Date.now(),
-        );
-      },
-      runInlineSubprompt: async (prompt: string, opts?: Record<string, unknown>) => {
-        if (this.runSpendLimit(runId) !== null) {
-          throw new ApiError(409, "nested_run_spend_limit", "A capped run cannot start an independent workflow model run");
-        }
-        const subRun = await this.enqueueOrRunInternal({
-          prompt,
-          actor,
-          wait: true,
-          outputSchema:
-            opts?.outputSchema && typeof opts.outputSchema === "object"
-              ? (opts.outputSchema as Record<string, unknown>)
-              : null,
-        });
-        return subRun.output ?? subRun.text;
-      },
-    };
   }
 
   async ensureAgentRepository(): Promise<{
@@ -802,7 +426,6 @@ export class AgentDO extends DurableObject<Env> {
       const repo = await tenantStub.getRepo(cfg.repoId);
       cfg.lineage = repo.lineage;
       if (!cfg.branch) cfg.branch = repo.defaultRef;
-      // Preserve configuration changes made while the repository lookup was pending.
       this.writeConfig({ ...this.requireConfig(), lineage: cfg.lineage, branch: cfg.branch });
       return { repoId: cfg.repoId, lineage: repo.lineage, branch: cfg.branch };
     }
@@ -1181,175 +804,89 @@ export class AgentDO extends DurableObject<Env> {
     }
   }
 
-  private extractInputToolName(
-    pendingTurnJson: string | null,
-    promptJson: string | null,
-  ): string {
-    if (pendingTurnJson) {
-      try {
-        const parsed = JSON.parse(pendingTurnJson) as {
-          currentToolCall?: { name?: unknown };
-        };
-        if (typeof parsed.currentToolCall?.name === "string" && parsed.currentToolCall.name.trim()) {
-          return parsed.currentToolCall.name;
-        }
-      } catch {
-        // Fall back to prompt_json
-      }
-    }
-    if (promptJson) {
-      try {
-        const parsed = JSON.parse(promptJson) as { tool?: unknown };
-        if (typeof parsed.tool === "string" && parsed.tool.trim()) {
-          return parsed.tool;
-        }
-      } catch {
-        // Fall back to default
-      }
-    }
-    return "tool";
+  private runSpendLimit(runId: string): number | null {
+    return this.ctx.storage.sql
+      .exec<{ spend_limit_usd: number | null }>("SELECT spend_limit_usd FROM runs WHERE id = ?1", runId)
+      .one().spend_limit_usd;
   }
 
-  private closePendingInputRuns(opts: {
-    inputStatus: "superseded" | "cancelled";
-    toolText: string;
-    error: { code: string; message: string };
-    actor?: string;
-  }): string[] {
-    const pausedRuns = this.ctx.storage.sql
-      .exec<{ id: string; actor: string | null }>(
-        `SELECT id, actor FROM runs WHERE status = 'input_required' AND batched_into IS NULL ORDER BY started_at ASC, rowid ASC`,
+  private runActor(runId: string): string | undefined {
+    return this.ctx.storage.sql
+      .exec<{ actor: string | null }>("SELECT actor FROM runs WHERE id = ?1", runId)
+      .toArray()[0]?.actor ?? undefined;
+  }
+
+  private followerIdsFor(runId: string): string[] {
+    return this.ctx.storage.sql
+      .exec<{ id: string }>(
+        "SELECT id FROM runs WHERE batched_into = ?1 AND status IN ('running', 'input_required')",
+        runId,
       )
-      .toArray();
-
-    const matching = pausedRuns.filter(
-      (r) => r.id !== this.activeRunId && (!opts.actor || !r.actor || r.actor === opts.actor),
-    );
-    if (matching.length === 0) return [];
-
-    const now = Date.now();
-    const closedRunIds: string[] = [];
-
-    for (const paused of matching) {
-      const pendingInputs = this.ctx.storage.sql
-        .exec<{
-          id: string;
-          tool_call_id: string;
-          prompt_json: string | null;
-          pending_turn_json: string | null;
-        }>(
-          `SELECT id, tool_call_id, prompt_json, pending_turn_json FROM inputs WHERE run_id = ?1 AND status = 'pending' ORDER BY rowid ASC`,
-          paused.id,
-        )
-        .toArray();
-
-      if (pendingInputs.length > 0) {
-        this.ctx.storage.sql.exec(
-          `UPDATE inputs SET status = ?1 WHERE run_id = ?2 AND status = 'pending'`,
-          opts.inputStatus,
-          paused.id,
-        );
-      }
-
-      for (const inp of pendingInputs) {
-        const toolName = this.extractInputToolName(inp.pending_turn_json, inp.prompt_json);
-        this.appendStoredMessage(paused.id, "tool", {
-          toolCallId: inp.tool_call_id,
-          toolName,
-          isError: true,
-          text: opts.toolText,
-        });
-        this.recordAndBroadcastEvent(paused.id, "tool_call_end", {
-          callId: inp.tool_call_id,
-          name: toolName,
-          ok: false,
-          error: opts.toolText,
-        });
-        this.recordAndBroadcastEvent(paused.id, "input_resolved", {
-          id: inp.id,
-          status: opts.inputStatus,
-        });
-      }
-
-      const updated = this.ctx.storage.sql.exec(
-        `UPDATE runs SET status = 'cancelled', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'input_required'`,
-        JSON.stringify(opts.error),
-        now,
-        paused.id,
-      );
-      if (!updated.rowsWritten) continue;
-
-      closedRunIds.push(paused.id);
-      this.recordAndBroadcastEvent(paused.id, "run_cancelled", {
-        runId: paused.id,
-        code: opts.error.code,
-      });
-      const followerIds = this.pausedFollowerIds(paused.id);
-      this.finalizeFollowers(this.materializeRunRecord(paused.id), followerIds);
-      this.notifyRunWaiters(paused.id);
-      for (const fid of followerIds) {
-        this.notifyRunWaiters(fid);
-      }
-    }
-
-    return closedRunIds;
+      .toArray()
+      .map(({ id }) => id);
   }
 
-  private expirePendingInput(
-    inp: {
-      id: string;
-      run_id: string;
-      tool_call_id: string;
-      prompt_json: string | null;
-      pending_turn_json: string | null;
-    },
+  private finalizeFollowers(primaryRecord: RunRecord, followerIds: string[]): void {
+    for (const fid of followerIds) {
+      this.ctx.storage.sql.exec(
+        `UPDATE runs
+         SET status = ?1, batched_into = ?2, text = ?3, output_json = ?4, error_json = ?5, ended_at = ?6
+         WHERE id = ?7`,
+        primaryRecord.status,
+        primaryRecord.id,
+        primaryRecord.text,
+        JSON.stringify(primaryRecord.output),
+        primaryRecord.error ? JSON.stringify(primaryRecord.error) : null,
+        primaryRecord.status === "input_required" ? null : Date.now(),
+        fid,
+      );
+      if (primaryRecord.status !== "input_required") {
+        this.logRunLifecycle(fid, `run_${primaryRecord.status}`, primaryRecord.error?.code);
+      }
+    }
+  }
+
+  private async expirePendingInputRow(
+    inp: { id: string; run_id: string; tool_call_id: string; prompt_json: string | null },
     now: number,
-  ): boolean {
+  ): Promise<boolean> {
     const updatedInput = this.ctx.storage.sql.exec(
       `UPDATE inputs SET status = 'expired' WHERE id = ?1 AND status = 'pending'`,
       inp.id,
     );
     if (!updatedInput.rowsWritten) return false;
 
-    const toolName = this.extractInputToolName(inp.pending_turn_json, inp.prompt_json);
-    const expiredText = "Not answered: the request for input expired.";
-    this.appendStoredMessage(inp.run_id, "tool", {
-      toolCallId: inp.tool_call_id,
-      toolName,
-      isError: true,
-      text: expiredText,
-    });
-    this.recordAndBroadcastEvent(inp.run_id, "tool_call_end", {
-      callId: inp.tool_call_id,
-      name: toolName,
-      ok: false,
-      error: expiredText,
-    });
+    const expired = this.ctx.storage.sql.exec(
+      `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status IN ('input_required', 'cancelled')`,
+      JSON.stringify({ code: "input_expired", message: "Pending human input timed out" }),
+      now,
+      inp.run_id,
+    );
+
+    await this.ensurePiEngine().abortExpiredInput(inp).catch(() => {});
+
     this.recordAndBroadcastEvent(inp.run_id, "input_resolved", {
       id: inp.id,
       status: "expired",
     });
 
-    const expired = this.ctx.storage.sql.exec(
-      `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'input_required'`,
-      JSON.stringify({ code: "input_expired", message: "Pending human input timed out" }),
-      now,
-      inp.run_id,
-    );
     if (!expired.rowsWritten) return true;
 
     this.recordAndBroadcastEvent(inp.run_id, "run_failed", {
       runId: inp.run_id,
       error: { code: "input_expired", message: "Pending human input timed out" },
     });
+    const failedRec = this.materializeRunRecord(inp.run_id);
+    const followerIds = this.followerIdsFor(inp.run_id);
+    this.finalizeFollowers(failedRec, followerIds);
     this.notifyRunWaiters(inp.run_id);
-    const followerIds = this.pausedFollowerIds(inp.run_id);
-    this.finalizeFollowers(this.materializeRunRecord(inp.run_id), followerIds);
     for (const id of followerIds) this.notifyRunWaiters(id);
     return true;
   }
 
-  private async enqueueOrRunInternal(
+  // ---- Serialized Queue, Batching & Steering over PiAgentEngine ----
+
+  private async enqueueOrRunPi(
     body: StartRunInput,
     hints?: StartRunHints,
   ): Promise<RunRecord> {
@@ -1395,21 +932,18 @@ export class AgentDO extends DurableObject<Env> {
       throw new ApiError(400, "invalid_attachments", "Attachments require a queued turn and a configured repository");
     }
 
-    // Mid-turn steering when a run is currently executing!
-    if (whileRunning === "steer" && this.activeRunId && actor === this.runActor(this.activeRunId)) {
+    // Mid-turn steer into an active running Pi turn
+    const engine = this.ensurePiEngine();
+    if (
+      whileRunning === "steer" &&
+      this.activeRunId &&
+      engine.hasActiveRunningTurn() &&
+      actor === engine.getActiveActor()
+    ) {
       this.releaseUnusedPreacquiredHint(cfg.tenantId, hints);
       const targetRunId = this.activeRunId;
-      const steerId = randomId("str", 6);
       const steerRunId = randomId("run", 8);
       const now = Date.now();
-
-      this.ctx.storage.sql.exec(
-        `INSERT INTO steers (id, run_id, text, taken, created_at) VALUES (?1, ?2, ?3, 0, ?4)`,
-        steerId,
-        targetRunId,
-        prompt,
-        now,
-      );
 
       this.ctx.storage.sql.exec(
         `INSERT INTO runs (id, idempotency_key, status, while_running, prompt, batched_into, text, usage_json, max_steps, started_at, ended_at, spend_limit_usd, actor)
@@ -1423,10 +957,12 @@ export class AgentDO extends DurableObject<Env> {
         maxSteps,
         now,
         wait ? null : now,
-        spendLimitUsd ?? null,
+        null,
         actor ?? null,
       );
       this.logRunLifecycle(steerRunId, "run_queued");
+
+      await engine.steerActiveRun(prompt, steerRunId);
 
       if (!wait) {
         this.logRunLifecycle(steerRunId, "run_completed");
@@ -1446,14 +982,16 @@ export class AgentDO extends DurableObject<Env> {
       return this.materializeRunRecord(steerRunId);
     }
 
-    // Standard run creation (`queued`)
+    // Supersede parked input_required runs unless explicitly suppressed
     if (body.supersedeInputs !== false) {
-      this.closePendingInputRuns({
-        inputStatus: "superseded",
-        toolText: "Not answered: the user sent a new message instead (next).",
-        error: { code: "superseded", message: "Superseded by a new message" },
-        actor,
-      });
+      const closedIds = await engine.supersedePendingInputRuns(actor);
+      for (const closedId of closedIds) {
+        const followers = this.followerIdsFor(closedId);
+        if (followers.length > 0) {
+          this.finalizeFollowers(this.materializeRunRecord(closedId), followers);
+          for (const fid of followers) this.notifyRunWaiters(fid);
+        }
+      }
     }
 
     const runId = hints?.runId ?? randomId("run", 8);
@@ -1465,6 +1003,10 @@ export class AgentDO extends DurableObject<Env> {
     ) {
       this.preRunHints.set(runId, hints);
     }
+    if (body.keyScope !== undefined) {
+      this.runKeyScopes.set(runId, body.keyScope);
+    }
+
     const now = Date.now();
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
@@ -1495,10 +1037,8 @@ export class AgentDO extends DurableObject<Env> {
       queueMode: cfg.queue.mode,
     });
 
-    // Deletion may cancel this row while the alarm write is awaiting storage.
     const generation = this.storageGeneration;
     const settlement = wait ? this.waitForRunSettlement(runId) : undefined;
-    // Persist a wake-up before acknowledging acceptance so eviction can recover the queue.
     await this.scheduleNextAlarm();
     if (this.storageGeneration !== generation) {
       if (settlement) return settlement;
@@ -1508,58 +1048,51 @@ export class AgentDO extends DurableObject<Env> {
     return settlement ?? this.materializeRunRecord(runId);
   }
 
-  private runSpendLimit(runId: string): number | null {
-    return this.ctx.storage.sql.exec<{ spend_limit_usd: number | null }>("SELECT spend_limit_usd FROM runs WHERE id = ?1", runId)
-      .one().spend_limit_usd;
-  }
-
-  private runActor(runId: string): string | undefined {
-    return this.ctx.storage.sql.exec<{ actor: string | null }>("SELECT actor FROM runs WHERE id = ?1", runId)
-      .toArray()[0]?.actor ?? undefined;
-  }
-
   private async drainRunQueue(): Promise<void> {
     if (this.destroying || !this.sqlReady || this.queueDrain || this.activeRunId) return;
     const drain = (async () => {
       while (!this.destroying && this.sqlReady) {
-        // Do not start a new queued run while another run is paused awaiting human input
         const pausedRow = this.ctx.storage.sql
-          .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`)
+          .exec<{ id: string }>(
+            `SELECT id FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`,
+          )
           .toArray();
         if (pausedRow.length > 0) break;
 
-        const cfg = this.requireConfig();
+        const cfg = this.readConfigOrNull();
+        if (!cfg) break;
 
-        // Check if any queued run exists
-        const readQueued = () => this.ctx.storage.sql
-          .exec<{
-            id: string;
-            prompt: string;
-            output_schema_json: string | null;
-            max_steps: number;
-            spend_limit_usd: number | null;
-            actor: string | null;
-          }>(
-            `SELECT id, prompt, output_schema_json, max_steps, spend_limit_usd, actor FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
-          )
-          .toArray();
+        const readQueued = () =>
+          this.ctx.storage.sql
+            .exec<{
+              id: string;
+              prompt: string;
+              output_schema_json: string | null;
+              max_steps: number;
+              spend_limit_usd: number | null;
+              actor: string | null;
+            }>(
+              `SELECT id, prompt, output_schema_json, max_steps, spend_limit_usd, actor FROM runs WHERE status = 'queued' ORDER BY started_at ASC`,
+            )
+            .toArray();
         let queued = readQueued();
         if (queued.length === 0) break;
 
-        // If batch mode has a coalescing window, wait briefly so concurrent arrivals coalesce!
-        const canBatch = (run: (typeof queued)[number]) => run.spend_limit_usd === null && run.actor === null;
+        const canBatch = (run: (typeof queued)[number]) =>
+          run.spend_limit_usd === null && run.actor === null;
         if (canBatch(queued[0]!) && cfg.queue.mode === "batch" && cfg.queue.windowMs > 0) {
           await new Promise((r) => setTimeout(r, Math.min(cfg.queue.windowMs, 5_000)));
-          if (this.destroying) break;
+          if (this.destroying || !this.sqlReady) break;
           queued = readQueued();
           if (queued.length === 0) break;
         }
 
         const primary = queued[0]!;
         const firstIndividual = queued.findIndex((run) => !canBatch(run));
-        const followers = cfg.queue.mode === "batch" && firstIndividual !== 0
-          ? queued.slice(1, firstIndividual === -1 ? undefined : firstIndividual)
-          : [];
+        const followers =
+          cfg.queue.mode === "batch" && firstIndividual !== 0
+            ? queued.slice(1, firstIndividual === -1 ? undefined : firstIndividual)
+            : [];
 
         const combinedPrompt =
           followers.length > 0
@@ -1573,6 +1106,7 @@ export class AgentDO extends DurableObject<Env> {
               this.preRunHints.delete(f.id);
               this.releaseUnusedPreacquiredHint(cfg.tenantId, followerHints);
             }
+            this.runKeyScopes.delete(f.id);
             this.ctx.storage.sql.exec(
               `UPDATE runs SET status = 'running', batched_into = ?1 WHERE id = ?2`,
               primary.id,
@@ -1597,7 +1131,7 @@ export class AgentDO extends DurableObject<Env> {
       await drain;
     } finally {
       this.queueDrain = null;
-      if (!this.destroying) void this.scheduleNextAlarm();
+      if (!this.destroying && this.sqlReady) void this.scheduleNextAlarm();
     }
   }
 
@@ -1612,11 +1146,11 @@ export class AgentDO extends DurableObject<Env> {
     const tenantStub = getTenantStub(this.env, cfg.tenantId);
 
     let slotAcquired = false;
-    const abortController = new AbortController();
     this.activeRunId = runId;
-    this.activeAbortController = abortController;
     const hints = this.preRunHints.get(runId);
     this.preRunHints.delete(runId);
+    const keyScope = this.runKeyScopes.get(runId);
+    this.runKeyScopes.delete(runId);
 
     try {
       if (hints?.preacquiredSlot) {
@@ -1636,21 +1170,26 @@ export class AgentDO extends DurableObject<Env> {
         for (const file of queued.files) files.push({ lineage: queued.lineage, file });
       }
 
-      const adapter = this.buildAdapter();
-      const finalRecord = await runAgentTurn(adapter, {
+      const handedOffSlot = slotAcquired;
+      slotAcquired = false; // Ownership transferred to PiAgentEngine.executeRun
+      const finalRecord = await this.ensurePiEngine().executeRun({
         runId,
         prompt,
         actor: this.runActor(runId),
         files,
         outputSchema,
         maxSteps,
-        signal: abortController.signal,
-        prefetchedProvider: hints?.prefetchedProvider,
-        prefetchedBalanceUsd: hints?.prefetchedBalanceUsd,
+        spendLimitUsd: this.runSpendLimit(runId),
+        keyScope,
+        hints,
+        slotAcquired: handedOffSlot,
       });
 
-      await this.settleAndFinalizeFollowers(finalRecord, batchedFollowerIds);
+      this.finalizeFollowers(finalRecord, batchedFollowerIds);
     } catch (err) {
+      if (slotAcquired) {
+        await tenantStub.releaseSlot(runId).catch(() => {});
+      }
       const apiErr = extractApiError(err);
       const code = apiErr ? apiErr.code : "run_failed";
       const message = apiErr ? apiErr.message : err instanceof Error ? err.message : String(err);
@@ -1662,110 +1201,16 @@ export class AgentDO extends DurableObject<Env> {
       );
       this.recordAndBroadcastEvent(runId, "run_failed", { runId, error: { code, message } });
       const failedRecord = this.materializeRunRecord(runId);
-      await this.settleAndFinalizeFollowers(failedRecord, batchedFollowerIds);
+      this.finalizeFollowers(failedRecord, batchedFollowerIds);
     } finally {
-      if (slotAcquired) {
-        await tenantStub.releaseSlot(runId).catch(() => {});
+      if (this.activeRunId === runId) {
+        this.activeRunId = null;
       }
-      this.activeRunId = null;
-      this.activeAbortController = null;
       this.notifyRunWaiters(runId);
       for (const fid of batchedFollowerIds) {
         this.notifyRunWaiters(fid);
       }
     }
-  }
-
-  private async settleAndFinalizeFollowers(
-    primaryRecord: RunRecord,
-    followerIds: string[],
-  ): Promise<void> {
-    const cfg = this.requireConfig();
-    if (
-      primaryRecord.status === "completed" ||
-      primaryRecord.status === "failed" ||
-      primaryRecord.status === "cancelled"
-    ) {
-      if (
-        primaryRecord.usage.inputTokens > 0 ||
-        primaryRecord.usage.outputTokens > 0 ||
-        primaryRecord.usage.vmMs > 0 ||
-        primaryRecord.usage.costUsd > 0
-      ) {
-        const tenantStub = getTenantStub(this.env, cfg.tenantId);
-        const refId = `run:${primaryRecord.id}`;
-        const isByok = primaryRecord.usage.byok === true;
-        let platformCostUsd = primaryRecord.usage.costUsd;
-
-        if (isByok) {
-          // BYOK runs NEVER debit platform balance for LLM tokens.
-          // Infra charges (e.g. VM seconds) draw from infra-only free credit first.
-          const vmCostUsd = calculateCostUsd("mock", 0, 0, primaryRecord.usage.vmMs, 0);
-          let uncoveredInfraUsd = vmCostUsd;
-          if (vmCostUsd > 0) {
-            const infra = await consumeInfraCredit(this.env, cfg.tenantId, vmCostUsd, refId).catch(() => ({
-              coveredUsd: 0,
-              uncoveredUsd: vmCostUsd,
-              remainingUsd: 0,
-            }));
-            uncoveredInfraUsd = infra.uncoveredUsd;
-          }
-          if (uncoveredInfraUsd > 0) {
-            // Never allow a BYOK run to drive platform balanceUsd negative (even against a warm TenantDO).
-            const profile = await tenantStub.getProfile().catch(() => null);
-            const availableBalance = Math.max(0, profile?.balanceUsd ?? 0);
-            platformCostUsd = Number(Math.min(availableBalance, uncoveredInfraUsd).toFixed(8));
-          } else {
-            platformCostUsd = 0;
-          }
-        }
-
-        await tenantStub
-          .settleUsage({
-            refId,
-            model: cfg.model,
-            inputTokens: primaryRecord.usage.inputTokens,
-            outputTokens: primaryRecord.usage.outputTokens,
-            cacheReadTokens: primaryRecord.usage.cacheReadTokens ?? 0,
-            vmMs: primaryRecord.usage.vmMs,
-            costUsd: platformCostUsd,
-            note: `Agent ${cfg.key} (${cfg.id})`,
-            agentId: cfg.id,
-            actor: primaryRecord.actor ?? undefined,
-            ...(isByok ? { byok: true } : {}),
-          })
-          .catch(() => {});
-      }
-    }
-
-    this.finalizeFollowers(primaryRecord, followerIds);
-  }
-
-  private finalizeFollowers(primaryRecord: RunRecord, followerIds: string[]): void {
-    for (const fid of followerIds) {
-      this.ctx.storage.sql.exec(
-        `UPDATE runs
-         SET status = ?1, batched_into = ?2, text = ?3, output_json = ?4, error_json = ?5, ended_at = ?6
-         WHERE id = ?7`,
-        primaryRecord.status,
-        primaryRecord.id,
-        primaryRecord.text,
-        JSON.stringify(primaryRecord.output),
-        primaryRecord.error ? JSON.stringify(primaryRecord.error) : null,
-        Date.now(),
-        fid,
-      );
-      if (primaryRecord.status !== "input_required") {
-        this.logRunLifecycle(fid, `run_${primaryRecord.status}`, primaryRecord.error?.code);
-      }
-    }
-  }
-
-  private pausedFollowerIds(runId: string): string[] {
-    return this.ctx.storage.sql.exec<{ id: string }>(
-      "SELECT id FROM runs WHERE batched_into = ? AND status = 'input_required'",
-      runId,
-    ).toArray().map(({ id }) => id);
   }
 
   private logRunLifecycle(runId: string, event: string, code?: string): void {
@@ -1779,12 +1224,14 @@ export class AgentDO extends DurableObject<Env> {
 
   private watchableRuns(): Array<{ id: string; status: string; started_at: number }> {
     const sql = this.ctx.storage.sql;
-    const oldest = (status: string) => sql.exec<{ id: string; status: string; started_at: number }>(
-      "SELECT id, status, started_at FROM runs WHERE status = ? AND batched_into IS NULL ORDER BY started_at LIMIT 1",
-      status,
-    ).toArray();
+    const oldest = (status: string) =>
+      sql
+        .exec<{ id: string; status: string; started_at: number }>(
+          "SELECT id, status, started_at FROM runs WHERE status = ? AND batched_into IS NULL ORDER BY started_at LIMIT 1",
+          status,
+        )
+        .toArray();
     const running = oldest("running");
-    // The queue intentionally waits when the agent has asked for input.
     return oldest("input_required").length > 0 ? running : [...running, ...oldest("queued")];
   }
 
@@ -1792,10 +1239,12 @@ export class AgentDO extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     for (const run of this.watchableRuns()) {
       if (now - run.started_at < RUN_STALL_AFTER_MS) continue;
-      const lastEvent = sql.exec<{ created_at: number }>(
-        "SELECT created_at FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT 1",
-        run.id,
-      ).toArray()[0];
+      const lastEvent = sql
+        .exec<{ created_at: number }>(
+          "SELECT created_at FROM events WHERE run_id = ? ORDER BY seq DESC LIMIT 1",
+          run.id,
+        )
+        .toArray()[0];
       const lastProgressAt = lastEvent?.created_at ?? run.started_at;
       if (now - lastProgressAt < RUN_STALL_AFTER_MS) continue;
       const key = `last_stall_${run.status}`;
@@ -1803,8 +1252,13 @@ export class AgentDO extends DurableObject<Env> {
       const previous = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = ?", key).toArray()[0];
       if (previous?.v === marker) continue;
       console.error({
-        message: "Agent turn stalled", event: "run_stalled", agentId: this.requireConfig().id, runId: run.id,
-        status: run.status, ageMs: now - run.started_at, noProgressMs: now - lastProgressAt,
+        message: "Agent turn stalled",
+        event: "run_stalled",
+        agentId: this.requireConfig().id,
+        runId: run.id,
+        status: run.status,
+        ageMs: now - run.started_at,
+        noProgressMs: now - lastProgressAt,
       });
       sql.exec("INSERT OR REPLACE INTO runtime_kv (k, v) VALUES (?, ?)", key, marker);
     }
@@ -1821,12 +1275,11 @@ export class AgentDO extends DurableObject<Env> {
       candidates.push((Math.floor(now / RUN_WATCH_INTERVAL_MS) + 1) * RUN_WATCH_INTERVAL_MS);
     }
 
-    const delivery = this.ctx.storage.sql.exec<{ due: number | null }>(
-      "SELECT MIN(next_attempt_at) AS due FROM app_webhook_deliveries",
-    ).one();
+    const delivery = this.ctx.storage.sql
+      .exec<{ due: number | null }>("SELECT MIN(next_attempt_at) AS due FROM app_webhook_deliveries")
+      .one();
     if (delivery.due !== null) candidates.push(delivery.due);
 
-    // 1. Next due schedule
     const schedRows = this.ctx.storage.sql
       .exec<{ next_due_at: number }>(
         `SELECT MIN(next_due_at) AS next_due_at FROM schedules WHERE enabled = 1`,
@@ -1836,7 +1289,6 @@ export class AgentDO extends DurableObject<Env> {
       candidates.push(Number(schedRows[0].next_due_at));
     }
 
-    // 2. Next expiring human input
     const inputRows = this.ctx.storage.sql
       .exec<{ expires_at: number }>(
         `SELECT MIN(expires_at) AS expires_at FROM inputs WHERE status = 'pending'`,
@@ -1846,7 +1298,6 @@ export class AgentDO extends DurableObject<Env> {
       candidates.push(Number(inputRows[0].expires_at));
     }
 
-    // 3. Next VM session lease expiration
     const vmRows = this.ctx.storage.sql
       .exec<{ lease_expires_at: number }>(
         `SELECT MIN(lease_expires_at) AS lease_expires_at FROM vm_session`,
@@ -1856,40 +1307,27 @@ export class AgentDO extends DurableObject<Env> {
       candidates.push(Number(vmRows[0].lease_expires_at));
     }
 
-    // 4. Dreaming idle consolidation
     if (cfg.dreaming?.enabled && cfg.dreaming.idleSeconds > 0) {
-      const msgRow = this.ctx.storage.sql
-        .exec<{ seq: number; created_at: number }>(
-          `SELECT seq, created_at FROM messages ORDER BY seq DESC LIMIT 1`,
-        )
-        .toArray();
-      if (msgRow[0] && msgRow[0].seq > this.lastDreamedSeq) {
-        candidates.push(msgRow[0].created_at + cfg.dreaming.idleSeconds * 1000);
+      const latest = await this.ensurePiEngine().getLatestMessageMeta();
+      if (latest && latest.seq > this.lastDreamedSeq) {
+        candidates.push(latest.createdAt + cfg.dreaming.idleSeconds * 1000);
       }
     }
 
-    if (this.piEngine !== null || this.isPiEngine(cfg) || this.hasLifecycleJobsTable()) {
-      const engine = this.ensurePiEngine();
-      await engine.ensureStarted();
-      if (candidates.length > 0) {
-        const earliest = Math.max(now + 250, Math.min(...candidates));
-        await engine.lifecycle.jobs.push({
-          id: "camelrun:periodic",
-          fn: "camelrun_periodic",
-          time: earliest,
-          singleflight: true,
-        });
-      } else {
-        await engine.lifecycle.jobs.cancel("camelrun:periodic");
-      }
-      return;
-    }
+    const engine = this.ensurePiEngine();
+    await engine.ensureStarted();
+    if (this.destroying || !this.sqlReady) return;
 
     if (candidates.length > 0) {
       const earliest = Math.max(now + 250, Math.min(...candidates));
-      await this.ctx.storage.setAlarm(earliest);
+      await engine.lifecycle.jobs.push({
+        id: "camelrun:periodic",
+        fn: "camelrun_periodic",
+        time: earliest,
+        singleflight: true,
+      });
     } else {
-      await this.ctx.storage.deleteAlarm();
+      await engine.lifecycle.jobs.cancel("camelrun:periodic");
     }
   }
 
@@ -1899,59 +1337,60 @@ export class AgentDO extends DurableObject<Env> {
     const cfg = this.readConfigOrNull();
     if (!cfg) return;
 
-    if (this.isPiEngine(cfg) || this.hasLifecycleJobsTable()) {
-      const engine = this.ensurePiEngine();
-      await engine.ensureStarted();
-      await engine.lifecycle.alarm();
-      return;
-    }
+    const generation = this.storageGeneration;
+    this.periodicRanInAlarm = false;
 
-    await this.runPeriodicTasks();
+    const engine = this.ensurePiEngine();
+    await engine.ensureStarted();
+    if (this.destroying || this.storageGeneration !== generation) return;
+    await engine.lifecycle.alarm();
+    if (this.destroying || this.storageGeneration !== generation) return;
+
+    // Also run periodic maintenance if `alarm()` was fired directly (e.g. legacy DO alarm or test trigger)
+    if (!this.periodicRanInAlarm) {
+      await this.runPeriodicTasks();
+    }
   }
 
   async onJob(context: LifecycleJobContext): Promise<void> {
     if (this.destroying) return;
     this.ensureSql();
     if (context.job.fn === "camelrun_periodic") {
+      this.periodicRanInAlarm = true;
       await this.runPeriodicTasks();
     }
   }
 
   private async runPeriodicTasks(): Promise<void> {
-    if (this.destroying) return;
-    this.ensureSql();
+    if (this.destroying || !this.sqlReady) return;
     const cfg = this.readConfigOrNull();
     if (!cfg) return;
 
     const generation = this.storageGeneration;
     const stopping = () => this.destroying || this.storageGeneration !== generation;
     const now = Date.now();
-    const isPi = this.isPiEngine(cfg);
 
-    // 1. Expire stale pending human inputs (pi-durable handles its own ToolPark deadlines via pi-wake)
+    // 1. Expire stale pending human inputs
     const expiredInputs = this.ctx.storage.sql
       .exec<{
         id: string;
         run_id: string;
         tool_call_id: string;
         prompt_json: string | null;
-        pending_turn_json: string | null;
       }>(
-        `SELECT id, run_id, tool_call_id, prompt_json, pending_turn_json FROM inputs WHERE status = 'pending' AND expires_at <= ?1 ORDER BY rowid ASC`,
+        `SELECT id, run_id, tool_call_id, prompt_json FROM inputs WHERE status = 'pending' AND expires_at <= ?1 ORDER BY rowid ASC`,
         now,
       )
       .toArray();
     for (const inp of expiredInputs) {
-      if (PiAgentEngine.isPiInputRow(inp.pending_turn_json)) continue;
-      this.expirePendingInput(inp, now);
+      await this.expirePendingInputRow(inp, now);
+      if (stopping()) return;
     }
 
-    if (!isPi) {
-      this.reportStalledRuns(now);
-      await this.scheduleNextAlarm();
-      if (stopping()) return;
-      this.ctx.waitUntil(this.drainRunQueue());
-    }
+    this.reportStalledRuns(now);
+    await this.scheduleNextAlarm();
+    if (stopping()) return;
+    this.ctx.waitUntil(this.drainRunQueue());
 
     // 2. Clean up expired VM session leases
     const expiredVms = this.ctx.storage.sql
@@ -2000,15 +1439,11 @@ export class AgentDO extends DurableObject<Env> {
 
     // 4. Idle dreaming consolidation
     if (cfg.dreaming?.enabled && !this.activeRunId) {
-      const latestMsg = this.ctx.storage.sql
-        .exec<{ seq: number; created_at: number }>(
-          `SELECT seq, created_at FROM messages ORDER BY seq DESC LIMIT 1`,
-        )
-        .toArray()[0];
+      const latestMsg = await this.ensurePiEngine().getLatestMessageMeta();
       if (
         latestMsg &&
         latestMsg.seq > this.lastDreamedSeq &&
-        now - latestMsg.created_at >= cfg.dreaming.idleSeconds * 1000
+        now - latestMsg.createdAt >= cfg.dreaming.idleSeconds * 1000
       ) {
         this.lastDreamedSeq = latestMsg.seq;
         this.ctx.storage.sql.exec(
@@ -2016,7 +1451,7 @@ export class AgentDO extends DurableObject<Env> {
            ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
           String(this.lastDreamedSeq),
         );
-        await performDreamConsolidation(this.buildAdapter()).catch(() => {});
+        await this.ensurePiEngine().consolidateDream().catch(() => {});
         if (stopping()) return;
       }
     }
@@ -2029,29 +1464,36 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private async deliverDueAppWebhooks(now: number, stopping: () => boolean): Promise<void> {
-    const deliveries = this.ctx.storage.sql.exec<{ id: string; message_json: string; attempts: number }>(
-      "SELECT id, message_json, attempts FROM app_webhook_deliveries WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 10",
-      now,
-    ).toArray();
-    await Promise.all(deliveries.map(async ({ id, message_json, attempts }) => {
-      try {
-        await deliverWebhookMessage(this.env, JSON.parse(message_json), true);
-        if (!stopping()) this.ctx.storage.sql.exec("DELETE FROM app_webhook_deliveries WHERE id = ?", id);
-      } catch (error) {
-        if (stopping()) return;
-        const delivery = { id, attempt: attempts + 1, code: extractApiError(error)?.code };
-        if (attempts === 2) {
-          console.error({ message: "App turn webhook delivery delayed", ...delivery });
-        } else {
-          console.warn({ message: "App turn webhook delivery retry", ...delivery });
+    const deliveries = this.ctx.storage.sql
+      .exec<{ id: string; message_json: string; attempts: number }>(
+        "SELECT id, message_json, attempts FROM app_webhook_deliveries WHERE next_attempt_at <= ? ORDER BY next_attempt_at LIMIT 10",
+        now,
+      )
+      .toArray();
+    await Promise.all(
+      deliveries.map(async ({ id, message_json, attempts }) => {
+        try {
+          await deliverWebhookMessage(this.env, JSON.parse(message_json), true);
+          if (!stopping()) {
+            this.ctx.storage.sql.exec("DELETE FROM app_webhook_deliveries WHERE id = ?", id);
+          }
+        } catch (error) {
+          if (stopping()) return;
+          const delivery = { id, attempt: attempts + 1, code: extractApiError(error)?.code };
+          if (attempts === 2) {
+            console.error({ message: "App turn webhook delivery delayed", ...delivery });
+          } else {
+            console.warn({ message: "App turn webhook delivery retry", ...delivery });
+          }
+          const delay = 1_000 * 2 ** Math.min(attempts, 8);
+          this.ctx.storage.sql.exec(
+            "UPDATE app_webhook_deliveries SET attempts = attempts + 1, next_attempt_at = ? WHERE id = ?",
+            Date.now() + delay,
+            id,
+          );
         }
-        const delay = 1_000 * 2 ** Math.min(attempts, 8);
-        this.ctx.storage.sql.exec(
-          "UPDATE app_webhook_deliveries SET attempts = attempts + 1, next_attempt_at = ? WHERE id = ?",
-          Date.now() + delay, id,
-        );
-      }
-    }));
+      }),
+    );
   }
 
   private fetchStoredEvents(afterSeq: number, runIdFilter: string | null): AgentEventRecord[] {
@@ -2102,34 +1544,12 @@ export class AgentDO extends DurableObject<Env> {
   ): Promise<{ config: AgentConfig; created: boolean; run?: RunRecord }> {
     this.ensureSql();
     const existing = this.readConfigOrNull();
-    const defaultEngine: AgentEngine = this.env.DEFAULT_AGENT_ENGINE === "pi" ? "pi" : "legacy";
-    const currentEngine: AgentEngine = existing?.engine ?? "legacy";
-    const nextEngine: AgentEngine = existing
-      ? (incoming.engine ?? currentEngine)
-      : (incoming.engine ?? defaultEngine);
-
-    if (existing && incoming.engine !== undefined && incoming.engine !== currentEngine) {
-      const hasActiveWork =
-        Boolean(this.activeRunId) ||
-        Boolean(this.piEngine?.isBusy()) ||
-        this.ctx.storage.sql
-          .exec(`SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1`)
-          .toArray().length > 0;
-      if (hasActiveWork) {
-        throw new ApiError(
-          409,
-          "engine_busy",
-          "Cannot switch agent engine while a run is active or awaiting input",
-        );
-      }
-    }
-
     const now = Date.now();
     const merged: AgentConfig = {
       id: incoming.id,
       tenantId: incoming.tenantId,
       key: incoming.key,
-      engine: nextEngine,
+      engine: "pi",
       model:
         incoming.model ??
         existing?.model ??
@@ -2178,20 +1598,20 @@ export class AgentDO extends DurableObject<Env> {
       updatedAt: now,
     };
     this.writeConfig(merged);
-    const indexSync = existing && (incoming.model !== undefined || incoming.keyScope !== undefined)
-      ? this.syncIndexedModel(merged)
-      : undefined;
+    const indexSync =
+      existing && (incoming.model !== undefined || incoming.keyScope !== undefined)
+        ? this.syncIndexedModel(merged)
+        : undefined;
 
     if (initialRun) {
-      // `drainRunQueue().finally()` will invoke `scheduleNextAlarm()` once finished.
       if (indexSync) {
-        this.ctx.waitUntil(indexSync.catch((error) => {
-          console.error("Agent model index update failed", { agentId: merged.id, error });
-        }));
+        this.ctx.waitUntil(
+          indexSync.catch((error) => {
+            console.error("Agent model index update failed", { agentId: merged.id, error });
+          }),
+        );
       }
-      const run = this.isPiEngine(merged)
-        ? await this.ensurePiEngine().startRun(initialRun.input, initialRun.hints)
-        : await this.enqueueOrRunInternal(initialRun.input, initialRun.hints);
+      const run = await this.enqueueOrRunPi(initialRun.input, initialRun.hints);
       return { config: merged, created: !existing, run };
     }
 
@@ -2203,10 +1623,19 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private async syncIndexedModel(config: AgentConfig): Promise<void> {
-    await getTenantStub(this.env, config.tenantId).updateAgentModel(config.id, config.model, config.updatedAt, config.keyScope ?? null);
+    await getTenantStub(this.env, config.tenantId).updateAgentModel(
+      config.id,
+      config.model,
+      config.updatedAt,
+      config.keyScope ?? null,
+    );
   }
 
-  async updateModelIfIdle(model: string, expectedModel: string, keyScope?: string | null): Promise<{ model: string; keyScope?: string | null; changed: boolean }> {
+  async updateModelIfIdle(
+    model: string,
+    expectedModel: string,
+    keyScope?: string | null,
+  ): Promise<{ model: string; keyScope?: string | null; changed: boolean }> {
     this.ensureSql();
     const cfg = this.requireConfig();
     const nextScope = keyScope !== undefined ? (keyScope?.trim() || null) : (cfg.keyScope ?? null);
@@ -2217,30 +1646,44 @@ export class AgentDO extends DurableObject<Env> {
     if (cfg.model !== expectedModel) {
       throw new ApiError(409, "model_changed", "The agent model changed");
     }
-    const pending = this.ctx.storage.sql.exec(
-      "SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1",
-    ).toArray().length > 0;
+    const pending =
+      this.ctx.storage.sql
+        .exec("SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1")
+        .toArray().length > 0;
     if (this.activeRunId || pending) {
       throw new ApiError(409, "agent_busy", "The agent has work in progress");
     }
-    const updated = { ...cfg, model, keyScope: nextScope, updatedAt: Date.now() };
+    const updated: AgentConfig = { ...cfg, model, keyScope: nextScope, updatedAt: Date.now() };
     this.writeConfig(updated);
-    if (this.isPiEngine(updated)) {
-      await this.ensurePiEngine().syncModelChange(updated);
-    }
+    await this.ensurePiEngine().syncModelChange(updated);
     await this.syncIndexedModel(updated);
     return { model, ...(nextScope ? { keyScope: nextScope } : {}), changed: true };
   }
 
-  updateSpendLimitIfIdle(scope: { tenantId: string; agentId: string }, spendLimitUsd: number, expectedSpendLimitUsd: number) {
-    if (![spendLimitUsd, expectedSpendLimitUsd].every(value => typeof value === "number" && Number.isFinite(value) && value >= 0)) {
-      throw new ApiError(400, "invalid_spend_limit", "Spend limits must be finite non-negative numbers");
+  updateSpendLimitIfIdle(
+    scope: { tenantId: string; agentId: string },
+    spendLimitUsd: number,
+    expectedSpendLimitUsd: number,
+  ) {
+    if (
+      ![spendLimitUsd, expectedSpendLimitUsd].every(
+        (value) => typeof value === "number" && Number.isFinite(value) && value >= 0,
+      )
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_spend_limit",
+        "Spend limits must be finite non-negative numbers",
+      );
     }
-    // MONEY: do not run cold queue recovery merely to compare one configuration field.
-    const tables = this.ctx.storage.sql.exec<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runs')",
-    ).toArray();
-    if (tables.length !== 2) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
+    const tables = this.ctx.storage.sql
+      .exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runs')",
+      )
+      .toArray();
+    if (tables.length !== 2) {
+      throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
+    }
     const cfg = this.requireConfig();
     if (!scope?.tenantId || !scope.agentId || cfg.tenantId !== scope.tenantId || cfg.id !== scope.agentId) {
       throw new ApiError(404, "agent_not_found", "Agent not found");
@@ -2252,61 +1695,25 @@ export class AgentDO extends DurableObject<Env> {
     if (cfg.spendLimitUsd !== expectedSpendLimitUsd) {
       throw new ApiError(409, "spend_limit_changed", "The agent spend limit changed");
     }
-    const pending = this.ctx.storage.sql.exec(
-      "SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1",
-    ).toArray().length > 0;
+    const pending =
+      this.ctx.storage.sql
+        .exec("SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1")
+        .toArray().length > 0;
     if (this.destroying || this.activeRunId || this.queueDrain || this.inputResumeWork || pending) {
       throw new ApiError(409, "agent_busy", "The agent has work in progress");
     }
-    // No await between the compare, idle check and this single configuration write.
     this.writeConfig({ ...cfg, spendLimitUsd });
     return { spendLimitUsd, changed: true };
   }
 
   async seedFork(payload: {
     config: AgentConfig;
-    messages: Array<{
-      seq: number;
-      run_id: string | null;
-      role: string;
-      content_json: string;
-      tokens_est: number;
-      created_at: number;
-    }>;
-    compaction: {
-      id: string;
-      up_to_seq: number;
-      summary: string;
-      created_at: number;
-    } | null;
-    piEntries?: EntryRecord[];
+    piEntries: EntryRecord[];
   }): Promise<{ seeded: true }> {
     this.ensureSql();
-    this.writeConfig(payload.config);
-    if (payload.compaction) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO compactions (id, up_to_seq, summary, created_at) VALUES (?1, ?2, ?3, ?4)`,
-        payload.compaction.id,
-        payload.compaction.up_to_seq,
-        payload.compaction.summary,
-        payload.compaction.created_at,
-      );
-    }
-    for (const m of payload.messages) {
-      this.ctx.storage.sql.exec(
-        `INSERT INTO messages (seq, run_id, role, content_json, tokens_est, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-        m.seq,
-        m.run_id,
-        m.role,
-        m.content_json,
-        m.tokens_est,
-        m.created_at,
-      );
-    }
-    if (payload.piEntries !== undefined && this.isPiEngine(payload.config)) {
-      await this.ensurePiEngine().seedForkEntries(payload.config, payload.piEntries);
-    }
+    const cfg: AgentConfig = { ...payload.config, engine: "pi" };
+    this.writeConfig(cfg);
+    await this.ensurePiEngine().seedForkEntries(cfg, payload.piEntries);
     return { seeded: true };
   }
 
@@ -2361,14 +1768,12 @@ export class AgentDO extends DurableObject<Env> {
     const msgCountRow = this.ctx.storage.sql
       .exec<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM messages`)
       .one();
-    const piMsgCount = this.isPiEngine(cfg)
-      ? await this.ensurePiEngine().getMessageCount()
-      : null;
+    const piMsgCount = await this.ensurePiEngine().getMessageCount();
     return {
       id: cfg.id,
       key: cfg.key,
       tenantId: cfg.tenantId,
-      engine: cfg.engine ?? "legacy",
+      engine: "pi",
       model: cfg.model,
       keyScope: cfg.keyScope ?? null,
       instructions: cfg.instructions,
@@ -2384,7 +1789,9 @@ export class AgentDO extends DurableObject<Env> {
       branch: cfg.branch,
       spendLimitUsd: cfg.spendLimitUsd,
       idleTtlSeconds: cfg.idleTtlSeconds,
-      ...(cfg.compactThresholdTokens !== undefined ? { compactThresholdTokens: cfg.compactThresholdTokens } : {}),
+      ...(cfg.compactThresholdTokens !== undefined
+        ? { compactThresholdTokens: cfg.compactThresholdTokens }
+        : {}),
       dreaming: cfg.dreaming,
       status: this.activeRunId ? "running" : "idle",
       activeRunId: this.activeRunId,
@@ -2400,33 +1807,32 @@ export class AgentDO extends DurableObject<Env> {
     if (typeof body.prompt !== "string") {
       throw new ApiError(400, "invalid_request", "`prompt` must be a string");
     }
-    if (this.isPiEngine()) {
-      return this.ensurePiEngine().startRun(body, hints);
-    }
-    return this.enqueueOrRunInternal(body, hints);
+    return this.enqueueOrRunPi(body, hints);
   }
 
   async appendPassiveNote(text: string, meta?: Record<string, unknown>): Promise<{ ok: true }> {
     this.ensureSql();
     this.requireConfig();
-    const content: StoredMessageContent = { text, ...(meta ? { meta } : {}) };
-    const contentJson = JSON.stringify(content);
-    this.ctx.storage.sql.exec(
-      `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
-       VALUES (NULL, 'user', ?1, ?2, ?3)`,
-      contentJson,
-      estimateTokens(text),
-      Date.now(),
-    );
+    const appendedToPi = await this.ensurePiEngine().appendPassiveNote(text);
+    if (!appendedToPi) {
+      const content: StoredMessageContent = { text, ...(meta ? { meta } : {}) };
+      this.ctx.storage.sql.exec(
+        `INSERT INTO messages (run_id, role, content_json, tokens_est, created_at)
+         VALUES (NULL, 'user', ?1, ?2, ?3)`,
+        JSON.stringify(content),
+        estimateTokens(text),
+        Date.now(),
+      );
+    }
     return { ok: true };
   }
 
   async getRun(runId: string, byIdempotencyKey = false): Promise<RunRecord> {
     this.ensureSql();
     if (byIdempotencyKey) {
-      const row = this.ctx.storage.sql.exec<{ id: string }>(
-        "SELECT id FROM runs WHERE idempotency_key = ?1", runId,
-      ).toArray()[0];
+      const row = this.ctx.storage.sql
+        .exec<{ id: string }>("SELECT id FROM runs WHERE idempotency_key = ?1", runId)
+        .toArray()[0];
       if (!row) throw new ApiError(404, "run_not_found", "No run for that idempotency key");
       return this.materializeRunRecord(row.id);
     }
@@ -2436,10 +1842,17 @@ export class AgentDO extends DurableObject<Env> {
   async getRunState(): Promise<{ cursor: number; activeRunId: string | null; runs: RunRecord[] }> {
     this.ensureSql();
     const sql = this.ctx.storage.sql;
-    const open = sql.exec<{ id: string }>("SELECT id FROM runs WHERE status IN ('queued', 'running', 'input_required') ORDER BY started_at, rowid").toArray();
-    const recent = sql.exec<{ id: string }>(`
-      SELECT id FROM runs WHERE status IN ('completed', 'failed', 'cancelled')
-      ORDER BY started_at DESC, rowid DESC LIMIT 64`).toArray();
+    const open = sql
+      .exec<{ id: string }>(
+        "SELECT id FROM runs WHERE status IN ('queued', 'running', 'input_required') ORDER BY started_at, rowid",
+      )
+      .toArray();
+    const recent = sql
+      .exec<{ id: string }>(
+        `SELECT id FROM runs WHERE status IN ('completed', 'failed', 'cancelled')
+         ORDER BY started_at DESC, rowid DESC LIMIT 64`,
+      )
+      .toArray();
     const cursor = sql.exec<{ seq: number }>("SELECT coalesce(max(seq), 0) AS seq FROM events").one().seq;
     return {
       cursor,
@@ -2450,11 +1863,13 @@ export class AgentDO extends DurableObject<Env> {
 
   async getRunsWithPendingInputs(): Promise<RunRecord[]> {
     this.ensureSql();
-    const rows = this.ctx.storage.sql.exec<{ run_id: string }>(
-      "SELECT DISTINCT run_id FROM inputs WHERE status = 'pending' AND expires_at > ?1",
-      Date.now(),
-    ).toArray();
-    return rows.map(row => this.materializeRunRecord(row.run_id));
+    const rows = this.ctx.storage.sql
+      .exec<{ run_id: string }>(
+        "SELECT DISTINCT run_id FROM inputs WHERE status = 'pending' AND expires_at > ?1",
+        Date.now(),
+      )
+      .toArray();
+    return rows.map((row) => this.materializeRunRecord(row.run_id));
   }
 
   async abortRuns(body?: { keepQueued?: boolean; supersedeInputs?: boolean }): Promise<{
@@ -2462,53 +1877,19 @@ export class AgentDO extends DurableObject<Env> {
     cancelledRunIds: string[];
   }> {
     this.ensureSql();
-    if (this.isPiEngine()) {
-      return this.ensurePiEngine().abortRuns(body);
-    }
-    const cancelledRunIds: string[] = [];
-
-    if (this.activeRunId && this.activeAbortController) {
-      cancelledRunIds.push(this.activeRunId);
-      this.activeAbortController.abort();
-    }
-
-    const closedInputRunIds = this.closePendingInputRuns(
-      body?.supersedeInputs
-        ? {
-            inputStatus: "superseded",
-            toolText: "Not answered: the user sent a new message instead (next).",
-            error: { code: "superseded", message: "Superseded by a new message" },
-          }
-        : {
-            inputStatus: "cancelled",
-            toolText: "Cancelled by the application before anyone answered.",
-            error: { code: "cancelled", message: "Cancelled via abort" },
-          },
-    );
-    cancelledRunIds.push(...closedInputRunIds);
-
-    if (!body?.keepQueued) {
-      const queuedRows = this.ctx.storage.sql
-        .exec<{ id: string }>(`SELECT id FROM runs WHERE status = 'queued'`)
-        .toArray();
-      const now = Date.now();
-      for (const qr of queuedRows) {
-        cancelledRunIds.push(qr.id);
-        this.ctx.storage.sql.exec(
-          `UPDATE runs SET status = 'cancelled', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
-          JSON.stringify({ code: "cancelled", message: "Cancelled via abort" }),
-          now,
-          qr.id,
-        );
-        this.recordAndBroadcastEvent(qr.id, "run_cancelled", { runId: qr.id });
-        this.notifyRunWaiters(qr.id);
+    const res = await this.ensurePiEngine().abortRuns(body);
+    for (const runId of res.cancelledRunIds) {
+      const followers = this.followerIdsFor(runId);
+      if (followers.length > 0) {
+        this.finalizeFollowers(this.materializeRunRecord(runId), followers);
+        for (const fid of followers) this.notifyRunWaiters(fid);
       }
-    } else if (closedInputRunIds.length > 0 && !this.destroying) {
+    }
+    if (body?.keepQueued && !this.destroying) {
       this.ctx.waitUntil(this.drainRunQueue());
       void this.scheduleNextAlarm();
     }
-
-    return { aborted: true, cancelledRunIds };
+    return res;
   }
 
   async getEvents(opts?: {
@@ -2518,7 +1899,9 @@ export class AgentDO extends DurableObject<Env> {
     if (opts?.after === "latest") {
       this.ensureSql();
       const row = opts.runId
-        ? this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events WHERE run_id = ?1", opts.runId).one()
+        ? this.ctx.storage.sql
+            .exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events WHERE run_id = ?1", opts.runId)
+            .one()
         : this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events").one();
       return { events: [], nextAfter: row.seq ?? 0 };
     }
@@ -2542,10 +1925,10 @@ export class AgentDO extends DurableObject<Env> {
     nextBefore?: number | null;
   }> {
     this.ensureSql();
-    if (this.isPiEngine()) {
-      const piHistory = await this.ensurePiEngine().getHistory(opts);
-      if (piHistory !== null) return piHistory;
-    }
+    const piHistory = await this.ensurePiEngine().getHistory(opts);
+    if (piHistory !== null) return piHistory;
+
+    // Read-only view of pre-migration legacy or v1-imported SQLite messages before first Pi turn
     const after = Math.max(0, Number(opts?.after ?? 0));
     const limit = Math.max(1, Math.min(500, Number(opts?.limit ?? 50)));
     const before = opts?.before;
@@ -2558,10 +1941,13 @@ export class AgentDO extends DurableObject<Env> {
         content_json: string;
         tokens_est: number;
         created_at: number;
-      }>(newest
-        ? "SELECT * FROM messages WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
-        : "SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
-        newest ? before : after, newest ? limit + 1 : limit)
+      }>(
+        newest
+          ? "SELECT * FROM messages WHERE seq < ?1 ORDER BY seq DESC LIMIT ?2"
+          : "SELECT * FROM messages WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
+        newest ? before : after,
+        newest ? limit + 1 : limit,
+      )
       .toArray();
     const hasOlder = newest && rows.length > limit;
     if (hasOlder) rows.pop();
@@ -2575,73 +1961,103 @@ export class AgentDO extends DurableObject<Env> {
       tokensEst: r.tokens_est,
       createdAt: r.created_at,
     }));
-    const compaction = this.buildAdapter().getLatestCompaction();
+    const compRow = this.ctx.storage.sql
+      .exec<{ id: string; up_to_seq: number; summary: string }>(
+        `SELECT id, up_to_seq, summary FROM compactions ORDER BY up_to_seq DESC, created_at DESC LIMIT 1`,
+      )
+      .toArray()[0];
+    const compaction = compRow
+      ? { id: compRow.id, upToSeq: compRow.up_to_seq, summary: compRow.summary }
+      : null;
     const nextAfter = messages.at(-1)?.seq ?? after;
-    return { messages, compaction, nextAfter, ...(newest ? { nextBefore: hasOlder ? rows[0]!.seq : null } : {}) };
+    return {
+      messages,
+      compaction,
+      nextAfter,
+      ...(newest ? { nextBefore: hasOlder ? rows[0]!.seq : null } : {}),
+    };
   }
 
-  /** Metadata assertion for an operator's already imported, still private destination.
-   * This is an observation, not a reservation against later writes.
-   */
   getV1HistoryImportProof(scope: { tenantId: string; agentId: string }) {
-    // Do not call ensureSql: cold-start queue recovery can mutate and resume work.
-    // A destination with no existing imported schema cannot furnish this proof.
-    const tables = this.ctx.storage.sql.exec<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runtime_kv')",
-    ).toArray();
+    const tables = this.ctx.storage.sql
+      .exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('config', 'runtime_kv')",
+      )
+      .toArray();
     if (tables.length !== 2) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
     return this.ctx.storage.transactionSync(() => {
-      const config = this.ctx.storage.sql.exec<Pick<AgentConfig, "id" | "tenantId" | "model" | "repoId" | "lineage" | "branch">>(
-        `SELECT json_extract(config_json, '$.id') AS id, json_extract(config_json, '$.tenantId') AS tenantId,
-          json_extract(config_json, '$.model') AS model, json_extract(config_json, '$.repoId') AS repoId,
-          json_extract(config_json, '$.lineage') AS lineage, json_extract(config_json, '$.branch') AS branch
-          FROM config WHERE id = 1`,
-      ).toArray()[0];
+      const config = this.ctx.storage.sql
+        .exec<Pick<AgentConfig, "id" | "tenantId" | "model" | "repoId" | "lineage" | "branch">>(
+          `SELECT json_extract(config_json, '$.id') AS id, json_extract(config_json, '$.tenantId') AS tenantId,
+            json_extract(config_json, '$.model') AS model, json_extract(config_json, '$.repoId') AS repoId,
+            json_extract(config_json, '$.lineage') AS lineage, json_extract(config_json, '$.branch') AS branch
+            FROM config WHERE id = 1`,
+        )
+        .toArray()[0];
       if (!config) throw new ApiError(404, "agent_not_initialized", "Agent is not initialized");
       if (config.tenantId !== scope.tenantId || config.id !== scope.agentId) {
         throw new ApiError(404, "not_found", "Agent not found");
       }
-      const current = this.ctx.storage.sql.exec<{ v: string }>(
-        "SELECT v FROM runtime_kv WHERE k = 'v1_history_import'",
-      ).toArray()[0];
+      const current = this.ctx.storage.sql
+        .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
+        .toArray()[0];
       if (!current) throw new ApiError(409, "history_import_conflict", "The destination has no v1 import receipt");
       let imported: { source?: unknown; receipt?: unknown } | null;
-      try { imported = JSON.parse(current.v); }
-      catch { throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable"); }
-      if (!imported || typeof imported.source !== "string" || !imported.source ||
-          typeof imported.receipt !== "string" || !/^[0-9a-f]{64}$/.test(imported.receipt)) {
+      try {
+        imported = JSON.parse(current.v);
+      } catch {
         throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable");
       }
-      const state = this.ctx.storage.sql.exec<{ count: number; used: number }>(`
-        SELECT (SELECT COUNT(*) FROM messages INDEXED BY idx_messages_run) AS count,
-          EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-          OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM inputs)
-          OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used
-      `).one();
+      if (
+        !imported ||
+        typeof imported.source !== "string" ||
+        !imported.source ||
+        typeof imported.receipt !== "string" ||
+        !/^[0-9a-f]{64}$/.test(imported.receipt)
+      ) {
+        throw new ApiError(503, "history_import_unavailable", "The v1 import receipt is unavailable");
+      }
+      const state = this.ctx.storage.sql
+        .exec<{ count: number; used: number }>(`
+          SELECT (SELECT COUNT(*) FROM messages INDEXED BY idx_messages_run) AS count,
+            EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+            OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM inputs)
+            OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used
+        `)
+        .one();
       if (state.used || this.activeRunId) {
         throw new ApiError(409, "history_import_conflict", "The destination already has activity");
       }
       return {
-        tenantId: config.tenantId, agentId: config.id,
-        source: imported.source, receipt: imported.receipt, messageCount: Number(state.count),
-        model: config.model, repoId: config.repoId, lineage: config.lineage, branch: config.branch,
+        tenantId: config.tenantId,
+        agentId: config.id,
+        source: imported.source,
+        receipt: imported.receipt,
+        messageCount: Number(state.count),
+        model: config.model,
+        repoId: config.repoId,
+        lineage: config.lineage,
+        branch: config.branch,
       };
     });
   }
 
-  /** A separate capability prevents installing inline history into an older deferred reader. */
   async importV1HistoryWithInlineImages(input: ReturnType<typeof parseV1History>, receipt: string) {
     return this.importV1History(input, receipt);
   }
 
   async importV1History(input: ReturnType<typeof parseV1History>, receipt: string) {
-    if (input.appendAfter !== undefined) throw new ApiError(400, "invalid_history", "Use the chunked history import");
+    if (input.appendAfter !== undefined) {
+      throw new ApiError(400, "invalid_history", "Use the chunked history import");
+    }
     return this.storeV1History(input, receipt);
   }
 
-  // A deferred Worker with an older AgentDO must fail before it can replace any history.
   async appendV1HistoryChunk(input: ReturnType<typeof parseV1History>, receipt: string) {
-    if (input.appendAfter === undefined || input.messages.some(message => message.content.legacyInlineImages)) {
+    if (
+      input.appendAfter === undefined ||
+      input.messages.some((message) => message.content.legacyInlineImages)
+    ) {
       throw new ApiError(400, "invalid_history", "Expected a non-image history chunk");
     }
     return this.storeV1History(input, receipt);
@@ -2658,12 +2074,18 @@ export class AgentDO extends DurableObject<Env> {
         continue;
       }
       const lineage = config.lineage;
-      if (!lineage) throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
-      const files = await verifyRunFiles(cfs, attachments.map(file => ({ lineage, file })), {
-        env: this.env,
-        tenantId: config.tenantId,
-      });
-      if (files.some(file => sourceFileSizes?.has(file.path) && sourceFileSizes.get(file.path) !== file.size)) {
+      if (!lineage) {
+        throw new ApiError(422, "invalid_history", "Importing attachments requires a configured repository");
+      }
+      const files = await verifyRunFiles(
+        cfs,
+        attachments.map((file) => ({ lineage, file })),
+        {
+          env: this.env,
+          tenantId: config.tenantId,
+        },
+      );
+      if (files.some((file) => sourceFileSizes?.has(file.path) && sourceFileSizes.get(file.path) !== file.size)) {
         throw new ApiError(422, "invalid_history", "A pinned attachment differs in size from its v1 workspace file");
       }
       messages.push({ ...content, files });
@@ -2673,10 +2095,19 @@ export class AgentDO extends DurableObject<Env> {
         throw new ApiError(409, "history_import_conflict", "The v2 destination repository changed during import");
       }
       const sql = this.ctx.storage.sql;
-      const current = sql.exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'").toArray()[0];
-      const imported = current ? JSON.parse(current.v) as { source: string; receipt: string; chunked?: true } : undefined;
-      const used = sql.exec<{ used: number }>(`SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
-        OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions) OR EXISTS (SELECT 1 FROM schedules) AS used`).one();
+      const current = sql
+        .exec<{ v: string }>("SELECT v FROM runtime_kv WHERE k = 'v1_history_import'")
+        .toArray()[0];
+      const imported = current
+        ? (JSON.parse(current.v) as { source: string; receipt: string; chunked?: true })
+        : undefined;
+      const used = sql
+        .exec<{ used: number }>(
+          `SELECT EXISTS (SELECT 1 FROM runs) OR EXISTS (SELECT 1 FROM events)
+           OR EXISTS (SELECT 1 FROM compactions) OR EXISTS (SELECT 1 FROM voice_sessions)
+           OR EXISTS (SELECT 1 FROM schedules) AS used`,
+        )
+        .one();
       if (used.used || (!imported && sql.exec("SELECT 1 FROM messages LIMIT 1").toArray().length)) {
         throw new ApiError(409, "history_import_conflict", "The v2 destination already has activity");
       }
@@ -2694,17 +2125,31 @@ export class AgentDO extends DurableObject<Env> {
           throw new ApiError(409, "history_import_conflict", "Start chunked history at the beginning");
         }
         const { last } = sql.exec<{ last: number }>("SELECT COALESCE(MAX(seq), 0) AS last FROM messages").one();
-        if (offset !== last) throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
+        if (offset !== last) {
+          throw new ApiError(409, "history_import_conflict", "The history chunk does not follow the last imported message");
+        }
       } else if (imported) {
         sql.exec("DELETE FROM messages");
       }
       for (const [index, message] of input.messages.entries()) {
         const content = messages[index]!;
-        sql.exec("INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-          offset + index + 1, message.role, JSON.stringify(content), estimateTokens(content.text ?? ""), message.createdAt);
+        sql.exec(
+          "INSERT INTO messages (seq, role, content_json, tokens_est, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+          offset + index + 1,
+          message.role,
+          JSON.stringify(content),
+          estimateTokens(content.text ?? ""),
+          message.createdAt,
+        );
       }
-      sql.exec(`INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
-        JSON.stringify({ source: input.source, receipt, chunked: input.appendAfter === undefined ? undefined : true }));
+      sql.exec(
+        `INSERT INTO runtime_kv (k, v) VALUES ('v1_history_import', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
+        JSON.stringify({
+          source: input.source,
+          receipt,
+          chunked: input.appendAfter === undefined ? undefined : true,
+        }),
+      );
       return { receipt, count };
     });
   }
@@ -2714,13 +2159,7 @@ export class AgentDO extends DurableObject<Env> {
     keepLast?: number;
   }): Promise<{ summary: string; upToSeq: number; compactedCount: number }> {
     this.ensureSql();
-    if (this.isPiEngine()) {
-      return this.ensurePiEngine().compactHistory(body);
-    }
-    return performCompaction(this.buildAdapter(), {
-      customSummary: body?.summary,
-      keepLast: body?.keepLast,
-    });
+    return this.ensurePiEngine().compactHistory(body);
   }
 
   async resetContext(body?: {
@@ -2728,27 +2167,7 @@ export class AgentDO extends DurableObject<Env> {
     keepLast?: number;
   }): Promise<{ ok: true; upToSeq: number; summary: string }> {
     this.ensureSql();
-    if (this.isPiEngine()) {
-      return this.ensurePiEngine().resetContext(body);
-    }
-    const keepLast = Math.max(0, Number(body?.keepLast ?? 0));
-    const allRows = this.ctx.storage.sql
-      .exec<{ seq: number; role: StoredMessage["role"] }>(`SELECT seq, role FROM messages ORDER BY seq ASC`)
-      .toArray();
-    const cutoff = contextCutoff(allRows, keepLast);
-    const upToSeq = allRows[cutoff - 1]?.seq ?? 0;
-    const summary = body?.summary?.trim() ?? "";
-
-    if (keepLast === 0 && !summary) {
-      this.ctx.storage.sql.exec(`DELETE FROM messages`);
-      this.ctx.storage.sql.exec(`DELETE FROM compactions`);
-      this.recordAndBroadcastEvent(null, "context_reset", { upToSeq: 0 });
-      return { ok: true, upToSeq: 0, summary: "" };
-    }
-
-    this.buildAdapter().insertCompaction(upToSeq, summary);
-    this.recordAndBroadcastEvent(null, "context_reset", { upToSeq });
-    return { ok: true, upToSeq, summary };
+    return this.ensurePiEngine().resetContext(body);
   }
 
   async forkAgent(body?: { key?: string; atSeq?: number; forkRepo?: boolean }): Promise<{
@@ -2765,54 +2184,9 @@ export class AgentDO extends DurableObject<Env> {
     const sourceCfg = this.requireConfig();
     const tenantStub = getTenantStub(this.env, sourceCfg.tenantId);
 
-    const isPi = this.isPiEngine(sourceCfg);
-    let targetSeq: number;
-    let piEntries: EntryRecord[] | undefined;
-    let copiedMessages: Array<{
-      seq: number;
-      run_id: string | null;
-      role: string;
-      content_json: string;
-      tokens_est: number;
-      created_at: number;
-    }> = [];
-    let copiedCompaction: {
-      id: string;
-      up_to_seq: number;
-      summary: string;
-      created_at: number;
-    } | null = null;
-
-    if (isPi) {
-      const exported = await this.ensurePiEngine().exportEntriesUpTo(body?.atSeq);
-      piEntries = exported.entries;
-      targetSeq = exported.targetSeq;
-    } else {
-      const maxSeqRow = this.ctx.storage.sql
-        .exec<{ max_seq: number | null }>(`SELECT MAX(seq) AS max_seq FROM messages`)
-        .one();
-      targetSeq =
-        typeof body?.atSeq === "number" ? body.atSeq : Number(maxSeqRow.max_seq ?? 0);
-
-      copiedMessages = this.ctx.storage.sql
-        .exec<{
-          seq: number;
-          run_id: string | null;
-          role: string;
-          content_json: string;
-          tokens_est: number;
-          created_at: number;
-        }>(`SELECT * FROM messages WHERE seq <= ?1 ORDER BY seq ASC`, targetSeq)
-        .toArray();
-
-      copiedCompaction =
-        this.ctx.storage.sql
-          .exec<{ id: string; up_to_seq: number; summary: string; created_at: number }>(
-            `SELECT * FROM compactions WHERE up_to_seq <= ?1 ORDER BY up_to_seq DESC LIMIT 1`,
-            targetSeq,
-          )
-          .toArray()[0] ?? null;
-    }
+    const { entries: piEntries, targetSeq } = await this.ensurePiEngine().exportEntriesUpTo(
+      body?.atSeq,
+    );
 
     const newKey =
       body?.key?.trim() || `${sourceCfg.key}-fork-${randomId("f", 3).slice(2)}`;
@@ -2872,6 +2246,7 @@ export class AgentDO extends DurableObject<Env> {
       ...sourceCfg,
       id: newAgentId,
       key: newKey,
+      engine: "pi",
       repoId: forkedRepoId,
       lineage: forkedLineage,
       branch: forkedBranch,
@@ -2881,9 +2256,7 @@ export class AgentDO extends DurableObject<Env> {
 
     await getAgentStub(this.env, newAgentId).seedFork({
       config: forkedConfig,
-      messages: copiedMessages,
-      compaction: copiedCompaction,
-      ...(piEntries !== undefined ? { piEntries } : {}),
+      piEntries,
     });
 
     return {
@@ -2942,104 +2315,23 @@ export class AgentDO extends DurableObject<Env> {
       );
     }
     if (inp.expires_at <= Date.now()) {
-      this.expirePendingInput(inp, Date.now());
+      await this.expirePendingInputRow(inp, Date.now());
       if (!this.destroying) {
         void this.scheduleNextAlarm();
         this.ctx.waitUntil(this.drainRunQueue());
       }
       throw new ApiError(410, "input_expired", `Input '${inputId}' has expired`);
     }
-    if (!inp.pending_turn_json) {
-      throw new ApiError(500, "missing_turn_state", "Paused turn state missing");
-    }
 
-    if (PiAgentEngine.isPiInputRow(inp.pending_turn_json)) {
-      return this.ensurePiEngine().respondToInput(inp, body, trustedResponder);
-    }
-
-    if (body?.approved !== undefined && typeof body.approved !== "boolean") {
-      throw new ApiError(400, "invalid_approval", "The approval decision must be a boolean");
-    }
-    if (inp.kind === "approval" && body?.approved === undefined) {
-      throw new ApiError(400, "invalid_approval", "Approve or decline the tool explicitly");
-    }
-    const approved = body?.approved ?? true;
-    const pausedState = JSON.parse(inp.pending_turn_json) as PausedTurnState;
-    if (pausedState.mcpInput && !trustedResponder) {
-      throw new ApiError(403, "forbidden", "A tenant credential must respond to signed tool inputs");
-    }
-    if (approved && pausedState.mcpInput?.mode === "form" && (!body?.answer || typeof body.answer !== "object" || Array.isArray(body.answer))) {
-      throw new ApiError(400, "invalid_approval", "Answer the tool form with an object");
-    }
-    const answeredAt = Date.now();
-    const newStatus = approved ? "answered" : "denied";
-    this.ctx.storage.sql.exec(
-      `UPDATE inputs SET status = ?1, answer_json = ?2 WHERE id = ?3`,
-      newStatus,
-      JSON.stringify(body?.answer ?? approved),
-      inputId,
-    );
-    this.recordAndBroadcastEvent(inp.run_id, "input_resolved", { id: inputId, status: newStatus });
-
-    const wait = body?.wait !== undefined ? Boolean(body.wait) : true;
-
-    const resumeWork = (async () => {
-      const cfg = this.requireConfig();
-      const tenantStub = getTenantStub(this.env, cfg.tenantId);
-      const followerIds = this.pausedFollowerIds(inp.run_id);
-      let slotAcquired = false;
-      const abortController = new AbortController();
-      this.activeRunId = inp.run_id;
-      this.activeAbortController = abortController;
-
-      try {
-        await tenantStub.acquireSlot(inp.run_id, cfg.id);
-        slotAcquired = true;
-        const rec = await resumePausedTurn(this.buildAdapter(), {
-          runId: inp.run_id,
-          paused: pausedState,
-          decision: {
-            input: inputId,
-            at: answeredAt,
-            kind: inp.kind,
-            approved,
-            answer: body?.answer,
-          },
-          signal: abortController.signal,
-        });
-        await this.settleAndFinalizeFollowers(rec, followerIds);
-        return rec;
-      } catch (error) {
-        const apiErr = extractApiError(error);
-        const code = apiErr?.code ?? "run_failed";
-        const message = apiErr?.message ?? (error instanceof Error ? error.message : String(error));
-        this.ctx.storage.sql.exec(
-          "UPDATE runs SET status = 'failed', error_json = ?, ended_at = ? WHERE id = ?",
-          JSON.stringify({ code, message }), Date.now(), inp.run_id,
-        );
-        this.recordAndBroadcastEvent(inp.run_id, "run_failed", { runId: inp.run_id, error: { code, message } });
-        const failed = this.materializeRunRecord(inp.run_id);
-        this.finalizeFollowers(failed, followerIds);
-        return failed;
-      } finally {
-        if (slotAcquired) {
-          await tenantStub.releaseSlot(inp.run_id).catch(() => {});
-        }
-        this.activeRunId = null;
-        this.activeAbortController = null;
+    const work = this.ensurePiEngine().respondToInput(inp, body, trustedResponder);
+    this.inputResumeWork = work;
+    try {
+      return await work;
+    } finally {
+      if (this.inputResumeWork === work) {
         this.inputResumeWork = null;
-        this.notifyRunWaiters(inp.run_id);
-        for (const id of followerIds) this.notifyRunWaiters(id);
-        this.ctx.waitUntil(this.drainRunQueue());
       }
-    })();
-
-    this.inputResumeWork = resumeWork;
-    this.ctx.waitUntil(resumeWork);
-    if (!wait) {
-      return this.materializeRunRecord(inp.run_id);
     }
-    return resumeWork;
   }
 
   async listSchedules(): Promise<{ schedules: ScheduleRecord[] }> {
@@ -3148,45 +2440,65 @@ export class AgentDO extends DurableObject<Env> {
     if (typeof body.code !== "string" || !body.code.trim()) {
       throw new ApiError(400, "invalid_request", "`code` is required");
     }
+    const cfg = this.requireConfig();
     const workflowId = randomId("wf", 8);
     const scope = body.idempotencyKey?.trim()
       ? `wf:${body.idempotencyKey.trim()}`
       : `wf:${workflowId}`;
-    const cfg = this.requireConfig();
-    const catalog = await buildToolCatalog(cfg, this.env);
-    const toolCtx = this.createToolExecutionContext(
-      workflowId,
-      new Set(),
-      () => {},
-      () => {},
-    );
+    const engine = this.ensurePiEngine();
 
-    return executeAgentWorkflow(workflowId, scope, body.code, {
-      getCachedStep: (s, k) => toolCtx.getCachedWorkflowStep(s, k),
-      putCachedStep: (s, k, v) => toolCtx.putCachedWorkflowStep(s, k, v),
-      runAgentStep: async (prompt, opts) => {
-        const run = await this.enqueueOrRunInternal({
-          prompt,
-          wait: true,
-          outputSchema:
-            opts?.outputSchema && typeof opts.outputSchema === "object"
-              ? (opts.outputSchema as Record<string, unknown>)
-              : null,
-        });
-        return run.output ?? run.text;
+    return executeAgentWorkflow(
+      workflowId,
+      scope,
+      body.code,
+      {
+        getCachedStep: (s, k) => {
+          const rows = this.ctx.storage.sql
+            .exec<{ result_json: string }>(
+              `SELECT result_json FROM step_cache WHERE scope = ?1 AND step_key = ?2 LIMIT 1`,
+              s,
+              k,
+            )
+            .toArray();
+          if (!rows[0]) return undefined;
+          return JSON.parse(rows[0].result_json) as unknown;
+        },
+        putCachedStep: (s, k, v) => {
+          this.ctx.storage.sql.exec(
+            `INSERT INTO step_cache (scope, step_key, result_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(scope, step_key) DO UPDATE SET result_json = excluded.result_json`,
+            s,
+            k,
+            JSON.stringify(v ?? null),
+            Date.now(),
+          );
+        },
+        runAgentStep: async (prompt, opts) => {
+          const run = await this.enqueueOrRunPi({
+            prompt,
+            wait: true,
+            outputSchema:
+              opts?.outputSchema && typeof opts.outputSchema === "object"
+                ? (opts.outputSchema as Record<string, unknown>)
+                : null,
+          });
+          return {
+            id: run.id,
+            status: run.status,
+            text: run.text,
+            output: run.output,
+          };
+        },
+        runBashStep: (cmd, opts) => engine.executeBashStep(cmd, opts),
+        runCommitStep: (msg) => engine.executeCommitStep(msg),
+        runToolStep: (name, args) => engine.executeRegisteredTool(name, args, randomId("wftool", 6)),
       },
-      runBashStep: (cmd, opts) =>
-        executeToolCall(toolCtx, catalog, randomId("wfbash", 6), "bash", {
-          command: cmd,
-          ...(opts ?? {}),
-        }),
-      runCommitStep: (msg) =>
-        executeToolCall(toolCtx, catalog, randomId("wfcp", 6), "repo_checkpoint", {
-          name: msg,
-        }),
-      runToolStep: (name, args) =>
-        executeToolCall(toolCtx, catalog, randomId("wftool", 6), name, args),
-    });
+      {
+        env: this.env,
+        instanceName: `${cfg.id}:wf:${workflowId}`,
+      },
+    );
   }
 
   async triggerDream(): Promise<{
@@ -3196,10 +2508,10 @@ export class AgentDO extends DurableObject<Env> {
     summary: string;
   }> {
     this.ensureSql();
-    return performDreamConsolidation(this.buildAdapter());
+    return this.ensurePiEngine().consolidateDream();
   }
 
-  // ---- Folded Voice Session Broker (eliminating separate VoiceDO) ----
+  // ---- Folded Voice Session Broker ----
 
   async createVoiceSession(body: {
     sessionId: string;
@@ -3339,23 +2651,12 @@ export class AgentDO extends DurableObject<Env> {
     if (!body.name) {
       throw new ApiError(400, "invalid_request", "`name` is required");
     }
-    const cfg = this.requireConfig();
-    const catalog = await buildToolCatalog(cfg, this.env);
     const callId = body.callId || randomId("vt", 6);
-    const toolCtx = this.createToolExecutionContext(
-      callId,
-      new Set([callId]),
-      () => {},
-      () => {},
-    );
-
     try {
-      const result = await executeToolCall(
-        toolCtx,
-        catalog,
-        callId,
+      const result = await this.ensurePiEngine().executeRegisteredTool(
         body.name,
         body.args ?? {},
+        callId,
       );
       this.ctx.storage.sql.exec(
         `INSERT INTO voice_tool_logs (id, session_id, name, args_json, result_json, ok, created_at)
@@ -3395,8 +2696,6 @@ export class AgentDO extends DurableObject<Env> {
     this.destroying = true;
     try {
       await this.abortRuns();
-      // A terminal event can reach clients before the turn releases its slot and
-      // the queue checks for another run. Keep SQLite available until that work settles.
       await Promise.all([this.queueDrain, this.inputResumeWork]);
       const cfg = this.readConfigOrNull();
       if (cfg) {
@@ -3422,6 +2721,7 @@ export class AgentDO extends DurableObject<Env> {
       this.storageGeneration++;
       this.cachedConfig = null;
       this.preRunHints.clear();
+      this.runKeyScopes.clear();
       this.sqlReady = false;
       return { deleted: true };
     } finally {
@@ -3579,7 +2879,6 @@ function computeNextScheduleDue(
     if (parts.length === 5) {
       const [minF, hourF, domF, monF, dowF] = parts as [string, string, string, string, string];
       const baseMinuteMs = Math.floor(fromMs / 60_000) * 60_000 + 60_000;
-      // Search up to 7 days ahead in 1-minute increments
       for (let i = 0; i < 10_080; i++) {
         const candidateMs = baseMinuteMs + i * 60_000;
         const d = new Date(candidateMs);

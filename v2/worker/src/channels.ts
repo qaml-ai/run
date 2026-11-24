@@ -1,4 +1,4 @@
-import { DEFAULT_MODEL_ID } from "./providers.ts";
+import { DEFAULT_MODEL_ID } from "./pi/models.ts";
 import { getAgentStub } from "./agent-do.ts";
 import {
   computeRawHmacHex,

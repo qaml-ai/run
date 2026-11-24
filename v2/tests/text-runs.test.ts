@@ -21,32 +21,33 @@ test("POST /v2/runs/text and /v2/runs support optional images and model with str
     for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks).toString("utf8");
     const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    captured.push({ path: req.url ?? "", body });
-    res.setHeader("Content-Type", "application/json");
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    captured.push({ path: pathname, body });
+    res.setHeader("Content-Type", "text/event-stream");
     if ((req.url ?? "").includes("/responses")) {
+      const text = '{"seen":true}';
       res.end(
-        JSON.stringify({
-          output: [{ type: "message", content: [{ type: "output_text", text: '{"seen":true}' }] }],
-          usage: { input_tokens: 120, output_tokens: 12 },
-        }),
+        `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] } })}\n\n` +
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text })}\n\n` +
+        `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text }] } })}\n\n` +
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_1", status: "completed", usage: { input_tokens: 120, output_tokens: 12, total_tokens: 132 } } })}\n\n`,
       );
       return;
     }
     if ((req.url ?? "").includes("/v1/messages")) {
+      const text = "anthropic-saw-image";
       res.end(
-        JSON.stringify({
-          stop_reason: "end_turn",
-          content: [{ type: "text", text: "anthropic-saw-image" }],
-          usage: { input_tokens: 100, output_tokens: 10 },
-        }),
+        `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], model: String(body.model ?? ""), stop_reason: null, usage: { input_tokens: 100, output_tokens: 0 } } })}\n\n` +
+        `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n` +
+        `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })}\n\n` +
+        `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n` +
+        `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 10 } })}\n\n` +
+        `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
       );
       return;
     }
     res.end(
-      JSON.stringify({
-        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "chat-saw-image" } }],
-        usage: { prompt_tokens: 100, completion_tokens: 10 },
-      }),
+      `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "chat-saw-image" }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`,
     );
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
@@ -207,6 +208,7 @@ test("POST /v2/runs/text and /v2/runs support optional images and model with str
           {
             type: "image",
             source: { type: "base64", media_type: "image/png", data: PNG_1X1 },
+            cache_control: { type: "ephemeral" },
           },
         ],
       },
@@ -218,11 +220,11 @@ test("POST /v2/runs/text and /v2/runs support optional images and model with str
     const omitted = await postText({ input: "Plain text", timeoutMs: 5000 });
     assert.equal(omitted.status, 200);
     assert.equal(captured[start]!.body.model, "gpt-6.1-terra");
-    assert.deepEqual(captured[start]!.body.input, [{ role: "user", content: "Plain text" }]);
+    assert.deepEqual(captured[start]!.body.input, [{ role: "user", content: [{ type: "input_text", text: "Plain text" }] }]);
 
     const empty = await postText({ input: "Empty images", timeoutMs: 5000, images: [] });
     assert.equal(empty.status, 200);
-    assert.deepEqual(captured[start + 1]!.body.input, [{ role: "user", content: "Empty images" }]);
+    assert.deepEqual(captured[start + 1]!.body.input, [{ role: "user", content: [{ type: "input_text", text: "Empty images" }] }]);
   });
 
   await t.test("rejects invalid images and invalid model with 400 without consuming idempotency key", async () => {

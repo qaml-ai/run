@@ -2105,7 +2105,7 @@ export function registerOpsRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/v2/admin/ops/product-signals", async (c) => {
     requireAdmin(c.env, c.req.raw);
     const timeZone = c.req.query("time_zone") ?? ADMIN_TIME_ZONE;
-    const today = utcDate(Date.now());
+    const today = dateInTimeZone(Date.now(), timeZone);
     const start = c.req.query("start_date") ?? today;
     const end = c.req.query("end_date") ?? today;
     const { tenants } = await collectTenants(c.env, 370);

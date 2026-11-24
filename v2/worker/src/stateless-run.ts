@@ -1,10 +1,6 @@
+import type { ImageContent, Message as PiAiMessage, TextContent, ToolResultMessage } from "@earendil-works/pi-ai";
 import { randomId } from "./crypto.ts";
-import {
-  DEFAULT_MODEL_ID,
-  addModelUsage,
-  streamModelResponse,
-  type ConversationMessage,
-} from "./providers.ts";
+import { DEFAULT_MODEL_ID, addModelUsage, streamPiModel } from "./pi/models.ts";
 import type { ModelImage } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
@@ -106,8 +102,23 @@ export async function executeStatelessRun(
   }));
   const toolByName = new Map(customTools.map((t) => [t.name, t]));
 
-  const messages: ConversationMessage[] = [
-    parsedImages ? { role: "user", text: body.input, images: parsedImages } : { role: "user", text: body.input },
+  const initialUserContent: string | (TextContent | ImageContent)[] = parsedImages
+    ? [
+        ...(body.input ? [{ type: "text" as const, text: body.input }] : []),
+        ...parsedImages.map((img) => ({
+          type: "image" as const,
+          mimeType: img.contentType,
+          data: img.base64,
+        })),
+      ]
+    : body.input;
+
+  const messages: PiAiMessage[] = [
+    {
+      role: "user",
+      content: initialUserContent,
+      timestamp: Date.now(),
+    },
   ];
   const usage = emptyUsage();
   const toolCallsSummary: ToolCallSummary[] = [];
@@ -118,8 +129,9 @@ export async function executeStatelessRun(
   for (let step = 0; step < maxSteps; step++) {
     let stepText = "";
     const stepCalls: ToolCallInvocation[] = [];
+    let assistantMessage: PiAiMessage | null = null;
 
-    for await (const chunk of streamModelResponse({
+    for await (const chunk of streamPiModel({
       env,
       tenantId,
       model,
@@ -128,7 +140,6 @@ export async function executeStatelessRun(
       tools: toolSchemas,
       outputSchema: body.outputSchema ?? null,
       signal,
-      purpose: "turn",
     })) {
       if (chunk.type === "text_delta") {
         stepText += chunk.delta;
@@ -143,15 +154,14 @@ export async function executeStatelessRun(
         const cacheRead = chunk.cacheReadTokens ?? 0;
         addModelUsage(usage, model, chunk.inputTokens, chunk.outputTokens, cacheRead);
         if (cacheRead) onCacheRead?.(cacheRead);
+        assistantMessage = chunk.message;
       }
     }
 
     if (stepText) finalText = stepText;
-    messages.push({
-      role: "assistant",
-      text: stepText,
-      toolCalls: stepCalls.length > 0 ? stepCalls : undefined,
-    });
+    if (assistantMessage) {
+      messages.push(assistantMessage);
+    }
 
     if (stepCalls.length === 0) {
       if (body.outputSchema) {
@@ -172,13 +182,15 @@ export async function executeStatelessRun(
       const spec = toolByName.get(tc.name);
       if (!spec?.url) {
         toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
-        messages.push({
-          role: "tool",
+        const errMsg: ToolResultMessage = {
+          role: "toolResult",
           toolCallId: tc.id,
           toolName: tc.name,
           isError: true,
-          text: JSON.stringify({ error: `Stateless tool '${tc.name}' requires a webhook url` }),
-        });
+          content: [{ type: "text", text: JSON.stringify({ error: `Stateless tool '${tc.name}' requires a webhook url` }) }],
+          timestamp: Date.now(),
+        };
+        messages.push(errMsg);
         continue;
       }
 
@@ -203,21 +215,23 @@ export async function executeStatelessRun(
         }
         toolCallsSummary.push({ id: tc.id, name: tc.name, ok: true });
         messages.push({
-          role: "tool",
+          role: "toolResult",
           toolCallId: tc.id,
           toolName: tc.name,
           isError: false,
-          text,
+          content: [{ type: "text", text }],
+          timestamp: Date.now(),
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         toolCallsSummary.push({ id: tc.id, name: tc.name, ok: false });
         messages.push({
-          role: "tool",
+          role: "toolResult",
           toolCallId: tc.id,
           toolName: tc.name,
           isError: true,
-          text: JSON.stringify({ error: msg }),
+          content: [{ type: "text", text: JSON.stringify({ error: msg }) }],
+          timestamp: Date.now(),
         });
       }
     }

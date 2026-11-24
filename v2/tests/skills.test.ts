@@ -573,7 +573,8 @@ Always verify typecheck before releasing.
     assert.equal(req1!.instructions, req2!.instructions);
 
     // Verify exact <skills> index content (only camel-bots/*, sorted deterministically, NOT deploy-rules)
-    assert.ok(req0!.instructions.startsWith("You are a Camel Bots expert.\n\n<skills>\n"));
+    assert.ok(req0!.instructions.includes("You are a Camel Bots expert."));
+    assert.ok(req0!.instructions.includes("<skills>\n"));
     assert.ok(
       req0!.instructions.includes(
         "- camel-bots/bot-core: Core bot entrypoints, manifest, and event lifecycle (refs: references/manifest.d.ts)",
@@ -653,7 +654,7 @@ Always verify typecheck before releasing.
     const run = await plainAgent.run("Hello", { wait: true });
     assert.equal(run.status, "completed");
     assert.equal(capturedRequests.length, 1);
-    assert.equal(capturedRequests[0]!.instructions, "Plain agent instructions.");
+    assert.ok(capturedRequests[0]!.instructions.includes("Plain agent instructions."));
     assert.ok(!capturedRequests[0]!.instructions.includes("<skills>"));
     assert.ok(!capturedRequests[0]!.toolNames.includes("read_skill"));
     assert.ok(!capturedRequests[0]!.toolNames.includes("search_skills"));

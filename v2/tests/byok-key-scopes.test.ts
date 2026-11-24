@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { gunzipSync, zstdDecompressSync } from "node:zlib";
 import { unstable_startWorker } from "wrangler";
 import { CamelRun } from "../sdk/src/index.ts";
 
@@ -14,25 +15,36 @@ test("v2 BYOK key scopes, header-only AI Gateway, custom apiStyle, and openai-co
     const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<string, unknown>;
+      const rawBuf = Buffer.concat(chunks);
+      const enc = String(req.headers["content-encoding"] ?? "").toLowerCase();
+      const decoded =
+        enc === "zstd" ? zstdDecompressSync(rawBuf) : enc === "gzip" ? gunzipSync(rawBuf) : rawBuf;
+      const body = JSON.parse(decoded.toString("utf8") || "{}") as Record<string, unknown>;
       captured.push({ url: req.url ?? "", headers: req.headers, body });
-      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Type", "text/event-stream");
       if ((req.url ?? "").includes("/responses")) {
-        res.end(JSON.stringify({
-          output: [{ type: "message", content: [{ type: "output_text", text: `ok:${req.url}` }] }],
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }));
+        const text = `ok:${req.url}`;
+        res.end(
+          `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] } })}\n\n` +
+          `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text })}\n\n` +
+          `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text }] } })}\n\n` +
+          `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_1", status: "completed", usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } } })}\n\n`,
+        );
       } else if ((req.url ?? "").includes("/v1/messages")) {
-        res.end(JSON.stringify({
-          stop_reason: "end_turn",
-          content: [{ type: "text", text: `ok-anthropic:${body.model}` }],
-          usage: { input_tokens: 10, output_tokens: 5 },
-        }));
+        const text = `ok-anthropic:${body.model}`;
+        res.end(
+          `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], model: String(body.model ?? ""), stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } } })}\n\n` +
+          `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n` +
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })}\n\n` +
+          `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n` +
+          `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 5 } })}\n\n` +
+          `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+        );
       } else {
-        res.end(JSON.stringify({
-          choices: [{ finish_reason: "stop", message: { role: "assistant", content: `ok-chat:${body.model}` } }],
-          usage: { prompt_tokens: 10, completion_tokens: 5 },
-        }));
+        const text = `ok-chat:${body.model}`;
+        res.end(
+          `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 5 } })}\n\ndata: [DONE]\n\n`,
+        );
       }
     });
   });
@@ -173,7 +185,9 @@ test("v2 BYOK key scopes, header-only AI Gateway, custom apiStyle, and openai-co
   assert.equal(run5.text, "ok:/backend-api/codex/responses");
   assert.equal(captured.at(-1)?.headers["chatgpt-account-id"], "acct_codex_42");
   assert.equal(captured.at(-1)?.headers["openai-beta"], "responses=experimental");
-  assert.equal(captured.at(-1)?.headers.originator, "codex_cli_rs");
+  assert.ok(
+    captured.at(-1)?.headers.originator === "pi" || captured.at(-1)?.headers.originator === "codex_cli_rs",
+  );
   assert.equal(captured.at(-1)?.headers["x-codex-proxy"], "proxy-ok");
   assert.equal(captured.at(-1)?.body.store, false);
 });

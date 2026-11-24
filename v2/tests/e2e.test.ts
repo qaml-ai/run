@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -9,10 +9,29 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { unstable_startWorker } from "wrangler";
+import { Miniflare } from "miniflare";
 import { CamelFsClient } from "../worker/src/camelfs.ts";
 import { CamelRun, CamelRunError, defineTool, parseSSE, type SSEMessage } from "../sdk/src/index.ts";
 import { importHistoryInChunks } from "../scripts/chunk-history.ts";
+
+function loadDirModules(dir: string) {
+  const modules: Record<
+    string,
+    { type: "esm" | "wasm" | "data"; contents: string | Uint8Array<ArrayBuffer> }
+  > = {};
+  for (const entry of readdirSync(dir)) {
+    if (entry.endsWith(".map") || entry === "README.md") continue;
+    const full = join(dir, entry);
+    if (entry.endsWith(".wasm")) {
+      const buf = readFileSync(full);
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      modules[entry] = { type: "wasm", contents: new Uint8Array(ab) };
+    } else if (entry.endsWith(".js") || entry.endsWith(".mjs")) {
+      modules[entry] = { type: "esm", contents: readFileSync(full, "utf8") };
+    }
+  }
+  return modules;
+}
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const CAMELFSD_BIN = join(ROOT, "camelfsd/bin/camelfsd");
@@ -63,7 +82,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
   let camelfsSigningKey: string;
   let auxServer: Server;
   let auxUrl: string;
-  let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
+  let worker: Miniflare;
   let startWorker: () => Promise<void>;
   let workerUrl: string;
   let failNextExec = false;
@@ -195,11 +214,18 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
         return;
       }
 
-      if (req.url === "/openai/v1/responses" && req.method === "POST") {
+      const reqPath = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+      if (reqPath === "/openai/v1/responses" && req.method === "POST") {
         const body = JSON.parse(rawBody) as Record<string, unknown>;
         azureRequests.push({ body, key: req.headers["api-key"], authorization: req.headers.authorization });
-        const input = body.input as Array<{ type?: string; content?: string }>;
-        const last = input.at(-1)?.content;
+        const input = body.input as Array<{ type?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+        const rawLastContent = input.at(-1)?.content;
+        const last =
+          typeof rawLastContent === "string"
+            ? rawLastContent
+            : Array.isArray(rawLastContent)
+              ? rawLastContent.map((b) => b.text ?? "").join("\n")
+              : undefined;
         if (last === "native-text-timeout") {
           res.writeHead(200, { "Content-Type": "text/event-stream" });
           res.flushHeaders();
@@ -222,12 +248,75 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
           : last === "repo-image-fixture" ? { name: "view_image", arguments: '{"path":"fixture.png"}' }
           : { name: "lookup", arguments: "{}" };
         res.writeHead(200, { "Content-Type": "text/event-stream" });
-        const events = [
-          ...(plain !== undefined ? [{ type: "response.output_text.delta", delta: plain }] : toolResult || rawBody.includes("app-runtime-credit-fixture")
-            ? [{ type: "response.output_text.delta", delta: "read the result" }]
-            : [{ type: "response.output_item.done", item: { type: "function_call", ...call, call_id: "call_azure_test" } }]),
-          { type: "response.completed", response: { usage: { input_tokens: 160_000, output_tokens: 7 } } },
-        ];
+        const textOut =
+          plain !== undefined
+            ? plain
+            : toolResult || rawBody.includes("app-runtime-credit-fixture")
+              ? "read the result"
+              : null;
+        const events =
+          textOut !== null
+            ? [
+                {
+                  type: "response.output_item.added",
+                  output_index: 0,
+                  item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+                },
+                { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: textOut },
+                {
+                  type: "response.output_item.done",
+                  output_index: 0,
+                  item: {
+                    type: "message",
+                    id: "msg_1",
+                    role: "assistant",
+                    status: "completed",
+                    content: [{ type: "output_text", text: textOut }],
+                  },
+                },
+                {
+                  type: "response.completed",
+                  response: {
+                    id: "resp_1",
+                    status: "completed",
+                    output: [],
+                    usage: { input_tokens: 160_000, output_tokens: 7 },
+                  },
+                },
+              ]
+            : [
+                {
+                  type: "response.output_item.added",
+                  output_index: 0,
+                  item: {
+                    type: "function_call",
+                    id: "fc_azure_test",
+                    call_id: "call_azure_test",
+                    name: call.name,
+                    arguments: "",
+                  },
+                },
+                {
+                  type: "response.output_item.done",
+                  output_index: 0,
+                  item: {
+                    type: "function_call",
+                    id: "fc_azure_test",
+                    call_id: "call_azure_test",
+                    name: call.name,
+                    arguments: call.arguments,
+                  },
+                },
+                {
+                  type: "response.completed",
+                  response: {
+                    id: "resp_1",
+                    status: "completed",
+                    output: [],
+                    usage: { input_tokens: 160_000, output_tokens: 7 },
+                  },
+                },
+              ];
         res.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
         return;
       }
@@ -293,52 +382,125 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     }
     await waitForHealth(`${camelfsUrl}/healthz`);
 
-    // 3. Start real Cloudflare workerd via Wrangler using an isolated test config
+    // 3. Bundle & start real camelrun-worker-v2 + camelrun-v2-codemode-sandbox via multi-worker Miniflare
     const workerPort = await getFreePort();
     const toolKey = generateKeyPairSync("ed25519").privateKey.export({ format: "jwk" });
     const baseConfig = JSON.parse(readFileSync(join(ROOT, "worker/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
-    if (baseConfig.durable_objects?.bindings) {
-      baseConfig.durable_objects.bindings = baseConfig.durable_objects.bindings.filter(
-        (b: { script_name?: string }) => !b.script_name,
-      );
-    }
     const testConfigPath = join(tempDir, "wrangler.test.jsonc");
     const runtimeMain = join(ROOT, "tests/fixtures/alarm-worker.ts");
+    const workerOut = join(tempDir, "worker-dist");
+    const sandboxOut = join(tempDir, "sandbox-dist");
     writeFileSync(
       testConfigPath,
       JSON.stringify(
         {
           ...baseConfig,
           main: runtimeMain,
-          vars: {
-            ADMIN_SECRET,
-            VAULT_SECRET,
-            CAMELFS_URL: auxUrl + "/camelfs",
-            CAMELFS_SIGNING_KEY: camelfsSigningKey,
-            CAMELFS_DEV_TOKEN: "",
-            DEFAULT_MODEL: "mock/default",
-            AZURE_OPENAI_SOL_ENDPOINT: auxUrl,
-            AZURE_OPENAI_SOL_API_KEY: "fixture-azure-key",
-            BUILDER_CUTOVER_CREDIT_TENANT_ID: "tnt_0000000000000001",
-            APP_RUNTIME_CREDIT_TENANT_IDS: "tnt_0000000000000002",
-            TOOL_IDENTITY_ISSUER: `http://127.0.0.1:${workerPort}/v2`,
-            TOOL_IDENTITY_PRIVATE_JWK: JSON.stringify({ ...toolKey, kid: "tool-fixture" }),
-          },
         },
         null,
         2,
       ),
     );
+    const wranglerEnv = {
+      ...process.env,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME || "/tmp/xdg",
+      WRANGLER_LOG_PATH: process.env.WRANGLER_LOG_PATH || join(ROOT, ".wrangler/logs"),
+    };
+    execFileSync(
+      "npx",
+      ["wrangler", "deploy", "--dry-run", "-c", testConfigPath, "--outdir", workerOut],
+      { cwd: ROOT, env: wranglerEnv, stdio: "pipe" },
+    );
+    execFileSync(
+      "npx",
+      ["wrangler", "deploy", "--dry-run", "-c", join(ROOT, "codemode-sandbox/wrangler.jsonc"), "--outdir", sandboxOut],
+      { cwd: ROOT, env: wranglerEnv, stdio: "pipe" },
+    );
+    const workerModules = loadDirModules(workerOut);
+    const sandboxModules = loadDirModules(sandboxOut);
     workerUrl = `http://127.0.0.1:${workerPort}`;
     startWorker = async () => {
-      worker = await unstable_startWorker({
-        config: testConfigPath,
-        dev: {
-          persist: join(tempDir, "wrangler-state"),
-          server: { hostname: "127.0.0.1", port: workerPort },
-          logLevel: "none",
-        },
+      worker = new Miniflare({
+        host: "127.0.0.1",
+        port: workerPort,
+        resourcePersistencePath: join(tempDir, "wrangler-state"),
+        workers: [
+          {
+            config: {
+              name: "camelrun-worker-v2",
+              compatibilityDate: "2026-03-24",
+              compatibilityFlags: ["nodejs_compat", "enhanced_error_serialization"],
+              manifest: {
+                mainModule: "alarm-worker.js",
+                modules: workerModules,
+              },
+              triggers: [
+                {
+                  type: "queue",
+                  name: "camelrun-events-v2",
+                  maxBatchSize: 25,
+                  maxBatchTimeout: 1,
+                  maxRetries: 3,
+                },
+              ],
+              exports: {
+                TenantDO: { type: "durable-object", storage: "sqlite" },
+                AgentDO: { type: "durable-object", storage: "sqlite" },
+                VoiceCallDO: { type: "durable-object", storage: "sqlite" },
+              },
+              env: {
+                ADMIN_SECRET: { type: "text", value: ADMIN_SECRET },
+                VAULT_SECRET: { type: "text", value: VAULT_SECRET },
+                CAMELFS_URL: { type: "text", value: auxUrl + "/camelfs" },
+                CAMELFS_SIGNING_KEY: { type: "text", value: camelfsSigningKey },
+                CAMELFS_DEV_TOKEN: { type: "text", value: "" },
+                DEFAULT_MODEL: { type: "text", value: "mock/default" },
+                AZURE_OPENAI_SOL_ENDPOINT: { type: "text", value: auxUrl },
+                AZURE_OPENAI_SOL_API_KEY: { type: "text", value: "fixture-azure-key" },
+                BUILDER_CUTOVER_CREDIT_TENANT_ID: { type: "text", value: "tnt_0000000000000001" },
+                APP_RUNTIME_CREDIT_TENANT_IDS: { type: "text", value: "tnt_0000000000000002" },
+                TOOL_IDENTITY_ISSUER: { type: "text", value: `http://127.0.0.1:${workerPort}/v2` },
+                TOOL_IDENTITY_PRIVATE_JWK: { type: "text", value: JSON.stringify({ ...toolKey, kid: "tool-fixture" }) },
+                MEDIA_BUCKET: { type: "r2", name: "camelrun-media-v2" },
+                EVENTS_QUEUE: { type: "queue", name: "camelrun-events-v2" },
+                TENANT_DO: { type: "durable-object", worker: "camelrun-worker-v2", exportName: "TenantDO" },
+                AGENT_DO: { type: "durable-object", worker: "camelrun-worker-v2", exportName: "AgentDO" },
+                VOICE_CALL_DO: { type: "durable-object", worker: "camelrun-worker-v2", exportName: "VoiceCallDO" },
+                CODEMODE_SANDBOX: {
+                  type: "durable-object",
+                  worker: "camelrun-v2-codemode-sandbox",
+                  exportName: "CodemodeSandbox",
+                },
+              },
+            },
+          },
+          {
+            config: {
+              name: "camelrun-v2-codemode-sandbox",
+              compatibilityDate: "2026-03-24",
+              compatibilityFlags: ["nodejs_compat"],
+              manifest: {
+                mainModule: "index.js",
+                modules: sandboxModules,
+              },
+              exports: {
+                CodemodeSandbox: {
+                  type: "durable-object",
+                  storage: "legacy-kv",
+                },
+              },
+              env: {
+                CODEMODE_SANDBOX: {
+                  type: "durable-object",
+                  worker: "camelrun-v2-codemode-sandbox",
+                  exportName: "CodemodeSandbox",
+                },
+              },
+            },
+          },
+        ],
       });
+      await worker.ready;
       await waitForHealth(`${workerUrl}/healthz`);
     };
     await startWorker();
@@ -387,7 +549,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       assert.equal(Object.hasOwn(body, "instructions"), false);
       assert.deepEqual((body.input as unknown[]).slice(0, 2), [
         { role: "developer", content: instructions },
-        { role: "user", content: "Call lookup before answering." },
+        { role: "user", content: [{ type: "input_text", text: "Call lookup before answering." }] },
       ]);
       assert.equal(key, "fixture-azure-key");
       assert.equal(authorization, undefined);
@@ -471,7 +633,8 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.equal(body.store, false);
     assert.equal(Object.hasOwn(body, "instructions"), false);
     assert.deepEqual(body.input, [
-      { role: "developer", content: "Be brief." }, { role: "user", content: "native-text-fixture" },
+      { role: "developer", content: "Be brief." },
+      { role: "user", content: [{ type: "input_text", text: "native-text-fixture" }] },
     ]);
     assert.equal((await call("native-text-fixture", 2000, apiKey, keyForRun)).status, 409);
     assert.equal((await call("native-text-invalid-json", 2000, apiKey, keyForRun)).status, 409);
@@ -1305,11 +1468,11 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
       const run = await agent.run("Continue from my history");
       assert.equal(run.status, "completed");
       assert.deepEqual(lastProviderMessages?.map(message => message.role), [
-        "system", "assistant", "tool", "tool", "assistant", "user", "assistant", "user",
+        "system", "user", "assistant", "tool", "tool", "assistant", "user", "assistant", "user",
       ]);
       assert.deepEqual(lastProviderMessages?.filter(message => message.role === "tool").map(message => message.tool_call_id),
         ["call_one", "call_two"]);
-      assert.match(String(lastProviderMessages?.[0]?.content), /summary \(up to message #3\)/);
+      assert.match(String(lastProviderMessages?.[1]?.content), /summary \(up to message #3\)/);
       assert.equal(lastProviderMessages?.at(-1)?.content, "Continue from my history");
       const history = (await agent.history()).map(row => row.content as { text?: string; meta?: { v1?: unknown } });
       assert.deepEqual(history.slice(0, messages.length).map(content => content.meta?.v1), messages);

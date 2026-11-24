@@ -572,14 +572,6 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     const questionInput = askRun.json.inputs[0];
     assert.equal(questionInput.kind, "question");
 
-    // Switching engine while input_required MUST return 409 engine_busy
-    const busySwitch = await api("/v2/agents/pi-human", {
-      method: "PUT",
-      body: JSON.stringify({ engine: "legacy" }),
-    });
-    assert.equal(busySwitch.status, 409, JSON.stringify(busySwitch));
-    assert.equal(busySwitch.json.error.code, "engine_busy");
-
     // Resume via POST /inputs/:id -> harness.signal
     const resumeAsk = await api(`/v2/agents/pi-human/inputs/${questionInput.id}`, {
       method: "POST",
@@ -724,12 +716,12 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     });
     assert.equal(capped.status, 200, JSON.stringify(capped));
     assert.equal(capped.json.status, "failed", JSON.stringify(capped.json));
-    assert.equal(capped.json.error?.code, "run_spend_limit_exceeded", JSON.stringify(capped.json));
+    assert.equal(capped.json.error?.code, "spend_limit_exceeded", JSON.stringify(capped.json));
   });
 
   // =========================================================================
-  // 5. Zero-data-loss lazy legacy history migration (2 legacy turns -> flip to
-  //    engine: "pi" -> turn 3 sees imported legacy conversation & tool pairs!)
+  // 5. Zero-data-loss lazy legacy history migration (imported legacy SQLite
+  //    messages with tool calls + tool results -> Pi turn sees full transcript!)
   // =========================================================================
   await t.test("5. Zero-data-loss lazy legacy -> pi migration preserves transcript & tool pairing", async () => {
     // Configure BYOK OpenAI-compatible provider pointing to our capturing mock LLM server
@@ -743,7 +735,7 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     });
     assert.equal(provRes.status, 200, JSON.stringify(provRes));
 
-    // Create agent explicitly on engine: "legacy" (also verifies legacy default)
+    // Create agent (even if caller passes legacy, AgentDO normalizes to pi)
     const createLegacy = await api("/v2/agents/migrate-agent", {
       method: "PUT",
       body: JSON.stringify({
@@ -761,42 +753,59 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
       }),
     });
     assert.equal(createLegacy.status, 201, JSON.stringify(createLegacy));
-    assert.equal(createLegacy.json.engine, "legacy");
+    assert.equal(createLegacy.json.engine, "pi");
 
-    // Legacy Turn 1 (includes tool call + tool result!)
-    const legacyT1 = await api("/v2/agents/migrate-agent/runs", {
-      method: "POST",
+    // Seed legacy SQLite `messages` table via v1 history import (simulating pre-migration prod AgentDO)
+    const importRes = await api("/v2/agents/migrate-agent/history/import", {
+      method: "PUT",
       body: JSON.stringify({
-        prompt: "Turn 1: USE_LOOKUP_TOOL remember secret keyword ALPHA-LEGACY-1",
-        wait: true,
+        source: "legacy-prod-migration",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "Turn 1: USE_LOOKUP_TOOL remember secret keyword ALPHA-LEGACY-1" }],
+            timestamp: 1000,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "call_legacy_1", name: "lookup_fact", arguments: { topic: "ocean" } }],
+            timestamp: 1001,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_legacy_1",
+            toolName: "lookup_fact",
+            content: [{ type: "text", text: JSON.stringify({ fact: "BLUE-OCEAN-42" }) }],
+            timestamp: 1002,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "The fact is BLUE-OCEAN-42." }],
+            timestamp: 1003,
+          },
+          {
+            role: "user",
+            content: [{ type: "text", text: "Turn 2: also remember BRAVO-LEGACY-2" }],
+            timestamp: 1004,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "Noted BRAVO-LEGACY-2." }],
+            timestamp: 1005,
+          },
+        ],
       }),
     });
-    assert.equal(legacyT1.status, 200, JSON.stringify(legacyT1));
-    assert.equal(legacyT1.json.status, "completed", JSON.stringify(legacyT1.json));
-    assert.ok(legacyT1.json.text.includes("BLUE-OCEAN-42"), JSON.stringify(legacyT1.json));
+    assert.equal(importRes.status, 200, JSON.stringify(importRes));
 
-    // Legacy Turn 2
-    const legacyT2 = await api("/v2/agents/migrate-agent/runs", {
-      method: "POST",
-      body: JSON.stringify({
-        prompt: "Turn 2: also remember BRAVO-LEGACY-2",
-        wait: true,
-      }),
-    });
-    assert.equal(legacyT2.status, 200, JSON.stringify(legacyT2));
-    assert.equal(legacyT2.json.status, "completed", JSON.stringify(legacyT2.json));
+    // Read-only GET /history before first Pi turn serves legacy SQLite table without mutating
+    const preHist = await api("/v2/agents/migrate-agent/history");
+    assert.equal(preHist.status, 200);
+    assert.equal(preHist.json.messages.length, 6);
 
     const reqCountBeforePi = mocks.capturedLlmRequests.length;
 
-    // Flip idle agent from legacy -> pi
-    const flipRes = await api("/v2/agents/migrate-agent", {
-      method: "PUT",
-      body: JSON.stringify({ engine: "pi" }),
-    });
-    assert.equal(flipRes.status, 200, JSON.stringify(flipRes));
-    assert.equal(flipRes.json.engine, "pi");
-
-    // Turn 3 under engine: "pi" — triggers atomic lazy migration before admitting turn 3!
+    // Turn 3 under Pi — triggers atomic lazy migration from SQLite `messages` into `PiSessionStore`!
     const piT3 = await api("/v2/agents/migrate-agent/runs", {
       method: "POST",
       body: JSON.stringify({
@@ -836,19 +845,5 @@ test("Phase 3: Dual-engine AgentDO (pi-durable + Lifecycle + Remote CodemodeSand
     assert.ok(histStr.includes("BLUE-OCEAN-42"), "GET /history should contain Turn 1 tool result");
     assert.ok(histStr.includes("BRAVO-LEGACY-2"), "GET /history should contain Turn 2");
     assert.ok(histStr.includes("Turn 3: verify prior legacy turns"), "GET /history should contain Turn 3");
-
-    // Instant safe rollback: flip back to legacy and verify legacy tables were untouched
-    const rollbackRes = await api("/v2/agents/migrate-agent", {
-      method: "PUT",
-      body: JSON.stringify({ engine: "legacy" }),
-    });
-    assert.equal(rollbackRes.status, 200);
-    assert.equal(rollbackRes.json.engine, "legacy");
-    const legacyHistAfterRollback = await api("/v2/agents/migrate-agent/history");
-    assert.equal(legacyHistAfterRollback.status, 200);
-    assert.ok(
-      JSON.stringify(legacyHistAfterRollback.json.messages).includes("BRAVO-LEGACY-2"),
-      "Legacy SQLite messages table must remain untouched for instant safe rollback",
-    );
   });
 });

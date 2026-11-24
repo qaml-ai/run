@@ -71,7 +71,7 @@ import {
 } from "./ops-metadata.ts";
 import { executeStatelessRun, parseStatelessRunImages, type StatelessRunInput } from "./stateless-run.ts";
 import { bridgeEvents } from "./sse-bridge.ts";
-import { DEFAULT_MODEL_ID } from "./providers.ts";
+import { DEFAULT_MODEL_ID } from "./pi/models.ts";
 import { getSkillStore, normalizeSkillSelectors, type SkillUpsertInput } from "./skills.ts";
 import { getTenantStub, TenantDO } from "./tenant-do.ts";
 import { VoiceCallDO } from "./voice-call-do.ts";
@@ -1167,7 +1167,7 @@ app.put("/v2/agents/:key", async (c) => {
       repoId: prep.repoId,
       branch: prep.branch,
       model: initResult.config.model,
-      engine: initResult.config.engine ?? "legacy",
+      engine: "pi",
       created: prep.created,
       ...(initResult.run ? { run: initResult.run } : {}),
     },

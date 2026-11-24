@@ -4,7 +4,7 @@ import {
   type ModelCostTier,
   type V2ModelCatalogEntry,
 } from "./model-catalog-data.ts";
-import { PLATFORM_AZURE_MODELS } from "./providers.ts";
+import { PLATFORM_AZURE_MODELS } from "./pi/models.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import type { Env } from "./types.ts";
 

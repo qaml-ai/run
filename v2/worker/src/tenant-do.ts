@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { CamelFsClient } from "./camelfs.ts";
 import { mintChannelId, openSecret, randomId, sealSecret } from "./crypto.ts";
-import { DEFAULT_MODEL_ID, getProviderLookupCandidates } from "./providers.ts";
+import { DEFAULT_MODEL_ID, getProviderLookupCandidates } from "./pi/models.ts";
 import {
   compareSlug,
   normalizeAndValidateSkill,

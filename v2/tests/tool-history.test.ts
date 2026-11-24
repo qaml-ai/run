@@ -11,7 +11,7 @@ import type { StoredMessage } from "../worker/src/types.ts";
 const toolCall = (id: string) => ({ id, name: "test_tool", args: {}, argumentsJson: "{}" });
 const result = (toolCallId: string, text: string, isError = false) => ({ toolCallId, text, isError });
 type HistoryRow = [StoredMessage["runId"], StoredMessage["role"], StoredMessage["content"]];
-type InputItem = { role?: string; content?: string; type?: string; call_id?: string; name?: string; arguments?: string; output?: string };
+type InputItem = { role?: string; content?: string | Array<Record<string, unknown>>; type?: string; call_id?: string; name?: string; arguments?: string; output?: string; status?: string; id?: string };
 
 test("recorded tool history produces complete Azure Responses groups", async (t) => {
   const requests: InputItem[][] = [];
@@ -50,7 +50,35 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end('data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: [DONE]\n\n');
+    const events = [
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+      },
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "ok" },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "ok" }],
+        },
+      },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          status: "completed",
+          output: [],
+          usage: { input_tokens: 10, output_tokens: 1 },
+        },
+      },
+    ];
+    res.end(events.map((ev) => `data: ${JSON.stringify(ev)}\n\n`).join("") + "data: [DONE]\n\n");
   });
   await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
   t.after(() => { provider.closeAllConnections(); provider.close(); });
@@ -88,13 +116,21 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
   };
   const callItem = (id: string) => ({ type: "function_call", call_id: id, name: "test_tool", arguments: "{}" });
   const outputItem = (id: string, output: string) => ({ type: "function_call_output", call_id: id, output });
+  const userItem = (text: string) => ({ role: "user", content: [{ type: "input_text", text }] });
+  const assistantItem = (text: string, idx = 0) => ({
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text, annotations: [] }],
+    status: "completed",
+    id: `msg_pi_${idx}`,
+  });
 
   await t.test("a new turn drops an aborted call-only group with no recorded outcomes", async () => {
     await ask([
       ["aborted", "user", { text: "original question" }],
       ["aborted", "assistant", { text: "", toolCalls: [toolCall("unrecorded")] }],
       ["next", "user", { text: "new question" }],
-    ], [{ role: "user", content: "original question" }, { role: "user", content: "new question" }]);
+    ], [userItem("original question"), userItem("new question")]);
   });
 
   await t.test("a partly recorded parallel group keeps assistant text, success, and explicit tool errors", async () => {
@@ -104,9 +140,9 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
       ["aborted", "tool", result("error", '{"error":"actual failure"}', true)],
       ["next", "user", { text: "carry on" }],
     ], [
-      { role: "assistant", content: "visible text" }, callItem("success"), callItem("error"),
+      assistantItem("visible text", 0), callItem("success"), callItem("error"),
       outputItem("success", "actual output"), outputItem("error", '{"error":"actual failure"}'),
-      { role: "user", content: "carry on" },
+      userItem("carry on"),
     ]);
   });
 
@@ -119,7 +155,7 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
       ["paused", "tool", result("answered", "human answer")],
       ["paused", "tool", result("after-answer", "resumed output")],
     ], [
-      callItem("imported"), outputItem("imported", "imported result"), { role: "user", content: "pause and resume" },
+      callItem("imported"), outputItem("imported", "imported result"), userItem("pause and resume"),
       callItem("answered"), callItem("after-answer"), outputItem("answered", "human answer"), outputItem("after-answer", "resumed output"),
     ]);
   });
@@ -132,7 +168,7 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
       ["other", "tool", result("unrecorded", "wrong run")],
       ["next", "user", { text: "new turn" }],
       ["old", "tool", result("unrecorded", "after intervening turn")],
-    ], [{ role: "assistant", content: "still visible" }, { role: "user", content: "new turn" }]);
+    ], [assistantItem("still visible", 0), userItem("new turn")]);
   });
 
   await t.test("lone UTF-16 surrogates in history are sanitized to U+FFFD while preserving valid emoji", async () => {
@@ -143,7 +179,7 @@ test("recorded tool history produces complete Azure Responses groups", async (t)
     ], [
       callItem("call_surr"),
       outputItem("call_surr", "coins 🪙\n\ufffd\nend"),
-      { role: "user", content: "hi \ufffd ok" },
+      userItem("hi \ufffd ok"),
     ]);
   });
 

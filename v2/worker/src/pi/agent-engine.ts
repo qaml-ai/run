@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, ImageContent, TextContent, ToolCall } from "@earendil-works/pi-ai";
 import {
@@ -19,18 +20,21 @@ import {
   type LiveState,
   type Registry,
   type TaskId,
+  type ToolExecutionResult,
   type ToolRegistration,
   type UserInput,
 } from "@earendil-works/pi-durable";
+import type { CodemodeGlobal } from "@earendil-works/pi-durable/codemode";
 import { num, obj, opt, str } from "@earendil-works/pi-schema";
 import { openPiSessionStore, PiHarness, ROOT_SESSION } from "agents/harness/pi";
 import { Lifecycle, type LifecycleJobContext } from "agents/lifecycle";
 import type { DurableObject } from "cloudflare:workers";
-import { CamelFsClient } from "../camelfs.ts";
+import { CamelFsClient, normalizeRepoPath } from "../camelfs.ts";
 import { randomId } from "../crypto.ts";
+import { imageHeader } from "../lib/image-header.ts";
 import { consumeInfraCredit } from "../ops-metadata.ts";
-import { getModelContextWindow, resolveTenantByokProvider } from "../providers.ts";
-import { verifyRunFiles } from "../run-files.ts";
+import { isImageAttachment, parseRunFiles, verifyRunFiles } from "../run-files.ts";
+import { toolImageKey } from "../tool-images.ts";
 import { getSkillStore, type SkillRecord } from "../skills.ts";
 import { getTenantStub, platformCreditReserve } from "../tenant-do.ts";
 import {
@@ -46,6 +50,7 @@ import {
   type StartRunHints,
   type StartRunInput,
   type StoredMessage,
+  type StoredRunFile,
   type ToolCallSummary,
 } from "../types.ts";
 import { createCamelFsExecutionEnv } from "./camelfs-env.ts";
@@ -75,10 +80,13 @@ import {
 import {
   buildPiModels,
   calculatePiCostUsd,
+  completePiModel,
   createProviderRequestExtension,
+  getAutoCompactThreshold,
+  getModelContextWindow,
   parsePiModelRef,
+  resolveTenantByokProvider,
 } from "./models.ts";
-import { parseRunFiles } from "../run-files.ts";
 
 const BG = BACKGROUND_CONTEXT;
 
@@ -131,11 +139,15 @@ export interface PiAgentHost {
   releaseUnusedPreacquiredHint(tenantId: string, hints?: StartRunHints): void;
   setActiveRunId(runId: string | null): void;
   getActiveRunId(): string | null;
+  onRunSettled?(runId: string): void;
+  runWorkflow?(body: { code: string; idempotencyKey?: string }): Promise<unknown>;
 }
 
 interface ActiveRunTracker {
   runId: string;
   actor?: string;
+  requestId?: string | null;
+  verifiedFiles?: StoredRunFile[];
   outputSchema: Record<string, unknown> | null;
   spendLimitUsd: number | null;
   usage: RunUsage;
@@ -151,7 +163,7 @@ interface ActiveRunTracker {
   slotAcquired: boolean;
   settled: boolean;
   pausedForInput: boolean;
-  spendLimitError: { code: "run_spend_limit_exceeded"; message: string } | null;
+  spendLimitError: { code: "spend_limit_exceeded"; message: string } | null;
   aborted: boolean;
   watchHandle: ConversationWatch | null;
   watchPromise: Promise<void> | null;
@@ -203,6 +215,48 @@ function tryParseStructuredOutput(text: string): unknown {
   }
 }
 
+function formatCustomToolOutput(result: unknown): ToolExecutionResult {
+  if (
+    result &&
+    typeof result === "object" &&
+    "content" in result &&
+    Array.isArray((result as { content: unknown }).content)
+  ) {
+    const rawBlocks = (result as { content: Array<Record<string, unknown>> }).content.filter(
+      (b): b is Record<string, unknown> => Boolean(b && typeof b === "object"),
+    );
+    const blocks: Array<TextContent | ImageContent> = [];
+    const imageDims: string[] = [];
+    for (const b of rawBlocks) {
+      if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
+        const hdr = imageHeader(Buffer.from(b.data, "base64"));
+        if (hdr) imageDims.push(`[image ${hdr.width}×${hdr.height}]`);
+        blocks.push({ type: "image", mimeType: b.mimeType, data: b.data });
+      } else {
+        blocks.push({
+          type: "text",
+          text: typeof b.text === "string" ? b.text : JSON.stringify(b),
+        });
+      }
+    }
+    if (imageDims.length > 0) {
+      const firstTextIdx = blocks.findIndex((b) => b.type === "text");
+      if (firstTextIdx >= 0) {
+        const prev = blocks[firstTextIdx] as TextContent;
+        blocks[firstTextIdx] = { type: "text", text: `${prev.text}\n${imageDims.join("\n")}` };
+      } else {
+        blocks.unshift({ type: "text", text: imageDims.join("\n") });
+      }
+    }
+    return { output: blocks };
+  }
+  const text = typeof result === "string" ? result : JSON.stringify(result ?? null);
+  return {
+    output: [{ type: "text", text }],
+    structuredOutput: JSON.parse(JSON.stringify(result ?? null)),
+  };
+}
+
 function isPiPendingInputMetadata(value: unknown): value is PiPendingInputMetadata {
   return Boolean(
     value &&
@@ -231,6 +285,7 @@ export class PiAgentEngine {
   private rootReady = false;
   private installedCustomFingerprint = "";
   private installedMcpFingerprint = "";
+  private toolResultTextOverrides = new Map<string, string>();
   private resolvedSkillsCache: { key: string; skills: SkillRecord[]; expiresAt: number } | null = null;
 
   constructor(host: PiAgentHost) {
@@ -299,6 +354,24 @@ export class PiAgentEngine {
   isBusy(): boolean {
     if (this.activeTracker && !this.activeTracker.settled) return true;
     return false;
+  }
+
+  getActiveActor(): string | undefined {
+    if (this.activeTracker && !this.activeTracker.settled && !this.activeTracker.pausedForInput) {
+      return this.activeTracker.actor;
+    }
+    return undefined;
+  }
+
+  hasActiveRunningTurn(): boolean {
+    return Boolean(
+      this.activeTracker && !this.activeTracker.settled && !this.activeTracker.pausedForInput,
+    );
+  }
+
+  async steerActiveRun(prompt: string, steerRunId: string): Promise<void> {
+    await this.ensureStarted();
+    await this.harness.session(ROOT_SESSION).steer(prompt, { operationId: steerRunId });
   }
 
   async dispose(): Promise<void> {
@@ -519,20 +592,101 @@ export class PiAgentEngine {
               );
             }
 
-            const text = typeof result === "string" ? result : JSON.stringify(result ?? null);
-            return {
-              output: [{ type: "text", text }],
-              structuredOutput: JSON.parse(JSON.stringify(result ?? null)),
-            };
+            return formatCustomToolOutput(result);
           },
         }) as unknown as ToolRegistration,
       );
     }
 
+    tools.push(
+      defineTool({
+        name: "run_workflow",
+        description:
+          "Execute a deterministic replay-cached workflow script with `wf.agent`, `wf.parallel`, `wf.bash`, `wf.commit`, `wf.sleep`, `wf.tool`, `wf.step`.",
+        parameters: obj(
+          {
+            code: str({ description: "JavaScript workflow body" }),
+            idempotencyKey: opt(str({ description: "Optional idempotency scope key" })),
+          },
+          { open: true },
+        ),
+        async execute(args) {
+          if (!host.runWorkflow) {
+            throw new Error("Workflow execution is not configured on this agent");
+          }
+          const res = await host.runWorkflow({
+            code: args.code,
+            ...(args.idempotencyKey ? { idempotencyKey: args.idempotencyKey } : {}),
+          });
+          return {
+            output: [{ type: "text", text: JSON.stringify(res ?? null) }],
+            structuredOutput: JSON.parse(JSON.stringify(res ?? null)),
+          };
+        },
+      }) as unknown as ToolRegistration,
+    );
+
     return defineExtension({
       name: "camelrun-custom-and-web",
       tools,
     });
+  }
+
+  private buildCodemodeFsGlobals(): CodemodeGlobal[] {
+    const host = this.host;
+    const onFilesChanged = (files: string[]) => this.recordFilesChanged(files);
+    return [
+      {
+        name: "fs.readFile",
+        spread: true,
+        async execute(rawArgs) {
+          const tuple = Array.isArray(rawArgs) ? rawArgs : [rawArgs];
+          const filePath = normalizeRepoPath(String(tuple[0] ?? ""));
+          const cfg = host.getConfig();
+          const { lineage, branch } = await host.ensureAgentRepository();
+          const cfs = new CamelFsClient(host.env, cfg.tenantId);
+          const res = await cfs.read(lineage, { at: branch, path: filePath });
+          return res.content ?? res.base64 ?? "";
+        },
+      },
+      {
+        name: "fs.writeFile",
+        spread: true,
+        async execute(rawArgs) {
+          const tuple = Array.isArray(rawArgs) ? rawArgs : [rawArgs];
+          const filePath = normalizeRepoPath(String(tuple[0] ?? ""));
+          const content = String(tuple[1] ?? "");
+          const cfg = host.getConfig();
+          const { repoId, lineage, branch } = await host.ensureAgentRepository();
+          const cfs = new CamelFsClient(host.env, cfg.tenantId);
+          const out = await cfs.write(lineage, {
+            ref: branch,
+            holder: cfg.id,
+            author: `agent:${cfg.id}`,
+            message: `codemode write ${filePath}`,
+            puts: [{ path: filePath, content, mode: 0o644 }],
+          });
+          onFilesChanged(out.changed);
+          await getTenantStub(host.env, cfg.tenantId)
+            .updateRepoCommit(repoId, out.commit)
+            .catch(() => {});
+          return JSON.parse(JSON.stringify(out));
+        },
+      },
+      {
+        name: "fs.readdir",
+        spread: true,
+        async execute(rawArgs) {
+          const tuple = Array.isArray(rawArgs) ? rawArgs : [rawArgs];
+          const dirPath = String(tuple[0] ?? "");
+          const cfg = host.getConfig();
+          const { lineage, branch } = await host.ensureAgentRepository();
+          const cfs = new CamelFsClient(host.env, cfg.tenantId);
+          const out = await cfs.ls(lineage, { at: branch, path: dirPath, recursive: false });
+          return JSON.parse(JSON.stringify(out.entries));
+        },
+      },
+    ];
   }
 
   private async ensureExtensionsInstalled(cfg: AgentConfig): Promise<void> {
@@ -542,6 +696,8 @@ export class PiAgentEngine {
       this.registry.install(
         createProviderRequestExtension({
           getOutputSchema: () => this.activeTracker?.outputSchema ?? null,
+          getPromptCacheKey: () => this.host.readConfigOrNull()?.id,
+          getToolResultOverride: (callId) => this.toolResultTextOverrides.get(callId),
         }),
       );
     }
@@ -557,7 +713,7 @@ export class PiAgentEngine {
           onSpendLimitExceeded: (ev) => {
             if (this.activeTracker) {
               this.activeTracker.spendLimitError = {
-                code: "run_spend_limit_exceeded",
+                code: "spend_limit_exceeded",
                 message: `Run spend limit exceeded ($${ev.spentUsd.toFixed(6)} >= $${ev.spendLimitUsd.toFixed(6)})`,
               };
             }
@@ -590,6 +746,14 @@ export class PiAgentEngine {
         createCamelRunCodingExtension({
           images: this.host.env.IMAGES,
           includeLegacyAliases: true,
+          readAtCommit: async (rawPath, at) => {
+            const curCfg = this.host.getConfig();
+            const { lineage } = await this.host.ensureAgentRepository();
+            const cfs = new CamelFsClient(this.host.env, curCfg.tenantId);
+            const cleanPath = normalizeRepoPath(rawPath);
+            const res = await cfs.read(lineage, { at, path: cleanPath });
+            return res.content ?? res.base64 ?? "";
+          },
         }),
       );
     }
@@ -656,6 +820,7 @@ export class PiAgentEngine {
           env: this.host.env,
           instanceName: () => `${this.host.getConfig().id}:root`,
           models: false,
+          globals: this.buildCodemodeFsGlobals(),
         }),
       );
     }
@@ -666,17 +831,14 @@ export class PiAgentEngine {
       this.installedCustomFingerprint = customFp;
     }
 
+    // Install placeholder MCP extension without eager network discovery (callers like camel-bots
+    // upsert agents before activating signed MCP ACLs). Real MCP discovery happens lazily in
+    // `ensureMcpExtensionReady()` right before `startRun`, `executeRun`, or `respondToInput`.
     if (!snap.extension("camelrun-mcp")) {
       this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
     }
   }
 
-  /**
-   * Discover & install remote MCP tools lazily ONLY when starting or resuming a run.
-   * Never perform remote MCP HTTP calls during `PUT /v2/agents`, `scheduleNextAlarm`,
-   * `syncModelChange`, or `GET /history` — callers like `camel-bots` often upsert the
-   * agent before activating its ID in their tool-server ACL.
-   */
   private async ensureMcpExtensionReady(cfg: AgentConfig): Promise<void> {
     const mcpFp = JSON.stringify(cfg.mcpServers ?? []);
     if (mcpFp === this.installedMcpFingerprint) return;
@@ -693,6 +855,110 @@ export class PiAgentEngine {
       this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
     }
     this.installedMcpFingerprint = mcpFp;
+  }
+
+  private async maybeAutoCompact(cfg: AgentConfig): Promise<void> {
+    const threshold = getAutoCompactThreshold(cfg.model, cfg.compactThresholdTokens);
+    const activeEntries = await this.harness.session(ROOT_SESSION).messages();
+    const contentEntries = activeEntries.filter(
+      (e) => UserEntry.is(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
+    );
+    if (contentEntries.length <= 6) return;
+
+    let totalChars = 0;
+    for (const e of contentEntries) {
+      totalChars += JSON.stringify(e.model ?? "").length;
+    }
+    const estTokens = Math.ceil(totalChars / 4);
+    if (estTokens <= threshold) return;
+
+    let cutIdx = Math.max(0, contentEntries.length - 6);
+    // Never split a tool call from any of its tool results
+    while (cutIdx > 0 && ToolResultEntry.is(contentEntries[cutIdx])) {
+      cutIdx--;
+    }
+    if (cutIdx <= 0) return;
+
+    const firstKept = contentEntries[cutIdx]!;
+    const upToSeq = cutIdx;
+
+    const transcriptLines: string[] = [];
+    for (const entry of contentEntries.slice(0, cutIdx)) {
+      const m = entry.model?.[0];
+      if (!m) continue;
+      if (m.role === "user") {
+        const txt =
+          typeof m.content === "string"
+            ? m.content
+            : m.content
+                .filter((c): c is TextContent => c.type === "text")
+                .map((c) => c.text)
+                .join("\n");
+        transcriptLines.push(`user: ${txt.slice(0, 600)}`);
+      } else if (m.role === "assistant") {
+        const txt = extractAssistantText(m);
+        transcriptLines.push(`assistant: ${txt.slice(0, 600)}`);
+      } else if (m.role === "toolResult") {
+        const txt = m.content
+          .filter((c): c is TextContent => c.type === "text")
+          .map((c) => c.text)
+          .join("\n");
+        transcriptLines.push(`tool(${m.toolName}): ${txt.slice(0, 400)}`);
+      }
+    }
+
+    let summary = `Previous conversation summary (up to message #${upToSeq}):\n${transcriptLines.join("\n").slice(0, 1200)}`;
+    try {
+      const res = await completePiModel({
+        env: this.host.env,
+        tenantId: cfg.tenantId,
+        keyScope: cfg.keyScope ?? null,
+        model: cfg.model,
+        instructions:
+          "Summarize the prior conversation concisely, preserving key facts, decisions, file paths, and tool results.",
+        messages: [
+          {
+            role: "user",
+            content: `Summarize these ${cutIdx} messages:\n\n${transcriptLines.join("\n").slice(0, 16_000)}`,
+            timestamp: Date.now(),
+          },
+        ],
+      });
+      if (res.text.trim()) {
+        summary = `Previous conversation summary (up to message #${upToSeq}):\n${res.text.trim()}`;
+      }
+    } catch {
+      // Keep deterministic transcript-snippet summary fallback
+    }
+
+    const pi = await this.harness.pi();
+    const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+    if (!conv) return;
+
+    const sub = await conv.submit(
+      {
+        type: "write",
+        entry: {
+          kind: CompactionEntry.kind,
+          head: firstKept.id,
+          model: [
+            {
+              role: "user",
+              content: wrapCompactionSummary(summary),
+              timestamp: Date.now(),
+            },
+          ],
+          data: { reason: "auto" },
+        },
+      },
+      BG,
+    );
+    await sub.wait(BG);
+
+    this.host.recordAndBroadcastEvent(null, "context_compacted", {
+      upToSeq,
+      compactedCount: cutIdx,
+    });
   }
 
   private buildAgentChange(cfg: AgentConfig, maxTurns?: number): AgentChange {
@@ -752,6 +1018,10 @@ export class PiAgentEngine {
         enabledTools.push(tool);
         continue;
       }
+      if (name === "run_workflow" && builtins.has("workflows")) {
+        enabledTools.push(tool);
+        continue;
+      }
     }
 
     const modelRef = parsePiModelRef(cfg.model, this.host.env);
@@ -770,8 +1040,7 @@ export class PiAgentEngine {
     tracker.usage.inputTokens += ev.inputTokens;
     tracker.usage.outputTokens += ev.outputTokens;
     tracker.usage.cacheReadTokens = (tracker.usage.cacheReadTokens ?? 0) + ev.cacheReadTokens;
-    const billedStepUsd = tracker.usage.byok ? 0 : ev.costUsd;
-    tracker.usage.costUsd = Number((tracker.usage.costUsd + billedStepUsd).toFixed(8));
+    tracker.usage.costUsd = Number((tracker.usage.costUsd + ev.costUsd).toFixed(8));
 
     if (tracker.actor) {
       this.host.ctx.storage.transactionSync(() => {
@@ -915,7 +1184,11 @@ export class PiAgentEngine {
     }));
 
     const modelRef = parsePiModelRef(curCfg.model, this.host.env);
-    let migrationResult = { importedEntries: 0, maxLegacySeq: afterSeq };
+    let migrationResult: {
+      importedEntries: number;
+      maxLegacySeq: number;
+      importedMeta: Array<{ entryId: number; runId: string | null; meta?: Record<string, unknown> }>;
+    } = { importedEntries: 0, maxLegacySeq: afterSeq, importedMeta: [] };
 
     const { created } = await this.harness.root({
       agent: this.buildAgentChange(curCfg, maxTurns),
@@ -935,6 +1208,9 @@ export class PiAgentEngine {
     if (created && (legacyCompaction || legacyMessages.length > 0)) {
       const migratedAt = String(Date.now());
       this.host.ctx.storage.transactionSync(() => {
+        for (const item of migrationResult.importedMeta) {
+          this.recordEntryMeta(item.entryId, item.runId, item.meta);
+        }
         this.host.ctx.storage.sql.exec(
           `INSERT INTO runtime_kv (k, v) VALUES ('pi_migrated_at', ?1)
            ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
@@ -975,23 +1251,19 @@ export class PiAgentEngine {
     });
   }
 
-  private async prepareUserInput(
+  private async buildUserInputWithFiles(
     cfg: AgentConfig,
     prompt: string,
-    files: RunFile[],
-  ): Promise<UserInput> {
-    if (files.length === 0) {
-      return prompt;
-    }
-    if (!cfg.lineage) {
-      throw new ApiError(400, "invalid_attachments", "Attachments require a configured repository");
+    refs: Array<{ lineage: string; file: RunFile }>,
+  ): Promise<{ userInput: UserInput; verifiedFiles: StoredRunFile[] }> {
+    if (refs.length === 0) {
+      return { userInput: prompt, verifiedFiles: [] };
     }
     const cfs = new CamelFsClient(this.host.env, cfg.tenantId);
-    const verified = await verifyRunFiles(
-      cfs,
-      files.map((file) => ({ lineage: cfg.lineage!, file })),
-      { env: this.host.env, tenantId: cfg.tenantId },
-    );
+    const verified = await verifyRunFiles(cfs, refs, {
+      env: this.host.env,
+      tenantId: cfg.tenantId,
+    });
 
     const blocks: (TextContent | ImageContent)[] = [];
     const lines = [
@@ -1002,7 +1274,50 @@ export class PiAgentEngine {
       ),
     ].filter(Boolean);
     blocks.push({ type: "text", text: lines.join("\n") });
-    return blocks;
+
+    for (const f of verified) {
+      if (!isImageAttachment(f)) continue;
+      if (f.resized && this.host.env.MEDIA_BUCKET) {
+        const obj = await this.host.env.MEDIA_BUCKET.get(toolImageKey(cfg.tenantId, f.resized));
+        if (obj) {
+          const buf = Buffer.from(await obj.arrayBuffer());
+          blocks.push({
+            type: "image",
+            mimeType: f.resized.contentType,
+            data: buf.toString("base64"),
+          });
+          continue;
+        }
+      }
+      const read = await cfs.read(f.lineage, { at: f.commit, path: f.path, limit: f.size + 1 });
+      if (read.base64) {
+        blocks.push({
+          type: "image",
+          mimeType: f.contentType,
+          data: read.base64,
+        });
+      }
+    }
+
+    return { userInput: blocks, verifiedFiles: verified };
+  }
+
+  private async prepareUserInput(
+    cfg: AgentConfig,
+    prompt: string,
+    files: RunFile[],
+  ): Promise<{ userInput: UserInput; verifiedFiles: StoredRunFile[] }> {
+    if (files.length === 0) {
+      return { userInput: prompt, verifiedFiles: [] };
+    }
+    if (!cfg.lineage) {
+      throw new ApiError(400, "invalid_attachments", "Attachments require a configured repository");
+    }
+    return this.buildUserInputWithFiles(
+      cfg,
+      prompt,
+      files.map((file) => ({ lineage: cfg.lineage!, file })),
+    );
   }
 
   private async startWatchForTracker(tracker: ActiveRunTracker): Promise<void> {
@@ -1016,7 +1331,7 @@ export class PiAgentEngine {
     }
 
     const processView = (view: typeof watch.value) => {
-      if (tracker.settled) return;
+      if (tracker.settled || tracker.pausedForInput || tracker.aborted) return;
 
       const live = view.docs["pi.live"] as LiveState | undefined;
 
@@ -1043,7 +1358,22 @@ export class PiAgentEngine {
         if (tracker.seenEntryIds.has(entryNum)) continue;
         tracker.seenEntryIds.add(entryNum);
 
-        if (AssistantEntry.is(entry)) {
+        if (UserEntry.is(entry)) {
+          const userMeta: Record<string, unknown> = {};
+          if (tracker.actor) {
+            userMeta.actor = tracker.actor;
+            userMeta.requestId = tracker.requestId ?? null;
+          }
+          if (tracker.verifiedFiles && tracker.verifiedFiles.length > 0) {
+            userMeta._files = tracker.verifiedFiles;
+          }
+          this.recordEntryMeta(
+            entryNum,
+            tracker.runId,
+            Object.keys(userMeta).length > 0 ? userMeta : undefined,
+          );
+        } else if (AssistantEntry.is(entry)) {
+          this.recordEntryMeta(entryNum, tracker.runId);
           const msg = entry.model?.[0];
           if (msg && msg.role === "assistant") {
             const text = extractAssistantText(msg);
@@ -1068,6 +1398,7 @@ export class PiAgentEngine {
             }
           }
         } else if (ToolResultEntry.is(entry)) {
+          this.recordEntryMeta(entryNum, tracker.runId);
           const msg = entry.model?.[0];
           if (msg && msg.role === "toolResult") {
             if (!tracker.seenToolEnds.has(msg.toolCallId)) {
@@ -1150,6 +1481,37 @@ export class PiAgentEngine {
       try {
         const result = await this.harness.wait(tracker.runId, { session: ROOT_SESSION });
 
+        // Flush any newly committed entries not yet observed by the async watch (e.g. fast mock turns)
+        if (!tracker.aborted) {
+          try {
+            const finalEntries = await this.harness.session(ROOT_SESSION).messages();
+            for (const entry of finalEntries) {
+              const entryNum = Number(entry.id);
+              if (tracker.seenEntryIds.has(entryNum)) continue;
+              tracker.seenEntryIds.add(entryNum);
+              if (UserEntry.is(entry)) {
+                const userMeta: Record<string, unknown> = {};
+                if (tracker.actor) {
+                  userMeta.actor = tracker.actor;
+                  userMeta.requestId = tracker.requestId ?? null;
+                }
+                if (tracker.verifiedFiles && tracker.verifiedFiles.length > 0) {
+                  userMeta._files = tracker.verifiedFiles;
+                }
+                this.recordEntryMeta(
+                  entryNum,
+                  tracker.runId,
+                  Object.keys(userMeta).length > 0 ? userMeta : undefined,
+                );
+              } else if (AssistantEntry.is(entry) || ToolResultEntry.is(entry)) {
+                this.recordEntryMeta(entryNum, tracker.runId);
+              }
+            }
+          } catch {
+            // Best-effort metadata flush
+          }
+        }
+
         // Give any final watch microtask a chance to flush last entry deltas
         if (tracker.watchHandle) {
           await new Promise((r) => setTimeout(r, 0));
@@ -1161,7 +1523,18 @@ export class PiAgentEngine {
         tracker.settled = true;
 
         const now = Date.now();
-        if (result.status === "done") {
+        const postRunSpendError =
+          tracker.spendLimitError ??
+          (tracker.spendLimitUsd !== null &&
+          tracker.spendLimitUsd >= 0 &&
+          tracker.usage.costUsd > tracker.spendLimitUsd
+            ? {
+                code: "spend_limit_exceeded",
+                message: `Run spend limit exceeded ($${tracker.usage.costUsd.toFixed(6)} > $${tracker.spendLimitUsd.toFixed(6)})`,
+              }
+            : null);
+
+        if (result.status === "done" && !postRunSpendError) {
           const finalText = result.text || tracker.accumulatedText;
           if (finalText.length > tracker.accumulatedText.length) {
             const delta = finalText.slice(tracker.accumulatedText.length);
@@ -1192,14 +1565,14 @@ export class PiAgentEngine {
             usage: tracker.usage,
           });
         } else {
-          // Unanswered: spend limit, abort, input expired, or model error
-          if (tracker.spendLimitError) {
-            const errObj = tracker.spendLimitError;
-            this.host.ctx.storage.sql.exec(
+          // Unanswered or post-step spend limit exceeded: spend limit, abort, input expired, or model error
+          if (postRunSpendError) {
+            const errObj = postRunSpendError;
+            const res = this.host.ctx.storage.sql.exec(
               `UPDATE runs
                SET status = 'failed', text = ?1, tool_calls_json = ?2, files_changed_json = ?3,
                    usage_json = ?4, error_json = ?5, ended_at = ?6
-               WHERE id = ?7`,
+               WHERE id = ?7 AND status NOT IN ('completed', 'failed', 'cancelled')`,
               tracker.accumulatedText,
               JSON.stringify(tracker.toolCalls),
               JSON.stringify([...tracker.filesChanged]),
@@ -1208,17 +1581,19 @@ export class PiAgentEngine {
               now,
               tracker.runId,
             );
-            this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
-              runId: tracker.runId,
-              error: errObj,
-            });
-          } else if (tracker.aborted || result.reason === "aborted") {
+            if (res.rowsWritten > 0) {
+              this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
+                runId: tracker.runId,
+                error: errObj,
+              });
+            }
+          } else if (tracker.aborted || (result.status !== "done" && result.reason === "aborted")) {
             const errObj = { code: "cancelled", message: "Cancelled via abort" };
-            this.host.ctx.storage.sql.exec(
+            const res = this.host.ctx.storage.sql.exec(
               `UPDATE runs
                SET status = 'cancelled', text = ?1, tool_calls_json = ?2, files_changed_json = ?3,
                    usage_json = ?4, error_json = ?5, ended_at = ?6
-               WHERE id = ?7 AND status != 'cancelled'`,
+               WHERE id = ?7 AND status NOT IN ('completed', 'failed', 'cancelled')`,
               tracker.accumulatedText,
               JSON.stringify(tracker.toolCalls),
               JSON.stringify([...tracker.filesChanged]),
@@ -1227,18 +1602,20 @@ export class PiAgentEngine {
               now,
               tracker.runId,
             );
-            this.host.recordAndBroadcastEvent(tracker.runId, "run_cancelled", {
-              runId: tracker.runId,
-            });
+            if (res.rowsWritten > 0) {
+              this.host.recordAndBroadcastEvent(tracker.runId, "run_cancelled", {
+                runId: tracker.runId,
+              });
+            }
           } else {
-            const code = result.reason || "run_failed";
+            const code = (result.status !== "done" ? result.reason : null) || "run_failed";
             const message = `Run ended unanswered (${code})`;
             const errObj = { code, message };
-            this.host.ctx.storage.sql.exec(
+            const res = this.host.ctx.storage.sql.exec(
               `UPDATE runs
                SET status = 'failed', text = ?1, tool_calls_json = ?2, files_changed_json = ?3,
                    usage_json = ?4, error_json = ?5, ended_at = ?6
-               WHERE id = ?7`,
+               WHERE id = ?7 AND status NOT IN ('completed', 'failed', 'cancelled')`,
               tracker.accumulatedText,
               JSON.stringify(tracker.toolCalls),
               JSON.stringify([...tracker.filesChanged]),
@@ -1247,10 +1624,12 @@ export class PiAgentEngine {
               now,
               tracker.runId,
             );
-            this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
-              runId: tracker.runId,
-              error: errObj,
-            });
+            if (res.rowsWritten > 0) {
+              this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
+                runId: tracker.runId,
+                error: errObj,
+              });
+            }
           }
         }
 
@@ -1338,6 +1717,7 @@ export class PiAgentEngine {
         if (this.host.getActiveRunId() === tracker.runId) {
           this.host.setActiveRunId(null);
         }
+        this.host.onRunSettled?.(tracker.runId);
         this.host.notifyRunWaiters(tracker.runId);
         if (!this.host.isDestroying()) {
           void this.host.scheduleNextAlarm();
@@ -1508,7 +1888,7 @@ export class PiAgentEngine {
 
     if (effectiveSpendLimit !== null && effectiveSpendLimit <= 0) {
       return failImmediately(
-        "run_spend_limit_exceeded",
+        "spend_limit_exceeded",
         `Run spend limit exceeded ($0.000000 >= $${effectiveSpendLimit.toFixed(6)})`,
       );
     }
@@ -1542,9 +1922,26 @@ export class PiAgentEngine {
     let slotAcquired = false;
     try {
       await this.refreshModels(cfg, { keyScope: body.keyScope, hints });
-      await this.ensureMcpExtensionReady(cfg);
+      if (!cfg.model.startsWith("mock")) {
+        const ref = parsePiModelRef(cfg.model, this.host.env);
+        const providerObj = this.currentModels?.getProvider(ref.provider);
+        const resolvedAuth = providerObj?.auth?.apiKey
+          ? await providerObj.auth.apiKey.resolve({
+              ctx: {},
+              signal: new AbortController().signal,
+            } as never)
+          : undefined;
+        if (!resolvedAuth) {
+          return failImmediately(
+            "missing_provider_key",
+            `No API key configured for provider '${ref.provider}'`,
+          );
+        }
+      }
       await this.ensureRootMigrated(cfg, maxSteps);
-      const userInput = await this.prepareUserInput(cfg, prompt, files);
+      await this.ensureMcpExtensionReady(cfg);
+      await this.maybeAutoCompact(cfg);
+      const { userInput, verifiedFiles } = await this.prepareUserInput(cfg, prompt, files);
 
       // Sync latest config (model, instructions, enabled tools, maxTurns) onto root conversation
       const pi = await this.harness.pi();
@@ -1563,6 +1960,7 @@ export class PiAgentEngine {
       const tracker: ActiveRunTracker = {
         runId,
         actor,
+        verifiedFiles,
         outputSchema: body.outputSchema ?? null,
         spendLimitUsd: effectiveSpendLimit,
         usage: isByok ? { ...emptyUsage(), byok: true } : emptyUsage(),
@@ -1627,25 +2025,316 @@ export class PiAgentEngine {
     }
   }
 
-  private async supersedePendingInputRuns(actor?: string): Promise<void> {
+  /**
+   * Executes a single already-admitted queued run (owned by `AgentDO.drainRunQueue`)
+   * with full Pi durability, billing, spend-limit enforcement, and streaming events.
+   * Returns once the run reaches a terminal or `input_required` state.
+   */
+  async executeRun(params: {
+    runId: string;
+    prompt: string;
+    actor?: string;
+    files: Array<{ lineage: string; file: RunFile }>;
+    outputSchema: Record<string, unknown> | null;
+    maxSteps: number;
+    spendLimitUsd: number | null;
+    keyScope?: string | null;
+    hints?: StartRunHints;
+    slotAcquired: boolean;
+  }): Promise<RunRecord> {
+    const cfg = this.host.getConfig();
+    const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
+    const { runId, prompt, actor, outputSchema, maxSteps, spendLimitUsd, hints } = params;
+    let slotAcquired = params.slotAcquired;
+
+    const failImmediately = (code: string, message: string): RunRecord => {
+      if (slotAcquired) {
+        slotAcquired = false;
+        void tenantStub.releaseSlot(runId).catch(() => {});
+      }
+      this.host.ctx.storage.sql.exec(
+        `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
+        JSON.stringify({ code, message }),
+        Date.now(),
+        runId,
+      );
+      this.host.recordAndBroadcastEvent(runId, "run_failed", {
+        runId,
+        error: { code, message },
+      });
+      this.host.notifyRunWaiters(runId);
+      return this.host.materializeRunRecord(runId);
+    };
+
+    if (spendLimitUsd !== null && spendLimitUsd <= 0) {
+      return failImmediately(
+        "spend_limit_exceeded",
+        `Run spend limit exceeded ($0.000000 >= $${spendLimitUsd.toFixed(6)})`,
+      );
+    }
+
+    const effectiveScope =
+      hints?.prefetchedProvider?.keyScope !== undefined
+        ? (hints.prefetchedProvider.keyScope ?? null)
+        : (params.keyScope ?? cfg.keyScope ?? null);
+    const { isByok } = await resolveTenantByokProvider(
+      this.host.env,
+      cfg.tenantId,
+      cfg.model,
+      hints?.prefetchedProvider,
+      effectiveScope,
+    );
+
+    if (!cfg.model.startsWith("mock") && !isByok && !platformCreditReserve(this.host.env, cfg.tenantId)) {
+      const balanceUsd =
+        hints?.prefetchedBalanceUsd !== undefined
+          ? hints.prefetchedBalanceUsd
+          : (await tenantStub.getProfile())?.balanceUsd;
+      if (balanceUsd !== undefined && balanceUsd <= 0) {
+        return failImmediately(
+          "insufficient_credits",
+          "Tenant balance is exhausted. Top up credits or add a BYOK provider key.",
+        );
+      }
+    }
+
+    try {
+      await this.ensureStarted();
+      await this.refreshModels(cfg, { keyScope: params.keyScope, hints });
+      if (!cfg.model.startsWith("mock")) {
+        const ref = parsePiModelRef(cfg.model, this.host.env);
+        const providerObj = this.currentModels?.getProvider(ref.provider);
+        const resolvedAuth = providerObj?.auth?.apiKey
+          ? await providerObj.auth.apiKey.resolve({
+              ctx: {},
+              signal: new AbortController().signal,
+            } as never)
+          : undefined;
+        if (!resolvedAuth) {
+          return failImmediately(
+            "missing_provider_key",
+            `No API key configured for provider '${ref.provider}'`,
+          );
+        }
+      }
+      await this.ensureRootMigrated(cfg, maxSteps);
+      await this.ensureMcpExtensionReady(cfg);
+      await this.maybeAutoCompact(cfg);
+
+      const { userInput, verifiedFiles } = await this.buildUserInputWithFiles(
+        cfg,
+        prompt,
+        params.files,
+      );
+
+      const pi = await this.harness.pi();
+      const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+      if (conv) {
+        await conv.configure(this.buildAgentChange(cfg, maxSteps), BG);
+      }
+
+      const runRow = this.host.ctx.storage.sql
+        .exec<{ idempotency_key: string | null }>(
+          `SELECT idempotency_key FROM runs WHERE id = ?1 LIMIT 1`,
+          runId,
+        )
+        .toArray()[0];
+
+      const tracker: ActiveRunTracker = {
+        runId,
+        actor,
+        requestId: runRow?.idempotency_key ?? null,
+        verifiedFiles,
+        outputSchema,
+        spendLimitUsd,
+        usage: isByok ? { ...emptyUsage(), byok: true } : emptyUsage(),
+        filesChanged: new Set(),
+        toolCalls: [],
+        seenToolStarts: new Set(),
+        seenToolEnds: new Set(),
+        seenEntryIds: new Set(),
+        emittedGenerationAttempt: -1,
+        emittedPartialTextLen: 0,
+        lastEmittedAssistantEntryId: 0,
+        accumulatedText: "",
+        slotAcquired,
+        settled: false,
+        pausedForInput: false,
+        spendLimitError: null,
+        aborted: false,
+        watchHandle: null,
+        watchPromise: null,
+      };
+      slotAcquired = false; // Ownership transferred to tracker
+      this.activeTracker = tracker;
+      this.host.setActiveRunId(runId);
+
+      this.host.ctx.storage.sql.exec(`UPDATE runs SET status = 'running' WHERE id = ?1`, runId);
+      this.host.recordAndBroadcastEvent(runId, "run_started", {
+        runId,
+        prompt,
+        ...(actor ? { actor } : {}),
+      });
+
+      await this.startWatchForTracker(tracker);
+
+      await this.harness.submit(userInput, {
+        session: ROOT_SESSION,
+        operationId: runId,
+        whenBusy: "followUp",
+      });
+
+      const waitPromise = this.host.waitForRunSettlement(runId);
+      this.trackSubmissionSettlement(tracker);
+      return await waitPromise;
+    } catch (err) {
+      if (this.activeTracker?.runId === runId) {
+        if (this.activeTracker.watchHandle) {
+          await this.activeTracker.watchHandle.stop().catch(() => {});
+        }
+        if (this.activeTracker.slotAcquired) {
+          this.activeTracker.slotAcquired = false;
+          await tenantStub.releaseSlot(runId).catch(() => {});
+        }
+        this.activeTracker = null;
+      }
+      if (this.host.getActiveRunId() === runId) {
+        this.host.setActiveRunId(null);
+      }
+      const apiErr = extractApiError(err);
+      return failImmediately(
+        apiErr?.code ?? "run_failed",
+        apiErr?.message ?? (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  private async finalizeAbortedInputs(
+    runId: string,
+    inputs: Array<{ id: string; tool_call_id: string; prompt_json: string | null }>,
+    reasonText: string,
+  ): Promise<void> {
+    if (inputs.length === 0) return;
+    let entries: EntryRecord[] = [];
+    try {
+      entries = await this.harness.session(ROOT_SESSION).messages();
+    } catch {
+      entries = [];
+    }
+
+    for (const inp of inputs) {
+      this.toolResultTextOverrides.set(inp.tool_call_id, reasonText);
+      let toolName = "ask_human";
+      if (inp.prompt_json) {
+        try {
+          const parsed = JSON.parse(inp.prompt_json) as { tool?: string };
+          if (typeof parsed.tool === "string" && parsed.tool) toolName = parsed.tool;
+        } catch {
+          // ignore
+        }
+      }
+
+      // Find the ToolResultEntry written by pi-durable during abort for this callId
+      let matchedEntry: EntryRecord | undefined;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i]!;
+        if (ToolResultEntry.is(entry)) {
+          const msg = entry.model?.[0];
+          if (msg && msg.role === "toolResult" && msg.toolCallId === inp.tool_call_id) {
+            matchedEntry = entry;
+            if (msg.toolName) toolName = msg.toolName;
+            break;
+          }
+        }
+      }
+
+      if (matchedEntry) {
+        this.host.ctx.storage.sql.exec(
+          `INSERT INTO pi_entry_meta (entry_id, run_id, meta_json) VALUES (?1, ?2, ?3)
+           ON CONFLICT(entry_id) DO UPDATE SET run_id = excluded.run_id, meta_json = excluded.meta_json`,
+          Number(matchedEntry.id),
+          runId,
+          JSON.stringify({ _overrideToolText: reasonText }),
+        );
+      }
+
+      this.host.recordAndBroadcastEvent(runId, "tool_call_end", {
+        callId: inp.tool_call_id,
+        name: toolName,
+        ok: false,
+        error: reasonText,
+      });
+    }
+  }
+
+  async abortExpiredInput(inp: {
+    id: string;
+    run_id: string;
+    tool_call_id: string;
+    prompt_json: string | null;
+  }): Promise<void> {
+    if (this.activeTracker && this.activeTracker.runId === inp.run_id && !this.activeTracker.settled) {
+      this.activeTracker.aborted = true;
+      if (this.activeTracker.watchHandle) {
+        const handle = this.activeTracker.watchHandle;
+        this.activeTracker.watchHandle = null;
+        await handle.stop().catch(() => {});
+      }
+    }
+    await this.ensureStarted();
+    await this.harness.abort({ session: ROOT_SESSION, operationId: inp.run_id }).catch(() => {});
+    await this.finalizeAbortedInputs(
+      inp.run_id,
+      [inp],
+      "Not answered: the request for input expired.",
+    );
+  }
+
+  async supersedePendingInputRuns(actor?: string): Promise<string[]> {
     const pausedRuns = this.host.ctx.storage.sql
       .exec<{ id: string; actor: string | null }>(
         `SELECT id, actor FROM runs WHERE status = 'input_required' AND batched_into IS NULL ORDER BY started_at ASC`,
       )
       .toArray();
     const matching = pausedRuns.filter((r) => !actor || !r.actor || r.actor === actor);
-    if (matching.length === 0) return;
+    if (matching.length === 0) return [];
 
-    await this.harness.abort({ session: ROOT_SESSION }).catch(() => {});
-    const now = Date.now();
+    const reasonText = "Not answered: the user sent a new message instead (next).";
+    const pendingByRun = new Map<
+      string,
+      Array<{ id: string; tool_call_id: string; prompt_json: string | null }>
+    >();
+
+    // Update inputs to 'superseded' BEFORE harness.abort() so handleInputCancelled never clobbers them
     for (const paused of matching) {
       const pendingInputs = this.host.ctx.storage.sql
-        .exec<{ id: string }>(`SELECT id FROM inputs WHERE run_id = ?1 AND status = 'pending'`, paused.id)
+        .exec<{ id: string; tool_call_id: string; prompt_json: string | null }>(
+          `SELECT id, tool_call_id, prompt_json FROM inputs WHERE run_id = ?1 AND status = 'pending'`,
+          paused.id,
+        )
         .toArray();
+      pendingByRun.set(paused.id, pendingInputs);
       this.host.ctx.storage.sql.exec(
         `UPDATE inputs SET status = 'superseded' WHERE run_id = ?1 AND status = 'pending'`,
         paused.id,
       );
+      if (this.activeTracker && this.activeTracker.runId === paused.id && !this.activeTracker.settled) {
+        this.activeTracker.aborted = true;
+        if (this.activeTracker.watchHandle) {
+          const handle = this.activeTracker.watchHandle;
+          this.activeTracker.watchHandle = null;
+          await handle.stop().catch(() => {});
+        }
+      }
+    }
+
+    await this.ensureStarted();
+    await this.harness.abort({ session: ROOT_SESSION }).catch(() => {});
+    const now = Date.now();
+    const closedIds: string[] = [];
+    for (const paused of matching) {
+      const pendingInputs = pendingByRun.get(paused.id) ?? [];
+      await this.finalizeAbortedInputs(paused.id, pendingInputs, reasonText);
       for (const inp of pendingInputs) {
         this.host.recordAndBroadcastEvent(paused.id, "input_resolved", {
           id: inp.id,
@@ -1658,12 +2347,14 @@ export class PiAgentEngine {
         now,
         paused.id,
       );
+      closedIds.push(paused.id);
       this.host.recordAndBroadcastEvent(paused.id, "run_cancelled", {
         runId: paused.id,
         code: "superseded",
       });
       this.host.notifyRunWaiters(paused.id);
     }
+    return closedIds;
   }
 
   async respondToInput(
@@ -1719,8 +2410,15 @@ export class PiAgentEngine {
     await this.ensureStarted();
     const cfg = this.host.getConfig();
     await this.refreshModels(cfg);
-    await this.ensureMcpExtensionReady(cfg);
     await this.ensureRootMigrated(cfg);
+    await this.ensureMcpExtensionReady(cfg);
+    {
+      const pi = await this.harness.pi();
+      const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+      if (conv) {
+        await conv.configure(this.buildAgentChange(cfg), BG);
+      }
+    }
 
     const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
 
@@ -1804,9 +2502,48 @@ export class PiAgentEngine {
     cancelledRunIds: string[];
   }> {
     const cancelledRunIds: string[] = [];
+    const inputStatus = body?.supersedeInputs ? "superseded" : "cancelled";
+    const reasonText = body?.supersedeInputs
+      ? "Not answered: the user sent a new message instead (next)."
+      : "Cancelled by the application before anyone answered.";
+    const errorObj = body?.supersedeInputs
+      ? { code: "superseded", message: "Superseded by a new message" }
+      : { code: "cancelled", message: "Cancelled via abort" };
+
+    const activeOrPaused = this.host.ctx.storage.sql
+      .exec<{ id: string }>(
+        `SELECT id FROM runs WHERE status IN ('running', 'input_required')`,
+      )
+      .toArray();
+
+    const pendingByRun = new Map<
+      string,
+      Array<{ id: string; tool_call_id: string; prompt_json: string | null }>
+    >();
+
+    // Update pending inputs BEFORE harness.abort() so handleInputCancelled never clobbers 'superseded'
+    for (const row of activeOrPaused) {
+      const pendingInputs = this.host.ctx.storage.sql
+        .exec<{ id: string; tool_call_id: string; prompt_json: string | null }>(
+          `SELECT id, tool_call_id, prompt_json FROM inputs WHERE run_id = ?1 AND status = 'pending'`,
+          row.id,
+        )
+        .toArray();
+      pendingByRun.set(row.id, pendingInputs);
+      this.host.ctx.storage.sql.exec(
+        `UPDATE inputs SET status = ?1 WHERE run_id = ?2 AND status = 'pending'`,
+        inputStatus,
+        row.id,
+      );
+    }
 
     if (this.activeTracker && !this.activeTracker.settled) {
       this.activeTracker.aborted = true;
+      if (this.activeTracker.watchHandle) {
+        const handle = this.activeTracker.watchHandle;
+        this.activeTracker.watchHandle = null;
+        await handle.stop().catch(() => {});
+      }
       cancelledRunIds.push(this.activeTracker.runId);
     }
 
@@ -1818,30 +2555,25 @@ export class PiAgentEngine {
     }
 
     const now = Date.now();
-    const inputStatus = body?.supersedeInputs ? "superseded" : "cancelled";
-    const errorObj = body?.supersedeInputs
-      ? { code: "superseded", message: "Superseded by a new message" }
-      : { code: "cancelled", message: "Cancelled via abort" };
-
-    const activeOrPaused = this.host.ctx.storage.sql
-      .exec<{ id: string }>(
-        `SELECT id FROM runs WHERE status IN ('running', 'input_required')`,
-      )
-      .toArray();
     for (const row of activeOrPaused) {
       if (!cancelledRunIds.includes(row.id)) cancelledRunIds.push(row.id);
-      this.host.ctx.storage.sql.exec(
-        `UPDATE inputs SET status = ?1 WHERE run_id = ?2 AND status = 'pending'`,
-        inputStatus,
-        row.id,
-      );
-      this.host.ctx.storage.sql.exec(
-        `UPDATE runs SET status = 'cancelled', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
+      const pendingInputs = pendingByRun.get(row.id) ?? [];
+      await this.finalizeAbortedInputs(row.id, pendingInputs, reasonText);
+      for (const inp of pendingInputs) {
+        this.host.recordAndBroadcastEvent(row.id, "input_resolved", {
+          id: inp.id,
+          status: inputStatus,
+        });
+      }
+      const res = this.host.ctx.storage.sql.exec(
+        `UPDATE runs SET status = 'cancelled', error_json = ?1, ended_at = ?2 WHERE id = ?3 AND status IN ('running', 'input_required')`,
         JSON.stringify(errorObj),
         now,
         row.id,
       );
-      this.host.recordAndBroadcastEvent(row.id, "run_cancelled", { runId: row.id });
+      if (res.rowsWritten > 0) {
+        this.host.recordAndBroadcastEvent(row.id, "run_cancelled", { runId: row.id });
+      }
       this.host.notifyRunWaiters(row.id);
     }
 
@@ -2011,6 +2743,43 @@ export class PiAgentEngine {
     return all;
   }
 
+  private recordEntryMeta(
+    entryId: number,
+    runId: string | null,
+    meta?: Record<string, unknown>,
+  ): void {
+    try {
+      this.host.ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO pi_entry_meta (entry_id, run_id, meta_json) VALUES (?1, ?2, ?3)`,
+        entryId,
+        runId,
+        meta ? JSON.stringify(meta) : null,
+      );
+    } catch {
+      // Table may not exist in minimal unit harnesses
+    }
+  }
+
+  private loadEntryMetaMap(): Map<number, import("./migrate.ts").PiEntryMetadata> {
+    const out = new Map<number, import("./migrate.ts").PiEntryMetadata>();
+    try {
+      const rows = this.host.ctx.storage.sql
+        .exec<{ entry_id: number; run_id: string | null; meta_json: string | null }>(
+          `SELECT entry_id, run_id, meta_json FROM pi_entry_meta`,
+        )
+        .toArray();
+      for (const r of rows) {
+        out.set(Number(r.entry_id), {
+          runId: r.run_id,
+          ...(r.meta_json ? { meta: JSON.parse(r.meta_json) as Record<string, unknown> } : {}),
+        });
+      }
+    } catch {
+      // Table absent
+    }
+    return out;
+  }
+
   async getHistory(opts?: {
     after?: number;
     before?: number;
@@ -2021,7 +2790,7 @@ export class PiAgentEngine {
       return null;
     }
     const entries = await this.listAllEntries();
-    return mapPiEntriesToHistory(entries, opts);
+    return mapPiEntriesToHistory(entries, opts, this.loadEntryMetaMap());
   }
 
   async getMessageCount(): Promise<number | null> {
@@ -2067,6 +2836,222 @@ export class PiAgentEngine {
       provider: modelRef.provider,
       id: modelRef.modelId,
     });
+  }
+
+  async appendPassiveNote(text: string): Promise<boolean> {
+    if (!this.rootReady && !this.hasPiRootConversation()) {
+      return false;
+    }
+    await this.ensureStarted();
+    const pi = await this.harness.pi();
+    const conv = await pi.conversation(1 as import("@earendil-works/pi-durable").ConversationId, BG);
+    if (!conv) return false;
+    const sub = await conv.submit(
+      {
+        type: "write",
+        entry: {
+          kind: UserEntry.kind,
+          model: [{ role: "user", content: text, timestamp: Date.now() }],
+        },
+      },
+      BG,
+    );
+    await sub.wait(BG);
+    return true;
+  }
+
+  async getLatestMessageMeta(): Promise<{ seq: number; createdAt: number } | null> {
+    if (this.rootReady || this.hasPiRootConversation()) {
+      const entries = await this.listAllEntries();
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const e = entries[i]!;
+        if (UserEntry.is(e) || AssistantEntry.is(e) || ToolResultEntry.is(e)) {
+          const msg = e.model?.[0] as { timestamp?: number } | undefined;
+          return { seq: Number(e.id), createdAt: msg?.timestamp || Date.now() };
+        }
+      }
+      return null;
+    }
+    const row = this.host.ctx.storage.sql
+      .exec<{ seq: number; created_at: number }>(
+        `SELECT seq, created_at FROM messages ORDER BY seq DESC LIMIT 1`,
+      )
+      .toArray()[0];
+    return row ? { seq: row.seq, createdAt: row.created_at } : null;
+  }
+
+  async executeBashStep(
+    command: string,
+    opts?: Record<string, unknown>,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string; commit?: string; billableMs?: number }> {
+    const execEnv = this.buildExecutionEnv();
+    const timeoutSeconds =
+      typeof opts?.timeoutSeconds === "number" && opts.timeoutSeconds > 0
+        ? opts.timeoutSeconds
+        : 60;
+    let stdout = "";
+    let stderr = "";
+    const res = await execEnv.exec(
+      command,
+      {
+        timeout: timeoutSeconds,
+        ...(typeof opts?.cwd === "string" ? { cwd: opts.cwd } : {}),
+        onOutput: (chunk, _ctx, meta) => {
+          if (meta?.stream === "stderr") stderr += chunk;
+          else stdout += chunk;
+        },
+      },
+      BG,
+    );
+    if (!res.ok) {
+      throw new Error(res.error.message || "Bash command failed");
+    }
+    return {
+      exitCode: res.value.exitCode,
+      stdout,
+      stderr,
+    };
+  }
+
+  async executeCommitStep(message: string): Promise<{ ref: string; commit: string }> {
+    const cfg = this.host.getConfig();
+    const { lineage, branch } = await this.host.ensureAgentRepository();
+    const cfs = new CamelFsClient(this.host.env, cfg.tenantId);
+    const refsRes = await cfs.listRefs(lineage, branch);
+    const head = refsRes.refs.find((r) => r.name === branch) ?? refsRes.refs[0];
+    if (!head) {
+      throw new Error(`Branch '${branch}' not found`);
+    }
+    const tagName = message.trim()
+      ? message.trim().replace(/^refs\/checkpoints\//, "").replace(/[^A-Za-z0-9._/-]+/g, "-")
+      : `cp-${Date.now()}`;
+    const checkpointRef = tagName.startsWith("refs/") ? tagName : `refs/checkpoints/${tagName}`;
+    return cfs.updateRef(lineage, {
+      ref: checkpointRef,
+      commit: head.commit,
+      holder: cfg.id,
+    });
+  }
+
+  async executeRegisteredTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    callId = randomId("tool", 6),
+  ): Promise<unknown> {
+    const cfg = this.host.getConfig();
+    await this.ensureExtensionsInstalled(cfg);
+    const snap = this.registry.snapshot();
+    const entry = [...snap.tools()].find((t) => t.tool.name === toolName);
+    if (!entry) {
+      throw new ApiError(404, "unknown_tool", `Tool '${toolName}' is not registered on this agent`);
+    }
+    const execEnv = this.buildExecutionEnv();
+    const fakeApi = {
+      callId,
+      conversationId: 1 as import("@earendil-works/pi-durable").ConversationId,
+      taskId: 0 as TaskId,
+      env: execEnv,
+      now: () => Date.now(),
+      memo: async <T>(_key: string, val: T) => val,
+      readSignal: async () => undefined,
+      snapshot: async () => undefined,
+    };
+    const out = await entry.tool.execute(args as never, fakeApi as never, BG);
+    if (out && typeof out === "object" && "sleep" in out) {
+      throw new ApiError(409, "tool_requires_input", `Tool '${toolName}' requires interactive input`);
+    }
+    const result = out as ToolExecutionResult;
+    if (result.structuredOutput !== undefined) {
+      return result.structuredOutput;
+    }
+    const text = (result.output ?? [])
+      .filter((b): b is TextContent => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("\n");
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+
+  async consolidateDream(): Promise<{
+    ok: boolean;
+    path: string;
+    commit: string;
+    summary: string;
+  }> {
+    const cfg = this.host.getConfig();
+    const { repoId, lineage, branch } = await this.host.ensureAgentRepository();
+    const cfs = new CamelFsClient(this.host.env, cfg.tenantId);
+
+    let existingMemory = "";
+    try {
+      const readRes = await cfs.read(lineage, { at: branch, path: "MEMORY.md" });
+      if (readRes.content) existingMemory = readRes.content;
+    } catch {
+      // MEMORY.md doesn't exist yet
+    }
+
+    const history = (await this.getHistory({ limit: 100 })) ?? {
+      messages: [],
+      compaction: null,
+      nextAfter: 0,
+    };
+    const lines: string[] = [];
+    if (history.compaction?.summary) {
+      lines.push(`Prior summary:\n${history.compaction.summary}`);
+    }
+    for (const m of history.messages.slice(-80)) {
+      const text = typeof m.content.text === "string" ? m.content.text : JSON.stringify(m.content);
+      if (text) lines.push(`[${m.role}]: ${text.slice(0, 3_000)}`);
+    }
+    const transcript = lines.join("\n\n").slice(-160_000);
+
+    const completion = await completePiModel({
+      env: this.host.env,
+      tenantId: cfg.tenantId,
+      model: cfg.model,
+      keyScope: cfg.keyScope ?? null,
+      instructions: [
+        "Consolidate durable lessons, user preferences, and repository architecture notes into clean Markdown for /workspace/MEMORY.md.",
+        existingMemory ? `Existing MEMORY.md:\n${existingMemory}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      messages: [
+        {
+          role: "user",
+          content: transcript || "Consolidate agent memory.",
+          timestamp: Date.now(),
+        },
+      ],
+    });
+
+    const finalDoc = completion.text.trim() || "# Consolidated Agent Memory\n";
+    const writeOut = await cfs.write(lineage, {
+      ref: branch,
+      holder: cfg.id,
+      author: `agent:${cfg.id}`,
+      message: "dream: consolidate MEMORY.md",
+      puts: [{ path: "MEMORY.md", content: finalDoc + "\n", mode: 0o644 }],
+    });
+
+    void getTenantStub(this.host.env, cfg.tenantId)
+      .updateRepoCommit(repoId, writeOut.commit)
+      .catch(() => {});
+
+    this.host.recordAndBroadcastEvent(null, "dream_completed", {
+      path: "MEMORY.md",
+      commit: writeOut.commit,
+    });
+
+    return {
+      ok: true,
+      path: "MEMORY.md",
+      commit: writeOut.commit,
+      summary: finalDoc,
+    };
   }
 
   /** Helper so AgentDO can check if a pending `inputs` row belongs to Pi. */

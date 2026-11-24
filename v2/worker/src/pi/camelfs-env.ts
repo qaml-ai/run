@@ -203,6 +203,12 @@ export function resolveCamelEnvPath(rawPath: string, cwd = WORKSPACE_ROOT): stri
   if (trimmed === "/.skills" || trimmed.startsWith("/.skills/")) {
     return posixNormalize(trimmed);
   }
+  if (trimmed === "/workspace/.skills" || trimmed.startsWith("/workspace/.skills/")) {
+    return posixNormalize(trimmed.slice("/workspace".length));
+  }
+  if (trimmed === "/bot/.skills" || trimmed.startsWith("/bot/.skills/")) {
+    return posixNormalize(trimmed.slice("/bot".length));
+  }
   if (trimmed === "/tmp" || trimmed.startsWith("/tmp/")) {
     return posixNormalize(trimmed);
   }
@@ -1135,7 +1141,7 @@ export function createCamelFsExecutionEnv(opts: CamelFsExecutionEnvOptions): Exe
         const execRequest: CamelFsVmExecRequest = {
           execId: randomId("exec", 8),
           command: commandStr,
-          cwd: options?.cwd || cwd,
+          ...(options?.cwd && options.cwd !== WORKSPACE_ROOT ? { cwd: options.cwd } : {}),
           ...(options?.env && Object.keys(options.env).length > 0 ? { env: options.env } : {}),
           timeoutS: options?.timeout ? Math.ceil(options.timeout) : 60,
           commit: {

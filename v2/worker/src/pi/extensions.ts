@@ -112,6 +112,8 @@ export interface CamelRunCodingExtensionOptions {
   images?: ImagesBinding;
   /** Include legacy `read_file`, `write_file`, `edit_file` aliases alongside `read`, `write`, `edit`. Default `true`. */
   includeLegacyAliases?: boolean;
+  /** Optional historical-commit file reader for `read_file({ path, at })`. */
+  readAtCommit?: (path: string, at: string) => Promise<string>;
 }
 
 export function createCamelRunCodingExtension(
@@ -141,11 +143,98 @@ export function createCamelRunCodingExtension(
           {
             path: str({ description: "File path to read" }),
             offset: opt(num({ description: "1-indexed line offset" })),
-            limit: opt(num({ description: "Maximum number of lines to read" })),
+            limit: opt(num({ description: "Maximum number of lines to read (or byte budget with start_line/end_line)" })),
+            start_line: opt(num({ description: "1-indexed inclusive start line number" })),
+            end_line: opt(num({ description: "1-indexed inclusive end line number" })),
+            at: opt(str({ description: "Optional git ref or commit hash to read from" })),
           },
           { open: true },
         ),
         async execute(args, api, context) {
+          const hasLineRange = args.start_line !== undefined || args.end_line !== undefined;
+          if (hasLineRange) {
+            let fullText: string;
+            if (args.at && options?.readAtCommit) {
+              fullText = await options.readAtCommit(args.path, args.at);
+            } else {
+              const env = api.env;
+              if (!env) throw new Error("No execution environment available");
+              const absRes = await env.absolutePath(args.path, context);
+              if (!absRes.ok) throw absRes.error;
+              const readRes = await env.readTextFile(absRes.value, context);
+              if (!readRes.ok) throw readRes.error;
+              fullText = readRes.value;
+            }
+            const rawLines =
+              fullText.length === 0
+                ? []
+                : fullText.endsWith("\n")
+                  ? fullText.slice(0, -1).split("\n")
+                  : fullText.split("\n");
+            const totalLines = rawLines.length;
+            const startLine = args.start_line !== undefined ? Math.max(1, Math.floor(args.start_line)) : 1;
+            const requestedEnd = args.end_line !== undefined ? Math.floor(args.end_line) : totalLines;
+            if (args.end_line !== undefined && requestedEnd < startLine) {
+              throw new Error(`read_file: end_line (${requestedEnd}) must be >= start_line (${startLine})`);
+            }
+            if (totalLines === 0 || startLine > totalLines) {
+              return textOutput({
+                path: args.path,
+                content: "",
+                totalLines,
+                startLine: totalLines === 0 ? 0 : startLine,
+                endLine: totalLines === 0 ? 0 : totalLines,
+                truncated: false,
+              });
+            }
+            const MAX_LINES = 500;
+            const MAX_BYTES =
+              typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0
+                ? Math.floor(args.limit)
+                : 32 * 1024;
+            const clampedEnd = Math.min(totalLines, requestedEnd);
+            const maxLineEnd = Math.min(clampedEnd, startLine + MAX_LINES - 1);
+            const encoder = new TextEncoder();
+            const formattedLines: string[] = [];
+            let usedBytes = 0;
+            let actualEndLine = startLine - 1;
+            let byteTruncated = false;
+            for (let lineNo = startLine; lineNo <= maxLineEnd; lineNo++) {
+              const rawLine = rawLines[lineNo - 1]!;
+              const cleanLine = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+              const numbered = `${lineNo}: ${cleanLine}`;
+              const chunk = formattedLines.length === 0 ? numbered : `\n${numbered}`;
+              const chunkBytes = encoder.encode(chunk).byteLength;
+              if (usedBytes + chunkBytes > MAX_BYTES) {
+                if (formattedLines.length === 0) {
+                  let slice = numbered;
+                  while (slice.length > 0 && encoder.encode(slice).byteLength > MAX_BYTES) {
+                    slice = slice.slice(0, Math.floor(slice.length * 0.8));
+                  }
+                  formattedLines.push(slice);
+                  actualEndLine = lineNo;
+                }
+                byteTruncated = true;
+                break;
+              }
+              formattedLines.push(numbered);
+              usedBytes += chunkBytes;
+              actualEndLine = lineNo;
+            }
+            const truncated = byteTruncated || actualEndLine < clampedEnd;
+            return textOutput({
+              path: args.path,
+              content: formattedLines.join("\n"),
+              totalLines,
+              startLine,
+              endLine: actualEndLine,
+              truncated,
+            });
+          }
+          if (args.at && options?.readAtCommit) {
+            const text = await options.readAtCommit(args.path, args.at);
+            return { output: [{ type: "text", text }] };
+          }
           return readBase.execute(args as never, api as never, context);
         },
       }) as ToolRegistration,
@@ -200,22 +289,41 @@ export function createCamelRunCodingExtension(
           { open: true },
         ),
         async execute(args, api, context) {
-          if (args.replaceAll && args.oldString !== undefined && args.newString !== undefined) {
+          if (args.oldString !== undefined && args.newString !== undefined) {
             const env = api.env;
             if (!env) throw new Error("No execution environment available");
             const absRes = await env.absolutePath(args.path, context);
             if (!absRes.ok) throw absRes.error;
             const curRes = await env.readTextFile(absRes.value, context);
             if (!curRes.ok) throw curRes.error;
-            if (!curRes.value.includes(args.oldString)) {
-              throw new Error(`edit_file: oldString not found in '${args.path}'`);
+            const content = curRes.value;
+            if (args.replaceAll) {
+              if (!content.includes(args.oldString)) {
+                throw new Error(`edit_file: oldString not found in '${args.path}'`);
+              }
+              const updated = content.split(args.oldString).join(args.newString);
+              const writeRes = await env.writeFile(absRes.value, updated, context);
+              if (!writeRes.ok) throw writeRes.error;
+              return {
+                output: [{ type: "text", text: `Successfully replaced all occurrences in ${args.path}.` }],
+              };
             }
-            const updated = curRes.value.split(args.oldString).join(args.newString);
-            const writeRes = await env.writeFile(absRes.value, updated, context);
-            if (!writeRes.ok) throw writeRes.error;
-            return {
-              output: [{ type: "text", text: `Successfully replaced all occurrences in ${args.path}.` }],
-            };
+            if (args.oldString.length > 0) {
+              const lineNumbers: number[] = [];
+              let searchFrom = 0;
+              while (true) {
+                const idx = content.indexOf(args.oldString, searchFrom);
+                if (idx === -1) break;
+                const lineNo = content.slice(0, idx).split("\n").length;
+                lineNumbers.push(lineNo);
+                searchFrom = idx + args.oldString.length;
+              }
+              if (lineNumbers.length > 1) {
+                throw new Error(
+                  `edit_file: oldString matched ${lineNumbers.length} times in '${args.path}' (lines ${lineNumbers.join(", ")}). Provide more context or set replaceAll: true.`,
+                );
+              }
+            }
           }
           const edits =
             args.edits && args.edits.length > 0
@@ -468,7 +576,10 @@ export function createCamelRunRepoExtension(options: CamelRunRepoExtensionOption
       }
       return {
         output: [
-          { type: "text", text: `Repository image ${path} at commit ${file.commit}` },
+          {
+            type: "text",
+            text: `Repository image ${path} at commit ${file.commit}\n[image ${header.width}×${header.height}]`,
+          },
           { type: "image", mimeType: header.mimeType, data: file.base64 },
         ],
       };
@@ -1052,11 +1163,43 @@ type SignedMcpCheckpoint = {
   sealedState?: string;
 };
 
+function formatMcpCallResult(res: unknown): ToolExecutionResult {
+  if (res && typeof res === "object" && Array.isArray((res as { content?: unknown }).content)) {
+    const blocks = (res as { content: Array<Record<string, unknown>> }).content;
+    const hasImages = blocks.some(
+      (b) => b && b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string",
+    );
+    if (hasImages) {
+      const output: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+      const textParts: string[] = [];
+      const imageDims: string[] = [];
+      for (const b of blocks) {
+        if (b.type === "text" && typeof b.text === "string" && b.text) {
+          textParts.push(b.text);
+        } else if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
+          const hdr = imageHeader(Buffer.from(b.data, "base64"));
+          if (hdr) imageDims.push(`[image ${hdr.width}×${hdr.height}]`);
+        }
+      }
+      const headerText = [...textParts, ...imageDims].join("\n").trim();
+      if (headerText) output.push({ type: "text", text: headerText });
+      for (const b of blocks) {
+        if (b.type === "image" && typeof b.data === "string" && typeof b.mimeType === "string") {
+          output.push({ type: "image", mimeType: b.mimeType, data: b.data });
+        }
+      }
+      return { output };
+    }
+  }
+  return textOutput(res);
+}
+
 async function discoverStandardMcpTools(
   server: McpServerSpec,
-  fetchImpl?: typeof globalThis.fetch,
+  options: CamelRunMcpExtensionOptions,
   signal?: AbortSignal,
 ): Promise<ToolRegistration[]> {
+  const fetchImpl = options.fetch;
   const client = new McpClient({ name: "camelrun-v2", version: "2.0.0" });
   const transport = new StreamableHttpTransport({
     url: server.url,
@@ -1097,6 +1240,25 @@ async function discoverStandardMcpTools(
                 { signal: context.abortSignal },
               );
               const llmContent = toLlmContent(result);
+              const imageDims: string[] = [];
+              for (const block of llmContent) {
+                if (block.type === "image" && typeof block.data === "string") {
+                  const hdr = imageHeader(Buffer.from(block.data, "base64"));
+                  if (hdr) imageDims.push(`[image ${hdr.width}×${hdr.height}]`);
+                }
+              }
+              if (imageDims.length > 0) {
+                const firstTextIdx = llmContent.findIndex((b) => b.type === "text");
+                if (firstTextIdx >= 0) {
+                  const prev = llmContent[firstTextIdx] as { type: "text"; text: string };
+                  llmContent[firstTextIdx] = {
+                    type: "text",
+                    text: `${prev.text}\n${imageDims.join("\n")}`,
+                  };
+                } else {
+                  llmContent.unshift({ type: "text", text: imageDims.join("\n") });
+                }
+              }
               return {
                 output: llmContent,
                 ...(result.isError ? { isError: true } : {}),
@@ -1111,8 +1273,38 @@ async function discoverStandardMcpTools(
 
     return tools;
   } catch {
-    // Non-fatal for unsigned/generic remote MCP servers
-    return [];
+    // Fallback to stateless JSON-RPC discovery/invocation for lightweight HTTP MCP servers
+    try {
+      const discovered = await discoverMcpTools(
+        options.env,
+        { ...options.agent, mcpServers: [server] },
+        signal,
+      );
+      return discovered.map((d) =>
+        defineTool({
+          name: d.qualifiedName,
+          description: d.schema.description,
+          parameters: d.schema.parameters as unknown as JsonObject,
+          async execute(args, api, context) {
+            const runId = options.getRunId?.() ?? `run_${api.conversationId}`;
+            const actor = options.getActor?.();
+            const res = await invokeMcpTool(
+              d,
+              (args ?? {}) as Record<string, unknown>,
+              {
+                env: options.env,
+                agent: options.agent,
+                call: { runId, callId: api.callId, actor },
+              },
+              context.abortSignal,
+            );
+            return formatMcpCallResult(res);
+          },
+        }) as unknown as ToolRegistration,
+      );
+    } catch {
+      return [];
+    }
   } finally {
     await client.close().catch(() => {});
   }
@@ -1209,7 +1401,7 @@ function buildSignedRuntimeMcpTool(
           context.abortSignal,
           mcpInput,
         );
-        return textOutput(res);
+        return formatMcpCallResult(res);
       } catch (error) {
         if (!(error instanceof McpInputRequired)) throw error;
 
@@ -1299,7 +1491,7 @@ export async function createCamelRunMcpExtension(
 
   const [genericToolLists, signedDiscovered] = await Promise.all([
     Promise.all(
-      genericServers.map((server) => discoverStandardMcpTools(server, options.fetch, signal)),
+      genericServers.map((server) => discoverStandardMcpTools(server, options, signal)),
     ),
     signedServers.length > 0
       ? discoverMcpTools(options.env, { ...options.agent, mcpServers: signedServers }, signal)

@@ -421,10 +421,10 @@ test("builtins: ['browser'] schemas, inline image storage, and CamelFS screensho
   assert.equal(isBrowserToolName("browser_markdown"), true);
   assert.equal(isBrowserToolName("web_fetch"), false);
 
-  // Verify tools.ts registers `browser: BROWSER_TOOL_SCHEMAS` and dispatches `isBrowserToolName`
-  const toolsSource = readFileSync(new URL("../worker/src/tools.ts", import.meta.url), "utf8");
-  assert.match(toolsSource, /\bbrowser:\s*BROWSER_TOOL_SCHEMAS\b/);
-  assert.match(toolsSource, /if\s*\(isBrowserToolName\(toolName\)\)/);
+  // Verify pi/extensions.ts registers `BROWSER_TOOL_SCHEMAS` and dispatches `executeBrowserTool`
+  const extensionsSource = readFileSync(new URL("../worker/src/pi/extensions.ts", import.meta.url), "utf8");
+  assert.match(extensionsSource, /BROWSER_TOOL_SCHEMAS\.map/);
+  assert.match(extensionsSource, /executeBrowserTool\(/);
 
   // Spin up a lightweight local mock CamelFS server to verify repo writes end-to-end
   const writtenPuts: Array<{ path: string; base64?: string }> = [];

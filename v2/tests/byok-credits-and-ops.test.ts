@@ -82,40 +82,37 @@ test("BYOK zero-balance bypass, dual free-credit policy, operator revenue exclus
             (m.content as Array<{ type?: string }>).some((b) => b.type === "tool_result"),
         );
         const tools = Array.isArray(body.tools) ? body.tools : [];
+        res.setHeader("Content-Type", "text/event-stream");
         if (tools.length > 0 && !hasToolResult) {
           res.end(
-            JSON.stringify({
-              stop_reason: "tool_use",
-              content: [
-                {
-                  type: "tool_use",
-                  id: "toolu_bash_1",
-                  name: "bash",
-                  input: { command: "echo hi" },
-                },
-              ],
-              usage: { input_tokens: 1_000, output_tokens: 100 },
-            }),
+            `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], model: "claude-sonnet-4", stop_reason: null, usage: { input_tokens: 1_000, output_tokens: 0 } } })}\n\n` +
+            `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_bash_1", name: "bash", input: {} } })}\n\n` +
+            `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ command: "echo hi" }) } })}\n\n` +
+            `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n` +
+            `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 100 } })}\n\n` +
+            `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
           );
           return;
         }
         res.end(
-          JSON.stringify({
-            stop_reason: "end_turn",
-            content: [{ type: "text", text: "BYOK run succeeded!" }],
-            usage: { input_tokens: 2_000, output_tokens: 200 },
-          }),
+          `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_2", type: "message", role: "assistant", content: [], model: "claude-sonnet-4", stop_reason: null, usage: { input_tokens: 2_000, output_tokens: 0 } } })}\n\n` +
+          `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n` +
+          `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "BYOK run succeeded!" } })}\n\n` +
+          `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n` +
+          `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 200 } })}\n\n` +
+          `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
         );
         return;
       }
 
       // Platform Azure endpoint (should NEVER be reached by $0 Google tenant!)
       if (url.includes("/openai/v1/responses")) {
+        res.setHeader("Content-Type", "text/event-stream");
         res.end(
-          JSON.stringify({
-            output: [{ type: "message", content: [{ type: "output_text", text: "platform ok" }] }],
-            usage: { input_tokens: 50, output_tokens: 20 },
-          }),
+          `event: response.output_item.added\ndata: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_p", role: "assistant", status: "in_progress", content: [] } })}\n\n` +
+          `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "platform ok" })}\n\n` +
+          `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_p", role: "assistant", status: "completed", content: [{ type: "output_text", text: "platform ok" }] } })}\n\n` +
+          `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: "resp_p", status: "completed", usage: { input_tokens: 50, output_tokens: 20, total_tokens: 70 } } })}\n\n`,
         );
         return;
       }

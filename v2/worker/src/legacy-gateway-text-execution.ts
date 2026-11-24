@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { DEFAULT_MODEL_ID } from "./providers.ts";
+import { DEFAULT_MODEL_ID } from "./pi/models.ts";
 import { executeStatelessRun } from "./stateless-run.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { extractApiError, type Env } from "./types.ts";

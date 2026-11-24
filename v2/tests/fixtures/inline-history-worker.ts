@@ -1,6 +1,8 @@
+import type { Message as PiAiMessage } from "@earendil-works/pi-ai";
+import type { ConversationId, EntryId, Tx } from "@earendil-works/pi-durable";
 import app, { AgentDO as RuntimeAgentDO, TenantDO } from "../../worker/src/index.ts";
-import { buildConversationMessages } from "../../worker/src/turn-loop.ts";
-import { streamModelResponse } from "../../worker/src/providers.ts";
+import { importLegacyTranscriptToPi } from "../../worker/src/pi/migrate.ts";
+import { parsePiModelRef, streamPiModel } from "../../worker/src/pi/models.ts";
 import { ApiError, toApiErrorResponse, type Env, type StoredMessage } from "../../worker/src/types.ts";
 export { TenantDO };
 
@@ -28,6 +30,22 @@ export class AgentDO extends RuntimeAgentDO {
   }
 }
 
+async function projectStoredToPiMessages(stored: StoredMessage[], model: string, env: Env): Promise<PiAiMessage[]> {
+  const messages: PiAiMessage[] = [];
+  let seq = 0;
+  const fakeTx = {
+    async appendEntry(_kindOrConv: unknown, _convOrEntry: unknown, maybeEntry?: { model?: PiAiMessage[] }) {
+      const entry = maybeEntry ?? (_convOrEntry as { model?: PiAiMessage[] });
+      if (entry?.model) {
+        messages.push(...entry.model);
+      }
+      return { id: ++seq as EntryId };
+    },
+  } as unknown as Tx;
+  await importLegacyTranscriptToPi(fakeTx, 1 as ConversationId, null, stored, parsePiModelRef(model, env));
+  return messages;
+}
+
 export default {
   ...app,
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -36,11 +54,30 @@ export default {
     try {
       const { provider, baseUrl } = await request.json() as { provider: string; baseUrl: string };
       const stub = env.AGENT_DO.get(env.AGENT_DO.idFromName(match[1]!)) as unknown as AgentDO;
-      const models: Record<string, string> = { openai: "openai/fixture", "openai-responses": "openai-responses/fixture", anthropic: "anthropic/fixture", gemini: "gemini/fixture" };
-      if (!models[provider] || !baseUrl.startsWith("http://127.0.0.1:")) return new Response(null, { status: 400 });
-      const messages = buildConversationMessages(null, await stub.fixtureMessages());
-      for await (const _ of streamModelResponse({ env, tenantId: "fixture", model: models[provider]!, messages,
-        prefetchedProvider: { credentials: { provider, apiKey: "fixture-no-provider-key", baseUrl, ...(provider === "openai" ? { apiStyle: "openai-chat" as const } : {}) } } })) { /* consume exact adapter */ }
+      const models: Record<string, string> = {
+        openai: "openai/fixture",
+        "openai-responses": "openai-responses/fixture",
+        anthropic: "anthropic/fixture",
+        gemini: "gemini/fixture",
+      };
+      const targetModel = models[provider];
+      if (!targetModel || !baseUrl.startsWith("http://127.0.0.1:")) return new Response(null, { status: 400 });
+      const ref = parsePiModelRef(targetModel, env);
+      const messages = await projectStoredToPiMessages(await stub.fixtureMessages(), targetModel, env);
+      for await (const _ of streamPiModel({
+        env,
+        tenantId: "fixture",
+        model: targetModel,
+        messages,
+        prefetchedCredentials: {
+          [ref.provider]: {
+            provider: ref.provider,
+            apiKey: "fixture-no-provider-key",
+            baseUrl,
+            ...(provider === "openai" ? { apiStyle: "openai-chat" as const } : {}),
+          },
+        },
+      })) { /* consume exact pi-ai adapter */ }
       return Response.json({ projected: messages.length });
     } catch (error) { return toApiErrorResponse(error); }
   },

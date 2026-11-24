@@ -2,9 +2,10 @@ import runtime, { AgentDO, TenantDO } from "../../worker/src/index.ts";
 import {
   addModelUsage,
   calculateCostUsd,
-  streamModelResponse,
-} from "../../worker/src/providers.ts";
-import { getAutoCompactThreshold, needsAutoCompaction } from "../../worker/src/turn-loop.ts";
+  getAutoCompactThreshold,
+  parsePiModelRef,
+  streamPiModel,
+} from "../../worker/src/pi/models.ts";
 import { emptyUsage, type Env, type ProviderCredentials } from "../../worker/src/types.ts";
 
 export { AgentDO, TenantDO };
@@ -35,48 +36,24 @@ export default {
       const { model, override } = await request.json<{ model: string; override?: number | null }>();
       return Response.json({ threshold: getAutoCompactThreshold(model, override) });
     }
-    if (url.pathname === "/_test/needs-compact" && request.method === "POST") {
-      const body = await request.json<{
-        count: number;
-        tokensEst: number;
-        lastTokensEst: number;
-        threshold: number;
-        excludeLast?: boolean;
-        observedInputTokens?: number;
-      }>();
-      const needed = needsAutoCompaction(
-        {
-          measureMessagesAfter: () => ({
-            count: body.count,
-            tokensEst: body.tokensEst,
-            lastTokensEst: body.lastTokensEst,
-          }),
-          listMessagesAfter: () => [],
-        },
-        0,
-        body.threshold,
-        {
-          excludeLast: body.excludeLast,
-          observedInputTokens: body.observedInputTokens,
-        },
-      );
-      return Response.json({ needed });
-    }
     if (url.pathname === "/_test/stream" && request.method === "POST") {
       const body = await request.json<{
         model: string;
         promptCacheKey?: string;
         credentials?: ProviderCredentials | null;
       }>();
+      const ref = parsePiModelRef(body.model, env);
+      const prefetchedCredentials =
+        body.credentials !== undefined ? { [ref.provider]: body.credentials } : undefined;
       const chunks = [];
-      for await (const chunk of streamModelResponse({
+      for await (const chunk of streamPiModel({
         env,
         tenantId: "fixture-tenant",
         model: body.model,
         instructions: "Test instructions",
-        messages: [{ role: "user", text: "Hello" }],
+        messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
         promptCacheKey: body.promptCacheKey,
-        prefetchedProvider: body.credentials !== undefined ? { credentials: body.credentials } : undefined,
+        prefetchedCredentials,
       })) {
         chunks.push(chunk);
       }

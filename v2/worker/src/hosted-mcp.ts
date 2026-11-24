@@ -14,7 +14,7 @@ import {
   oauthResourceOriginFor,
   resolveOAuthAccessToken,
 } from "./oauth.ts";
-import { DEFAULT_MODEL_ID } from "./providers.ts";
+import { DEFAULT_MODEL_ID } from "./pi/models.ts";
 import { getSkillStore, normalizeSkillSelectors } from "./skills.ts";
 import { getTenantStub, type RepoRecord } from "./tenant-do.ts";
 import {

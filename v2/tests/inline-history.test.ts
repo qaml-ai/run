@@ -18,7 +18,25 @@ test("inline history retains original raster bytes and ordered provider content 
     for await (const chunk of request) body += chunk;
     requests.push({ url: request.url!, body: JSON.parse(body) });
     response.writeHead(200, { "Content-Type": "text/event-stream" });
-    response.end("data: [DONE]\n\n");
+    if (request.url?.includes("/responses")) {
+      response.end(
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}\n\n`,
+      );
+    } else if (request.url?.includes("/messages")) {
+      response.end(
+        `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", content: [], model: "fixture", stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } } })}\n\n` +
+        `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } })}\n\n` +
+        `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+      );
+    } else if (request.url?.includes("streamGenerateContent")) {
+      response.end(
+        `data: ${JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } })}\n\n`,
+      );
+    } else {
+      response.end(
+        `data: ${JSON.stringify({ id: "chatcmpl_1", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
+      );
+    }
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));

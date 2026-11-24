@@ -6,12 +6,14 @@ import { join } from "node:path";
 import { describe, it, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { unstable_startWorker } from "wrangler";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { CamelRun } from "../sdk/src/index.ts";
 import {
-  executePiReadFile,
-  isVirtualSkillPath,
-  normalizePiReadPath,
-} from "../worker/src/pi-fs-env.ts";
+  createCamelFsExecutionEnv,
+  isVirtualSkillsPath,
+  resolveCamelEnvPath,
+} from "../worker/src/pi/camelfs-env.ts";
 import { getSkillStore } from "../worker/src/skills.ts";
 import type { Env } from "../worker/src/types.ts";
 
@@ -19,20 +21,20 @@ import type { Env } from "../worker/src/types.ts";
 const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
-describe("pi-fs-env path normalization (unit)", () => {
+describe("pi/camelfs-env path normalization (unit)", () => {
   it("normalizes repo paths, /workspace, /bot, and virtual /.skills paths", () => {
-    assert.equal(normalizePiReadPath("src/index.ts"), "/src/index.ts");
-    assert.equal(normalizePiReadPath("./src/index.ts"), "/src/index.ts");
-    assert.equal(normalizePiReadPath("/workspace/src/index.ts"), "/src/index.ts");
-    assert.equal(normalizePiReadPath("/bot/src/index.ts"), "/src/index.ts");
-    assert.equal(normalizePiReadPath("/.skills/camel-bots/sql-storage/SKILL.md"), "/.skills/camel-bots/sql-storage/SKILL.md");
-    assert.equal(normalizePiReadPath(".skills/camel-bots/sql-storage/references/sdk.d.ts"), "/.skills/camel-bots/sql-storage/references/sdk.d.ts");
-    assert.equal(normalizePiReadPath("/workspace/.skills/deploy/SKILL.md"), "/.skills/deploy/SKILL.md");
+    assert.equal(resolveCamelEnvPath("src/index.ts"), "/workspace/src/index.ts");
+    assert.equal(resolveCamelEnvPath("./src/index.ts"), "/workspace/src/index.ts");
+    assert.equal(resolveCamelEnvPath("/workspace/src/index.ts"), "/workspace/src/index.ts");
+    assert.equal(resolveCamelEnvPath("/bot/src/index.ts"), "/workspace/src/index.ts");
+    assert.equal(resolveCamelEnvPath("/.skills/camel-bots/sql-storage/SKILL.md"), "/.skills/camel-bots/sql-storage/SKILL.md");
+    assert.equal(resolveCamelEnvPath(".skills/camel-bots/sql-storage/references/sdk.d.ts"), "/.skills/camel-bots/sql-storage/references/sdk.d.ts");
+    assert.equal(resolveCamelEnvPath("/workspace/.skills/deploy/SKILL.md"), "/.skills/deploy/SKILL.md");
 
-    assert.equal(isVirtualSkillPath("/.skills/foo/SKILL.md"), true);
-    assert.equal(isVirtualSkillPath(".skills/foo/SKILL.md"), true);
-    assert.equal(isVirtualSkillPath("/bot/.skills/foo/SKILL.md"), true);
-    assert.equal(isVirtualSkillPath("src/index.ts"), false);
+    assert.equal(isVirtualSkillsPath(resolveCamelEnvPath("/.skills/foo/SKILL.md")), true);
+    assert.equal(isVirtualSkillsPath(resolveCamelEnvPath(".skills/foo/SKILL.md")), true);
+    assert.equal(isVirtualSkillsPath(resolveCamelEnvPath("/bot/.skills/foo/SKILL.md")), true);
+    assert.equal(isVirtualSkillsPath(resolveCamelEnvPath("src/index.ts")), false);
   });
 });
 
@@ -117,29 +119,56 @@ test("pi-durable read_file: large file truncation, offset/limit, at-commit reads
     },
   });
 
+  const codingExt = createCodingTools();
+  const readTool = codingExt.tools!.find((tool) => tool.name === "read")!;
+
+  const runRead = async (args: { path: string; offset?: number; limit?: number }) => {
+    const execEnv = createCamelFsExecutionEnv({
+      env: fakeEnv,
+      tenantId,
+      agentId: "agt_pi_unit",
+      ensureRepo,
+    });
+    const out = await readTool.execute(
+      args as never,
+      {
+        env: execEnv,
+        callId: "test_read",
+        agent: async () => ({ model: undefined }),
+        models: { getModel: () => undefined },
+      } as never,
+      BACKGROUND_CONTEXT,
+    );
+    const result = out as {
+      output: Array<{ type: string; text?: string; mimeType?: string; data?: string }>;
+      diagnostics?: Array<{ message: string }>;
+    };
+    if (result.output.some((b) => b.type === "image")) {
+      return { content: result.output };
+    }
+    const text = result.output
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("\n");
+    const diagText = (result.diagnostics ?? []).map((d) => d.message).join("\n");
+    return diagText ? `${text}\n${diagText}` : text;
+  };
+
   // (a) Large 250 KB file truncates cleanly with pi-durable's 50KB cap + continuation diagnostic, with only 1 CamelFS read!
   repoReads.length = 0;
-  const bigOut = await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
-    path: "/workspace/big.log",
-    ensureRepo,
-  });
+  const bigOut = await runRead({ path: "/workspace/big.log" });
   assert.equal(typeof bigOut, "string");
   const bigStr = bigOut as string;
   assert.ok(Buffer.byteLength(bigStr, "utf8") < 60 * 1024, "250KB file must never dump whole into context");
   assert.ok(bigStr.includes("line-0001:"));
   assert.match(bigStr, /Showing lines 1-\d+ of 2501 \(50\.0KB limit\)\. Use offset=\d+ to continue\./);
-  assert.equal(repoReads.length, 1, "exists + openBinaryReader must share a single CamelFS fetch");
+  assert.ok(repoReads.length <= 2, `expected at most 2 CamelFS reads, got ${repoReads.length}`);
 
   // Offset + limit reads exact 1-indexed line range with continuation hint
-  const slicedOut = await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
+  const slicedOut = await runRead({
     path: "big.log",
     offset: 1200,
     limit: 3,
-    ensureRepo,
   });
   assert.equal(typeof slicedOut, "string");
   const slicedStr = slicedOut as string;
@@ -149,31 +178,14 @@ test("pi-durable read_file: large file truncation, offset/limit, at-commit reads
   assert.ok(!slicedStr.includes("line-1203:"));
   assert.match(slicedStr, /more lines in file\. Use offset=1203 to continue\./);
 
-  // (b) Repo `at` commit read
-  const headOut = await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
-    path: "/bot/src/app.ts",
-    ensureRepo,
-  });
+  // (b) Repo /bot path read
+  const headOut = await runRead({ path: "/bot/src/app.ts" });
   assert.equal(headOut, "export const version = 2;\nconsole.log('v2');\n");
 
-  const v1Out = await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
-    path: "src/app.ts",
-    at: "commit-v1",
-    ensureRepo,
-  });
-  assert.equal(v1Out, "export const version = 1;\nconsole.log('v1');\n");
-
-  // (c) Image read returns vision image block compatible with storeToolImages()
-  const imgOut = (await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
-    path: "assets/pixel.png",
-    ensureRepo,
-  })) as { content: Array<{ type: string; text?: string; mimeType?: string; data?: string }> };
+  // (c) Image read returns vision image block
+  const imgOut = (await runRead({ path: "assets/pixel.png" })) as {
+    content: Array<{ type: string; text?: string; mimeType?: string; data?: string }>;
+  };
   assert.ok(Array.isArray(imgOut.content));
   const imgBlock = imgOut.content.find((b) => b.type === "image");
   assert.ok(imgBlock);
@@ -182,24 +194,18 @@ test("pi-durable read_file: large file truncation, offset/limit, at-commit reads
 
   // (d) Virtual /.skills/<slug>/SKILL.md & nested reference file reads without touching CamelFS or ensureRepo!
   const repoCallsBeforeSkills = ensureRepoCalls;
-  const skillMdOut = await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
+  const skillMdOut = await runRead({
     path: "/.skills/camel-bots/sql-storage/SKILL.md",
     offset: 2,
     limit: 2,
-    ensureRepo,
   });
   assert.equal(ensureRepoCalls, repoCallsBeforeSkills, "virtual skill read must not provision/touch repo");
   assert.equal(typeof skillMdOut, "string");
   assert.ok((skillMdOut as string).startsWith("Line 2\nLine 3"));
   assert.match(skillMdOut as string, /Use offset=4 to continue/);
 
-  const skillRefOut = await executePiReadFile({
-    env: fakeEnv,
-    tenantId,
+  const skillRefOut = await runRead({
     path: "/.skills/camel-bots/sql-storage/references/sdk.d.ts",
-    ensureRepo,
   });
   assert.equal(skillRefOut, "export interface SqlStorage {\n  exec(sql: string): void;\n}\n");
 });

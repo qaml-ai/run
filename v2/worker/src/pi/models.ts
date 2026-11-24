@@ -7,11 +7,13 @@ import {
   type ApiStreamOptions,
   type AssistantMessage,
   type Context as PiAiContext,
+  type Message as PiAiMessage,
   type Model,
   type MutableModels,
   type ProviderStreams,
   type SimpleStreamOptions,
   type TextContent,
+  type Tool as PiAiTool,
   type ToolCall,
   type TranscriptContext,
   type Usage,
@@ -50,9 +52,12 @@ import {
   ApiError,
   estimateTokens,
   type Env,
+  type LlmToolSchema,
+  type ModelStreamChunk,
   type ProviderApiStyle,
   type ProviderCredentials,
   type RpcStub,
+  type RunUsage,
 } from "../types.ts";
 
 function tenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
@@ -105,6 +110,183 @@ export function calculatePiCostUsd(
 
 export const PLATFORM_AZURE_MODELS = new Set(["gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol"]);
 export const DEFAULT_PI_MODEL_ID = "azure/gpt-6.1-terra";
+export const DEFAULT_MODEL_ID = DEFAULT_PI_MODEL_ID;
+export const calculateCostUsd = calculatePiCostUsd;
+
+export function addModelUsage(
+  usage: RunUsage,
+  model: string,
+  input: number,
+  output: number,
+  cacheRead = 0,
+): void {
+  const clampedCacheRead = Math.max(0, Math.min(input, cacheRead));
+  usage.inputTokens += input;
+  usage.outputTokens += output;
+  if (clampedCacheRead > 0) {
+    usage.cacheReadTokens = (usage.cacheReadTokens ?? 0) + clampedCacheRead;
+  }
+  usage.costUsd = Number(
+    (usage.costUsd + calculatePiCostUsd(model, input, output, 0, clampedCacheRead)).toFixed(8),
+  );
+}
+
+export function addVmUsage(usage: RunUsage, model: string, vmMs: number): void {
+  usage.vmMs += vmMs;
+  usage.costUsd = Number((usage.costUsd + calculatePiCostUsd(model, 0, 0, vmMs)).toFixed(8));
+}
+
+export function getModelContextWindow(rawModel: string): number {
+  const resolved = VIRTUAL_MODEL_ALIASES[rawModel] ?? rawModel;
+  const catalogEntry = lookupCatalogModel(resolved);
+  if (catalogEntry) return catalogEntry.contextWindow;
+  const m = resolved.toLowerCase();
+  if (m === "azure/gpt-6.2-sol") return 1_050_000;
+  if (
+    m.includes("muse-ember") ||
+    m.includes("gemini-2.5") ||
+    m.includes("gemini-3") ||
+    m.includes("gemini-4") ||
+    m.includes("gpt-4.1")
+  ) {
+    return 1_048_576;
+  }
+  if (
+    m.includes("claude-") ||
+    m.includes("o1") ||
+    m.includes("o3") ||
+    m.includes("o4") ||
+    m.includes("gpt-5") ||
+    m.includes("gpt-6")
+  ) {
+    return 200_000;
+  }
+  return 128_000;
+}
+
+export function getAutoCompactThreshold(model: string, override?: number | null): number {
+  const ctxWindow = getModelContextWindow(model);
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    const minThreshold = 8_000;
+    const maxThreshold = Math.max(minThreshold, Math.floor(ctxWindow * 0.8));
+    return Math.min(maxThreshold, Math.max(minThreshold, Math.floor(override)));
+  }
+  return Math.min(40_000, Math.floor(ctxWindow * 0.6));
+}
+
+export function getProviderLookupCandidates(
+  env: Env,
+  rawModel: string,
+  keyScope?: string | null,
+): {
+  isMock: boolean;
+  modelId: string;
+  explicitProvider: string | null;
+  candidates: string[];
+} {
+  const candidateModel = (rawModel || env.DEFAULT_MODEL || DEFAULT_MODEL_ID).trim();
+  const model = VIRTUAL_MODEL_ALIASES[candidateModel] ?? candidateModel;
+
+  if (model === "mock" || model.startsWith("mock/")) {
+    return { isMock: true, modelId: model, explicitProvider: null, candidates: [] };
+  }
+
+  let explicitProvider: string | null = null;
+  let modelId = model;
+  const slashIdx = model.indexOf("/");
+  if (slashIdx > 0) {
+    explicitProvider = model.slice(0, slashIdx).toLowerCase();
+    modelId = model.slice(slashIdx + 1);
+  }
+
+  if (explicitProvider === "azure" && PLATFORM_AZURE_MODELS.has(modelId)) {
+    return { isMock: false, modelId, explicitProvider, candidates: keyScope?.trim() ? ["azure"] : [] };
+  }
+  if (explicitProvider === "azure") return { isMock: false, modelId, explicitProvider, candidates: ["azure"] };
+  if (explicitProvider === "openai-codex") return { isMock: false, modelId, explicitProvider, candidates: ["openai-codex"] };
+  if (explicitProvider === "custom" || explicitProvider?.startsWith("bedrock-openai-")) {
+    return { isMock: false, modelId, explicitProvider, candidates: [explicitProvider] };
+  }
+
+  const candidates: string[] = [];
+  if (explicitProvider === "anthropic" || (!explicitProvider && modelId.startsWith("claude-"))) {
+    candidates.push("anthropic");
+  } else if (explicitProvider === "google") {
+    candidates.push("google", "gemini");
+  } else if (
+    explicitProvider === "gemini" ||
+    (!explicitProvider && (modelId.startsWith("gemini-") || modelId.startsWith("gemma-")))
+  ) {
+    candidates.push("gemini", "google");
+  } else if (explicitProvider === "openrouter") {
+    candidates.push("openrouter");
+  } else if (explicitProvider === "openai-responses") {
+    candidates.push("openai-responses", "openai");
+  } else if (explicitProvider === "openai") {
+    candidates.push("openai", "openai-responses");
+  } else if (explicitProvider) {
+    candidates.push(explicitProvider);
+  } else if (modelId.startsWith("grok-")) {
+    candidates.push("xai");
+  } else {
+    candidates.push("openai", "openai-responses");
+  }
+
+  return { isMock: false, modelId, explicitProvider, candidates: [...new Set(candidates)] };
+}
+
+function hasCustomAuthHeaders(headers?: Record<string, string>): boolean {
+  return Boolean(headers && Object.keys(headers).length > 0);
+}
+
+export function hasByokCredentials(
+  creds: ProviderCredentials | null | undefined,
+): creds is ProviderCredentials {
+  return Boolean(creds && (creds.apiKey || hasCustomAuthHeaders(creds.headers)));
+}
+
+export async function resolveTenantByokProvider(
+  env: Env,
+  tenantId: string,
+  rawModel: string,
+  prefetchedProvider?: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null },
+  keyScope?: string | null,
+): Promise<{
+  isByok: boolean;
+  prefetchedProvider: { model: string; keyScope?: string | null; credentials: ProviderCredentials | null } | undefined;
+}> {
+  const normScope = keyScope?.trim() || null;
+  const { isMock, candidates } = getProviderLookupCandidates(env, rawModel, normScope);
+  if (isMock) {
+    return { isByok: false, prefetchedProvider };
+  }
+  if (
+    prefetchedProvider !== undefined &&
+    prefetchedProvider.model === rawModel &&
+    (prefetchedProvider.keyScope ?? null) === normScope
+  ) {
+    return {
+      isByok: hasByokCredentials(prefetchedProvider.credentials),
+      prefetchedProvider,
+    };
+  }
+  if (candidates.length === 0) {
+    return {
+      isByok: false,
+      prefetchedProvider: { model: rawModel, keyScope: normScope, credentials: null },
+    };
+  }
+  const stub = tenantStub(env, tenantId);
+  let stored: ProviderCredentials | null = null;
+  for (const candidate of candidates) {
+    stored = await stub.getProviderSecret(candidate, normScope);
+    if (stored) break;
+  }
+  return {
+    isByok: hasByokCredentials(stored),
+    prefetchedProvider: { model: rawModel, keyScope: normScope, credentials: stored },
+  };
+}
 
 const VIRTUAL_MODEL_ALIASES: Record<string, string> = {
   "camelrun/default": DEFAULT_PI_MODEL_ID,
@@ -184,7 +366,12 @@ export function parsePiModelRef(
   if (slashIdx > 0) {
     const rawProvider = expanded.slice(0, slashIdx).toLowerCase();
     const modelId = expanded.slice(slashIdx + 1);
-    const provider = rawProvider === "google" ? "gemini" : rawProvider;
+    const provider =
+      rawProvider === "google"
+        ? "gemini"
+        : rawProvider === "openai-responses"
+          ? "openai"
+          : rawProvider;
     return { provider, modelId };
   }
 
@@ -244,7 +431,11 @@ export function resolveAzurePlatformConfig(
         ? byok.modelAliases[modelId]!
         : modelId;
     const baseUrl = byok.baseUrl ? normalizeAzureOpenAIBaseUrl(byok.baseUrl) : "";
-    const api: Api = byok.apiStyle ? apiForStyle(byok.apiStyle) : "azure-openai-responses";
+    const api: Api = byok.apiStyle
+      ? apiForStyle(byok.apiStyle)
+      : PLATFORM_AZURE_MODELS.has(modelId)
+        ? "azure-openai-responses"
+        : "openai-completions";
     return {
       endpointKind: "byok",
       baseUrl,
@@ -382,12 +573,26 @@ function wrapStreamsWithOverrides(
           }
         : existingOnPayload;
 
+    const hasExplicitAuthHeader = Boolean(
+      mergedHeaders &&
+        Object.keys(mergedHeaders).some((k) => k.toLowerCase() === "authorization"),
+    );
+    const stripDummyAuth = !resolved.apiKey && Boolean(mergedHeaders) && !hasExplicitAuthHeader;
+    const customFetch: typeof fetch | undefined = stripDummyAuth
+      ? (input, init) => {
+          const headers = new Headers(init?.headers);
+          headers.delete("authorization");
+          return globalThis.fetch(input, { ...init, headers });
+        }
+      : undefined;
+
     return {
       model: nextModel,
       options: {
         ...(options ?? {}),
         ...(resolved.apiKey ? { apiKey: resolved.apiKey } : {}),
         ...(mergedHeaders ? { headers: mergedHeaders } : {}),
+        ...(customFetch ? { fetch: customFetch } : {}),
         ...(resolved.baseUrl && nextModel.api === "azure-openai-responses"
           ? { azureBaseUrl: resolved.baseUrl }
           : {}),
@@ -433,12 +638,13 @@ function safeParseArgs(jsonStr: string): JsonObject {
 
 function extractMockDirectives(text: string): ParsedMockDirective[] {
   const out: ParsedMockDirective[] = [];
-  const regex = /\[(PARALLEL_CALL|CALL):([A-Za-z0-9_.:-]+)(?:\(([\s\S]*?)\))?\]/g;
+  const regex =
+    /\[(PARALLEL_CALL|CALL):([A-Za-z0-9_.:-]+)(?:\(([\s\S]*?)\)|\s+(\{[\s\S]*?\}))?\]/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     const parallel = match[1] === "PARALLEL_CALL";
     const name = match[2]!;
-    const rawArgs = match[3]?.trim() || "{}";
+    const rawArgs = (match[3] ?? match[4])?.trim() || "{}";
     out.push({
       parallel,
       name,
@@ -447,6 +653,13 @@ function extractMockDirectives(text: string): ParsedMockDirective[] {
     });
   }
   return out;
+}
+
+function stripMockDirectives(text: string): string {
+  return text
+    .replace(/\[(PARALLEL_CALL|CALL):([A-Za-z0-9_.:-]+)(?:\([\s\S]*?\)|\s+\{[\s\S]*?\})?\]/g, "")
+    .replace(/\[COST:[^\]]+\]/g, "")
+    .trim();
 }
 
 function extractUserMessageText(content: string | readonly (TextContent | { type: string })[]): string {
@@ -677,7 +890,7 @@ function buildMockAssistantMessage(
       const seed =
         recentToolResults.length > 0
           ? `${latestUserText} (${recentToolResults.join("; ")})`.trim()
-          : latestUserText.replace(/\[(PARALLEL_CALL|CALL|COST):[^\]]+\]/g, "").trim() || "ok";
+          : stripMockDirectives(latestUserText) || "ok";
       jsonText = JSON.stringify(synthesizeFromJsonSchema(options!.outputSchema!, seed));
     }
     return {
@@ -692,9 +905,7 @@ function buildMockAssistantMessage(
     };
   }
 
-  const cleanPrompt = latestUserText
-    .replace(/\[(PARALLEL_CALL|CALL|COST):[^\]]+\]/g, "")
-    .trim();
+  const cleanPrompt = stripMockDirectives(latestUserText);
   const parts: string[] = [];
   if (model.id === "echo") {
     parts.push(cleanPrompt || latestUserText || "echo");
@@ -1217,8 +1428,12 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
 export interface ProviderRequestHookOptions {
   /** Returns the active run's JSON Schema for structured output, if any. */
   getOutputSchema?: () => Record<string, unknown> | null | undefined;
+  /** Returns a stable prompt cache key (clamped to 64 chars for OpenAI/Azure Responses). */
+  getPromptCacheKey?: () => string | null | undefined;
   /** Default reasoning effort for platform Azure models when unset (default `"low"`). */
   defaultAzureReasoningEffort?: "none" | "low" | "medium" | "high" | null;
+  /** Optional override text for synthetic tool results (e.g. superseded/expired/cancelled human inputs). */
+  getToolResultOverride?: (toolCallId: string) => string | undefined;
 }
 
 export function createProviderRequestHook(
@@ -1302,16 +1517,81 @@ export function createProviderRequestHook(
       };
     }
 
-    // 3. Platform Azure default reasoning effort when unset
+    // 3. Platform Azure default reasoning effort when unset or defaulted to "none"
+    const existingReasoningEffort =
+      next.reasoning && typeof next.reasoning === "object" && !Array.isArray(next.reasoning)
+        ? (next.reasoning as { effort?: unknown }).effort
+        : undefined;
     if (
       defaultAzureEffort !== null &&
       model.provider === "azure" &&
       PLATFORM_AZURE_MODELS.has(model.id) &&
       model.api === "azure-openai-responses" &&
-      next.reasoning === undefined
+      (next.reasoning === undefined || existingReasoningEffort === "none")
     ) {
       ensureClone();
       next.reasoning = { effort: defaultAzureEffort };
+    }
+
+    // 4. Strip unsupported temperature for OpenAI/Azure reasoning models
+    if (
+      model.reasoning &&
+      next.temperature !== undefined &&
+      (model.api === "azure-openai-responses" ||
+        model.api === "openai-responses" ||
+        (model.api === "openai-completions" && model.provider === "openai"))
+    ) {
+      ensureClone();
+      delete next.temperature;
+    }
+
+    // 5. Prompt cache routing key (clamped to 64 chars)
+    const rawCacheKey = options?.getPromptCacheKey?.()?.trim();
+    if (
+      rawCacheKey &&
+      (model.api === "azure-openai-responses" || model.api === "openai-responses")
+    ) {
+      ensureClone();
+      next.prompt_cache_key = rawCacheKey.slice(0, 64);
+    }
+
+    // 6. Override aborted human-input synthetic tool results with exact application reason text
+    if (options?.getToolResultOverride) {
+      const lookup = options.getToolResultOverride;
+      if (Array.isArray(next.messages)) {
+        let changed = false;
+        const mapped = (next.messages as Array<Record<string, unknown>>).map((m) => {
+          if (m && m.role === "tool" && typeof m.tool_call_id === "string") {
+            const override = lookup(m.tool_call_id);
+            if (override !== undefined) {
+              changed = true;
+              return { ...m, content: override };
+            }
+          }
+          return m;
+        });
+        if (changed) {
+          ensureClone();
+          next.messages = mapped;
+        }
+      }
+      if (Array.isArray(next.input)) {
+        let changed = false;
+        const mapped = (next.input as Array<Record<string, unknown>>).map((item) => {
+          if (item && item.type === "function_call_output" && typeof item.call_id === "string") {
+            const override = lookup(item.call_id);
+            if (override !== undefined) {
+              changed = true;
+              return { ...item, output: override };
+            }
+          }
+          return item;
+        });
+        if (changed) {
+          ensureClone();
+          next.input = mapped;
+        }
+      }
     }
 
     return mutated ? { payload: next } : undefined;
@@ -1327,4 +1607,242 @@ export function createProviderRequestExtension(options?: ProviderRequestHookOpti
       }),
     ],
   });
+}
+
+// ---- Stateless Pi Model Streaming (`POST /v2/runs`, `POST /v2/decisions`, dreaming) ----
+
+export interface StreamPiModelRequest {
+  env: Env;
+  tenantId: string;
+  model: string;
+  keyScope?: string | null;
+  instructions?: string;
+  messages: PiAiMessage[];
+  tools?: LlmToolSchema[];
+  outputSchema?: Record<string, unknown> | null;
+  temperature?: number;
+  maxOutputTokens?: number;
+  promptCacheKey?: string;
+  signal?: AbortSignal;
+  prefetchedCredentials?: Record<string, ProviderCredentials | null>;
+}
+
+export type PiModelStreamChunk =
+  | Exclude<ModelStreamChunk, { type: "done" }>
+  | {
+      type: "done";
+      inputTokens: number;
+      outputTokens: number;
+      stopReason: string;
+      cacheReadTokens?: number;
+      message: AssistantMessage;
+    };
+
+function fnv1a64Hex(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x811c9dc5 ^ 0x9e3779b9;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (ch + i), 0x01000193) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+
+function normalizeSingleResponsesCallId(rawId: string, emptyFallbackIndex: number): string {
+  if (!rawId) return `call_${emptyFallbackIndex}`;
+  if (rawId.length <= 64) return rawId;
+  const suffix = fnv1a64Hex(rawId);
+  return `${rawId.slice(0, 64 - 1 - suffix.length)}_${suffix}`;
+}
+
+function normalizePiResponsesToolCallIds(messages: PiAiMessage[]): PiAiMessage[] {
+  let emptyCallIdx = 0;
+  let emptyResultIdx = 0;
+  return messages.map((msg) => {
+    if (msg.role === "assistant") {
+      let changed = false;
+      const nextContent = msg.content.map((block) => {
+        if (block.type !== "toolCall") return block;
+        const normalized = normalizeSingleResponsesCallId(block.id, block.id ? 0 : emptyCallIdx++);
+        if (normalized === block.id) return block;
+        changed = true;
+        return { ...block, id: normalized };
+      });
+      return changed ? { ...msg, content: nextContent } : msg;
+    }
+    if (msg.role === "toolResult") {
+      const normalized = normalizeSingleResponsesCallId(
+        msg.toolCallId,
+        msg.toolCallId ? 0 : emptyResultIdx++,
+      );
+      if (normalized === msg.toolCallId) return msg;
+      return { ...msg, toolCallId: normalized };
+    }
+    return msg;
+  });
+}
+
+export async function* streamPiModel(
+  req: StreamPiModelRequest,
+): AsyncGenerator<PiModelStreamChunk, void, unknown> {
+  const ref = parsePiModelRef(req.model, req.env);
+  const models = await buildPiModels({
+    env: req.env,
+    tenantId: req.tenantId,
+    keyScope: req.keyScope ?? null,
+    rawModel: req.model,
+    prefetchedCredentials: req.prefetchedCredentials,
+    getOutputSchema: () => req.outputSchema ?? null,
+  });
+
+  const model = models.getModel(ref.provider, ref.modelId);
+  if (!model) {
+    throw new ApiError(400, "unknown_model", `Model '${req.model}' is not registered`);
+  }
+
+  if (ref.provider !== "mock") {
+    const auth = await models.getAuth(model);
+    if (!auth) {
+      const isPlatformAzure = ref.provider === "azure" && PLATFORM_AZURE_MODELS.has(ref.modelId);
+      throw new ApiError(
+        isPlatformAzure ? 503 : 400,
+        "missing_provider_key",
+        `No API key configured for provider '${ref.provider}'`,
+      );
+    }
+  }
+
+  const requestHook = createProviderRequestHook({
+    getOutputSchema: () => req.outputSchema ?? null,
+    getPromptCacheKey: () => req.promptCacheKey,
+  });
+
+  const piTools: PiAiTool[] | undefined =
+    req.tools && req.tools.length > 0
+      ? req.tools.map((t) => ({
+          name: t.name,
+          description: t.description || `Tool ${t.name}`,
+          parameters: t.parameters as PiAiTool["parameters"],
+        }))
+      : undefined;
+
+  const normalizedMessages =
+    model.api === "azure-openai-responses" || model.api === "openai-responses"
+      ? normalizePiResponsesToolCallIds(req.messages)
+      : req.messages;
+
+  const piContext: PiAiContext = {
+    ...(req.instructions ? { systemPrompt: req.instructions } : {}),
+    messages: normalizedMessages,
+    ...(piTools ? { tools: piTools } : {}),
+  };
+
+  const eventStream = models.streamSimple(model, piContext, {
+    ...(req.signal ? { signal: req.signal } : {}),
+    ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    ...(req.maxOutputTokens !== undefined ? { maxTokens: req.maxOutputTokens } : {}),
+    ...(req.promptCacheKey ? { sessionId: req.promptCacheKey.slice(0, 64) } : {}),
+    onPayload: async (payload, payloadModel) => {
+      const res = await requestHook(
+        { model: payloadModel, payload } as Parameters<typeof requestHook>[0],
+        {} as Parameters<typeof requestHook>[1],
+        {} as Parameters<typeof requestHook>[2],
+      );
+      return res && "payload" in res ? res.payload : payload;
+    },
+  });
+
+  let finalMessage: AssistantMessage | null = null;
+  for await (const ev of eventStream) {
+    if (ev.type === "text_delta") {
+      yield { type: "text_delta", delta: ev.delta };
+    } else if (ev.type === "toolcall_end") {
+      const args =
+        ev.toolCall.arguments && typeof ev.toolCall.arguments === "object"
+          ? (ev.toolCall.arguments as Record<string, unknown>)
+          : {};
+      yield {
+        type: "tool_call",
+        id: ev.toolCall.id,
+        name: ev.toolCall.name,
+        argumentsJson: JSON.stringify(args),
+        args,
+      };
+    } else if (ev.type === "done") {
+      finalMessage = ev.message;
+    } else if (ev.type === "error") {
+      if (req.signal?.aborted) {
+        throw req.signal.reason instanceof Error
+          ? req.signal.reason
+          : new DOMException("Request was aborted", "AbortError");
+      }
+      throw new ApiError(
+        502,
+        "provider_error",
+        ev.error.errorMessage || "Model provider returned an error",
+      );
+    }
+  }
+
+  if (!finalMessage) {
+    finalMessage = await eventStream.result();
+  }
+  if (finalMessage.stopReason === "error" || finalMessage.stopReason === "aborted") {
+    if (req.signal?.aborted) {
+      throw req.signal.reason instanceof Error
+        ? req.signal.reason
+        : new DOMException("Request was aborted", "AbortError");
+    }
+    throw new ApiError(
+      502,
+      "provider_error",
+      finalMessage.errorMessage || "Model provider returned an error",
+    );
+  }
+
+  const uncachedInput = finalMessage.usage?.input ?? 0;
+  const cacheReadTokens = finalMessage.usage?.cacheRead ?? 0;
+  const cacheWriteTokens = finalMessage.usage?.cacheWrite ?? 0;
+  const inputTokens = uncachedInput + cacheReadTokens + cacheWriteTokens;
+  const outputTokens = finalMessage.usage?.output ?? 0;
+
+  yield {
+    type: "done",
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    stopReason: finalMessage.stopReason,
+    message: finalMessage,
+  };
+}
+
+export async function completePiModel(
+  req: StreamPiModelRequest,
+): Promise<{
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  message: AssistantMessage;
+}> {
+  let text = "";
+  let doneChunk: Extract<PiModelStreamChunk, { type: "done" }> | null = null;
+  for await (const chunk of streamPiModel(req)) {
+    if (chunk.type === "text_delta") {
+      text += chunk.delta;
+    } else if (chunk.type === "done") {
+      doneChunk = chunk;
+    }
+  }
+  if (!doneChunk) {
+    throw new ApiError(502, "provider_error", "Model stream ended without a terminal message");
+  }
+  return {
+    text,
+    inputTokens: doneChunk.inputTokens,
+    outputTokens: doneChunk.outputTokens,
+    cacheReadTokens: doneChunk.cacheReadTokens ?? 0,
+    message: doneChunk.message,
+  };
 }

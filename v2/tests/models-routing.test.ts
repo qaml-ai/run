@@ -15,23 +15,44 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks).toString("utf8");
     const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    captured.push({ path: req.url ?? "", body });
-    res.setHeader("Content-Type", "application/json");
-    if ((req.url ?? "").includes("/responses")) {
-      res.end(
-        JSON.stringify({
-          output: [{ type: "message", content: [{ type: "output_text", text: "ok-responses" }] }],
-          usage: { input_tokens: 100, output_tokens: 20 },
-        }),
-      );
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    captured.push({ path: pathname, body });
+    res.setHeader("Content-Type", "text/event-stream");
+    if (pathname.includes("/responses")) {
+      const events = [
+        {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+        },
+        { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "ok-responses" },
+        {
+          type: "response.output_item.done",
+          output_index: 0,
+          item: {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            status: "completed",
+            content: [{ type: "output_text", text: "ok-responses" }],
+          },
+        },
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_1",
+            status: "completed",
+            output: [],
+            usage: { input_tokens: 100, output_tokens: 20 },
+          },
+        },
+      ];
+      res.end(events.map((ev) => `data: ${JSON.stringify(ev)}\n\n`).join("") + "data: [DONE]\n\n");
       return;
     }
-    res.end(
-      JSON.stringify({
-        choices: [{ finish_reason: "stop", message: { role: "assistant", content: "ok-chat" } }],
-        usage: { prompt_tokens: 100, completion_tokens: 20 },
-      }),
-    );
+    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: "ok-chat" }, finish_reason: "stop" }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20 } })}\n\n`);
+    res.end("data: [DONE]\n\n");
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   t.after(() => {
@@ -229,7 +250,7 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     assert.equal(rChatReasoning.body.max_tokens, undefined);
     assert.equal(rChatReasoning.body.temperature, undefined);
 
-    // OpenRouter chat completions keeps max_tokens and temperature
+    // OpenRouter chat completions keeps temperature and sends a max token cap
     const rOpenRouter = await stream({
       model: "openrouter/openai/gpt-5",
       temperature: 0.5,
@@ -237,8 +258,7 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
       credentials: { provider: "openrouter", apiKey: "or-test", baseUrl: `${mockUrl}/v1` },
     });
     assert.equal(rOpenRouter.path, "/v1/chat/completions");
-    assert.equal(rOpenRouter.body.max_tokens, 512);
-    assert.equal(rOpenRouter.body.max_completion_tokens, undefined);
+    assert.equal(rOpenRouter.body.max_tokens ?? rOpenRouter.body.max_completion_tokens, 512);
     assert.equal(rOpenRouter.body.temperature, 0.5);
   });
 
@@ -439,12 +459,12 @@ test("OpenAI /v1/responses routing, BYOK provider defaults, pricing, and full v1
     assert.equal(googleModels.length, 23);
     assert.ok(googleModels.some((m) => m.id === "gemini/gemini-3.5-flash"));
 
-    // Azure: platform-deployed azure/gpt-6.1-terra and azure/gpt-6.2-sol are available without BYOK azure key
+    // Azure: platform-deployed azure/gpt-6-luna, azure/gpt-6.1-terra, and azure/gpt-6.2-sol are available without BYOK azure key
     const azureRes = await worker.fetch(`${origin}/v2/models?provider=azure`, { headers });
     assert.equal(azureRes.status, 200);
     const azureModels = (await azureRes.json()) as Array<{ id: string; available: boolean }>;
     const availAzure = azureModels.filter((m) => m.available).map((m) => m.id).sort();
-    assert.deepEqual(availAzure, ["azure/gpt-6.1-terra", "azure/gpt-6.2-sol"]);
+    assert.deepEqual(availAzure, ["azure/gpt-6-luna", "azure/gpt-6.1-terra", "azure/gpt-6.2-sol"]);
 
     // Full catalog includes xai, anthropic, openrouter, etc.
     const allRes = await worker.fetch(`${origin}/v2/models`, { headers });

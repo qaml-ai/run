@@ -17,9 +17,10 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     for await (const c of req) chunks.push(c as Buffer);
     const raw = Buffer.concat(chunks).toString("utf8");
     const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    recordedRequests.push({ path: req.url ?? "", body });
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    recordedRequests.push({ path: pathname, body });
 
-    if (req.url === "/usage-webhook") {
+    if (pathname === "/usage-webhook") {
       receivedWebhooks.push({
         event: req.headers["x-camelrun-event"] as string | undefined,
         body,
@@ -29,22 +30,41 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       return;
     }
 
-    if (req.url === "/tool-echo") {
+    if (pathname === "/tool-echo") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
       return;
     }
 
-    if (req.url === "/openai/v1/responses") {
+    if (pathname === "/openai/v1/responses") {
       const input = (body.input as Array<{ type?: string }>) ?? [];
       const hasToolOutput = input.some((item) => item.type === "function_call_output");
       res.writeHead(200, { "content-type": "text/event-stream" });
       const events = hasToolOutput
         ? [
-            { type: "response.output_text.delta", delta: "Done after tool" },
+            {
+              type: "response.output_item.added",
+              output_index: 0,
+              item: { type: "message", id: "msg_1", role: "assistant", status: "in_progress", content: [] },
+            },
+            { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "Done after tool" },
+            {
+              type: "response.output_item.done",
+              output_index: 0,
+              item: {
+                type: "message",
+                id: "msg_1",
+                role: "assistant",
+                status: "completed",
+                content: [{ type: "output_text", text: "Done after tool" }],
+              },
+            },
             {
               type: "response.completed",
               response: {
+                id: "resp_2",
+                status: "completed",
+                output: [],
                 usage: {
                   input_tokens: 100_000,
                   output_tokens: 500,
@@ -55,9 +75,22 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
           ]
         : [
             {
-              type: "response.output_item.done",
+              type: "response.output_item.added",
+              output_index: 0,
               item: {
                 type: "function_call",
+                id: "fc_cache_1",
+                call_id: "call_cache_1",
+                name: "echo",
+                arguments: "",
+              },
+            },
+            {
+              type: "response.output_item.done",
+              output_index: 0,
+              item: {
+                type: "function_call",
+                id: "fc_cache_1",
                 call_id: "call_cache_1",
                 name: "echo",
                 arguments: "{}",
@@ -66,6 +99,9 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
             {
               type: "response.completed",
               response: {
+                id: "resp_1",
+                status: "completed",
+                output: [],
                 usage: {
                   input_tokens: 100_000,
                   output_tokens: 500,
@@ -78,7 +114,7 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       return;
     }
 
-    if (req.url === "/v1/chat/completions") {
+    if (pathname === "/v1/chat/completions") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "hi" }, finish_reason: "stop" }] })}\n\n`);
       res.write(`data: ${JSON.stringify({
@@ -93,12 +129,19 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
       return;
     }
 
-    if (req.url === "/v1/messages") {
+    if (pathname === "/v1/messages") {
       // Anthropic reports input_tokens as uncached and cache_read_input_tokens separately.
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`event: message_start\ndata: ${JSON.stringify({
         type: "message_start",
         message: {
+          id: "msg_anth_1",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "claude-sonnet-4-0",
+          stop_reason: null,
+          stop_sequence: null,
           usage: {
             input_tokens: 2_000,
             cache_read_input_tokens: 18_000,
@@ -107,16 +150,26 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
           },
         },
       })}\n\n`);
+      res.write(`event: content_block_start\ndata: ${JSON.stringify({
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      })}\n\n`);
       res.write(`event: content_block_delta\ndata: ${JSON.stringify({
         type: "content_block_delta",
         index: 0,
         delta: { type: "text_delta", text: "claude ok" },
+      })}\n\n`);
+      res.write(`event: content_block_stop\ndata: ${JSON.stringify({
+        type: "content_block_stop",
+        index: 0,
       })}\n\n`);
       res.write(`event: message_delta\ndata: ${JSON.stringify({
         type: "message_delta",
         delta: { stop_reason: "end_turn" },
         usage: { output_tokens: 100 },
       })}\n\n`);
+      res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
       res.end();
       return;
     }
@@ -124,7 +177,7 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     if (req.url?.includes(":streamGenerateContent")) {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(`data: ${JSON.stringify({
-        candidates: [{ content: { parts: [{ text: "gemini ok" }] } }],
+        candidates: [{ content: { parts: [{ text: "gemini ok" }] }, finishReason: "STOP" }],
         usageMetadata: {
           promptTokenCount: 40_000,
           candidatesTokenCount: 300,
@@ -271,20 +324,6 @@ test("cost accounting discounts cacheReadTokens, sends prompt_cache_key, and tig
     await check("azure/gpt-6.2-sol", 8_000, 2_500);
     await check("openai/gpt-4o", Math.floor(128_000 * 0.8), 500_000);
     await check("azure/gpt-6.2-sol", 40_000, null);
-
-    const checkNeeds = async (payload: Record<string, unknown>, expected: boolean) => {
-      const res = await worker.fetch(`${origin}/_test/needs-compact`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      assert.equal(res.status, 200);
-      assert.deepEqual(await res.json(), { needed: expected });
-    };
-    await checkNeeds({ count: 7, tokensEst: 90_000, lastTokensEst: 1_000, threshold: 40_000, observedInputTokens: 120_000 }, false);
-    await checkNeeds({ count: 10, tokensEst: 45_000, lastTokensEst: 10_000, threshold: 40_000, excludeLast: true }, false);
-    await checkNeeds({ count: 10, tokensEst: 45_000, lastTokensEst: 10_000, threshold: 40_000 }, true);
-    await checkNeeds({ count: 10, tokensEst: 25_000, lastTokensEst: 2_000, threshold: 40_000, observedInputTokens: 39_000 }, false);
-    await checkNeeds({ count: 10, tokensEst: 25_000, lastTokensEst: 2_000, threshold: 40_000, observedInputTokens: 41_000 }, true);
   });
 
   await t.test("protocol stream parsers extract cacheReadTokens accurately without double-counting", async () => {

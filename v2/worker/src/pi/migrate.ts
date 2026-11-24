@@ -65,9 +65,43 @@ export function unwrapCompactionSummary(raw: string): string {
   return trimmed;
 }
 
+const MAX_TOOL_CALL_ARGS_JSON_LENGTH = 512 * 1024;
+const TRUNCATED_TOOL_CALL_PREVIEW_LENGTH = 4_000;
+
+function sanitizeLoneSurrogates(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += text[i]! + text[i + 1]!;
+        i++;
+      } else {
+        out += "\ufffd";
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      out += "\ufffd";
+    } else {
+      out += text[i]!;
+    }
+  }
+  return out;
+}
+
 function safeParseToolArgs(tc: ToolCallInvocation): JsonObject {
-  if (tc.args && typeof tc.args === "object" && !Array.isArray(tc.args)) {
-    return JSON.parse(JSON.stringify(tc.args)) as JsonObject;
+  const rawJson =
+    typeof tc.argumentsJson === "string" && tc.argumentsJson.length > 0
+      ? tc.argumentsJson
+      : tc.args && typeof tc.args === "object"
+        ? JSON.stringify(tc.args)
+        : "";
+  if (rawJson.length > MAX_TOOL_CALL_ARGS_JSON_LENGTH) {
+    return {
+      _truncated: true,
+      originalLength: rawJson.length,
+      preview: sanitizeLoneSurrogates(rawJson.slice(0, TRUNCATED_TOOL_CALL_PREVIEW_LENGTH)),
+    };
   }
   if (tc.argumentsJson) {
     try {
@@ -79,13 +113,16 @@ function safeParseToolArgs(tc: ToolCallInvocation): JsonObject {
       // fall through
     }
   }
+  if (tc.args && typeof tc.args === "object" && !Array.isArray(tc.args)) {
+    return JSON.parse(JSON.stringify(tc.args)) as JsonObject;
+  }
   return {};
 }
 
 function formatUserMessageContent(msg: StoredMessage): string | (TextContent | ImageContent)[] {
   const files = msg.content.files;
   const textParts: string[] = [];
-  if (msg.content.text) textParts.push(msg.content.text);
+  if (msg.content.text) textParts.push(sanitizeLoneSurrogates(msg.content.text));
   if (files?.length) {
     for (const file of files) {
       textParts.push(
@@ -100,7 +137,7 @@ function formatUserMessageContent(msg: StoredMessage): string | (TextContent | I
     const blocks: (TextContent | ImageContent)[] = [];
     for (const part of legacyInline) {
       if (part.type === "text") {
-        blocks.push({ type: "text", text: part.text });
+        blocks.push({ type: "text", text: sanitizeLoneSurrogates(part.text) });
       } else if (part.type === "image") {
         blocks.push({ type: "image", mimeType: part.mimeType, data: part.data });
       }
@@ -127,15 +164,32 @@ function formatUserMessageContent(msg: StoredMessage): string | (TextContent | I
  * or dangling tool results so provider transcripts remain 100% valid).
  * Legacy tables are never modified or deleted, enabling instant safe rollback.
  */
+export interface ImportedEntryMeta {
+  entryId: number;
+  runId: string | null;
+  meta?: Record<string, unknown>;
+}
+
 export async function importLegacyTranscriptToPi(
   tx: Tx,
   conversationId: ConversationId,
   legacyCompaction: LegacyCompactionRow | null,
   legacyMessages: readonly StoredMessage[],
   modelRef: ModelRef,
-): Promise<{ importedEntries: number; maxLegacySeq: number }> {
+): Promise<{ importedEntries: number; maxLegacySeq: number; importedMeta: ImportedEntryMeta[] }> {
   let importedEntries = 0;
   let maxLegacySeq = legacyCompaction?.upToSeq ?? 0;
+  const importedMeta: ImportedEntryMeta[] = [];
+
+  const recordMeta = (entryId: EntryId, msg: StoredMessage) => {
+    const meta =
+      msg.content.meta && typeof msg.content.meta === "object"
+        ? (msg.content.meta as Record<string, unknown>)
+        : undefined;
+    if (msg.runId || meta) {
+      importedMeta.push({ entryId: Number(entryId), runId: msg.runId, ...(meta ? { meta } : {}) });
+    }
+  };
 
   // 1. Import latest legacy compaction marker if present
   if (legacyCompaction) {
@@ -176,9 +230,10 @@ export async function importLegacyTranscriptToPi(
         content: formatUserMessageContent(msg),
         timestamp: msg.createdAt || Date.now(),
       };
-      await tx.appendEntry(UserEntry, conversationId, {
+      const appended = await tx.appendEntry(UserEntry, conversationId, {
         model: [userMsg],
       });
+      recordMeta(appended.id, msg);
       importedEntries++;
       continue;
     }
@@ -186,7 +241,7 @@ export async function importLegacyTranscriptToPi(
     if (msg.role === "assistant") {
       const rawCalls = msg.content.toolCalls ?? [];
       if (rawCalls.length === 0) {
-        const text = msg.content.text ?? "";
+        const text = sanitizeLoneSurrogates(msg.content.text ?? "");
         const assistantMsg: AssistantMessage = {
           role: "assistant",
           content: text ? [{ type: "text", text }] : [{ type: "text", text: "" }],
@@ -197,9 +252,10 @@ export async function importLegacyTranscriptToPi(
           stopReason: "stop",
           timestamp: msg.createdAt || Date.now(),
         };
-        await tx.appendEntry(AssistantEntry, conversationId, {
+        const appended = await tx.appendEntry(AssistantEntry, conversationId, {
           model: [assistantMsg],
         });
+        recordMeta(appended.id, msg);
         importedEntries++;
         continue;
       }
@@ -220,7 +276,7 @@ export async function importLegacyTranscriptToPi(
       const pairedCalls = rawCalls.filter((c) => !pendingCallIds.has(c.id));
       const contentBlocks: (TextContent | ToolCall)[] = [];
       if (msg.content.text) {
-        contentBlocks.push({ type: "text", text: msg.content.text });
+        contentBlocks.push({ type: "text", text: sanitizeLoneSurrogates(msg.content.text) });
       }
       for (const tc of pairedCalls) {
         contentBlocks.push({
@@ -242,15 +298,16 @@ export async function importLegacyTranscriptToPi(
           stopReason: pairedCalls.length > 0 ? "toolUse" : "stop",
           timestamp: msg.createdAt || Date.now(),
         };
-        await tx.appendEntry(AssistantEntry, conversationId, {
+        const appended = await tx.appendEntry(AssistantEntry, conversationId, {
           model: [assistantMsg],
         });
+        recordMeta(appended.id, msg);
         importedEntries++;
       }
 
       for (const resMsg of pairedResults) {
         const textParts: string[] = [];
-        if (resMsg.content.text) textParts.push(resMsg.content.text);
+        if (resMsg.content.text) textParts.push(sanitizeLoneSurrogates(resMsg.content.text));
         if (resMsg.content.toolImages?.length) {
           for (const img of resMsg.content.toolImages) {
             textParts.push(
@@ -266,16 +323,17 @@ export async function importLegacyTranscriptToPi(
           isError: Boolean(resMsg.content.isError),
           timestamp: resMsg.createdAt || Date.now(),
         };
-        await tx.appendEntry(ToolResultEntry, conversationId, {
+        const appended = await tx.appendEntry(ToolResultEntry, conversationId, {
           model: [toolResultMsg],
           data: { diagnostics: [] },
         });
+        recordMeta(appended.id, resMsg);
         importedEntries++;
       }
     }
   }
 
-  return { importedEntries, maxLegacySeq };
+  return { importedEntries, maxLegacySeq, importedMeta };
 }
 
 /**
@@ -343,6 +401,11 @@ export interface MappedHistoryResult {
   nextBefore?: number | null;
 }
 
+export interface PiEntryMetadata {
+  runId: string | null;
+  meta?: Record<string, unknown>;
+}
+
 /**
  * Maps `pi-durable` `EntryRecord[]` (ascending by EntryId) into CamelRun v2's
  * `GET /v2/agents/:idOrKey/history` response shape (`StoredMessage[]` + `compaction`).
@@ -350,6 +413,7 @@ export interface MappedHistoryResult {
 export function mapPiEntriesToHistory(
   entries: readonly EntryRecord[],
   opts?: { after?: number; before?: number; limit?: number },
+  entryMeta?: ReadonlyMap<number, PiEntryMetadata>,
 ): MappedHistoryResult {
   const allMessages: MappedHistoryMessage[] = [];
   let latestCompaction: { id: string; upToSeq: number; summary: string } | null = null;
@@ -390,11 +454,20 @@ export function mapPiEntriesToHistory(
       const msg = entry.model?.[0];
       if (!msg || msg.role !== "user") continue;
       const text = extractTextFromUserContent(msg.content);
+      const em = entryMeta?.get(seq);
+      const rawMeta = em?.meta ? { ...em.meta } : undefined;
+      const attachedFiles = rawMeta && Array.isArray(rawMeta._files) ? rawMeta._files : undefined;
+      if (rawMeta && "_files" in rawMeta) delete rawMeta._files;
+      const hasMeta = rawMeta && Object.keys(rawMeta).length > 0;
       allMessages.push({
         seq,
-        runId: null,
+        runId: em?.runId ?? null,
         role: "user",
-        content: { text },
+        content: {
+          text,
+          ...(attachedFiles ? { files: attachedFiles } : {}),
+          ...(hasMeta ? { meta: rawMeta } : {}),
+        },
         tokensEst: estimateTokens(text),
         createdAt: msg.timestamp || 0,
       });
@@ -426,9 +499,13 @@ export function mapPiEntriesToHistory(
       const content: Record<string, unknown> = {};
       if (text) content.text = text;
       if (toolCalls.length > 0) content.toolCalls = toolCalls;
+      const em = entryMeta?.get(seq);
+      if (em?.meta && Object.keys(em.meta).length > 0) {
+        content.meta = em.meta;
+      }
       allMessages.push({
         seq,
-        runId: null,
+        runId: em?.runId ?? null,
         role: "assistant",
         content,
         tokensEst: estimateTokens(text || JSON.stringify(content)),
@@ -440,16 +517,35 @@ export function mapPiEntriesToHistory(
     if (ToolResultEntry.is(entry)) {
       const msg = entry.model?.[0];
       if (!msg || msg.role !== "toolResult") continue;
-      const text = extractTextFromToolContent(msg.content);
+      const em = entryMeta?.get(seq);
+      const rawMeta = em?.meta ? { ...em.meta } : undefined;
+      const overrideText =
+        rawMeta && typeof rawMeta._overrideToolText === "string"
+          ? rawMeta._overrideToolText
+          : undefined;
+      if (rawMeta && "_overrideToolText" in rawMeta) delete rawMeta._overrideToolText;
+      const hasMeta = rawMeta && Object.keys(rawMeta).length > 0;
+      const text = overrideText ?? extractTextFromToolContent(msg.content);
+      const imageBlocks = msg.content.filter(
+        (b): b is ImageContent => b.type === "image" && typeof b.mimeType === "string",
+      );
       allMessages.push({
         seq,
-        runId: null,
+        runId: em?.runId ?? null,
         role: "tool",
         content: {
           toolCallId: msg.toolCallId,
           toolName: msg.toolName,
           text,
+          ...(imageBlocks.length > 0
+            ? {
+                toolImages: imageBlocks.map((img) => ({
+                  contentType: img.mimeType,
+                })),
+              }
+            : {}),
           ...(msg.isError ? { isError: true } : {}),
+          ...(hasMeta ? { meta: rawMeta } : {}),
         },
         tokensEst: estimateTokens(text),
         createdAt: msg.timestamp || 0,

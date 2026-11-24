@@ -1,5 +1,5 @@
 import { randomId } from "./crypto.ts";
-import { DEFAULT_MODEL_ID, calculateCostUsd, streamModelResponse } from "./providers.ts";
+import { DEFAULT_MODEL_ID, calculateCostUsd, streamPiModel } from "./pi/models.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import { ApiError, estimateTokens, type Env } from "./types.ts";
 
@@ -128,7 +128,7 @@ export async function runDecisionClassifier(
     };
 
     let rawText = "";
-    for await (const chunk of streamModelResponse({
+    for await (const chunk of streamPiModel({
       env,
       tenantId,
       model,
@@ -136,10 +136,9 @@ export async function runDecisionClassifier(
         req.instructions || "Classify the input into exactly one of the allowed choices.",
         `Allowed choices: ${JSON.stringify(choices)}. Return calibrated probabilities summing to 1.0 in 'scores'.`,
       ].join("\n"),
-      messages: [{ role: "user", text: req.input }],
+      messages: [{ role: "user", content: req.input, timestamp: Date.now() }],
       outputSchema: schema,
       temperature: 0,
-      purpose: "decision",
     })) {
       if (chunk.type === "text_delta") {
         rawText += chunk.delta;
