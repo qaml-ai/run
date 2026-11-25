@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import { useCloudflareCamelfsBackend } from "./camelfs.ts";
 import {
   ADMIN_ACCOUNT_AGENTS,
   ADMIN_COHORT_WEEKS,
@@ -1186,6 +1187,31 @@ function buildRevenue(tenants: HydratedTenant[], rawDays: string, now = Date.now
 }
 
 async function probeCamelfsHealth(env: Env): Promise<AdminCheck> {
+  if (useCloudflareCamelfsBackend(env)) {
+    const started = Date.now();
+    try {
+      await env.CAMELFS_BUCKET!.head("__healthcheck");
+      const latencyMs = Date.now() - started;
+      const hasContainers = Boolean(env.CAMELFS_CONTAINER_DO);
+      return {
+        key: "camelfsd",
+        label: "camelFS storage",
+        status: latencyMs > 1500 ? "warn" : "ok",
+        value: `${latencyMs} ms`,
+        detail: hasContainers
+          ? "Cloudflare native camelFS (DO SQLite + R2 + Containers)."
+          : "Cloudflare native camelFS (DO SQLite + R2).",
+      };
+    } catch (caught) {
+      return {
+        key: "camelfsd",
+        label: "camelFS storage",
+        status: "bad",
+        value: "Unreachable",
+        detail: caught instanceof Error ? caught.message : "R2 health probe failed.",
+      };
+    }
+  }
   const baseUrl = env.CAMELFS_URL?.trim();
   if (!baseUrl) {
     return {

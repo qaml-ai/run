@@ -29,7 +29,7 @@ export interface Env {
   APP_RUNTIME_CREDIT_TENANT_IDS?: string;
   OPS_INTERNAL_DOMAINS?: string;
   CAMELFS_BACKEND?: "http" | "cloudflare";
-  CAMELFS_URL: string;
+  CAMELFS_URL?: string;
   CAMELFS_SIGNING_KEY?: string;
   CAMELFS_DEV_TOKEN?: string;
   CAMELFS_SELF_URL?: string;

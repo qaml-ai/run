@@ -52,9 +52,8 @@ history has the cutover runbook.
   or replacement unless named in `ALLOW_DESTROY`, applied only after you type `apply` (`PLAN_ONLY=1` stops at the plan).
 - `infra/job-hosts/apply.sh`: the same guarded apply for the job-host pools' own root module and state
   (`infra/job-hosts/README.md`).
-- `infra/camelfs/apply.sh`, `deploy.sh`, `jwks.sh`, `aop.sh`, `notify-key.sh`: the camelFS service (`camelfsd api` on
-  Fargate, the DynamoDB tables, the objects bucket, the token keys), its own root module and state
-  (`infra/camelfs/README.md`).
+- `infra/camelfs/` (decommissioned 2026-11-25): legacy AWS camelFS Terraform/ECS/DynamoDB/S3 stack was removed after
+  migrating camelFS natively to Cloudflare Workers, Durable Objects SQLite, R2, and Cloudflare Containers (`v2/worker/src/camelfs/`).
 - `infra/tenant.sh`: tenants, operator tokens and provider keys in Secrets Manager.
 - `infra/github-oauth.sh`: stores the GitHub OAuth secret, then force-rolls the ECS service.
 - `infra/google-oauth.sh`: stores the Google OAuth client, then force-rolls the ECS service.

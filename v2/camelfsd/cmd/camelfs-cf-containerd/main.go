@@ -57,13 +57,13 @@ func (f *httpBlobFetcher) FetchBlob(ctx context.Context, hash string) ([]byte, e
 }
 
 type persistentShell struct {
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	stderr   *bufio.Reader
-	baseDir  string
-	initEnv  map[string]string
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	stdout  *bufio.Reader
+	stderr  *bufio.Reader
+	baseDir string
+	initEnv map[string]string
 }
 
 func newPersistentShell(baseDir string, initEnv map[string]string) *persistentShell {
@@ -320,23 +320,23 @@ func (d *daemonServer) handleProbe(w http.ResponseWriter, _ *http.Request) {
 		ovFS = strings.Contains(string(raw), "overlay")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"uid":               os.Getuid(),
-		"gid":               os.Getgid(),
-		"devFusePresent":    fuseErr == nil,
-		"fusermount3Path":   fm3,
-		"fusermountPath":    fm,
-		"kernelOverlayfs":   ovFS,
-		"cowFuseSupported":  fuseErr == nil && (fm3 != "" || fm != "" || os.Getuid() == 0),
+		"uid":              os.Getuid(),
+		"gid":              os.Getgid(),
+		"devFusePresent":   fuseErr == nil,
+		"fusermount3Path":  fm3,
+		"fusermountPath":   fm,
+		"kernelOverlayfs":  ovFS,
+		"cowFuseSupported": fuseErr == nil && (fm3 != "" || fm != "" || os.Getuid() == 0),
 	})
 }
 
 func (d *daemonServer) handleMount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		VMID          string              `json:"vmId"`
+		VMID          string                  `json:"vmId"`
 		Tree          []cfcontainer.TreeEntry `json:"tree"`
-		Env           map[string]string   `json:"env"`
-		BlobBaseURL   string              `json:"blobBaseUrl"`
-		InternalToken string              `json:"internalToken"`
+		Env           map[string]string       `json:"env"`
+		BlobBaseURL   string                  `json:"blobBaseUrl"`
+		InternalToken string                  `json:"internalToken"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_request", err.Error())

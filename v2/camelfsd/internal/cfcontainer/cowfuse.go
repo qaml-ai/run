@@ -99,15 +99,15 @@ const (
 )
 
 const (
-	capAsyncRead       uint32 = 1 << 0
-	capAtomicOTrunc    uint32 = 1 << 3
-	capBigWrites       uint32 = 1 << 5
-	capDoReaddirplus   uint32 = 1 << 13
-	capReaddirplusAut  uint32 = 1 << 14
-	capWritebackCache  uint32 = 1 << 16
-	capParallelDirops  uint32 = 1 << 18
-	capMaxPages        uint32 = 1 << 22
-	capInitExt         uint32 = 1 << 30
+	capAsyncRead      uint32 = 1 << 0
+	capAtomicOTrunc   uint32 = 1 << 3
+	capBigWrites      uint32 = 1 << 5
+	capDoReaddirplus  uint32 = 1 << 13
+	capReaddirplusAut uint32 = 1 << 14
+	capWritebackCache uint32 = 1 << 16
+	capParallelDirops uint32 = 1 << 18
+	capMaxPages       uint32 = 1 << 22
+	capInitExt        uint32 = 1 << 30
 )
 
 // MountConfig tunes FUSE caching behavior (direct vs writeback+dentry cache).
@@ -220,16 +220,16 @@ type CowFuseServer struct {
 	workers  int
 	cfg      MountConfig
 
-	mu            sync.RWMutex
-	nextIno       uint64
-	nodes         map[uint64]*cowNode
-	root          *cowNode
-	dirtyPaths    map[string]struct{}
-	deletedPaths  map[string]struct{}
-	knownPaths    map[string]commitSig // baseline paths as of last checkpoint / ApplyOps
-	blobCache     map[string][]byte
-	sfMu          sync.Mutex
-	inFlight      map[string]*inFlightCall
+	mu           sync.RWMutex
+	nextIno      uint64
+	nodes        map[uint64]*cowNode
+	root         *cowNode
+	dirtyPaths   map[string]struct{}
+	deletedPaths map[string]struct{}
+	knownPaths   map[string]commitSig // baseline paths as of last checkpoint / ApplyOps
+	blobCache    map[string][]byte
+	sfMu         sync.Mutex
+	inFlight     map[string]*inFlightCall
 
 	negotiatedFlags  atomic.Uint32
 	negotiatedFlags2 atomic.Uint32

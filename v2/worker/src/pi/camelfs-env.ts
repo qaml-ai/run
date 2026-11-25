@@ -25,6 +25,7 @@ import {
 import type { ImageLimits, ImageProcessor, PreparedImage } from "@earendil-works/pi-durable/tools";
 import {
   CamelFsClient,
+  type CamelFsClientEnv,
   type CamelFsLsResponse,
   type CamelFsReadResponse,
   type CamelFsVmExecRequest,
@@ -157,7 +158,7 @@ export interface TmpScratchEntry {
 }
 
 export interface CamelFsExecutionEnvOptions {
-  env: Pick<Env, "CAMELFS_URL" | "CAMELFS_SIGNING_KEY" | "CAMELFS_DEV_TOKEN" | "MEDIA_BUCKET" | "IMAGES">;
+  env: CamelFsClientEnv & Pick<Env, "MEDIA_BUCKET" | "IMAGES">;
   tenantId: string;
   agentId: string;
   /** Optional commit/ref override for read operations. */

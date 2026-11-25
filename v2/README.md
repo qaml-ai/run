@@ -35,43 +35,17 @@ The guest kernel requires `CONFIG_FUSE_FS` and `CONFIG_OVERLAY_FS`, and `/worksp
 ## v2 pilot
 
 Deploy from `v2/` with `worker/wrangler.pilot.jsonc`. This creates a separate
-API at `run-v2-pilot.camelai.dev` with its own Durable Objects, media bucket,
-and events queue. Start with fresh repositories. The v2 API and storage layout
-use separate data from the original pilot.
+API at `run-v2-pilot.camelai.dev` with its own Durable Objects (`TenantDO`,
+`AgentDO`, `CamelfsLineageDO`, `CamelfsContainerDO`), R2 buckets
+(`camelrun-v2-pilot-media`, `camelrun-v2-pilot-camelfs`), Cloudflare Containers
+(`scheduling_policy: "durable_object"`), and events queue.
 
-On the Firecracker host, build the guest init and install it on a copy of a
-Linux ext4 rootfs with Bash and the tools needed by pilot workloads.
-
-```sh
-cd v2/camelfsd
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/camelfs-guest-init ./cmd/camelfs-guest-init
-scripts/install-guest-init.sh /path/to/base.ext4 /tmp/camelfs-guest-init /path/to/v2-rootfs.ext4
-```
-
-Run one direct Firecracker daemon for the pilot's VM table. Set
-`CAMELFSD_BACKEND=aws`, `CAMELFSD_VM_DRIVER=firecracker`, the pilot S3 bucket,
-and the `camelfs-v2-pilot-repos` and `camelfs-v2-pilot-vms` DynamoDB tables.
-Each table has string keys `PK` and `SK`. Set `--firecracker-kernel` and
-`--firecracker-rootfs` (no workspace template, editor, or NBD devices needed). Bind the daemon to loopback and route
-`camelfs-v2-pilot.camelai.dev` to it through a Cloudflare tunnel. Set
-`CAMELFSD_PUBLIC_KEYS` to the public half of the Worker's Ed25519 signing key.
-
-Use Wrangler's `--secrets-file` for the first deployment. Supply
-`ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` through that file and
-keep the file outside the checkout. The signing key is
-`<kid>:<base64url-encoded Ed25519 seed>`. The daemon's public key uses the same
-key ID. The pilot config provides no development bearer tokens.
-
-Run one direct Firecracker daemon per VM table, with a stable data directory.
-A daemon exit kills its child microVMs. At startup,
-camelfsd retires their VM records and releases the matching ref leases before
-serving requests. Interrupted commands surface an error and the next VM opens
-the last committed workspace. To replace a host, stop or fence the old host
-before starting the replacement against its tables.
-
-The same end-to-end suite can target a dedicated Firecracker daemon with
-`CAMELFSD_TEST_URL` and `CAMELFSD_TEST_SIGNING_KEY`. The file and VM case
-covers a live edit, a stop, an API edit during sleep, and a read after restart.
+Use Wrangler's `--secrets-file` for the first deployment. Supply `ADMIN_SECRET`
+and `VAULT_SECRET` through that file and keep the file outside the checkout.
+No external AWS host, S3 bucket, DynamoDB table, or signing key is needed:
+`CAMELFS_BACKEND="cloudflare"` runs repo storage directly in `CamelfsLineageDO`
+SQLite + R2 (`CAMELFS_BUCKET`) and workspace shells in `CamelfsContainerDO`
+(`camelfsd/Dockerfile.cf-container` with RO Lazy FUSE + `tmpfs` + kernel `overlayfs`).
 
 ## Production v2 route
 
@@ -80,18 +54,13 @@ covers a live edit, a stop, an API edit during sleep, and a read after restart.
 record for the AWS load balancer. Cloudflare sends everything outside these
 routes, including `/v1`, `/console`, and `/ops`, to the existing origin.
 
-Create the production R2 bucket and queue named in the configuration. Set up
-`fs-v2.camelai.dev` with its own Firecracker host, S3 bucket, DynamoDB repo and
-VM tables, and signing key. Run camelfsd as a system service on cgroup v2 with
-`KillMode=control-group` and `Restart=on-failure`. Set
-`CAMELFSD_FC_JAILER=/usr/local/bin/jailer` using the same Firecracker release as
-`CAMELFSD_FC_BIN`. The jailer uses UID and GID 201000 plus the VM's allocated
-guest CID. Reserve that range on the dedicated host, and use a
-short data path such as `/nvme/v2` for the Unix sockets. Create fresh
-`ADMIN_SECRET`, `VAULT_SECRET`, and `CAMELFS_SIGNING_KEY` for the production
-Worker. The deploy creates its own Durable Objects. Supply a separate
-`TOOL_IDENTITY_PRIVATE_JWK` secret for Camel Bots tool signing. Bootstrap new v2
-tenants and issue v2 credentials for the clients joining the rollout.
+Create the production R2 buckets (`camelrun-v2-prod-media`,
+`camelrun-v2-prod-camelfs`) and queue named in the configuration. Provide
+`ADMIN_SECRET`, `VAULT_SECRET`, and `TOOL_IDENTITY_PRIVATE_JWK` as Worker
+secrets. The deploy creates its own Durable Objects (`TenantDO`, `AgentDO`,
+`VoiceCallDO`, `CamelfsLineageDO`, `CamelfsContainerDO`) and Cloudflare
+Container image (`camelfsd/Dockerfile.cf-container`). Bootstrap new v2 tenants
+and issue v2 credentials for the clients joining the rollout.
 
 Set `AZURE_OPENAI_SOL_ENDPOINT` to the Azure resource serving the
 `gpt-6.2-sol` deployment and `AZURE_OPENAI_SOL_API_KEY` to its key before
