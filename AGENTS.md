@@ -97,5 +97,6 @@ exit codes: `scripts/sprite-test --help`, the core's header and the `sprites-age
 - **Migrations** (`migrations/NNN_name.sql`, applied at startup): take the next free number on origin/main when you
   merge, and check again after rebasing.
 - **Never print a secret**: no tokens, keys or `.env` values in output, logs, tests, commits or PR text.
+- **Durable Object deferred code updates**: every `wrangler*.jsonc` with `durable_objects` MUST set `"code_update_strategy": { "mode": "deferred", "max_delay": 86400 }` so deploys never kill or restart active Durable Objects (or their containers) until they hibernate/sleep.
 - **Production changes go through a human**: no applies, restores or writes against production from an agent.
 - Code and docs here are written plainly: short sentences, the facts and the numbers. Match the file you are in.

@@ -40,6 +40,10 @@
     ]
   },
   "durable_objects": {
+    "code_update_strategy": {
+      "mode": "deferred",
+      "max_delay": 86400
+    },
     "bindings": [
       {
         "name": "TENANT_DO",
