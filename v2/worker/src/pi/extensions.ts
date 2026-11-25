@@ -1,25 +1,34 @@
 import { Buffer } from "node:buffer";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
+import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import {
   CompactionTask,
+  DEFAULT_COMPACTION_POLICY,
   defineExtension,
   defineSignal,
   defineTool,
   GenerationTask,
   hook,
+  ProviderDoc,
   section,
   ToolTask,
   UsageDoc,
   wrapTool,
+  type Agent,
+  type ContextView,
+  type ConversationId,
+  type EntryId,
   type Extension,
   type HookApi,
   type JsonObject,
+  type Settings,
   type ToolExecutionApi,
   type ToolExecutionResult,
   type ToolHookCall,
   type ToolPark,
   type ToolRegistration,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import {
@@ -971,6 +980,102 @@ export interface BillingUsageEvent {
   cacheReadTokens: number;
   costUsd: number;
   stopReason: string;
+  kind?: "response" | "compaction";
+}
+
+const PREFIX_PRESERVING_COMPACTION_PROMPT = `STOP. Do NOT call any tools. Do NOT continue the conversation or answer any pending questions.
+
+Your ONLY task right now is to create a structured context checkpoint summary of the conversation above so that another turn can seamlessly continue the work. If the conversation starts with an earlier <summary>, preserve its still-relevant information and fold the newer messages into it.
+
+Output ONLY the structured summary using this EXACT format:
+
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, identifiers, and error messages. Do NOT call any tools.`;
+
+export function buildPrefixPreservingCompactionPrompt(instructions?: string): string {
+  const focus = instructions?.trim() ? `\n\nAdditional focus: ${instructions.trim()}` : "";
+  return `${PREFIX_PRESERVING_COMPACTION_PROMPT}${focus}`;
+}
+
+type CompactionHookRuntime = HookApi & {
+  readonly signal?: AbortSignal;
+  readonly settings?: Settings;
+  agent?: (context: Context) => Promise<Agent>;
+  context?: (
+    conversationId: ConversationId,
+    context: Context,
+    options?: { readonly at?: EntryId },
+  ) => Promise<ContextView>;
+  commit?: (
+    change: (tx: Tx, current: unknown) => unknown | Promise<unknown>,
+    context: Context,
+  ) => Promise<void>;
+};
+
+function buildBillingUsageEvent(
+  message: AssistantMessage,
+  api: Pick<HookApi, "conversationId" | "taskId">,
+  kind: "response" | "compaction",
+): BillingUsageEvent {
+  // pi-ai reports `usage.input` as UNCACHED input tokens, while CamelRun v2's usage &
+  // pricing schema defines `inputTokens` as TOTAL input tokens (inclusive of cache tokens).
+  const uncachedInputTokens = message.usage?.input ?? 0;
+  const outputTokens = message.usage?.output ?? 0;
+  const cacheReadTokens = message.usage?.cacheRead ?? 0;
+  const cacheWriteTokens = message.usage?.cacheWrite ?? 0;
+  const inputTokens = uncachedInputTokens + cacheReadTokens + cacheWriteTokens;
+  const reportedCost = message.usage?.cost?.total ?? 0;
+  const qualifiedModel = `${message.provider}/${message.model}`;
+  const costUsd =
+    lookupCatalogModel(qualifiedModel) || reportedCost <= 0
+      ? calculatePiCostUsd(
+          qualifiedModel,
+          inputTokens,
+          outputTokens,
+          0,
+          cacheReadTokens,
+          cacheWriteTokens,
+        )
+      : reportedCost;
+
+  return {
+    conversationId: api.conversationId,
+    taskId: api.taskId,
+    provider: message.provider,
+    model: message.model,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    costUsd,
+    stopReason: message.stopReason,
+    kind,
+  };
 }
 
 export interface SpendLimitExceededEvent {
@@ -1081,47 +1186,185 @@ export function createCamelRunBillingExtension(
           throw new SpendLimitExceededError(check.spentUsd, check.spendLimitUsd);
         },
         async afterResponse(message, api) {
-          // pi-ai reports `usage.input` as UNCACHED input tokens, while CamelRun v2's usage &
-          // pricing schema defines `inputTokens` as TOTAL input tokens (inclusive of cache tokens).
-          const uncachedInputTokens = message.usage?.input ?? 0;
-          const outputTokens = message.usage?.output ?? 0;
-          const cacheReadTokens = message.usage?.cacheRead ?? 0;
-          const cacheWriteTokens = message.usage?.cacheWrite ?? 0;
-          const inputTokens = uncachedInputTokens + cacheReadTokens + cacheWriteTokens;
-          const reportedCost = message.usage?.cost?.total ?? 0;
-          const qualifiedModel = `${message.provider}/${message.model}`;
-          const costUsd =
-            lookupCatalogModel(qualifiedModel) || reportedCost <= 0
-              ? calculatePiCostUsd(
-                  qualifiedModel,
-                  inputTokens,
-                  outputTokens,
-                  0,
-                  cacheReadTokens,
-                  cacheWriteTokens,
-                )
-              : reportedCost;
-
-          await options.onUsageRecorded?.({
-            conversationId: api.conversationId,
-            taskId: api.taskId,
-            provider: message.provider,
-            model: message.model,
-            inputTokens,
-            outputTokens,
-            cacheReadTokens,
-            costUsd,
-            stopReason: message.stopReason,
-          });
+          await options.onUsageRecorded?.(buildBillingUsageEvent(message, api, "response"));
         },
       }),
       hook(CompactionTask, {
-        async beforeCompact(_compaction, api, context) {
+        async beforeCompact(compaction, api, context) {
           const check = await checkSpendExceeded(api, context);
           if (check.exceeded) {
             return { decline: true };
           }
-          return undefined;
+
+          // Overflow means the full live prefix already exceeded the model's context window.
+          // Let pi-durable's default serialized CompactionTask (with 2k tool-result truncation) handle it.
+          if (compaction.reason === "overflow") {
+            return undefined;
+          }
+
+          const rt = api as CompactionHookRuntime;
+          if (typeof rt.context !== "function" || typeof rt.agent !== "function") {
+            return undefined;
+          }
+
+          const view = await rt.context(api.conversationId, context);
+          if (!view.messages || view.messages.length === 0) {
+            return undefined;
+          }
+
+          const agent = await rt.agent(context);
+          const ref = agent.model;
+          const model = ref ? api.models.getModel(ref.provider, ref.modelId) : undefined;
+          if (!ref || !model) {
+            return undefined;
+          }
+
+          // Reuse the EXACT same provider sessionId as GenerationTask (OpenAI/Azure prompt_cache_key).
+          let sessionId = (await api.snapshot(ProviderDoc, api.conversationId, context))?.sessionId;
+          if (sessionId === undefined && typeof rt.commit === "function") {
+            await rt.commit(async (tx) => {
+              sessionId = (await tx.doc(ProviderDoc, api.conversationId)).sessionId;
+              return undefined;
+            }, context);
+          }
+
+          const modelKey = `${ref.provider}/${ref.modelId}`;
+          const reserveTokens =
+            agent.compaction?.modelOverrides?.[modelKey]?.reserveTokens ??
+            rt.settings?.compaction?.modelOverrides?.[modelKey]?.reserveTokens ??
+            agent.compaction?.reserveTokens ??
+            rt.settings?.compaction?.reserveTokens ??
+            DEFAULT_COMPACTION_POLICY.reserveTokens;
+          const maxTokens = Math.min(
+            Math.floor(0.8 * reserveTokens),
+            model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
+          );
+
+          const messages = [
+            ...view.messages,
+            {
+              role: "user" as const,
+              content: [
+                {
+                  type: "text" as const,
+                  text: buildPrefixPreservingCompactionPrompt(compaction.instructions),
+                },
+              ],
+              timestamp: api.now(),
+            },
+          ];
+
+          const { deferred: _deferred, ...forwarded } = rt.settings?.stream ?? {};
+          const signal = rt.signal ?? context.abortSignal;
+
+          let message: AssistantMessage;
+          try {
+            message = await api.models.completeSimple(
+              model,
+              { messages },
+              {
+                ...forwarded,
+                maxTokens,
+                ...(signal ? { signal } : {}),
+                ...(context.telemetry ? { telemetry: context.telemetry } : {}),
+                ...(sessionId !== undefined ? { sessionId } : {}),
+                ...(agent.thinkingLevel !== "off" ? { reasoning: agent.thinkingLevel } : {}),
+                ...(model.provider === "openrouter"
+                  ? {
+                      onPayload: (payload: unknown) => {
+                        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+                          return undefined;
+                        }
+                        const rec = payload as Record<string, unknown>;
+                        const existingProvider =
+                          rec.provider &&
+                          typeof rec.provider === "object" &&
+                          !Array.isArray(rec.provider)
+                            ? (rec.provider as Record<string, unknown>)
+                            : {};
+                        return {
+                          ...rec,
+                          provider: { ...existingProvider, data_collection: "deny" },
+                        };
+                      },
+                    }
+                  : {}),
+              },
+            );
+          } catch (err) {
+            if (signal?.aborted) throw err;
+            console.warn(
+              "Prefix-preserving compaction request threw; falling back to default CompactionTask",
+              {
+                conversationId: api.conversationId,
+                taskId: api.taskId,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+            return undefined;
+          }
+
+          signal?.throwIfAborted();
+
+          // Record compaction usage ONCE into pi.usage and CamelRun billing ledger.
+          const billingEvent = buildBillingUsageEvent(message, api, "compaction");
+          const hasUsage =
+            billingEvent.inputTokens > 0 ||
+            billingEvent.outputTokens > 0 ||
+            billingEvent.costUsd > 0;
+          if (hasUsage) {
+            if (typeof rt.commit === "function" && message.usage) {
+              const u = message.usage;
+              const usageKey = `${message.provider}/${message.model}`;
+              await rt.commit(async (tx) => {
+                const totals = (await tx.doc(UsageDoc, api.conversationId)).models;
+                const existing = Object.hasOwn(totals, usageKey) ? totals[usageKey] : undefined;
+                if (!existing) {
+                  totals[usageKey] = JSON.parse(JSON.stringify(u));
+                } else {
+                  existing.input += u.input;
+                  existing.output += u.output;
+                  existing.cacheRead += u.cacheRead;
+                  existing.cacheWrite += u.cacheWrite;
+                  existing.totalTokens += u.totalTokens;
+                  if (u.cacheWrite1h !== undefined) {
+                    existing.cacheWrite1h = (existing.cacheWrite1h ?? 0) + u.cacheWrite1h;
+                  }
+                  if (u.reasoning !== undefined) {
+                    existing.reasoning = (existing.reasoning ?? 0) + u.reasoning;
+                  }
+                  existing.cost.input += u.cost.input;
+                  existing.cost.output += u.cost.output;
+                  existing.cost.cacheRead += u.cost.cacheRead;
+                  existing.cost.cacheWrite += u.cost.cacheWrite;
+                  existing.cost.total += u.cost.total;
+                }
+                return undefined;
+              }, context);
+            }
+            await options.onUsageRecorded?.(billingEvent);
+          }
+
+          if (
+            message.stopReason !== "stop" ||
+            message.content.some((block) => block.type === "toolCall")
+          ) {
+            return undefined;
+          }
+
+          const summary = message.content
+            .filter(
+              (block): block is TextContent =>
+                block.type === "text" && typeof block.text === "string",
+            )
+            .map((block) => block.text)
+            .join("\n")
+            .trim();
+          if (!summary) {
+            return undefined;
+          }
+
+          return { summary };
         },
       }),
     ],

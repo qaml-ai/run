@@ -1227,7 +1227,7 @@ function createTenantMcpServer(
       compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
       compactOnIdle: compactOnIdleConfigSchema
         .optional()
-        .describe("Lazy on-resume stale-cache compaction settings (or null to disable)"),
+        .describe("Warm-cache idle alarm compaction settings (or null to disable)"),
       spendLimitUsd: z.number().min(0).optional().describe("Maximum USD spend per agent"),
       idleTtlSeconds: z.number().int().min(0).optional().describe("Idle TTL in seconds"),
       repoId: z.string().nullable().optional().describe("Default CamelFS repo ID"),
@@ -1472,7 +1472,7 @@ function createTenantMcpServer(
       compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
       compactOnIdle: compactOnIdleConfigSchema
         .optional()
-        .describe("Lazy on-resume stale-cache compaction settings (or null to disable)"),
+        .describe("Warm-cache idle alarm compaction settings (or null to disable)"),
       repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach"),
       branch: z.string().optional().describe("CamelFS branch ref"),
       spendLimitUsd: z.number().min(0).optional().describe("Spend limit in USD"),
@@ -1641,7 +1641,7 @@ function createTenantMcpServer(
       compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
       compactOnIdle: compactOnIdleConfigSchema
         .optional()
-        .describe("Lazy on-resume stale-cache compaction settings (or null to disable)"),
+        .describe("Warm-cache idle alarm compaction settings (or null to disable)"),
       skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs"),
       builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
       repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach, or null to detach"),

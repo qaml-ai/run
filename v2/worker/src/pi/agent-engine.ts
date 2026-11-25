@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage, ImageContent, TextContent, ToolCall } from "@earendil-works/pi-ai";
-import { estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
+import { calculateContextTokens, estimateMessageTokens } from "@earendil-works/pi-ai/utils/estimate";
 import {
   AssistantEntry,
   CompactionEntry,
@@ -47,7 +47,6 @@ import { getTenantStub, platformCreditReserve } from "../tenant-do.ts";
 import {
   ApiError,
   DEFAULT_COMPACT_ON_IDLE_KEEP_RECENT_TOKENS,
-  DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS,
   emptyUsage,
   extractApiError,
   type AgentConfig,
@@ -1077,9 +1076,37 @@ export class PiAgentEngine {
     });
   }
 
-  private handleBillingUsage(ev: BillingUsageEvent): void {
+  private async handleBillingUsage(ev: BillingUsageEvent): Promise<void> {
     const tracker = this.getOrRehydrateActiveTracker();
-    if (!tracker) return;
+    if (!tracker) {
+      if (ev.kind !== "compaction") return;
+      if (ev.inputTokens <= 0 && ev.outputTokens <= 0 && ev.costUsd <= 0) return;
+      const cfg = this.host.readConfigOrNull();
+      if (!cfg) return;
+      const { isByok } = await resolveTenantByokProvider(
+        this.host.env,
+        cfg.tenantId,
+        cfg.model,
+        undefined,
+        cfg.keyScope ?? null,
+      );
+      const costUsd = isByok ? 0 : ev.costUsd;
+      await getTenantStub(this.host.env, cfg.tenantId)
+        .settleUsage({
+          refId: `compaction:${cfg.id}:${ev.taskId}`,
+          model: cfg.model,
+          inputTokens: ev.inputTokens,
+          outputTokens: ev.outputTokens,
+          cacheReadTokens: ev.cacheReadTokens,
+          vmMs: 0,
+          costUsd,
+          note: `Compaction ${cfg.key} (${cfg.id})`,
+          agentId: cfg.id,
+          ...(isByok ? { byok: true } : {}),
+        })
+        .catch(() => {});
+      return;
+    }
     const cfg = this.host.getConfig();
     tracker.usage.inputTokens += ev.inputTokens;
     tracker.usage.outputTokens += ev.outputTokens;
@@ -1095,7 +1122,7 @@ export class PiAgentEngine {
           actor: tracker.actor,
           context: cfg.toolIdentity?.context,
           model: cfg.model,
-          kind: "response",
+          kind: ev.kind ?? "response",
           input: ev.inputTokens,
           output: ev.outputTokens,
           cacheRead: ev.cacheReadTokens,
@@ -1624,11 +1651,11 @@ export class PiAgentEngine {
         if (this.host.getActiveRunId() === tracker.runId) {
           this.host.setActiveRunId(null);
         }
+        if (!this.host.isDestroying()) {
+          await this.host.scheduleNextAlarm().catch(() => {});
+        }
         this.host.onRunSettled?.(tracker.runId);
         this.host.notifyRunWaiters(tracker.runId);
-        if (!this.host.isDestroying()) {
-          void this.host.scheduleNextAlarm();
-        }
       }
     })();
 
@@ -1749,7 +1776,6 @@ export class PiAgentEngine {
           await conv.configure(nextChange, BG);
           this.lastAppliedAgentConfigFp = nextFp;
         }
-        await this.maybeCompactOnIdleResume(cfg, conv);
       }
 
       const runRow = this.host.ctx.storage.sql
@@ -2183,116 +2209,154 @@ export class PiAgentEngine {
     return { aborted: true, cancelledRunIds };
   }
 
-  private async maybeCompactOnIdleResume(
-    cfg: AgentConfig,
-    conv: Conversation,
-  ): Promise<void> {
+  async getIdleCompactionState(
+    _cfg?: AgentConfig,
+  ): Promise<{ latestSeq: number; latestAt: number; activeTokens: number } | null> {
+    if (!this.rootReady && !this.hasPiRootConversation()) return null;
+    await this.ensureStarted();
+    const conv = await this.getRootConversation();
+    if (!conv) return null;
+
+    const latest = await this.getLatestMessageMeta();
+    if (!latest) return null;
+
+    // Exact pi-durable estimateContext() logic: measured assistant usage after view.head +
+    // estimateMessageTokens() for any messages after it.
+    const view = await conv.context(BG);
+    let measured: AssistantMessage | undefined;
+    const after = view.head?.id ?? Number.NEGATIVE_INFINITY;
+    for (let index = view.entries.length - 1; index >= 0 && measured === undefined; index--) {
+      const entry = view.entries[index]!;
+      if (entry.id <= after) continue;
+      const contrib = view.contributions[index] ?? [];
+      for (let j = contrib.length - 1; j >= 0; j--) {
+        const msg = contrib[j]!;
+        if (msg.role === "assistant" && calculateContextTokens(msg.usage) > 0) {
+          measured = msg;
+          break;
+        }
+      }
+    }
+    const from = measured === undefined ? 0 : view.messages.lastIndexOf(measured) + 1;
+    let activeTokens = measured === undefined ? 0 : calculateContextTokens(measured.usage);
+    for (const msg of view.messages.slice(from)) {
+      activeTokens += estimateMessageTokens(msg);
+    }
+
+    return {
+      latestSeq: latest.seq,
+      latestAt: latest.createdAt,
+      activeTokens,
+    };
+  }
+
+  async runIdleCompaction(cfg: AgentConfig, latestAt: number): Promise<boolean> {
     const idleCfg = cfg.compactOnIdle;
-    if (!idleCfg?.enabled) return;
+    if (!idleCfg?.enabled) return false;
 
+    await this.ensureStarted();
+    await this.refreshModels(cfg);
+    await this.ensureRoot(cfg);
+    await this.ensureMcpExtensionReady(cfg);
+
+    const conv = await this.getRootConversation();
+    if (!conv) return false;
+
+    const nextChange = this.buildAgentChange(cfg);
+    if (!this.lastAppliedAgentConfigFp) {
+      await conv.configure(nextChange, BG);
+      this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(nextChange);
+    }
+
+    const view = await conv.context(BG);
+    const start = view.head === undefined ? 0 : 1;
+    const activeEntries = view.entries.slice(start);
+    const activeContributions = view.contributions.slice(start);
+
+    let estimatedActiveTokens = 0;
+    let firstNonSystemEntryTokens: number | null = null;
+    const contentEntries: EntryRecord[] = [];
+    for (let i = 0; i < activeEntries.length; i++) {
+      const entry = activeEntries[i]!;
+      const msgs = activeContributions[i] ?? [];
+      let entryTokens = 0;
+      for (const m of msgs) {
+        if (m.role !== "system") {
+          entryTokens += estimateMessageTokens(m);
+        }
+      }
+      estimatedActiveTokens += entryTokens;
+      if (entryTokens > 0 && firstNonSystemEntryTokens === null) {
+        firstNonSystemEntryTokens = entryTokens;
+      }
+      if (isUserContentEntry(entry) || AssistantEntry.is(entry) || ToolResultEntry.is(entry)) {
+        contentEntries.push(entry);
+      }
+    }
+    if (contentEntries.length === 0) return false;
+
+    const keepRecentTokens =
+      idleCfg.keepRecentTokens ?? DEFAULT_COMPACT_ON_IDLE_KEEP_RECENT_TOKENS;
+    const tailTokensAfterOldest =
+      firstNonSystemEntryTokens !== null
+        ? estimatedActiveTokens - firstNonSystemEntryTokens
+        : 0;
+    if (tailTokensAfterOldest <= 0) return false;
+
+    const effectiveKeepRecentTokens = Math.min(keepRecentTokens, tailTokensAfterOldest);
+    const pi = await this.harness.pi();
+    const prevHeadId = view.head ? Number(view.head.id) : 0;
+
+    await conv.configure(
+      { compaction: { enabled: true, keepRecentTokens: effectiveKeepRecentTokens } },
+      BG,
+    );
     try {
-      const latest = await this.getLatestMessageMeta();
-      if (!latest) return;
-
-      const now = Date.now();
-      const idleMs = now - latest.createdAt;
-      if (idleMs < idleCfg.idleSeconds * 1000) return;
-
-      const view = await conv.context(BG);
-      const start = view.head === undefined ? 0 : 1;
-      const activeEntries = view.entries.slice(start);
-      const activeContributions = view.contributions.slice(start);
-
-      let activeContextTokens = 0;
-      let firstNonSystemEntryTokens: number | null = null;
-      const contentEntries: EntryRecord[] = [];
-      for (let i = 0; i < activeEntries.length; i++) {
-        const entry = activeEntries[i]!;
-        const msgs = activeContributions[i] ?? [];
-        let entryTokens = 0;
-        for (const m of msgs) {
-          if (m.role !== "system") {
-            entryTokens += estimateMessageTokens(m);
+      const taskId = await conv.compact(undefined, BG);
+      const settled = await pi.waitForTask(taskId, BG);
+      if (settled.state.status === "terminal" && settled.state.outcome.status === "completed") {
+        const result = settled.state.outcome.result as
+          | { entryId?: EntryId; submissionId?: SubmissionId }
+          | undefined;
+        if (result?.submissionId !== undefined) {
+          const sub = await pi.submission(result.submissionId, BG);
+          await sub?.wait(BG);
+        }
+        if (result?.entryId !== undefined || result?.submissionId !== undefined) {
+          let compEntry: EntryRecord | undefined;
+          let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+          for (;;) {
+            const page = await conv.entries({ order: "descending" }, 16, cursor, BG);
+            compEntry =
+              result?.entryId !== undefined
+                ? page.items.find((e) => Number(e.id) === Number(result.entryId))
+                : page.items.find((e) => CompactionEntry.is(e));
+            if (compEntry || !page.next) break;
+            cursor = page.next;
           }
-        }
-        activeContextTokens += entryTokens;
-        if (entryTokens > 0 && firstNonSystemEntryTokens === null) {
-          firstNonSystemEntryTokens = entryTokens;
-        }
-        if (isUserContentEntry(entry) || AssistantEntry.is(entry) || ToolResultEntry.is(entry)) {
-          contentEntries.push(entry);
-        }
-      }
-
-      const minTokens = idleCfg.minTokens ?? DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS;
-      if (activeContextTokens < minTokens) return;
-
-      const keepRecentTokens =
-        idleCfg.keepRecentTokens ?? DEFAULT_COMPACT_ON_IDLE_KEEP_RECENT_TOKENS;
-      if (keepRecentTokens >= activeContextTokens) return;
-
-      const tailTokensAfterOldest =
-        firstNonSystemEntryTokens !== null
-          ? activeContextTokens - firstNonSystemEntryTokens
-          : 0;
-      if (tailTokensAfterOldest <= 0) return;
-
-      const effectiveKeepRecentTokens = Math.min(keepRecentTokens, tailTokensAfterOldest);
-
-      const pi = await this.harness.pi();
-      const prevHeadId = view.head ? Number(view.head.id) : 0;
-
-      await conv.configure({ compaction: { enabled: true, keepRecentTokens: effectiveKeepRecentTokens } }, BG);
-      try {
-        const taskId = await conv.compact(undefined, BG);
-        const settled = await pi.waitForTask(taskId, BG);
-        if (settled.state.status === "terminal" && settled.state.outcome.status === "completed") {
-          const result = settled.state.outcome.result as
-            | { entryId?: EntryId; submissionId?: SubmissionId }
-            | undefined;
-          if (result?.submissionId !== undefined) {
-            const sub = await pi.submission(result.submissionId, BG);
-            await sub?.wait(BG);
-          }
-          if (result?.entryId !== undefined || result?.submissionId !== undefined) {
-            let compEntry: EntryRecord | undefined;
-            let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
-            for (;;) {
-              const page = await conv.entries({ order: "descending" }, 16, cursor, BG);
-              compEntry =
-                result?.entryId !== undefined
-                  ? page.items.find((e) => Number(e.id) === Number(result.entryId))
-                  : page.items.find((e) => CompactionEntry.is(e));
-              if (compEntry || !page.next) break;
-              cursor = page.next;
-            }
-            if (compEntry && Number(compEntry.id) > prevHeadId) {
-              const headId = Number(compEntry.head ?? compEntry.id);
-              const compactedCount = contentEntries.filter((e) => Number(e.id) < headId).length;
-              if (compactedCount > 0) {
-                this.host.recordAndBroadcastEvent(null, "context_compacted", {
-                  upToSeq: headId,
-                  compactedCount,
-                  reason: "idle_resume",
-                  idleSeconds: Math.round(idleMs / 1000),
-                });
-              }
+          if (compEntry && Number(compEntry.id) > prevHeadId) {
+            const headId = Number(compEntry.head ?? compEntry.id);
+            const compactedCount = contentEntries.filter((e) => Number(e.id) < headId).length;
+            if (compactedCount > 0) {
+              this.host.recordAndBroadcastEvent(null, "context_compacted", {
+                upToSeq: headId,
+                compactedCount,
+                reason: "idle",
+                idleSeconds: Math.max(0, Math.round((Date.now() - latestAt) / 1000)),
+              });
+              return true;
             }
           }
-        } else if (settled.state.status === "terminal" && settled.state.outcome.status === "failed") {
-          console.warn("Idle-resume compaction failed; continuing with resumed run", {
-            agentId: cfg.id,
-            error: settled.state.outcome.error,
-          });
         }
-      } finally {
-        await conv.configure({ compaction: null }, BG).catch(() => {});
+      } else if (settled.state.status === "terminal" && settled.state.outcome.status === "failed") {
+        console.warn("Idle alarm compaction failed", {
+          agentId: cfg.id,
+          error: settled.state.outcome.error,
+        });
       }
-    } catch (err) {
-      console.warn("Idle-resume compaction errored; continuing with resumed run", {
-        agentId: cfg.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return false;
+    } finally {
+      await conv.configure({ compaction: null }, BG).catch(() => {});
     }
   }
 

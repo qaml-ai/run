@@ -111,11 +111,11 @@ export interface QueueConfig { mode: "each" | "batch"; windowMs?: number; }
 export interface DreamingConfig { enabled: boolean; idleSeconds?: number; }
 export interface CompactOnIdleConfig {
   enabled: boolean;
-  /** Idle duration in seconds after which prompt cache is assumed cold (default 600 = 10 min). */
+  /** Idle duration in seconds before warm-cache idle compaction fires (default 240 = 4 min, before 5-min prompt cache TTL expires). */
   idleSeconds: number;
-  /** Minimum estimated uncompacted context tokens required to trigger idle-resume compaction (default 12_000). */
+  /** Minimum active context tokens required to schedule/run idle compaction (default 24_000). */
   minTokens?: number;
-  /** Approximate recent tokens kept verbatim when compacting on idle resume (default 4_000). */
+  /** Approximate recent tokens kept verbatim when compacting on idle (default 4_000). */
   keepRecentTokens?: number;
 }
 

@@ -8,6 +8,7 @@ import { parseRunFiles } from "./run-files.ts";
 import { getTenantStub } from "./tenant-do.ts";
 import {
   ApiError,
+  DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS,
   emptyUsage,
   extractApiError,
   normalizeCompactOnIdleConfig,
@@ -75,6 +76,7 @@ export class AgentDO extends DurableObject<Env> {
   private sseListeners = new Set<(ev: AgentEventRecord) => void>();
   private pendingWsCalls = new Map<string, PendingWsCall>();
   private lastDreamedSeq = 0;
+  private lastIdleCompactedSeq = 0;
   private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
   private piEngine: PiAgentEngine | null = null;
   private periodicRanInAlarm = false;
@@ -237,6 +239,13 @@ export class AgentDO extends DurableObject<Env> {
       .toArray()[0];
     if (dreamRow?.v) {
       this.lastDreamedSeq = Number(dreamRow.v) || 0;
+    }
+
+    const idleCompactRow = this.ctx.storage.sql
+      .exec<{ v: string }>(`SELECT v FROM runtime_kv WHERE k = 'last_idle_compacted_seq' LIMIT 1`)
+      .toArray()[0];
+    if (idleCompactRow?.v) {
+      this.lastIdleCompactedSeq = Number(idleCompactRow.v) || 0;
     }
 
     // Recover queued runs persisted before an isolate restart.
@@ -1000,7 +1009,9 @@ export class AgentDO extends DurableObject<Env> {
       await drain;
     } finally {
       this.queueDrain = null;
-      if (!this.destroying && this.sqlReady) void this.scheduleNextAlarm();
+      if (!this.destroying && this.sqlReady) {
+        await this.scheduleNextAlarm().catch(() => {});
+      }
     }
   }
 
@@ -1183,6 +1194,25 @@ export class AgentDO extends DurableObject<Env> {
       }
     }
 
+    if (
+      cfg.compactOnIdle?.enabled &&
+      cfg.compactOnIdle.idleSeconds > 0 &&
+      !this.activeRunId &&
+      this.ctx.storage.sql
+        .exec(`SELECT 1 FROM runs WHERE status = 'queued' LIMIT 1`)
+        .toArray().length === 0
+    ) {
+      const state = await this.ensurePiEngine().getIdleCompactionState(cfg);
+      const minTokens = cfg.compactOnIdle.minTokens ?? DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS;
+      if (
+        state &&
+        state.latestSeq > this.lastIdleCompactedSeq &&
+        state.activeTokens >= minTokens
+      ) {
+        candidates.push(state.latestAt + cfg.compactOnIdle.idleSeconds * 1000);
+      }
+    }
+
     const engine = this.ensurePiEngine();
     await engine.ensureStarted();
     if (this.destroying || !this.sqlReady) return;
@@ -1247,6 +1277,23 @@ export class AgentDO extends DurableObject<Env> {
         latest &&
         latest.seq > this.lastDreamedSeq &&
         now - latest.createdAt >= cfg.dreaming.idleSeconds * 1000
+      ) {
+        return true;
+      }
+    }
+    if (
+      cfg.compactOnIdle?.enabled &&
+      cfg.compactOnIdle.idleSeconds > 0 &&
+      !this.activeRunId &&
+      sql.exec(`SELECT 1 FROM runs WHERE status = 'queued' LIMIT 1`).toArray().length === 0
+    ) {
+      const state = await this.ensurePiEngine().getIdleCompactionState(cfg);
+      const minTokens = cfg.compactOnIdle.minTokens ?? DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS;
+      if (
+        state &&
+        state.latestSeq > this.lastIdleCompactedSeq &&
+        state.activeTokens >= minTokens &&
+        now - state.latestAt >= cfg.compactOnIdle.idleSeconds * 1000
       ) {
         return true;
       }
@@ -1389,6 +1436,42 @@ export class AgentDO extends DurableObject<Env> {
         );
         await this.ensurePiEngine().consolidateDream().catch(() => {});
         if (stopping()) return;
+      }
+    }
+
+    // 5. Warm-cache idle compaction (threshold-gated)
+    if (
+      cfg.compactOnIdle?.enabled &&
+      cfg.compactOnIdle.idleSeconds > 0 &&
+      !this.activeRunId &&
+      this.ctx.storage.sql
+        .exec(`SELECT 1 FROM runs WHERE status = 'queued' LIMIT 1`)
+        .toArray().length === 0
+    ) {
+      const state = await this.ensurePiEngine().getIdleCompactionState(cfg);
+      if (
+        state &&
+        state.latestSeq > this.lastIdleCompactedSeq &&
+        now - state.latestAt >= cfg.compactOnIdle.idleSeconds * 1000
+      ) {
+        this.lastIdleCompactedSeq = state.latestSeq;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO runtime_kv (k, v) VALUES ('last_idle_compacted_seq', ?1)
+           ON CONFLICT(k) DO UPDATE SET v = excluded.v`,
+          String(this.lastIdleCompactedSeq),
+        );
+        const minTokens = cfg.compactOnIdle.minTokens ?? DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS;
+        if (state.activeTokens >= minTokens) {
+          try {
+            await this.ensurePiEngine().runIdleCompaction(cfg, state.latestAt);
+          } catch (err) {
+            console.warn("Idle alarm compaction errored", {
+              agentId: cfg.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          if (stopping()) return;
+        }
       }
     }
 
@@ -2288,6 +2371,8 @@ export class AgentDO extends DurableObject<Env> {
       this.cachedConfig = null;
       this.preRunHints.clear();
       this.runKeyScopes.clear();
+      this.lastDreamedSeq = 0;
+      this.lastIdleCompactedSeq = 0;
       this.sqlReady = false;
       return { deleted: true };
     } finally {
