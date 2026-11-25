@@ -258,8 +258,8 @@ export class TenantDO extends DurableObject<Env> {
         tier TEXT NOT NULL DEFAULT 'pro',
         balance_usd REAL NOT NULL DEFAULT 0,
         monthly_cap_usd REAL NOT NULL DEFAULT 1000,
-        concurrency_limit INTEGER NOT NULL DEFAULT 25,
-        rate_limit_rpm INTEGER NOT NULL DEFAULT 600,
+        concurrency_limit INTEGER NOT NULL DEFAULT 250,
+        rate_limit_rpm INTEGER NOT NULL DEFAULT 6000,
         created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS api_keys (
@@ -490,8 +490,8 @@ export class TenantDO extends DurableObject<Env> {
         input.tier ?? "pro",
         initialCredits,
         input.monthlyCapUsd ?? 1000,
-        input.concurrencyLimit ?? 25,
-        input.rateLimitRpm ?? 600,
+        input.concurrencyLimit ?? 250,
+        input.rateLimitRpm ?? 6000,
         now,
       );
       this.ctx.storage.sql.exec(

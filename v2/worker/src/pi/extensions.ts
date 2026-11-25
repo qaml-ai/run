@@ -781,7 +781,7 @@ export interface HumanInputRequiredEvent {
 export interface CamelRunHumanExtensionOptions {
   /** Returns true when a tool requires explicit human approval before executing. */
   requiresApproval?: (toolName: string, call: ToolHookCall) => boolean;
-  /** Default timeout in ms before a parked human input/approval expires (default 24h). */
+  /** Default timeout in ms before a parked human input/approval expires (default 14d, under 32-bit timer cap). */
   defaultTimeoutMs?: number;
   /** Called right before parking so AgentDO can persist the `inputs` row & broadcast `input_required`. */
   onInputRequired?: (event: HumanInputRequiredEvent) => void | Promise<void>;
@@ -797,7 +797,7 @@ type AskHumanCheckpoint = {
 export function createCamelRunHumanExtension(
   options?: CamelRunHumanExtensionOptions,
 ): Extension {
-  const timeoutMs = options?.defaultTimeoutMs ?? 24 * 60 * 60 * 1000;
+  const timeoutMs = options?.defaultTimeoutMs ?? 14 * 24 * 60 * 60 * 1000;
 
   const askHumanTool = defineTool<
     ReturnType<typeof askHumanSchema>,
@@ -1555,7 +1555,7 @@ function buildSignedRuntimeMcpTool(
   discovered: DiscoveredMcpTool,
   options: CamelRunMcpExtensionOptions,
 ): ToolRegistration {
-  const timeoutMs = options.defaultInputTimeoutMs ?? 24 * 60 * 60 * 1000;
+  const timeoutMs = options.defaultInputTimeoutMs ?? 14 * 24 * 60 * 60 * 1000;
   const deferred = discovered.server.deferred ?? options.deferByDefault ?? false;
 
   return defineTool<Record<string, unknown>, JsonValue, SignedMcpCheckpoint>({

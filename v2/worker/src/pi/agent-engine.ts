@@ -322,11 +322,13 @@ export class PiAgentEngine {
                     backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
                   },
                   afterFailedRun: "keep",
+                  restartLimit: 25,
                 };
               }
               return {
                 compaction: { enabled: true },
                 afterFailedRun: "keep",
+                restartLimit: 25,
               };
             },
             env: async () => this.buildExecutionEnv(),

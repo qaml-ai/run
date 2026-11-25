@@ -96,7 +96,11 @@ export async function executeStatelessRun(
 
   const runId = randomId("run", 8);
   const model = (body.model || env.DEFAULT_MODEL || DEFAULT_MODEL_ID).trim();
-  const maxSteps = Math.max(1, Math.min(25, Number(body.maxSteps ?? 10)));
+  const parsedMaxSteps =
+    body.maxSteps !== undefined && body.maxSteps !== null ? Number(body.maxSteps) : Number.NaN;
+  const maxSteps = Number.isFinite(parsedMaxSteps)
+    ? Math.max(1, Math.trunc(parsedMaxSteps))
+    : Number.POSITIVE_INFINITY;
   const customTools = body.tools ?? [];
 
   const toolSchemas: LlmToolSchema[] = customTools.map((t) => ({

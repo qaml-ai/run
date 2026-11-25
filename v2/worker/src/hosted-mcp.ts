@@ -1787,7 +1787,7 @@ function createTenantMcpServer(
         .optional()
         .describe("Queue behind or steer an active run (default queue)"),
       wait: z.boolean().optional().describe("Wait for the turn to settle (default true)"),
-      maxSteps: z.number().int().min(1).max(1000).optional(),
+      maxSteps: z.number().int().min(1).optional(),
       spendLimitUsd: z.number().min(0).optional(),
       outputSchema: z.record(z.string(), z.unknown()).optional(),
     },

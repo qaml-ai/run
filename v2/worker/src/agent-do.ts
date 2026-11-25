@@ -776,11 +776,11 @@ export class AgentDO extends DurableObject<Env> {
     const whileRunning = body.whileRunning === "steer" ? "steer" : "queue";
     const wait = body.wait !== undefined ? Boolean(body.wait) : true;
     // 0 = unlimited turns (stored in NOT NULL max_steps column for backwards-compatible DO SQLite schema);
-    // explicit positive maxSteps still enforces a per-run turn cap (up to 1000).
+    // explicit positive maxSteps still enforces a per-run turn cap (any positive integer).
     const parsedMaxSteps =
       body.maxSteps !== undefined && body.maxSteps !== null ? Number(body.maxSteps) : Number.NaN;
     const maxSteps = Number.isFinite(parsedMaxSteps)
-      ? Math.max(1, Math.min(1000, Math.trunc(parsedMaxSteps)))
+      ? Math.max(1, Math.trunc(parsedMaxSteps))
       : 0;
     const spendLimitUsd = body.spendLimitUsd;
     if (spendLimitUsd !== undefined && (!Number.isFinite(spendLimitUsd) || spendLimitUsd < 0)) {
