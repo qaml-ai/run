@@ -169,6 +169,12 @@ export async function handleChannelInbound(
     mcpServers: channelCfg.mcpServers ?? defCfg?.mcpServers ?? [],
     builtins: channelCfg.builtins ?? defCfg?.builtins ?? [],
     skills: channelCfg.skills ?? defCfg?.skills ?? [],
+    compactThresholdTokens:
+      channelCfg.compactThresholdTokens !== undefined
+        ? channelCfg.compactThresholdTokens
+        : defCfg?.compactThresholdTokens,
+    compactOnIdle:
+      channelCfg.compactOnIdle !== undefined ? channelCfg.compactOnIdle : defCfg?.compactOnIdle,
   });
 
   const runRecord = await agentStub.startRun({

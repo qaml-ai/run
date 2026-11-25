@@ -63,6 +63,7 @@ import type {
   AgentConfig,
   AgentUpsertInput,
   BuiltinSuite,
+  CompactOnIdleConfig,
   Env,
   McpServerSpec,
   RpcStub,
@@ -1617,6 +1618,7 @@ async function upsertChildAgent(
     builtins: BuiltinSuite[];
     skills?: string[];
     compactThresholdTokens?: number;
+    compactOnIdle?: Partial<CompactOnIdleConfig> | null;
     tools?: AgentUpsertInput["tools"];
     mcpServers?: AgentUpsertInput["mcpServers"];
     definitionSlug?: string | null;
@@ -1654,6 +1656,7 @@ async function upsertChildAgent(
     builtins: opts.builtins,
     skills: opts.skills,
     compactThresholdTokens: opts.compactThresholdTokens,
+    compactOnIdle: opts.compactOnIdle,
     tools: opts.tools,
     mcpServers: opts.mcpServers,
     repoId: opts.repoId,
@@ -1732,6 +1735,8 @@ export function createCamelRunDelegateExtension(
       builtins: childBuiltins,
       skills: defCfg?.skills ?? config.skills,
       compactThresholdTokens: defCfg?.compactThresholdTokens ?? config.compactThresholdTokens,
+      compactOnIdle:
+        defCfg?.compactOnIdle !== undefined ? defCfg.compactOnIdle : config.compactOnIdle,
       tools: defCfg?.tools,
       mcpServers: defCfg?.mcpServers,
       definitionSlug: defEntry?.slug ?? null,

@@ -111,6 +111,90 @@ export interface DreamingConfig {
   idleSeconds: number;
 }
 
+export interface CompactOnIdleConfig {
+  enabled: boolean;
+  /** Idle duration in seconds after which prompt cache is assumed cold (default 600 = 10 min). */
+  idleSeconds: number;
+  /** Minimum estimated uncompacted context tokens required to trigger idle-resume compaction (default 12_000). */
+  minTokens?: number;
+  /** Approximate recent tokens kept verbatim when compacting on idle resume (default 4_000). */
+  keepRecentTokens?: number;
+}
+
+export const DEFAULT_COMPACT_ON_IDLE_SECONDS = 600;
+export const DEFAULT_COMPACT_ON_IDLE_MIN_TOKENS = 12_000;
+export const DEFAULT_COMPACT_ON_IDLE_KEEP_RECENT_TOKENS = 4_000;
+
+export function normalizeCompactOnIdleConfig(
+  raw: unknown,
+): CompactOnIdleConfig | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ApiError(400, "invalid_request", "`compactOnIdle` must be an object or null");
+  }
+  const obj = raw as Record<string, unknown>;
+  if (obj.enabled !== undefined && typeof obj.enabled !== "boolean") {
+    throw new ApiError(400, "invalid_request", "`compactOnIdle.enabled` must be a boolean");
+  }
+  const enabled = obj.enabled ?? false;
+
+  let idleSeconds = DEFAULT_COMPACT_ON_IDLE_SECONDS;
+  if (obj.idleSeconds !== undefined) {
+    if (
+      typeof obj.idleSeconds !== "number" ||
+      !Number.isFinite(obj.idleSeconds) ||
+      obj.idleSeconds < 1
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "`compactOnIdle.idleSeconds` must be a finite integer >= 1",
+      );
+    }
+    idleSeconds = Math.floor(obj.idleSeconds);
+  }
+
+  let minTokens: number | undefined;
+  if (obj.minTokens !== undefined) {
+    if (
+      typeof obj.minTokens !== "number" ||
+      !Number.isFinite(obj.minTokens) ||
+      obj.minTokens < 0
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "`compactOnIdle.minTokens` must be a finite number >= 0",
+      );
+    }
+    minTokens = Math.floor(obj.minTokens);
+  }
+
+  let keepRecentTokens: number | undefined;
+  if (obj.keepRecentTokens !== undefined) {
+    if (
+      typeof obj.keepRecentTokens !== "number" ||
+      !Number.isFinite(obj.keepRecentTokens) ||
+      obj.keepRecentTokens < 0
+    ) {
+      throw new ApiError(
+        400,
+        "invalid_request",
+        "`compactOnIdle.keepRecentTokens` must be a finite number >= 0",
+      );
+    }
+    keepRecentTokens = Math.floor(obj.keepRecentTokens);
+  }
+
+  return {
+    enabled,
+    idleSeconds,
+    ...(minTokens !== undefined ? { minTokens } : {}),
+    ...(keepRecentTokens !== undefined ? { keepRecentTokens } : {}),
+  };
+}
+
 export type AgentEngine = "pi";
 
 export interface AgentConfig {
@@ -134,6 +218,7 @@ export interface AgentConfig {
   spendLimitUsd: number;
   idleTtlSeconds: number;
   compactThresholdTokens?: number;
+  compactOnIdle?: CompactOnIdleConfig;
   dreaming: DreamingConfig;
   createdAt: number;
   updatedAt: number;
@@ -156,6 +241,7 @@ export interface AgentUpsertInput {
   spendLimitUsd?: number;
   idleTtlSeconds?: number;
   compactThresholdTokens?: number;
+  compactOnIdle?: Partial<CompactOnIdleConfig> | null;
   dreaming?: Partial<DreamingConfig>;
   /** Optional first run prompt to create + start an agent in a single HTTP request. */
   prompt?: string;

@@ -109,6 +109,15 @@ export interface LocalTool<TArgs = Record<string, unknown>, TResult = unknown> e
 
 export interface QueueConfig { mode: "each" | "batch"; windowMs?: number; }
 export interface DreamingConfig { enabled: boolean; idleSeconds?: number; }
+export interface CompactOnIdleConfig {
+  enabled: boolean;
+  /** Idle duration in seconds after which prompt cache is assumed cold (default 600 = 10 min). */
+  idleSeconds: number;
+  /** Minimum estimated uncompacted context tokens required to trigger idle-resume compaction (default 12_000). */
+  minTokens?: number;
+  /** Approximate recent tokens kept verbatim when compacting on idle resume (default 4_000). */
+  keepRecentTokens?: number;
+}
 
 export type AgentEngine = "pi";
 
@@ -128,6 +137,7 @@ export interface AgentConfig {
   spendLimitUsd?: number;
   idleTtlSeconds?: number;
   compactThresholdTokens?: number;
+  compactOnIdle?: CompactOnIdleConfig | null;
   dreaming?: DreamingConfig;
 }
 export type UpsertAgentInput = AgentConfig;
@@ -186,6 +196,7 @@ export interface AgentSummary {
   definition?: string | null;
   skills?: string[];
   compactThresholdTokens?: number;
+  compactOnIdle?: CompactOnIdleConfig;
   status?: "idle" | "running" | (string & {});
   activeRunId?: string | null;
   messageCount?: number;

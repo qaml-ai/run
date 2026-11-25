@@ -10,9 +10,11 @@ import {
   ApiError,
   emptyUsage,
   extractApiError,
+  normalizeCompactOnIdleConfig,
   toApiErrorResponse,
   type AgentConfig,
   type AgentEventRecord,
+  type CompactOnIdleConfig,
   type Env,
   type PendingInputView,
   type QueueMessagePayload,
@@ -1468,17 +1470,22 @@ export class AgentDO extends DurableObject<Env> {
   // ---- Native Durable Object RPC Methods ----
 
   async initAgent(
-    incoming: Partial<AgentConfig> & {
+    incoming: Partial<Omit<AgentConfig, "compactOnIdle">> & {
       id: string;
       tenantId: string;
       key: string;
       initialModel?: string;
+      compactOnIdle?: Partial<CompactOnIdleConfig> | null;
     },
     initialRun?: { input: StartRunInput; hints?: StartRunHints },
   ): Promise<{ config: AgentConfig; created: boolean; run?: RunRecord }> {
     this.ensureSql();
     const existing = this.readConfigOrNull();
     const now = Date.now();
+    const resolvedCompactOnIdle =
+      incoming.compactOnIdle !== undefined
+        ? normalizeCompactOnIdleConfig(incoming.compactOnIdle)
+        : existing?.compactOnIdle;
     const merged: AgentConfig = {
       id: incoming.id,
       tenantId: incoming.tenantId,
@@ -1524,6 +1531,7 @@ export class AgentDO extends DurableObject<Env> {
         : existing?.compactThresholdTokens !== undefined
           ? { compactThresholdTokens: existing.compactThresholdTokens }
           : {}),
+      ...(resolvedCompactOnIdle ? { compactOnIdle: resolvedCompactOnIdle } : {}),
       dreaming: {
         enabled: incoming.dreaming?.enabled ?? existing?.dreaming.enabled ?? false,
         idleSeconds: incoming.dreaming?.idleSeconds ?? existing?.dreaming.idleSeconds ?? 3600,
@@ -1729,6 +1737,7 @@ export class AgentDO extends DurableObject<Env> {
       ...(cfg.compactThresholdTokens !== undefined
         ? { compactThresholdTokens: cfg.compactThresholdTokens }
         : {}),
+      ...(cfg.compactOnIdle !== undefined ? { compactOnIdle: cfg.compactOnIdle } : {}),
       dreaming: cfg.dreaming,
       status: this.activeRunId ? "running" : "idle",
       activeRunId: this.activeRunId,

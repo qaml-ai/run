@@ -20,6 +20,7 @@ import { getTenantStub, type RepoRecord } from "./tenant-do.ts";
 import {
   ApiError,
   extractApiError,
+  normalizeCompactOnIdleConfig,
   type AgentEventRecord,
   type AgentUpsertInput,
   type BuiltinSuite,
@@ -100,6 +101,15 @@ const dreamingConfigSchema = z.object({
   enabled: z.boolean().optional(),
   idleSeconds: z.number().int().min(0).optional(),
 });
+
+const compactOnIdleConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    idleSeconds: z.number().int().min(1).optional(),
+    minTokens: z.number().int().min(0).optional(),
+    keepRecentTokens: z.number().int().min(0).optional(),
+  })
+  .nullable();
 
 const SECRET_KEY_RE = /^(token|agentToken|sealedToken|apiKey|secret|password|authorization)$/i;
 
@@ -1215,6 +1225,9 @@ function createTenantMcpServer(
       queue: queueConfigSchema.optional().describe("Queue mode configuration (each or batch)"),
       dreaming: dreamingConfigSchema.optional().describe("Idle dreaming consolidation settings"),
       compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
+      compactOnIdle: compactOnIdleConfigSchema
+        .optional()
+        .describe("Lazy on-resume stale-cache compaction settings (or null to disable)"),
       spendLimitUsd: z.number().min(0).optional().describe("Maximum USD spend per agent"),
       idleTtlSeconds: z.number().int().min(0).optional().describe("Idle TTL in seconds"),
       repoId: z.string().nullable().optional().describe("Default CamelFS repo ID"),
@@ -1457,6 +1470,9 @@ function createTenantMcpServer(
       queue: queueConfigSchema.optional().describe("Queue mode configuration (each or batch)"),
       dreaming: dreamingConfigSchema.optional().describe("Idle dreaming consolidation settings"),
       compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
+      compactOnIdle: compactOnIdleConfigSchema
+        .optional()
+        .describe("Lazy on-resume stale-cache compaction settings (or null to disable)"),
       repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach"),
       branch: z.string().optional().describe("CamelFS branch ref"),
       spendLimitUsd: z.number().min(0).optional().describe("Spend limit in USD"),
@@ -1593,6 +1609,12 @@ function createTenantMcpServer(
           input.compactThresholdTokens !== undefined
             ? Math.floor(input.compactThresholdTokens)
             : defCfg?.compactThresholdTokens,
+        compactOnIdle:
+          input.compactOnIdle !== undefined
+            ? normalizeCompactOnIdleConfig(input.compactOnIdle)
+            : defCfg?.compactOnIdle !== undefined
+              ? normalizeCompactOnIdleConfig(defCfg.compactOnIdle)
+              : undefined,
         dreaming: dreamingCfg,
       });
 
@@ -1617,6 +1639,9 @@ function createTenantMcpServer(
       instructions: z.string().optional().describe("Replace system prompt / instructions"),
       spendLimitUsd: z.number().min(0).optional().describe("Spend limit in USD"),
       compactThresholdTokens: z.number().int().min(1).optional().describe("Context compaction threshold in tokens"),
+      compactOnIdle: compactOnIdleConfigSchema
+        .optional()
+        .describe("Lazy on-resume stale-cache compaction settings (or null to disable)"),
       skills: z.array(z.string()).optional().describe("Attached tenant skill slugs or globs"),
       builtins: z.array(z.enum(BUILTIN_SUITES)).optional().describe("Enabled built-in tool suites"),
       repoId: z.string().nullable().optional().describe("CamelFS repository ID to attach, or null to detach"),
@@ -1665,6 +1690,9 @@ function createTenantMcpServer(
         ...(patch.spendLimitUsd !== undefined ? { spendLimitUsd: patch.spendLimitUsd } : {}),
         ...(patch.compactThresholdTokens !== undefined
           ? { compactThresholdTokens: Math.floor(patch.compactThresholdTokens) }
+          : {}),
+        ...(patch.compactOnIdle !== undefined
+          ? { compactOnIdle: normalizeCompactOnIdleConfig(patch.compactOnIdle) }
           : {}),
         ...(normalizedSkills !== undefined ? { skills: normalizedSkills } : {}),
         ...(patch.builtins !== undefined ? { builtins: patch.builtins } : {}),

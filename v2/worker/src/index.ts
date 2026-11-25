@@ -86,6 +86,7 @@ import {
   ApiError,
   errorResponse,
   extractApiError,
+  normalizeCompactOnIdleConfig,
   toApiErrorResponse,
   type AgentUpsertInput,
   type Env,
@@ -500,6 +501,14 @@ app.put("/v2/definitions/:slug", async (c) => {
   assertTenantScope(auth);
   const slug = c.req.param("slug");
   const config = (await c.req.json()) as AgentUpsertInput;
+  if (config.compactOnIdle !== undefined) {
+    const normalized = normalizeCompactOnIdleConfig(config.compactOnIdle);
+    if (normalized === null || normalized === undefined) {
+      delete config.compactOnIdle;
+    } else {
+      config.compactOnIdle = normalized;
+    }
+  }
   const out = await getTenantStub(c.env, auth.tenantId).upsertDefinition(slug, config);
   return c.json(out);
 });
@@ -1047,6 +1056,13 @@ app.put("/v2/agents/:key", async (c) => {
     }
     input.compactThresholdTokens = Math.floor(input.compactThresholdTokens);
   }
+  const normalizedInputCompactOnIdle =
+    input.compactOnIdle !== undefined
+      ? normalizeCompactOnIdleConfig(input.compactOnIdle)
+      : undefined;
+  if (normalizedInputCompactOnIdle !== undefined) {
+    input.compactOnIdle = normalizedInputCompactOnIdle;
+  }
   const identity = input.toolIdentity;
   if (identity !== undefined && (!identity || typeof identity.subject !== "string" || !identity.subject.trim() ||
     (identity.context !== undefined && (!identity.context || typeof identity.context !== "object" || Array.isArray(identity.context))))) {
@@ -1123,6 +1139,12 @@ app.put("/v2/agents/:key", async (c) => {
           input.compactThresholdTokens !== undefined
             ? input.compactThresholdTokens
             : defCfg?.compactThresholdTokens,
+        compactOnIdle:
+          normalizedInputCompactOnIdle !== undefined
+            ? normalizedInputCompactOnIdle
+            : defCfg?.compactOnIdle !== undefined
+              ? normalizeCompactOnIdleConfig(defCfg.compactOnIdle)
+              : undefined,
         dreaming: dreamingCfg,
       },
       hasInitialPrompt

@@ -13,6 +13,7 @@ import {
 import {
   ApiError,
   extractApiError,
+  normalizeCompactOnIdleConfig,
   type AgentUpsertInput,
   type AuthContext,
   type Env,
@@ -1252,16 +1253,25 @@ export class TenantDO extends DurableObject<Env> {
     config: AgentUpsertInput,
   ): Promise<{ slug: string; config: AgentUpsertInput; updatedAt: number }> {
     this.requireProfile();
+    const normalizedConfig: AgentUpsertInput = { ...config };
+    if (normalizedConfig.compactOnIdle !== undefined) {
+      const normalized = normalizeCompactOnIdleConfig(normalizedConfig.compactOnIdle);
+      if (normalized === null || normalized === undefined) {
+        delete normalizedConfig.compactOnIdle;
+      } else {
+        normalizedConfig.compactOnIdle = normalized;
+      }
+    }
     const now = Date.now();
     this.ctx.storage.sql.exec(
       `INSERT INTO definitions (slug, config_json, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?3)
        ON CONFLICT(slug) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`,
       slug,
-      JSON.stringify(config),
+      JSON.stringify(normalizedConfig),
       now,
     );
-    return { slug, config, updatedAt: now };
+    return { slug, config: normalizedConfig, updatedAt: now };
   }
 
   async getDefinition(slug: string): Promise<{
