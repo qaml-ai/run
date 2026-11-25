@@ -2,7 +2,7 @@ import { closeDetail, messageJson, redactDetail } from "../lib/voice-socket.ts";
 import { fetchWithoutRedirects } from "../lib/no-redirect.ts";
 import { NO_USAGE, type RealtimeTool, type RealtimeUsage } from "../lib/realtime-provider.ts";
 
-export type OpenAICallsOptions = { baseUrl?: string; fetch?: typeof fetch };
+export type OpenAICallsOptions = { baseUrl?: string; azure?: boolean; fetch?: typeof fetch };
 
 export interface OpenAICalls {
   readonly models: readonly string[];
@@ -51,19 +51,21 @@ export interface Sideband {
 }
 
 const TIMEOUT_MS = 10_000;
-const auth = (apiKey: string) => ({ Authorization: `Bearer ${apiKey}` });
+const auth = (apiKey: string, azure = false): Record<string, string> =>
+  azure ? { "api-key": apiKey } : { Authorization: `Bearer ${apiKey}` };
 
 /** Broker a WebRTC offer, then attach a server socket for events and tool replies. */
 export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
+  const azure = options.azure === true;
   const base = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
   const send = options.fetch ?? fetch;
   const hangup = async (id: string, apiKey: string) => {
     const response = await fetchWithoutRedirects(send, `${base}/realtime/calls/${encodeURIComponent(id)}/hangup`, {
       method: "POST",
-      headers: auth(apiKey),
+      headers: auth(apiKey, azure),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!response.ok && response.status !== 404) throw await responseError(response, apiKey);
+    if (!response.ok && response.status !== 404) throw await responseError(response, [apiKey]);
     await response.body?.cancel();
   };
   return {
@@ -96,17 +98,55 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
         tools: input.tools.map((tool) => ({ type: "function", ...tool })),
         tool_choice: "auto",
       };
-      const body = new FormData();
-      body.set("sdp", input.sdp);
-      body.set("session", JSON.stringify(session));
-      const response = await fetchWithoutRedirects(send, `${base}/realtime/calls`, {
-        method: "POST",
-        headers: auth(input.apiKey),
-        body,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-      if (!response.ok) throw await responseError(response, input.apiKey);
-      const callId = /\/realtime\/calls\/([\w-]+)$/.exec(response.headers.get("location") ?? "")?.[1];
+      const secrets: string[] = [input.apiKey];
+      let response: Response;
+      if (azure) {
+        const secretRes = await fetchWithoutRedirects(send, `${base}/realtime/client_secrets`, {
+          method: "POST",
+          headers: { ...auth(input.apiKey, true), "Content-Type": "application/json" },
+          body: JSON.stringify({ session }),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+        if (!secretRes.ok) throw await responseError(secretRes, secrets);
+        let ephemeralKey: string | undefined;
+        try {
+          const parsed = (await secretRes.json()) as { value?: unknown; client_secret?: { value?: unknown } };
+          const raw = typeof parsed?.value === "string" ? parsed.value : parsed?.client_secret?.value;
+          if (typeof raw === "string" && raw.length > 0) ephemeralKey = raw;
+        } catch {
+          // Handled below
+        }
+        if (!ephemeralKey) {
+          throw new Error("OpenAI realtime did not return an ephemeral client secret");
+        }
+        secrets.push(ephemeralKey);
+        try {
+          response = await fetchWithoutRedirects(send, `${base}/realtime/calls`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${ephemeralKey}`, "Content-Type": "application/sdp" },
+            body: input.sdp,
+            signal: AbortSignal.timeout(TIMEOUT_MS),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (secrets.some((secret) => secret && message.includes(secret))) {
+            throw new Error(redactDetail(message, 300, secrets));
+          }
+          throw error;
+        }
+      } else {
+        const body = new FormData();
+        body.set("sdp", input.sdp);
+        body.set("session", JSON.stringify(session));
+        response = await fetchWithoutRedirects(send, `${base}/realtime/calls`, {
+          method: "POST",
+          headers: auth(input.apiKey, false),
+          body,
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      }
+      if (!response.ok) throw await responseError(response, secrets);
+      const callId = /\/realtime\/calls\/([\w-]+)$/.exec((response.headers.get("location") ?? "").trim())?.[1];
       if (!callId) {
         await response.body?.cancel();
         throw new Error("OpenAI did not return a realtime call id");
@@ -118,6 +158,8 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
           `${base}/realtime?call_id=${encodeURIComponent(callId)}`,
           input.apiKey,
           events,
+          azure,
+          secrets,
         );
         return { callId, sdpAnswer, sideband };
       } catch (error) {
@@ -129,8 +171,8 @@ export function openaiCalls(options: OpenAICallsOptions = {}): OpenAICalls {
   };
 }
 
-async function responseError(response: Response, key: string) {
-  return new Error(`OpenAI realtime HTTP ${response.status}: ${redactDetail(await response.text().catch(() => ""), 300, [key])}`);
+async function responseError(response: Response, secrets: readonly string[]) {
+  return new Error(`OpenAI realtime HTTP ${response.status}: ${redactDetail(await response.text().catch(() => ""), 300, secrets)}`);
 }
 
 async function openSideband(
@@ -138,11 +180,13 @@ async function openSideband(
   url: string,
   key: string,
   events: SidebandEvents,
+  azure = false,
+  secrets: readonly string[] = [key],
 ): Promise<Sideband> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const handshake = fetchImpl(url, {
-    headers: { ...auth(key), Upgrade: "websocket" },
+    headers: { ...auth(key, azure), Upgrade: "websocket" },
     redirect: "manual",
   });
   handshake
@@ -162,8 +206,8 @@ async function openSideband(
     if (timer !== undefined) clearTimeout(timer);
   });
   const socket = response.webSocket;
-  if (response.status !== 101 || !socket) throw await responseError(response, key);
-  const safe = (detail: string) => redactDetail(detail, 200, [key]);
+  if (response.status !== 101 || !socket) throw await responseError(response, secrets);
+  const safe = (detail: string) => redactDetail(detail, 200, secrets);
   let requested = false;
   let limitsReported = false;
   socket.addEventListener("close", (event) => {

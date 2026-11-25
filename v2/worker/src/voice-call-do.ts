@@ -56,6 +56,7 @@ type Row = {
   providerCall?: string;
   providerAgent?: string;
   platform: boolean;
+  azure?: boolean;
   seq: number;
   noteSeq?: number;
   lines: string[];
@@ -64,6 +65,46 @@ type Row = {
   budgetExpiresAt?: number;
   ending?: Ending;
 };
+
+const DEFAULT_AZURE_REALTIME_MODELS = ["gpt-realtime-2.1"];
+
+function azureRealtimeModels(env: Env): string[] {
+  const raw = env.AZURE_OPENAI_REALTIME_MODELS?.trim();
+  if (!raw) return DEFAULT_AZURE_REALTIME_MODELS;
+  return raw
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+}
+
+function azureRealtimeBaseUrl(rawEndpoint: string): string {
+  const trimmed = rawEndpoint.trim().replace(/\/+$/, "");
+  if (trimmed.endsWith("/openai/v1")) return trimmed;
+  if (trimmed.endsWith("/openai")) return `${trimmed}/v1`;
+  return `${trimmed}/openai/v1`;
+}
+
+function azureRealtimeEndpoint(env: Env, allowWithBaseOverride = false): { baseUrl: string; apiKey: string } | null {
+  const dedicatedEndpoint = env.AZURE_OPENAI_REALTIME_ENDPOINT?.trim();
+  const dedicatedKey = env.AZURE_OPENAI_REALTIME_API_KEY?.trim();
+  if (dedicatedEndpoint && dedicatedKey) {
+    return { baseUrl: azureRealtimeBaseUrl(dedicatedEndpoint), apiKey: dedicatedKey };
+  }
+  if (!allowWithBaseOverride && env.VOICE_OPENAI_BASE_URL?.trim()) {
+    return null;
+  }
+  const lunaEndpoint = env.AZURE_OPENAI_LUNA_ENDPOINT?.trim();
+  const lunaKey = env.AZURE_OPENAI_LUNA_API_KEY?.trim();
+  if (lunaEndpoint && lunaKey) {
+    return { baseUrl: azureRealtimeBaseUrl(lunaEndpoint), apiKey: lunaKey };
+  }
+  return null;
+}
+
+function resolveAzureRealtime(env: Env, model: string): { baseUrl: string; apiKey: string } | null {
+  if (!azureRealtimeModels(env).includes(model)) return null;
+  return azureRealtimeEndpoint(env, false);
+}
 
 const PENDING_MS = 45_000;
 const LATE_MS = 300_000;
@@ -144,7 +185,10 @@ export class VoiceCallDO extends DurableObject<Env> {
     await this.arm(row);
   }
 
-  private openai() {
+  private openai(options?: { azure?: boolean; baseUrl?: string }) {
+    if (options?.azure) {
+      return openaiCalls({ baseUrl: options.baseUrl, azure: true });
+    }
     return openaiCalls({ baseUrl: this.env.VOICE_OPENAI_BASE_URL });
   }
 
@@ -183,11 +227,16 @@ export class VoiceCallDO extends DurableObject<Env> {
     tenant: string,
     provider: "openai" | "elevenlabs",
     keyScope?: string,
-  ): Promise<{ apiKey: string; platform: boolean } | null> {
+    model?: string,
+  ): Promise<{ apiKey: string; platform: boolean; azure?: boolean; baseUrl?: string } | null> {
     const tenantStub = getTenantStub(this.env, tenant);
     const cred = await tenantStub.getProviderSecret(provider, keyScope);
     if (cred?.apiKey) return { apiKey: cred.apiKey, platform: false };
     if (keyScope) return null;
+    if (provider === "openai" && model) {
+      const azure = resolveAzureRealtime(this.env, model);
+      if (azure) return { apiKey: azure.apiKey, platform: true, azure: true, baseUrl: azure.baseUrl };
+    }
     const platformKey = provider === "openai" ? this.env.OPENAI_API_KEY : this.env.ELEVENLABS_API_KEY;
     if (platformKey) return { apiKey: platformKey, platform: true };
     return null;
@@ -276,7 +325,7 @@ export class VoiceCallDO extends DurableObject<Env> {
         throw new ApiError(402, "insufficient_credits", "Voice call spend limit is exhausted");
       }
 
-      const key = await this.resolveProviderKey(tenant, provider, options.keyScope);
+      const key = await this.resolveProviderKey(tenant, provider, options.keyScope, model);
       if (eleven && key && !key.platform) {
         throw new ApiError(
           400,
@@ -335,6 +384,7 @@ export class VoiceCallDO extends DurableObject<Env> {
         v2AgentId,
         options,
         platform: key.platform,
+        ...(key.azure ? { azure: true } : {}),
         seq: 0,
         lines: [],
         ...(budgetExpiresAt !== undefined ? { budgetExpiresAt } : {}),
@@ -401,7 +451,8 @@ export class VoiceCallDO extends DurableObject<Env> {
           };
         }
 
-        const created = await openai.create(
+        const openaiClient = key.azure ? this.openai({ azure: true, baseUrl: key.baseUrl }) : openai;
+        const created = await openaiClient.create(
           {
             sdp: sdp!,
             model,
@@ -677,16 +728,25 @@ export class VoiceCallDO extends DurableObject<Env> {
     }
     if (row.call.provider === "elevenlabs") return row.call;
     if (row.providerCall) {
+      let hangupKey = "";
       try {
-        const key = await this.resolveProviderKey(row.tenant, "openai", row.options.keyScope);
-        if (!key?.apiKey) throw new Error("No OpenAI key for hanging up the voice call");
-        await this.openai().hangup(row.providerCall, key.apiKey);
+        if (row.azure) {
+          const azure = azureRealtimeEndpoint(this.env, true);
+          if (!azure) throw new Error("No Azure OpenAI key for hanging up the voice call");
+          hangupKey = azure.apiKey;
+          await this.openai({ azure: true, baseUrl: azure.baseUrl }).hangup(row.providerCall, azure.apiKey);
+        } else {
+          const key = await this.resolveProviderKey(row.tenant, "openai", row.options.keyScope);
+          if (!key?.apiKey) throw new Error("No OpenAI key for hanging up the voice call");
+          hangupKey = key.apiKey;
+          await this.openai().hangup(row.providerCall, key.apiKey);
+        }
       } catch (error) {
         if (!providerClosed) {
           throw new ApiError(
             502,
             "realtime_failed",
-            redactDetail(error instanceof Error ? error.message : String(error), 300),
+            redactDetail(error instanceof Error ? error.message : String(error), 300, hangupKey ? [hangupKey] : []),
           );
         }
       }
