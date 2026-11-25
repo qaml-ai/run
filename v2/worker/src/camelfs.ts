@@ -1,5 +1,7 @@
-import { mintCamelfsToken } from "./crypto.ts";
-import { ApiError, type Env } from "./types.ts";
+import { mintCamelfsToken, randomId } from "./crypto.ts";
+import type { CamelfsLineageDO } from "./camelfs/lineage-do.ts";
+import { decodeVmLineage, type WriteDurabilityMode } from "./camelfs/objects.ts";
+import { ApiError, type Env, type RpcStub } from "./types.ts";
 
 export interface CamelFsLineageInfo {
   lineage: string;
@@ -27,6 +29,7 @@ export interface CamelFsWriteRequest {
   holder?: string;
   author?: string;
   message?: string;
+  durability?: WriteDurabilityMode;
   puts?: Array<{
     path: string;
     content?: string;
@@ -129,18 +132,57 @@ export interface CamelFsVmExecResult {
   };
 }
 
+export type CamelFsClientEnv = Pick<Env, "CAMELFS_URL" | "CAMELFS_SIGNING_KEY" | "CAMELFS_DEV_TOKEN"> &
+  Partial<
+    Pick<
+      Env,
+      | "CAMELFS_BACKEND"
+      | "CAMELFS_BUCKET"
+      | "CAMELFS_LINEAGE_DO"
+      | "CAMELFS_CONTAINER_DO"
+      | "CAMELFS_SELF_URL"
+      | "CAMELFS_INTERNAL_SECRET"
+      | "CAMELFS_CONTAINER_URL"
+      | "CAMELFS_CONTAINER_INSTANCE"
+      | "VAULT_SECRET"
+    >
+  >;
+
+export function useCloudflareCamelfsBackend(env: CamelFsClientEnv): boolean {
+  if (env.CAMELFS_BACKEND === "cloudflare") return true;
+  if (env.CAMELFS_BACKEND === "http") return false;
+  return Boolean(env.CAMELFS_LINEAGE_DO && env.CAMELFS_BUCKET && !env.CAMELFS_URL);
+}
+
 export class CamelFsClient {
   private readonly baseUrl: string;
-  private readonly env: Pick<Env, "CAMELFS_URL" | "CAMELFS_SIGNING_KEY" | "CAMELFS_DEV_TOKEN">;
+  private readonly env: CamelFsClientEnv;
   private readonly tenantId: string;
+  private readonly nativeCloudflare: boolean;
 
-  constructor(
-    env: Pick<Env, "CAMELFS_URL" | "CAMELFS_SIGNING_KEY" | "CAMELFS_DEV_TOKEN">,
-    tenantId: string,
-  ) {
+  constructor(env: CamelFsClientEnv, tenantId: string) {
     this.env = env;
     this.baseUrl = (env.CAMELFS_URL || "http://127.0.0.1:8790").replace(/\/+$/, "");
     this.tenantId = tenantId;
+    this.nativeCloudflare = useCloudflareCamelfsBackend(env);
+  }
+
+  private lineageStub(lineage: string): RpcStub<CamelfsLineageDO> {
+    if (!this.env.CAMELFS_LINEAGE_DO) {
+      throw new ApiError(503, "camelfs_not_configured", "CAMELFS_LINEAGE_DO binding is not configured");
+    }
+    return this.env.CAMELFS_LINEAGE_DO.get(
+      this.env.CAMELFS_LINEAGE_DO.idFromName(lineage),
+    ) as unknown as RpcStub<CamelfsLineageDO>;
+  }
+
+  private resolveVmLineage(vmId: string, lineage: string): string {
+    if (lineage && lineage !== "*") return lineage;
+    const decoded = decodeVmLineage(vmId);
+    if (!decoded) {
+      throw new ApiError(404, "not_found", `vm "${vmId}" not found`);
+    }
+    return decoded;
   }
 
   private async request<T>(
@@ -210,6 +252,9 @@ export class CamelFsClient {
   }
 
   async healthz(): Promise<{ ok: boolean }> {
+    if (this.nativeCloudflare) {
+      return { ok: Boolean(this.env.CAMELFS_LINEAGE_DO && this.env.CAMELFS_BUCKET) };
+    }
     const res = await fetch(`${this.baseUrl}/healthz`);
     if (!res.ok) {
       throw new ApiError(res.status, "camelfs_unhealthy", `camelfsd healthz returned ${res.status}`);
@@ -223,6 +268,13 @@ export class CamelFsClient {
     commit: string;
     tree: string;
   }> {
+    if (this.nativeCloudflare) {
+      const id = (lineage ?? "").trim() || randomId("lin");
+      if (id.includes("/")) {
+        throw new ApiError(400, "invalid_request", "lineage id must not contain '/'");
+      }
+      return this.lineageStub(id).createLineage({ lineage: id, tenantId: this.tenantId });
+    }
     return this.request("POST", "/v1/lineages", {
       lineage: lineage ?? "*",
       scopes: ["repo:write"],
@@ -231,6 +283,9 @@ export class CamelFsClient {
   }
 
   async deleteLineage(lineage: string): Promise<{ deleted: boolean }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).deleteLineage();
+    }
     return this.request("DELETE", `/v1/lineages/${encodeURIComponent(lineage)}`, {
       lineage,
       scopes: ["repo:write", "vm:exec"],
@@ -246,6 +301,9 @@ export class CamelFsClient {
       atCommit?: string;
     },
   ): Promise<{ lineage: string; ref: string; commit: string; tree: string }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).forkLineage({ ...(opts ?? {}), tenantId: this.tenantId });
+    }
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/fork`, {
       lineage: "*",
       scopes: ["repo:read", "repo:write"],
@@ -254,6 +312,9 @@ export class CamelFsClient {
   }
 
   async listRefs(lineage: string, prefix?: string): Promise<{ refs: CamelFsRefInfo[] }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).listRefs(prefix);
+    }
     return this.request("GET", `/v1/lineages/${encodeURIComponent(lineage)}/refs`, {
       lineage,
       scopes: ["repo:read"],
@@ -271,6 +332,9 @@ export class CamelFsClient {
       delete?: boolean;
     },
   ): Promise<{ ref: string; commit: string; tree: string }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).setRef(req);
+    }
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/refs`, {
       lineage,
       scopes: ["repo:write"],
@@ -289,6 +353,14 @@ export class CamelFsClient {
     epoch: number;
     expiresAt: number;
   }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).leaseRef({
+        ref: req.ref,
+        holder: req.holder,
+        ttlMs: req.ttlMs ?? 600_000,
+        ...(req.release !== undefined ? { release: req.release } : {}),
+      });
+    }
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/lease`, {
       lineage,
       scopes: ["repo:write"],
@@ -302,6 +374,9 @@ export class CamelFsClient {
   }
 
   async write(lineage: string, req: CamelFsWriteRequest): Promise<CamelFsWriteResponse> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).write(req);
+    }
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/write`, {
       lineage,
       scopes: ["repo:write"],
@@ -311,8 +386,17 @@ export class CamelFsClient {
 
   async read(
     lineage: string,
-    params: { at?: string; path: string; offset?: number; limit?: number },
+    params: { at?: string; path: string; offset?: number; limit?: number; bypassCache?: boolean },
   ): Promise<CamelFsReadResponse> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).read({
+        at: params.at ?? "refs/heads/main",
+        path: normalizeRepoPath(params.path),
+        offset: params.offset,
+        limit: params.limit,
+        bypassCache: params.bypassCache,
+      });
+    }
     return this.request("GET", `/v1/lineages/${encodeURIComponent(lineage)}/read`, {
       lineage,
       scopes: ["repo:read"],
@@ -329,6 +413,14 @@ export class CamelFsClient {
     lineage: string,
     params?: { at?: string; path?: string; recursive?: boolean | number; glob?: string },
   ): Promise<CamelFsLsResponse> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).ls({
+        at: params?.at ?? "refs/heads/main",
+        path: params?.path ? normalizeRepoPath(params.path) : "",
+        recursive: Boolean(params?.recursive),
+        glob: params?.glob,
+      });
+    }
     return this.request("GET", `/v1/lineages/${encodeURIComponent(lineage)}/ls`, {
       lineage,
       scopes: ["repo:read"],
@@ -343,8 +435,17 @@ export class CamelFsClient {
 
   async grep(
     lineage: string,
-    req: { at?: string; pattern: string; pathPrefix?: string; maxMatches?: number },
+    req: { at?: string; pattern: string; pathPrefix?: string; maxMatches?: number; bypassCache?: boolean },
   ): Promise<CamelFsGrepResponse> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).grep({
+        at: req.at ?? "refs/heads/main",
+        pattern: req.pattern,
+        pathPrefix: req.pathPrefix ? normalizeRepoPath(req.pathPrefix) : undefined,
+        maxMatches: req.maxMatches ?? 100,
+        bypassCache: req.bypassCache,
+      });
+    }
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/grep`, {
       lineage,
       scopes: ["repo:read"],
@@ -361,6 +462,12 @@ export class CamelFsClient {
     lineage: string,
     params?: { ref?: string; limit?: number },
   ): Promise<{ commits: CamelFsCommitInfo[] }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).history({
+        ref: params?.ref ?? "refs/heads/main",
+        limit: params?.limit ?? 20,
+      });
+    }
     return this.request("GET", `/v1/lineages/${encodeURIComponent(lineage)}/history`, {
       lineage,
       scopes: ["repo:read"],
@@ -382,6 +489,9 @@ export class CamelFsClient {
       message?: string;
     },
   ): Promise<{ commit: string; tree: string }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(lineage).restore(req);
+    }
     return this.request("POST", `/v1/lineages/${encodeURIComponent(lineage)}/restore`, {
       lineage,
       scopes: ["repo:write"],
@@ -399,6 +509,15 @@ export class CamelFsClient {
     leaseS?: number;
     env?: Record<string, string>;
   }): Promise<CamelFsVmInfo> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(req.lineage).bootOrReuseVm({
+        vcpus: 2,
+        memoryMiB: 2048,
+        idleTimeoutS: 60,
+        leaseS: 600,
+        ...req,
+      });
+    }
     return this.request("POST", "/v1/vms", {
       lineage: req.lineage,
       scopes: ["repo:read", "repo:write", "vm:exec"],
@@ -417,6 +536,9 @@ export class CamelFsClient {
     lineage: string,
     req: CamelFsVmExecRequest,
   ): Promise<CamelFsVmExecResult> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(this.resolveVmLineage(vmId, lineage)).execVm(vmId, req);
+    }
     return this.request("POST", `/v1/vms/${encodeURIComponent(vmId)}/exec`, {
       lineage,
       scopes: ["repo:read", "repo:write", "vm:exec"],
@@ -429,6 +551,9 @@ export class CamelFsClient {
     lineage: string,
     leaseS = 600,
   ): Promise<{ vmId: string; state: string; leaseExpiresAt: number }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(this.resolveVmLineage(vmId, lineage)).renewVmLease(vmId, leaseS);
+    }
     return this.request("POST", `/v1/vms/${encodeURIComponent(vmId)}/lease`, {
       lineage,
       scopes: ["vm:exec"],
@@ -440,6 +565,9 @@ export class CamelFsClient {
     vmId: string,
     lineage = "*",
   ): Promise<{ vmId: string; state: string; commit: string; unbilledMs: number }> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(this.resolveVmLineage(vmId, lineage)).stopVm(vmId);
+    }
     return this.request("POST", `/v1/vms/${encodeURIComponent(vmId)}/stop`, {
       lineage,
       scopes: ["repo:write", "vm:exec"],
@@ -448,6 +576,9 @@ export class CamelFsClient {
   }
 
   async getVm(vmId: string, lineage = "*"): Promise<CamelFsVmInfo> {
+    if (this.nativeCloudflare) {
+      return this.lineageStub(this.resolveVmLineage(vmId, lineage)).getVm(vmId);
+    }
     return this.request("GET", `/v1/vms/${encodeURIComponent(vmId)}`, {
       lineage,
       scopes: ["vm:exec"],

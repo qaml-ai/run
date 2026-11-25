@@ -2,13 +2,15 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "camelrun-v2-pilot",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-01",
+  "compatibility_date": "2026-11-05",
   "compatibility_flags": [
     "nodejs_compat",
     "enhanced_error_serialization"
   ],
   "vars": {
-    "CAMELFS_URL": "https://camelfs-v2-pilot.camelai.dev",
+    "CAMELFS_BACKEND": "cloudflare",
+    "CAMELFS_SELF_URL": "https://run-v2-pilot.camelai.dev",
+    "CAMELFS_CONTAINER_INSTANCE": "standard-1",
     "DEFAULT_MODEL": "openrouter/meta/muse-ember"
   },
   "images": { "binding": "IMAGES" },
@@ -17,6 +19,10 @@
     {
       "binding": "MEDIA_BUCKET",
       "bucket_name": "camelrun-v2-pilot-media"
+    },
+    {
+      "binding": "CAMELFS_BUCKET",
+      "bucket_name": "camelrun-v2-pilot-camelfs"
     }
   ],
   "queues": {
@@ -44,15 +50,42 @@
       {
         "name": "AGENT_DO",
         "class_name": "AgentDO"
+      },
+      {
+        "name": "CAMELFS_LINEAGE_DO",
+        "class_name": "CamelfsLineageDO"
+      },
+      {
+        "name": "CAMELFS_CONTAINER_DO",
+        "class_name": "CamelfsContainerDO"
       }
     ]
   },
+  "containers": [
+    {
+      "name": "camelrun-v2-pilot",
+      "class_name": "CamelfsContainerDO",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "camelfs": {
+          "dockerfile": "../camelfsd/Dockerfile.cf-container"
+        }
+      }
+    }
+  ],
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": [
         "TenantDO",
         "AgentDO"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "CamelfsLineageDO",
+        "CamelfsContainerDO"
       ]
     }
   ],

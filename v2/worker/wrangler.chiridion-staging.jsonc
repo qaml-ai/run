@@ -3,19 +3,22 @@
   "name": "camelrun-v2-chiridion-staging",
   "main": "src/index.ts",
   "account_id": "85bbd288051330fb51ee1c86031a299b",
-  "compatibility_date": "2026-03-01",
+  "compatibility_date": "2026-11-05",
   "compatibility_flags": ["nodejs_compat", "enhanced_error_serialization"],
   "workers_dev": true,
   "preview_urls": false,
   "vars": {
-    "CAMELFS_URL": "https://fs-v2.camelai.dev",
+    "CAMELFS_BACKEND": "cloudflare",
+    "CAMELFS_SELF_URL": "https://camelrun-v2-chiridion-staging.miguel-85b.workers.dev",
+    "CAMELFS_CONTAINER_INSTANCE": "standard-1",
     "DEFAULT_MODEL": "openrouter/openai/gpt-6-luna",
     "TOOL_IDENTITY_ISSUER": "https://camelrun-v2-chiridion-staging.miguel-85b.workers.dev/v2"
   },
   "images": { "binding": "IMAGES" },
   "services": [{ "binding": "SVG_RENDERER", "service": "camelrun-v2-svg-renderer" }],
   "r2_buckets": [
-    { "binding": "MEDIA_BUCKET", "bucket_name": "camelrun-v2-chiridion-staging-media" }
+    { "binding": "MEDIA_BUCKET", "bucket_name": "camelrun-v2-chiridion-staging-media" },
+    { "binding": "CAMELFS_BUCKET", "bucket_name": "camelrun-v2-chiridion-staging-camelfs" }
   ],
   "queues": {
     "producers": [{ "binding": "EVENTS_QUEUE", "queue": "camelrun-v2-chiridion-staging-events" }],
@@ -25,8 +28,25 @@
     "code_update_strategy": { "mode": "deferred", "max_delay": 86400 },
     "bindings": [
       { "name": "TENANT_DO", "class_name": "TenantDO" },
-      { "name": "AGENT_DO", "class_name": "AgentDO" }
+      { "name": "AGENT_DO", "class_name": "AgentDO" },
+      { "name": "CAMELFS_LINEAGE_DO", "class_name": "CamelfsLineageDO" },
+      { "name": "CAMELFS_CONTAINER_DO", "class_name": "CamelfsContainerDO" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TenantDO", "AgentDO"] }]
+  "containers": [
+    {
+      "name": "camelrun-v2-chiridion-staging",
+      "class_name": "CamelfsContainerDO",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "camelfs": {
+          "dockerfile": "../camelfsd/Dockerfile.cf-container"
+        }
+      }
+    }
+  ],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TenantDO", "AgentDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["CamelfsLineageDO", "CamelfsContainerDO"] }
+  ]
 }

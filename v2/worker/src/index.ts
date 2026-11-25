@@ -17,6 +17,9 @@ import {
   verifyAdminHeader,
 } from "./auth.ts";
 import { CamelFsClient } from "./camelfs.ts";
+import { CamelfsContainerDO } from "./camelfs/container-do.ts";
+import { CamelfsLineageDO, deriveCamelfsInternalToken, getCamelfsLineageStub } from "./camelfs/lineage-do.ts";
+import { getObject, objectKey } from "./camelfs/objects.ts";
 import {
   computeRepoDiff,
   DIFF_DEFAULT_CONTEXT_LINES,
@@ -100,7 +103,7 @@ import {
   processEventsQueueBatch,
 } from "./webhooks.ts";
 
-export { TenantDO, AgentDO, VoiceCallDO };
+export { TenantDO, AgentDO, VoiceCallDO, CamelfsLineageDO, CamelfsContainerDO };
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -137,6 +140,112 @@ app.get("/healthz", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/health", (c) => c.json({ ok: true, service: "camelrun-worker-v2" }));
 app.get("/v2/.well-known/jwks.json", (c) => c.json(toolIdentityKeys(c.env), 200, { "Cache-Control": "public, max-age=60" }));
+
+// ---- Internal Native Cloudflare camelFS Endpoints (Container Lazy FUSE + Migration) ----
+app.get("/v2/internal/camelfs/objects/:hash", async (c) => {
+  const expected = await deriveCamelfsInternalToken(c.env);
+  const provided = c.req.header("X-Camelfs-Internal-Token") ?? "";
+  if (!provided || provided !== expected) {
+    throw new ApiError(401, "unauthorized", "invalid internal camelfs blob token");
+  }
+  if (!c.env.CAMELFS_BUCKET) {
+    throw new ApiError(503, "camelfs_not_configured", "CAMELFS_BUCKET binding is not configured");
+  }
+  const hash = c.req.param("hash");
+  if (!/^[a-f0-9]{64}$/.test(hash)) {
+    throw new ApiError(400, "invalid_request", "invalid sha256 object hash");
+  }
+  const { data } = await getObject(c.env.CAMELFS_BUCKET, hash, "blob");
+  return new Response(data, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Cache-Control": "public, max-age=31536000, immutable",
+      ETag: `"${hash}"`,
+    },
+  });
+});
+
+app.get("/v2/internal/camelfs/lineages/:lineage/outbox", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const lineage = c.req.param("lineage");
+  const flush = c.req.query("flush") === "1" || c.req.query("flush") === "true";
+  const verifyR2Hash = c.req.query("verifyR2Hash") ?? "";
+  const status = await getCamelfsLineageStub(c.env, lineage).outboxStatus({ flush });
+  let r2Exists: boolean | null = null;
+  if (verifyR2Hash && /^[a-f0-9]{64}$/.test(verifyR2Hash) && c.env.CAMELFS_BUCKET) {
+    const head = await c.env.CAMELFS_BUCKET.head(objectKey(verifyR2Hash));
+    r2Exists = head !== null;
+  }
+  return c.json({ ...status, r2Exists });
+});
+
+app.post("/v2/internal/camelfs/import-lineages", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const body = (await c.req.json()) as {
+    lineages: Array<{
+      lineage: string;
+      tenantId: string;
+      defaultRef: string;
+      createdAt: number;
+      refs: Array<{ name: string; commit: string; tree: string; updatedAt: number }>;
+    }>;
+  };
+  if (!Array.isArray(body.lineages) || body.lineages.length === 0) {
+    throw new ApiError(400, "invalid_request", "`lineages` non-empty array is required");
+  }
+  if (body.lineages.length > 50) {
+    throw new ApiError(400, "invalid_request", "max 50 lineages per batch");
+  }
+  const results = await Promise.all(
+    body.lineages.map((lin) => getCamelfsLineageStub(c.env, lin.lineage).importLineage(lin)),
+  );
+  let importedRefs = 0;
+  let skippedNewerRefs = 0;
+  for (const r of results) {
+    importedRefs += r.importedRefs;
+    skippedNewerRefs += r.skippedNewerRefs;
+  }
+  return c.json({ count: results.length, importedRefs, skippedNewerRefs });
+});
+
+app.post("/v2/internal/camelfs/put-raw-r2", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  if (!c.env.CAMELFS_BUCKET) {
+    throw new ApiError(503, "camelfs_not_configured", "CAMELFS_BUCKET not configured");
+  }
+  const key = c.req.query("key") ?? "";
+  if (!key.startsWith("objects/")) {
+    throw new ApiError(400, "invalid_request", "key must start with objects/");
+  }
+  const kind = c.req.query("kind") ?? "";
+  const body = await c.req.arrayBuffer();
+  await c.env.CAMELFS_BUCKET.put(key, body, kind ? { customMetadata: { kind } } : undefined);
+  return c.json({ ok: true, key, bytes: body.byteLength });
+});
+
+app.get("/v2/internal/camelfs/lineages/:lineage/verify", async (c) => {
+  if (!verifyAdminHeader(c.env, c.req.raw)) {
+    throw new ApiError(401, "unauthorized", "Invalid or missing X-Admin-Key");
+  }
+  const lineage = c.req.param("lineage");
+  const path = c.req.query("path") ?? "";
+  const at = c.req.query("at") || "refs/heads/main";
+  const stub = getCamelfsLineageStub(c.env, lineage);
+  const refs = await stub.listRefs();
+  const ls = await stub.ls({ at, path: "", recursive: true });
+  let file = null;
+  if (path) {
+    file = await stub.read({ at, path });
+  }
+  return c.json({ lineage, refs: refs.refs, entryCount: ls.entries.length, entries: ls.entries.slice(0, 20), file });
+});
 
 // ---- 0. Hosted MCP & OAuth 2.1 Authorization Server Endpoints ----
 

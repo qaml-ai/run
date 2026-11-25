@@ -3,6 +3,8 @@ import type { TenantDO } from "./tenant-do.ts";
 import type { ToolImageRef } from "./tool-images.ts";
 import type { AgentDO } from "./agent-do.ts";
 import type { VoiceCallDO } from "./voice-call-do.ts";
+import type { CamelfsLineageDO } from "./camelfs/lineage-do.ts";
+import type { CamelfsContainerDO } from "./camelfs/container-do.ts";
 
 export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined> & {
   [K in Exclude<keyof T, keyof DurableObject<Env>>]: T[K];
@@ -10,6 +12,7 @@ export type RpcStub<T extends DurableObject<Env>> = DurableObjectStub<undefined>
 
 export interface Env {
   MEDIA_BUCKET?: R2Bucket;
+  CAMELFS_BUCKET?: R2Bucket;
   IMAGES?: ImagesBinding;
   BROWSER?: BrowserRun;
   SVG_RENDERER?: Fetcher;
@@ -17,15 +20,22 @@ export interface Env {
   TENANT_DO: DurableObjectNamespace<TenantDO>;
   AGENT_DO: DurableObjectNamespace<AgentDO>;
   VOICE_CALL_DO?: DurableObjectNamespace<VoiceCallDO>;
+  CAMELFS_LINEAGE_DO?: DurableObjectNamespace<CamelfsLineageDO>;
+  CAMELFS_CONTAINER_DO?: DurableObjectNamespace<CamelfsContainerDO>;
   CODEMODE_SANDBOX?: DurableObjectNamespace;
   ADMIN_SECRET: string;
   VAULT_SECRET: string;
   BUILDER_CUTOVER_CREDIT_TENANT_ID?: string;
   APP_RUNTIME_CREDIT_TENANT_IDS?: string;
   OPS_INTERNAL_DOMAINS?: string;
+  CAMELFS_BACKEND?: "http" | "cloudflare";
   CAMELFS_URL: string;
   CAMELFS_SIGNING_KEY?: string;
   CAMELFS_DEV_TOKEN?: string;
+  CAMELFS_SELF_URL?: string;
+  CAMELFS_INTERNAL_SECRET?: string;
+  CAMELFS_CONTAINER_URL?: string;
+  CAMELFS_CONTAINER_INSTANCE?: string;
   TOOL_IDENTITY_ISSUER?: string;
   TOOL_IDENTITY_PRIVATE_JWK?: string;
   DEFAULT_MODEL?: string;

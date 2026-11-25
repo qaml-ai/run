@@ -2,13 +2,15 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "camelrun-v2-prod",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-24",
+  "compatibility_date": "2026-11-05",
   "compatibility_flags": [
     "nodejs_compat",
     "enhanced_error_serialization"
   ],
   "vars": {
-    "CAMELFS_URL": "https://fs-v2.camelai.dev",
+    "CAMELFS_BACKEND": "cloudflare",
+    "CAMELFS_SELF_URL": "https://run.camelai.com/v2",
+    "CAMELFS_CONTAINER_INSTANCE": "standard-1",
     "DEFAULT_MODEL": "azure/gpt-6.1-terra",
     "TOOL_IDENTITY_ISSUER": "https://run.camelai.com/v2",
     "VOICE_PUBLIC_URL": "https://run.camelai.com",
@@ -24,6 +26,10 @@
     {
       "binding": "MEDIA_BUCKET",
       "bucket_name": "camelrun-v2-prod-media"
+    },
+    {
+      "binding": "CAMELFS_BUCKET",
+      "bucket_name": "camelrun-v2-prod-camelfs"
     }
   ],
   "queues": {
@@ -61,12 +67,32 @@
         "class_name": "VoiceCallDO"
       },
       {
+        "name": "CAMELFS_LINEAGE_DO",
+        "class_name": "CamelfsLineageDO"
+      },
+      {
+        "name": "CAMELFS_CONTAINER_DO",
+        "class_name": "CamelfsContainerDO"
+      },
+      {
         "name": "CODEMODE_SANDBOX",
         "class_name": "CodemodeSandbox",
         "script_name": "camelrun-v2-codemode-sandbox"
       }
     ]
   },
+  "containers": [
+    {
+      "name": "camelrun-v2-prod",
+      "class_name": "CamelfsContainerDO",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "camelfs": {
+          "dockerfile": "../camelfsd/Dockerfile.cf-container"
+        }
+      }
+    }
+  ],
   "migrations": [
     {
       "tag": "v1",
@@ -79,6 +105,13 @@
       "tag": "v2",
       "new_sqlite_classes": [
         "VoiceCallDO"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "CamelfsLineageDO",
+        "CamelfsContainerDO"
       ]
     }
   ],

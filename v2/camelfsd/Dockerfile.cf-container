@@ -1,0 +1,17 @@
+FROM golang:1.24-bookworm AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /camelfs-cf-containerd ./cmd/camelfs-cf-containerd
+
+FROM node:24-trixie-slim
+# Match backends/workers/computers/Dockerfile toolchain + fuse3/util-linux for RO Lazy FUSE + kernel overlayfs.
+# libnss-myhostname resolves container hostname without DNS stall when offline.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash ca-certificates curl fuse3 git gh jq libnss-myhostname procps \
+    python3 python3-pip python3-venv build-essential ripgrep unzip util-linux \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /camelfs-cf-containerd /usr/local/bin/camelfs-cf-containerd
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/camelfs-cf-containerd", "--listen", ":8080", "--data-dir", "/tmp/camelfs"]
