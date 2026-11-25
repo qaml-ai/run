@@ -334,9 +334,7 @@ export class PiAgentEngine {
           BG,
         );
       },
-      defaults: {
-        maxTurns: 25,
-      },
+      defaults: {},
     });
 
     this.lifecycle.use(this.harness);
@@ -1061,7 +1059,9 @@ export class PiAgentEngine {
       thinkingLevel,
       instructions: cfg.instructions ? cfg.instructions : null,
       tools: enabledTools,
-      ...(maxTurns !== undefined ? { maxTurns } : {}),
+      // Default to unlimited turns (null clears any previously persisted maxTurns on existing agents);
+      // explicit per-run maxSteps still applies when provided, and spendLimit guards runaway cost.
+      maxTurns: maxTurns ?? null,
     };
   }
 
@@ -1675,7 +1675,7 @@ export class PiAgentEngine {
     actor?: string;
     files: Array<{ lineage: string; file: RunFile }>;
     outputSchema: Record<string, unknown> | null;
-    maxSteps: number;
+    maxSteps?: number;
     spendLimitUsd: number | null;
     keyScope?: string | null;
     hints?: StartRunHints;

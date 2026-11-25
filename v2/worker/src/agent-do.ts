@@ -150,7 +150,7 @@ export class AgentDO extends DurableObject<Env> {
         files_changed_json TEXT NOT NULL DEFAULT '[]',
         usage_json TEXT NOT NULL DEFAULT '{"inputTokens":0,"outputTokens":0,"costUsd":0,"vmMs":0}',
         error_json TEXT,
-        max_steps INTEGER NOT NULL DEFAULT 25,
+        max_steps INTEGER NOT NULL DEFAULT 0,
         started_at INTEGER NOT NULL,
         ended_at INTEGER
       );
@@ -775,7 +775,13 @@ export class AgentDO extends DurableObject<Env> {
     const prompt = String(body.prompt ?? "");
     const whileRunning = body.whileRunning === "steer" ? "steer" : "queue";
     const wait = body.wait !== undefined ? Boolean(body.wait) : true;
-    const maxSteps = Math.max(1, Math.min(100, Number(body.maxSteps ?? 25)));
+    // 0 = unlimited turns (stored in NOT NULL max_steps column for backwards-compatible DO SQLite schema);
+    // explicit positive maxSteps still enforces a per-run turn cap (up to 1000).
+    const parsedMaxSteps =
+      body.maxSteps !== undefined && body.maxSteps !== null ? Number(body.maxSteps) : Number.NaN;
+    const maxSteps = Number.isFinite(parsedMaxSteps)
+      ? Math.max(1, Math.min(1000, Math.trunc(parsedMaxSteps)))
+      : 0;
     const spendLimitUsd = body.spendLimitUsd;
     if (spendLimitUsd !== undefined && (!Number.isFinite(spendLimitUsd) || spendLimitUsd < 0)) {
       throw new ApiError(400, "invalid_spend_limit", "spendLimitUsd must be a finite non-negative number");
@@ -1058,7 +1064,7 @@ export class AgentDO extends DurableObject<Env> {
         actor: this.runActor(runId),
         files,
         outputSchema,
-        maxSteps,
+        maxSteps: maxSteps > 0 ? maxSteps : undefined,
         spendLimitUsd: this.runSpendLimit(runId),
         keyScope,
         hints,
