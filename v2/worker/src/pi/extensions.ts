@@ -107,13 +107,11 @@ function toJsonValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value ?? null)) as JsonValue;
 }
 
-// ---- 1. Coding Tools Extension (`read`, `write`, `edit`, `bash` + legacy aliases) ----
+// ---- 1. Coding Tools Extension (`read`, `write`, `edit`, `bash`) ----
 
 export interface CamelRunCodingExtensionOptions {
   images?: ImagesBinding;
-  /** Include legacy `read_file`, `write_file`, `edit_file` aliases alongside `read`, `write`, `edit`. Default `true`. */
-  includeLegacyAliases?: boolean;
-  /** Optional historical-commit file reader for `read_file({ path, at })`. */
+  /** Optional historical-commit file reader for `read({ path, at })`. */
   readAtCommit?: (path: string, at: string) => Promise<string>;
 }
 
@@ -134,7 +132,7 @@ function formatBoundedLineRange(
   const startLine = startLineArg !== undefined ? Math.max(1, Math.floor(startLineArg)) : 1;
   const requestedEnd = endLineArg !== undefined ? Math.floor(endLineArg) : totalLines;
   if (endLineArg !== undefined && requestedEnd < startLine) {
-    throw new Error(`read_file: end_line (${requestedEnd}) must be >= start_line (${startLine})`);
+    throw new Error(`read: end_line (${requestedEnd}) must be >= start_line (${startLine})`);
   }
   if (totalLines === 0 || startLine > totalLines) {
     return textOutput({
@@ -197,8 +195,6 @@ export function createCamelRunCodingExtension(
   const baseCoding = createCodingTools({ images: imageProcessor });
   const baseTools = [...(baseCoding.tools ?? [])] as ToolRegistration[];
   const readBase = baseTools.find((t) => t.name === "read");
-  const writeBase = baseTools.find((t) => t.name === "write");
-  const editBase = baseTools.find((t) => t.name === "edit");
 
   const readParams = obj(
     {
@@ -313,110 +309,13 @@ export function createCamelRunCodingExtension(
       : []),
   ] as Extension["wraps"];
 
-  const aliasTools: ToolRegistration[] = [];
-  if (options?.includeLegacyAliases !== false) {
-    if (readBase) {
-      aliasTools.push(
-        defineTool({
-          name: "read_file",
-          description:
-            "Read file contents from the repository or virtual skill files (/.skills/<slug>/SKILL.md). Compatibility alias for `read`.",
-          parameters: readParams,
-          execute: (args, api, context) =>
-            executeCamelRead(readBase, args, api as never, context),
-        }) as ToolRegistration,
-      );
-    }
-
-    if (writeBase) {
-      aliasTools.push(
-        defineTool({
-          name: "write_file",
-          description: "Create or overwrite a file in the repository. Compatibility alias for `write`.",
-          parameters: obj(
-            {
-              path: str({ description: "File path to write" }),
-              content: str({ description: "File contents" }),
-              message: opt(str({ description: "Optional commit message" })),
-            },
-            { open: true },
-          ),
-          execute: (args, api, context) =>
-            writeBase.execute({ path: args.path, content: args.content } as never, api as never, context),
-        }) as ToolRegistration,
-      );
-    }
-
-    if (editBase) {
-      aliasTools.push(
-        defineTool({
-          name: "edit_file",
-          description:
-            "Replace exact text inside a repository file (`oldString`/`newString` or `edits`). Compatibility alias for `edit`.",
-          parameters: obj(
-            {
-              path: str({ description: "File path to edit" }),
-              oldString: opt(str({ description: "Exact text to replace" })),
-              newString: opt(str({ description: "Replacement text" })),
-              replaceAll: opt(bool({ description: "Replace all occurrences" })),
-              edits: opt(arr(obj({ oldText: str(), newText: str() }))),
-            },
-            { open: true },
-          ),
-          async execute(args, api, context) {
-            if (args.oldString !== undefined && args.newString !== undefined) {
-              if (!api.env) throw new Error("No execution environment available");
-              const absRes = await api.env.absolutePath(args.path, context);
-              if (!absRes.ok) throw absRes.error;
-              const curRes = await api.env.readTextFile(absRes.value, context);
-              if (!curRes.ok) throw curRes.error;
-              const content = curRes.value;
-              if (args.replaceAll) {
-                if (!content.includes(args.oldString)) {
-                  throw new Error(`edit_file: oldString not found in '${args.path}'`);
-                }
-                const writeRes = await api.env.writeFile(
-                  absRes.value,
-                  content.split(args.oldString).join(args.newString),
-                  context,
-                );
-                if (!writeRes.ok) throw writeRes.error;
-                return {
-                  output: [{ type: "text", text: `Successfully replaced all occurrences in ${args.path}.` }],
-                };
-              }
-              if (args.oldString.length > 0) {
-                const lineNumbers: number[] = [];
-                for (let idx = content.indexOf(args.oldString); idx !== -1; idx = content.indexOf(args.oldString, idx + args.oldString.length)) {
-                  lineNumbers.push(content.slice(0, idx).split("\n").length);
-                }
-                if (lineNumbers.length > 1) {
-                  throw new Error(
-                    `edit_file: oldString matched ${lineNumbers.length} times in '${args.path}' (lines ${lineNumbers.join(", ")}). Provide more context or set replaceAll: true.`,
-                  );
-                }
-              }
-            }
-            const edits =
-              args.edits && args.edits.length > 0
-                ? args.edits
-                : args.oldString !== undefined && args.newString !== undefined
-                  ? [{ oldText: args.oldString, newText: args.newString }]
-                  : [];
-            return editBase.execute({ path: args.path, edits } as never, api as never, context);
-          },
-        }) as ToolRegistration,
-      );
-    }
-  }
-
   return defineExtension({
     name: baseCoding.name,
     namespace: {
       name: "coding",
       description: "Read, write, edit files and run bash commands in the workspace",
     },
-    tools: [...baseTools, ...aliasTools],
+    tools: baseTools,
     sections: baseCoding.sections as Extension["sections"],
     hooks: baseCoding.hooks,
     wraps,

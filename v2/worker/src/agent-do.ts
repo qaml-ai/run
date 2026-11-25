@@ -31,23 +31,7 @@ import { deliverWebhookMessage, enqueueWebhookEvent } from "./webhooks.ts";
 import { executeAgentWorkflow, type WorkflowExecutionSummary } from "./workflows.ts";
 
 interface WsAttachment {
-  kind?: "agent" | "voice";
-  sessionId?: string;
   tools: string[];
-}
-
-export interface VoiceSessionRecord {
-  sessionId: string;
-  tenantId: string;
-  agentId: string;
-  agentKey: string;
-  provider: "openai" | "elevenlabs";
-  voice: string;
-  clientSecret: string;
-  wsUrl: string;
-  status: "active" | "closed";
-  createdAt: number;
-  expiresAt: number;
 }
 
 export function getAgentStub(env: Env, agentId: string): RpcStub<AgentDO> {
@@ -230,25 +214,6 @@ export class AgentDO extends DurableObject<Env> {
         k TEXT PRIMARY KEY,
         v TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS voice_sessions (
-        id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL,
-        voice TEXT NOT NULL,
-        client_secret TEXT NOT NULL,
-        ws_url TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS voice_tool_logs (
-        id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        name TEXT NOT NULL,
-        args_json TEXT NOT NULL,
-        result_json TEXT,
-        ok INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
-      );
     `);
     const runColumns = this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(runs)").toArray();
     if (!runColumns.some((column) => column.name === "spend_limit_usd")) {
@@ -411,8 +376,6 @@ export class AgentDO extends DurableObject<Env> {
 
     for (const ws of this.ctx.getWebSockets()) {
       try {
-        const attachment = ws.deserializeAttachment() as WsAttachment | null;
-        if (attachment?.kind === "voice") continue;
         ws.send(wsPayload);
       } catch {
         // Closed socket
@@ -529,28 +492,9 @@ export class AgentDO extends DurableObject<Env> {
       return;
     }
 
-    const attachment = (ws.deserializeAttachment() as WsAttachment | null) ?? {
-      kind: "agent",
-      tools: [],
-    };
     const msgType = parsed.type;
     if (msgType === "ping") {
       ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
-      return;
-    }
-
-    if (attachment.kind === "voice" && msgType === "tool_call" && typeof parsed.name === "string") {
-      const callId = typeof parsed.callId === "string" ? parsed.callId : randomId("vt", 6);
-      const args =
-        parsed.args && typeof parsed.args === "object"
-          ? (parsed.args as Record<string, unknown>)
-          : {};
-      const out = await this.execVoiceTool(attachment.sessionId ?? "", {
-        callId,
-        name: parsed.name,
-        args,
-      });
-      ws.send(JSON.stringify({ type: "tool_result", ...out }));
       return;
     }
 
@@ -558,7 +502,7 @@ export class AgentDO extends DurableObject<Env> {
       const tools = Array.isArray(parsed.tools)
         ? parsed.tools.filter((t): t is string => typeof t === "string")
         : [];
-      ws.serializeAttachment({ kind: "agent", tools } satisfies WsAttachment);
+      ws.serializeAttachment({ tools } satisfies WsAttachment);
       ws.send(JSON.stringify({ type: "tools_registered", tools }));
       return;
     }
@@ -2302,184 +2246,6 @@ export class AgentDO extends DurableObject<Env> {
     return this.ensurePiEngine().consolidateDream();
   }
 
-  // ---- Folded Voice Session Broker ----
-
-  async createVoiceSession(body: {
-    sessionId: string;
-    provider?: "openai" | "elevenlabs";
-    voice?: string;
-    instructions?: string;
-  }): Promise<{
-    sessionId: string;
-    provider: "openai" | "elevenlabs";
-    voice: string;
-    agentId: string;
-    clientSecret: string;
-    wsUrl: string;
-    expiresAt: number;
-  }> {
-    this.ensureSql();
-    const cfg = this.requireConfig();
-    const provider = body.provider === "elevenlabs" ? "elevenlabs" : "openai";
-    const voice = body.voice?.trim() || (provider === "elevenlabs" ? "Rachel" : "alloy");
-    const now = Date.now();
-    const expiresAt = now + 15 * 60_000;
-
-    let clientSecret = `eph_${randomId("sec", 12)}`;
-    let wsUrl =
-      provider === "elevenlabs"
-        ? `wss://api.elevenlabs.io/v1/convai/conversation?session_id=${body.sessionId}`
-        : `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview`;
-
-    const tenantStub = getTenantStub(this.env, cfg.tenantId);
-
-    if (provider === "openai") {
-      const cred = await tenantStub.getProviderSecret("openai");
-      const apiKey = cred?.apiKey || this.env.OPENAI_API_KEY;
-      if (apiKey && !apiKey.startsWith("mock")) {
-        try {
-          const base = (cred?.baseUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
-          const rtRes = await fetch(`${base}/realtime/sessions`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: "gpt-4o-realtime-preview",
-              voice,
-              instructions: body.instructions || cfg.instructions || undefined,
-            }),
-          });
-          if (rtRes.ok) {
-            const data = (await rtRes.json()) as { client_secret?: { value?: string } };
-            if (data.client_secret?.value) {
-              clientSecret = data.client_secret.value;
-            }
-          }
-        } catch {
-          // Offline fallback
-        }
-      }
-    } else {
-      const cred = await tenantStub.getProviderSecret("elevenlabs");
-      const apiKey = cred?.apiKey || this.env.ELEVENLABS_API_KEY;
-      if (apiKey && !apiKey.startsWith("mock") && cred?.baseUrl) {
-        wsUrl = cred.baseUrl;
-      }
-    }
-
-    this.ctx.storage.sql.exec(
-      `INSERT INTO voice_sessions (id, provider, voice, client_secret, ws_url, status, created_at, expires_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7)
-       ON CONFLICT(id) DO UPDATE SET status = 'active', expires_at = excluded.expires_at`,
-      body.sessionId,
-      provider,
-      voice,
-      clientSecret,
-      wsUrl,
-      now,
-      expiresAt,
-    );
-
-    return {
-      sessionId: body.sessionId,
-      provider,
-      voice,
-      agentId: cfg.id,
-      clientSecret,
-      wsUrl,
-      expiresAt,
-    };
-  }
-
-  async getVoiceSession(sessionId: string): Promise<VoiceSessionRecord> {
-    this.ensureSql();
-    const cfg = this.requireConfig();
-    const row = this.ctx.storage.sql
-      .exec<{
-        id: string;
-        provider: "openai" | "elevenlabs";
-        voice: string;
-        client_secret: string;
-        ws_url: string;
-        status: "active" | "closed";
-        created_at: number;
-        expires_at: number;
-      }>(`SELECT * FROM voice_sessions WHERE id = ?1 LIMIT 1`, sessionId)
-      .toArray()[0];
-    if (!row) {
-      throw new ApiError(404, "voice_session_not_found", "Voice session not found");
-    }
-    return {
-      sessionId: row.id,
-      tenantId: cfg.tenantId,
-      agentId: cfg.id,
-      agentKey: cfg.key,
-      provider: row.provider,
-      voice: row.voice,
-      clientSecret: row.client_secret,
-      wsUrl: row.ws_url,
-      status: row.status,
-      createdAt: row.created_at,
-      expiresAt: row.expires_at,
-    };
-  }
-
-  async execVoiceTool(
-    sessionId: string,
-    body: { name: string; args?: Record<string, unknown>; callId?: string },
-  ): Promise<{
-    callId: string;
-    ok: boolean;
-    result: unknown;
-    error: { code: string; message: string } | null;
-  }> {
-    this.ensureSql();
-    if (sessionId) {
-      await this.getVoiceSession(sessionId);
-    }
-    if (!body.name) {
-      throw new ApiError(400, "invalid_request", "`name` is required");
-    }
-    const callId = body.callId || randomId("vt", 6);
-    try {
-      const result = await this.ensurePiEngine().executeRegisteredTool(
-        body.name,
-        body.args ?? {},
-        callId,
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT INTO voice_tool_logs (id, session_id, name, args_json, result_json, ok, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)`,
-        callId,
-        sessionId,
-        body.name,
-        JSON.stringify(body.args ?? {}),
-        JSON.stringify(result ?? null),
-        Date.now(),
-      );
-      return { callId, ok: true, result: result ?? null, error: null };
-    } catch (err) {
-      const apiErr = extractApiError(err);
-      const errorObj = {
-        code: apiErr?.code ?? "tool_error",
-        message: apiErr?.message ?? (err instanceof Error ? err.message : String(err)),
-      };
-      this.ctx.storage.sql.exec(
-        `INSERT INTO voice_tool_logs (id, session_id, name, args_json, result_json, ok, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)`,
-        callId,
-        sessionId,
-        body.name,
-        JSON.stringify(body.args ?? {}),
-        JSON.stringify(errorObj),
-        Date.now(),
-      );
-      return { callId, ok: false, result: null, error: errorObj };
-    }
-  }
-
   async destroyAgent(): Promise<{ deleted: true }> {
     if (this.destroying) {
       throw new ApiError(409, "agent_deleting", "Agent deletion is in progress");
@@ -2529,22 +2295,16 @@ export class AgentDO extends DurableObject<Env> {
       const path = url.pathname;
       const method = request.method;
 
-      if (method === "GET" && (path === "/ws" || path === "/voice-ws")) {
+      if (method === "GET" && path === "/ws") {
         const upgrade = request.headers.get("upgrade") ?? request.headers.get("Upgrade") ?? "";
         if (upgrade.toLowerCase() !== "websocket") {
           throw new ApiError(426, "upgrade_required", "Expected WebSocket Upgrade header");
-        }
-        const sessionId = url.searchParams.get("sessionId") ?? undefined;
-        if (path === "/voice-ws" && sessionId) {
-          await this.getVoiceSession(sessionId);
         }
         const pair = new WebSocketPair();
         const client = pair[0];
         const server = pair[1];
         this.ctx.acceptWebSocket(server);
         server.serializeAttachment({
-          kind: path === "/voice-ws" ? "voice" : "agent",
-          sessionId,
           tools: [],
         } satisfies WsAttachment);
         return new Response(null, { status: 101, webSocket: client });

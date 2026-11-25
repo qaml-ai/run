@@ -324,7 +324,6 @@ export interface RepoDiffResult {
 
 export interface DecisionRequest<TChoice extends string = string> { input: string; choices: readonly TChoice[]; instructions?: string; model?: string; }
 export interface DecisionResult<TChoice extends string = string> { choice: TChoice; confidence: number; scores: Record<TChoice, number>; costUsd: number; }
-export interface VoiceSession { sessionId: string; provider: "openai" | "elevenlabs"; clientSecret: string; wsUrl: string; }
 
 export interface ChannelConfig {
   id?: string;

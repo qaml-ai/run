@@ -3,9 +3,6 @@ import { crc32 } from "node:zlib";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** Why a damaged image is replaced in requests, without changing the saved history. */
-export const IMAGE_DAMAGED = "could not be read (damaged or incomplete image)";
-
 /**
  * An image's format and size from its header: PNG, GIF, WebP and JPEG, the types models take.
  * Only bounds-checked reads of a few bytes, nothing decoded; undefined when the header is not one of them.

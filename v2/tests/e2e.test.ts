@@ -956,7 +956,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
     // Step A: Write initial file via repo file tool
     const r1 = await coder.run(
-      `Create seed [CALL:write_file {"path":"notes.txt","content":"line1\\n","message":"seed notes"}]`,
+      `Create seed [CALL:write {"path":"notes.txt","content":"line1\\n"}]`,
     );
     assert.equal(r1.status, "completed");
 
@@ -977,7 +977,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
     // Step D: Edit file via file tool WHILE the VM holds the branch lease (must NOT 409!)
     const r4 = await coder.run(
-      `Edit notes [CALL:edit_file {"path":"notes.txt","oldString":"line1","newString":"line1-edited"}]`,
+      `Edit notes [CALL:edit({"path":"notes.txt","edits":[{"oldText":"line1","newText":"line1-edited"}]})]`,
     );
     assert.equal(r4.status, "completed");
 
@@ -1309,7 +1309,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
 
     // SSE stream yields live deltas
     const deltas: string[] = [];
-    const stream = agent.stream("Stream me a friendly greeting and write v1 [CALL:write_file {\"path\":\"version.txt\",\"content\":\"v1\\n\"}]");
+    const stream = agent.stream("Stream me a friendly greeting and write v1 [CALL:write {\"path\":\"version.txt\",\"content\":\"v1\\n\"}]");
     for await (const ev of stream) {
       if (ev.type === "text_delta" || (ev.data && typeof (ev.data as { delta?: unknown }).delta === "string")) {
         deltas.push(String((ev.data as { delta?: string })?.delta ?? ""));
@@ -1464,49 +1464,6 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
     assert.ok(["billing", "technical", "sales"].includes(decision.choice));
     assert.ok(decision.confidence > 0 && decision.confidence <= 1);
-
-    // Folded AgentDO voice session (both HTTP /tool RPC and hibernatable /ws)
-    const voice = await camel.voice.createSession({
-      agentIdOrKey: mcpAgent.key,
-      provider: "openai",
-      voice: "alloy",
-    });
-    assert.ok(voice.sessionId.startsWith("vs_"));
-    const voiceTool = await camel.voice.invokeTool(voice.sessionId, {
-      name: "write_file",
-      args: { path: "voice-note.txt", content: "recorded during voice call\n" },
-    });
-    assert.ok(voiceTool);
-
-    // Also verify live voice WebSocket tool_call directly on AgentDO
-    const wsVoiceUrl = `${workerUrl.replace("http://", "ws://")}/v2/voice/sessions/${encodeURIComponent(voice.sessionId)}/ws?token=${encodeURIComponent(apiKey)}`;
-    await new Promise<void>((resolve, reject) => {
-      const vws = new globalThis.WebSocket(wsVoiceUrl);
-      vws.addEventListener("open", () => {
-        vws.send(
-          JSON.stringify({
-            type: "tool_call",
-            callId: "vt_ws_1",
-            name: "write_file",
-            args: { path: "voice-ws.txt", content: "via voice ws\n" },
-          }),
-        );
-      });
-      vws.addEventListener("message", (ev) => {
-        const msg = JSON.parse(String(ev.data)) as { type: string; ok?: boolean };
-        if (msg.type === "tool_result") {
-          vws.close();
-          if (msg.ok) resolve();
-          else reject(new Error("voice ws tool_call failed"));
-        }
-      });
-      vws.addEventListener("error", () => reject(new Error("voice ws error")));
-    });
-
-    const voiceFile = await camel.repos.read(refreshedAgent.repoId!, { path: "voice-note.txt" });
-    assert.equal(voiceFile.content, "recorded during voice call\n");
-    const voiceWsFile = await camel.repos.read(refreshedAgent.repoId!, { path: "voice-ws.txt" });
-    assert.equal(voiceWsFile.content, "via voice ws\n");
 
     // Channels inbound routing into keyed channel agent
     const ch = await camel.channels.create({
@@ -2014,7 +1971,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
     assert.equal(restored.tree, w1.tree);
 
-    // 6. Builtin agent file tools: bounded read_file, edit_file multi-match error, delete_file updateRepoCommit, repo_diff.
+    // 6. Builtin agent file tools: bounded read, edit multi-match error & multi-edit replacement, delete_file updateRepoCommit, repo_diff.
     const bigLines = Array.from({ length: 60 }, (_, i) => `line-${i + 1}: ${i % 10 === 0 ? "DUP_TOKEN" : "val"}`).join("\n") + "\n";
     const seedForAgent = await camel.repos.write(repo.repoId, {
       message: "seed agent file",
@@ -2031,7 +1988,7 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     });
 
     const readRangeRun = await agent.run(
-      `Read lines [CALL:read_file {"path":"big.txt","start_line":10,"end_line":12}]`,
+      `Read lines [CALL:read {"path":"big.txt","start_line":10,"end_line":12}]`,
     );
     assert.equal(readRangeRun.status, "completed");
     assert.match(readRangeRun.text, /10: line-10: val/);
@@ -2040,35 +1997,38 @@ describe("camelRun v2 end-to-end (SDK <-> workerd <-> Ed25519 JWT <-> Go camelfs
     assert.match(readRangeRun.text, /"totalLines":60/);
     assert.match(readRangeRun.text, /"truncated":false/);
 
-    // Byte-capped read_file line range sets truncated: true.
+    // Byte-capped read line range sets truncated: true.
     const readTruncRun = await agent.run(
-      `Read capped [CALL:read_file {"path":"big.txt","start_line":1,"end_line":60,"limit":60}]`,
+      `Read capped [CALL:read {"path":"big.txt","start_line":1,"end_line":60,"limit":60}]`,
     );
     assert.equal(readTruncRun.status, "completed");
     assert.match(readTruncRun.text, /"truncated":true/);
 
-    // Backwards compatibility: read_file without start_line/end_line returns unnumbered content via pi-durable read tool.
+    // Backwards compatibility: read without start_line/end_line returns unnumbered content via pi-durable read tool.
     const readCompatRun = await agent.run(
-      `Read raw [CALL:read_file {"path":"temp.txt"}]`,
+      `Read raw [CALL:read {"path":"temp.txt"}]`,
     );
     assert.equal(readCompatRun.status, "completed");
     assert.match(readCompatRun.text, /delete me/);
 
-    // edit_file with multiple matches and replaceAll omitted must return an actionable error with count and line numbers.
+    // edit with multiple matches must return an actionable uniqueness error.
     const multiMatchRun = await agent.run(
-      `Try ambiguous edit [CALL:edit_file {"path":"big.txt","oldString":"DUP_TOKEN","newString":"FIXED"}]`,
+      `Try ambiguous edit [CALL:edit({"path":"big.txt","edits":[{"oldText":"DUP_TOKEN","newText":"FIXED"}]})]`,
     );
     assert.equal(multiMatchRun.status, "completed");
-    assert.match(multiMatchRun.text, /matched 6 times/);
-    assert.match(multiMatchRun.text, /lines 1, 11, 21, 31, 41, 51/);
+    assert.match(multiMatchRun.text, /Found 6 occurrences/);
 
     // File must remain unmodified after rejected ambiguous edit.
     const afterReject = await camel.repos.read(repo.repoId, { path: "big.txt" });
     assert.equal(afterReject.content, bigLines);
 
-    // edit_file with replaceAll: true succeeds across all occurrences.
+    // edit with targeted unique edits succeeds across all occurrences.
+    const targetedEdits = [1, 11, 21, 31, 41, 51].map((lineNo) => ({
+      oldText: `line-${lineNo}: DUP_TOKEN`,
+      newText: `line-${lineNo}: FIXED`,
+    }));
     const replaceAllRun = await agent.run(
-      `Replace all [CALL:edit_file {"path":"big.txt","oldString":"DUP_TOKEN","newString":"FIXED","replaceAll":true}]`,
+      `Replace all [CALL:edit(${JSON.stringify({ path: "big.txt", edits: targetedEdits })})]`,
     );
     assert.equal(replaceAllRun.status, "completed");
     const afterReplaceAll = await camel.repos.read(repo.repoId, { path: "big.txt" });

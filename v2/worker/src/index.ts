@@ -33,9 +33,7 @@ import {
   hashPassword,
   mintAgentToken,
   mintTenantApiKey,
-  mintVoiceSessionId,
   openSecret,
-  parseVoiceSessionAgentId,
   randomId,
   sealSecret,
   verifyPassword,
@@ -1521,89 +1519,6 @@ app.post("/v2/voice/providers/elevenlabs/post-call", (c) => handleElevenLabsPost
 app.post("/v2/voice/providers/elevenlabs/tools/:tool", (c) => handleElevenLabsTool(c));
 app.get("/v2/admin/voice/elevenlabs", (c) => handleAdminElevenLabsDiagnostics(c));
 app.post("/v2/admin/voice/elevenlabs/reset", (c) => handleAdminElevenLabsReset(c));
-
-app.post("/v2/voice/sessions", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  const body = (await c.req.json()) as {
-    agentIdOrKey: string;
-    provider?: "openai" | "elevenlabs";
-    voice?: string;
-    instructions?: string;
-  };
-  if (!body.agentIdOrKey) {
-    throw new ApiError(400, "invalid_request", "`agentIdOrKey` is required");
-  }
-  const agentRow = await getTenantStub(c.env, auth.tenantId).resolveAgent(body.agentIdOrKey);
-  if (!agentRow) {
-    throw new ApiError(404, "agent_not_found", `Agent '${body.agentIdOrKey}' not found`);
-  }
-  assertAgentAccess(auth, agentRow.id, "run");
-
-  const sessionId = mintVoiceSessionId(agentRow.id);
-  const created = await getAgentStub(c.env, agentRow.id).createVoiceSession({
-    sessionId,
-    provider: body.provider,
-    voice: body.voice,
-    instructions: body.instructions,
-  });
-  return c.json(created);
-});
-
-app.get("/v2/voice/sessions/:id", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  const sessionId = c.req.param("id");
-  const agentId = parseVoiceSessionAgentId(sessionId);
-  if (!agentId) {
-    throw new ApiError(404, "voice_session_not_found", "Voice session not found");
-  }
-  assertAgentAccess(auth, agentId, "read");
-  const session = await getAgentStub(c.env, agentId).getVoiceSession(sessionId);
-  if (session.tenantId !== auth.tenantId) {
-    throw new ApiError(403, "forbidden", "Voice session belongs to a different tenant");
-  }
-  return c.json(session);
-});
-
-app.post("/v2/voice/sessions/:id/tool", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw);
-  const sessionId = c.req.param("id");
-  const agentId = parseVoiceSessionAgentId(sessionId);
-  if (!agentId) {
-    throw new ApiError(404, "voice_session_not_found", "Voice session not found");
-  }
-  assertAgentAccess(auth, agentId, "run");
-  const session = await getAgentStub(c.env, agentId).getVoiceSession(sessionId);
-  if (session.tenantId !== auth.tenantId) {
-    throw new ApiError(403, "forbidden", "Voice session belongs to a different tenant");
-  }
-  const body = (await c.req.json()) as {
-    name: string;
-    args?: Record<string, unknown>;
-    callId?: string;
-  };
-  const out = await getAgentStub(c.env, agentId).execVoiceTool(sessionId, body);
-  return c.json(out, out.ok ? 200 : 422);
-});
-
-app.get("/v2/voice/sessions/:id/ws", async (c) => {
-  const auth = await authenticateRequest(c.env, c.req.raw, { allowQueryToken: true });
-  const sessionId = c.req.param("id");
-  const agentId = parseVoiceSessionAgentId(sessionId);
-  if (!agentId) {
-    throw new ApiError(404, "voice_session_not_found", "Voice session not found");
-  }
-  assertAgentAccess(auth, agentId, "run");
-  const session = await getAgentStub(c.env, agentId).getVoiceSession(sessionId);
-  if (session.tenantId !== auth.tenantId) {
-    throw new ApiError(403, "forbidden", "Voice session belongs to a different tenant");
-  }
-  return getAgentStub(c.env, agentId).fetch(
-    new Request(
-      `https://agent.internal/voice-ws?sessionId=${encodeURIComponent(sessionId)}`,
-      c.req.raw,
-    ),
-  );
-});
 
 app.post("/v2/channels", async (c) => {
   const auth = await authenticateRequest(c.env, c.req.raw);

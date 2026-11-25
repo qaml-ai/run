@@ -10,7 +10,7 @@ import {
   type RepoLeaseRefResult, type RepoReadResult, type RepoUpdateRefInput, type RepoUpdateRefResult,
   type RepoWriteInput, type RepoWriteResult, type ResponseLike, type RunRecord, type SkillRecord, type SkillSummary, type SkillUpsertInput, type SpeechInput,
   type SpeechResult, type StatelessRunOptions, type TenantInfo, type TranscribeInput,
-  type TranscriptionResult, type VoiceSession, type WebhookEndpoint, type WebSocketConstructorLike,
+  type TranscriptionResult, type WebhookEndpoint, type WebSocketConstructorLike,
 } from "./types.ts";
 
 function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
@@ -213,13 +213,6 @@ export class CamelRun {
   readonly decisions = {
     decide: <TChoice extends string = string>(request: DecisionRequest<TChoice>): Promise<DecisionResult<TChoice>> =>
       this.requestJson("POST", "/v2/decisions", request),
-  };
-
-  readonly voice = {
-    createSession: (input: { agentIdOrKey: string; provider: "openai" | "elevenlabs"; voice?: string }): Promise<VoiceSession> =>
-      this.requestJson("POST", "/v2/voice/sessions", input),
-    invokeTool: (sessionId: string, input: { name: string; args?: Record<string, unknown>; callId?: string }): Promise<{ callId?: string; result: unknown; error?: string | null }> =>
-      this.requestJson("POST", `/v2/voice/sessions/${encodeURIComponent(sessionId)}/tool`, input),
   };
 
   readonly channels = {

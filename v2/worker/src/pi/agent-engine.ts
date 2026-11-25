@@ -159,9 +159,6 @@ const FILES_TOOL_NAMES = new Set([
   "read",
   "write",
   "edit",
-  "read_file",
-  "write_file",
-  "edit_file",
   "list_files",
   "grep_files",
   "delete_file",
@@ -862,7 +859,6 @@ export class PiAgentEngine {
       this.registry.install(
         createCamelRunCodingExtension({
           images: this.host.env.IMAGES,
-          includeLegacyAliases: true,
           readAtCommit: async (rawPath, at) => {
             const curCfg = this.host.getConfig();
             const { lineage } = await this.host.ensureAgentRepository();

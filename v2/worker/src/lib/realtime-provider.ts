@@ -19,13 +19,10 @@ export type RealtimePrice =
   | { perMinute: number; perTextInput: number }
   | { inputText: number; cachedText: number; outputText: number; inputAudio: number; cachedAudio: number; outputAudio: number };
 
-/** List prices, per million tokens (or per minute/text item for xAI). */
+/** List prices, per million tokens. */
 export const REALTIME_PRICES: Readonly<Record<string, RealtimePrice>> = Object.freeze({
   "openai/gpt-realtime-2.1": { inputText: micros(4), cachedText: micros(0.4), outputText: micros(24), inputAudio: micros(32), cachedAudio: micros(0.4), outputAudio: micros(64) },
   "openai/gpt-realtime-2.1-mini": { inputText: micros(0.6), cachedText: micros(0.06), outputText: micros(2.4), inputAudio: micros(10), cachedAudio: micros(0.3), outputAudio: micros(20) },
-  "grok/grok-voice-latest": { perMinute: micros(0.08), perTextInput: micros(0.004) },
-  "grok/grok-voice-3.0": { perMinute: micros(0.08), perTextInput: micros(0.004) },
-  "gemini/gemini-3.8-live": { inputText: micros(0.75), cachedText: micros(0.75), outputText: micros(4.5), inputAudio: micros(3), cachedAudio: micros(3), outputAudio: micros(12) },
 });
 
 const ELEVENLABS_LLM_RATES: Record<string, string | undefined> = {

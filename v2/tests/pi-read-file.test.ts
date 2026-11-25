@@ -38,7 +38,7 @@ describe("pi/camelfs-env path normalization (unit)", () => {
   });
 });
 
-test("pi-durable read_file: large file truncation, offset/limit, at-commit reads, images, and virtual /.skills (unit + mock CamelFS)", async (t) => {
+test("pi-durable read: large file truncation, offset/limit, at-commit reads, images, and virtual /.skills (unit + mock CamelFS)", async (t) => {
   const largeLines = Array.from(
     { length: 2500 },
     (_, i) => `line-${String(i + 1).padStart(4, "0")}: ${"x".repeat(90)}`,
@@ -210,7 +210,7 @@ test("pi-durable read_file: large file truncation, offset/limit, at-commit reads
   assert.equal(skillRefOut, "export interface SqlStorage {\n  exec(sql: string): void;\n}\n");
 });
 
-test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallback) + agent read_file on /.skills and large CamelFS file", async (t) => {
+test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallback) + agent read on /.skills and large CamelFS file", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "camelrun-v2-pi-read-"));
   const adminSecret = "pi-read-admin";
   const vaultSecret = "pi-read-vault-32-bytes-minimum!!";
@@ -310,7 +310,7 @@ test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallba
             id: "call_skill_virtual",
             type: "function",
             function: {
-              name: "read_file",
+              name: "read",
               arguments: JSON.stringify({ path: "/.skills/camel-bots/guide/SKILL.md" }),
             },
           },
@@ -319,7 +319,7 @@ test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallba
             id: "call_big_repo",
             type: "function",
             function: {
-              name: "read_file",
+              name: "read",
               arguments: JSON.stringify({ path: "big.txt" }),
             },
           },
@@ -328,7 +328,7 @@ test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallba
             id: "call_old_commit",
             type: "function",
             function: {
-              name: "read_file",
+              name: "read",
               arguments: JSON.stringify({ path: "notes.txt", at: "c_old" }),
             },
           },
@@ -341,7 +341,7 @@ test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallba
           seenToolOutputs.push({ tool_call_id: m.tool_call_id, content: String(m.content ?? "") });
         }
       }
-      send({ role: "assistant", content: "All read_file checks passed." });
+      send({ role: "assistant", content: "All read checks passed." });
       send({}, "stop", { prompt_tokens: 200, completion_tokens: 10 });
     }
     res.write("data: [DONE]\n\n");
@@ -462,7 +462,7 @@ test("End-to-end Miniflare R2 skills CRUD (including large customMetadata fallba
 
   const run = await agent.run("Read skill, big file, and old commit", { wait: true });
   assert.equal(run.status, "completed", JSON.stringify(run.error));
-  assert.equal(run.text, "All read_file checks passed.");
+  assert.equal(run.text, "All read checks passed.");
 
   const skillOut = seenToolOutputs.find((o) => o.tool_call_id === "call_skill_virtual")!;
   assert.ok(skillOut.content.includes("Always use R2-backed skills."));

@@ -166,20 +166,6 @@ export function parseChannelTenantId(channelId: string): string | null {
   return rest.slice(0, dotIdx);
 }
 
-export function mintVoiceSessionId(agentId: string): string {
-  const rand = new Uint8Array(6);
-  crypto.getRandomValues(rand);
-  return `vs_${agentId}.${bytesToHex(rand)}`;
-}
-
-export function parseVoiceSessionAgentId(sessionId: string): string | null {
-  if (!sessionId.startsWith("vs_")) return null;
-  const rest = sessionId.slice("vs_".length);
-  const dotIdx = rest.indexOf(".");
-  if (dotIdx <= 0) return null;
-  return rest.slice(0, dotIdx);
-}
-
 async function deriveVaultKey(vaultSecret: string): Promise<CryptoKey> {
   const effective = vaultSecret || "default-dev-vault-secret";
   let cached = vaultKeyCache.get(effective);
