@@ -2,6 +2,7 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "camelrun-v2-ingress",
   "main": "worker.ts",
+  "minify": true,
   "compatibility_date": "2026-11-19",
   "account_id": "85bbd288051330fb51ee1c86031a299b",
   "workers_dev": false,

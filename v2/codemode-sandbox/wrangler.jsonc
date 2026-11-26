@@ -2,6 +2,7 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "camelrun-v2-codemode-sandbox",
   "main": "src/index.ts",
+  "minify": true,
   "account_id": "85bbd288051330fb51ee1c86031a299b",
   "compatibility_date": "2026-03-24",
   "compatibility_flags": ["nodejs_compat"],

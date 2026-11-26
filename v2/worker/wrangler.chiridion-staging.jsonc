@@ -2,6 +2,7 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "camelrun-v2-chiridion-staging",
   "main": "src/index.ts",
+  "minify": true,
   "account_id": "85bbd288051330fb51ee1c86031a299b",
   "compatibility_date": "2026-11-05",
   "compatibility_flags": ["nodejs_compat", "enhanced_error_serialization"],
