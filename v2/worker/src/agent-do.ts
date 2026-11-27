@@ -1800,9 +1800,11 @@ export class AgentDO extends DurableObject<Env> {
       if (sourceEntry.id !== cfg.id) {
         const sourceStub = getAgentStub(this.env, sourceEntry.id);
         const collected: StoredMessage[] = [];
+        let sourceCompaction: { id: string; upToSeq: number; summary: string } | null = null;
         let after = 0;
         for (let pageIdx = 0; pageIdx < 200; pageIdx++) {
           const page = await sourceStub.getHistory({ after, limit: 500 });
+          if (page.compaction) sourceCompaction = page.compaction;
           if (!page.messages.length) break;
           for (const m of page.messages) {
             collected.push({
@@ -1818,9 +1820,31 @@ export class AgentDO extends DurableObject<Env> {
           after = page.nextAfter;
         }
         if (collected.length > 0) {
-          const res = await engine.importV1Messages(cfg, collected, { append: true });
-          appendedFromSource = res.imported;
-          messageCount = res.messageCount;
+          if (sourceCompaction) {
+            const beforeCompaction = collected.filter((m) => m.seq <= sourceCompaction!.upToSeq);
+            const afterCompaction = collected.filter((m) => m.seq > sourceCompaction!.upToSeq);
+            if (beforeCompaction.length > 0) {
+              const r1 = await engine.importV1Messages(cfg, beforeCompaction, { append: true });
+              appendedFromSource += r1.imported;
+              messageCount = r1.messageCount;
+            }
+            const r2 = await engine.importV1Messages(cfg, afterCompaction, {
+              append: true,
+              compaction: {
+                id: sourceCompaction.id,
+                upToSeq: sourceCompaction.upToSeq,
+                summary: sourceCompaction.summary,
+                createdAt:
+                  beforeCompaction.at(-1)?.createdAt ?? afterCompaction[0]?.createdAt ?? Date.now(),
+              },
+            });
+            appendedFromSource += r2.imported;
+            messageCount = r2.messageCount;
+          } else {
+            const res = await engine.importV1Messages(cfg, collected, { append: true });
+            appendedFromSource = res.imported;
+            messageCount = res.messageCount;
+          }
         }
       }
     }
