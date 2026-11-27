@@ -140,6 +140,21 @@ export interface PiAgentHost {
   runWorkflow?(body: { code: string; idempotencyKey?: string }): Promise<unknown>;
 }
 
+interface PiRunProgress {
+  lastEntryId: number;
+  lastMessageEntryId: number | null;
+  generationTaskId: number | null;
+  generationAttempt: number;
+  generationTextStart: number;
+  attemptTextStart: number;
+  partialTextLen: number;
+  openToolCalls: string[];
+}
+
+type RunProgressEvent =
+  | { type: "text_delta"; data: { delta: string } }
+  | { type: "tool_call_start" | "tool_call_end"; data: Record<string, unknown> };
+
 interface ActiveRunTracker {
   runId: string;
   actor?: string;
@@ -148,24 +163,46 @@ interface ActiveRunTracker {
   usage: RunUsage;
   filesChanged: Set<string>;
   toolCalls: ToolCallSummary[];
-  seenToolStarts: Set<string>;
+  openToolCalls: Set<string>;
   seenToolEnds: Set<string>;
-  seenEntryIds: Set<number>;
-  baselineEntryId: number;
-  emittedGenerationAttempt: number;
-  emittedPartialTextLen: number;
-  lastEmittedAssistantEntryId: number;
+  baselineEntryId: number | null;
+  submissionId: SubmissionId | null;
+  submissionFinished: boolean;
+  answerEntryId: EntryId | null;
+  nextRunEntryId: EntryId | null;
+  lastEntryId: number | null;
+  lastMessageEntryId: number | null;
+  generationTaskId: number | null;
+  generationAttempt: number;
+  generationTextStart: number;
+  attemptTextStart: number;
+  partialTextLen: number;
   lastRepoCommit: string | null;
   accumulatedText: string;
   slotAcquired: boolean;
+  settling: boolean;
   settled: boolean;
   pausedForInput: boolean;
   spendLimitError: { code: "spend_limit_exceeded"; message: string } | null;
   aborted: boolean;
+  recovered: boolean;
   watchStarting: boolean;
   watchHandle: ConversationWatch | null;
+  watchProcessing: Promise<void> | null;
   watchPromise: Promise<void> | null;
 }
+
+const RUN_ENTRY_PAGE_SIZE = 8;
+
+type ActiveRunRow = {
+  id: string;
+  status: string;
+  actor: string | null;
+  output_schema_json: string | null;
+  spend_limit_usd: number | null;
+  baseline_entry_id: number | null;
+  pi_progress_json: string | null;
+};
 
 const FILES_TOOL_NAMES = new Set([
   "read",
@@ -190,6 +227,13 @@ function extractAssistantText(msg: AssistantMessage): string {
 
 function extractAssistantToolCalls(msg: AssistantMessage): ToolCall[] {
   return msg.content.filter((b): b is ToolCall => b.type === "toolCall");
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let length = 0;
+  while (length < limit && left[length] === right[length]) length += 1;
+  return length;
 }
 
 function tryParseStructuredOutput(text: string): unknown {
@@ -366,8 +410,9 @@ export class PiAgentEngine {
     }
     // If the DO was evicted mid-run and woken by `pi-wake`, rehydrate the active run tracker
     // so post-eviction billing, spend limits, outputSchema, and terminal settlement continue.
-    if (!this.activeTracker) {
-      this.getOrRehydrateActiveTracker();
+    const tracker = this.activeTracker ?? this.getOrRehydrateActiveTracker();
+    if (tracker?.recovered && !tracker.settled && !tracker.pausedForInput) {
+      this.trackSubmissionSettlement(tracker, this.host.hasEventSubscribers());
     }
   }
 
@@ -422,64 +467,17 @@ export class PiAgentEngine {
     }
     if (!this.host.readConfigOrNull()) return null;
 
-    let row:
-      | {
-          id: string;
-          status: string;
-          actor: string | null;
-          output_schema_json: string | null;
-          spend_limit_usd: number | null;
-        }
-      | undefined;
-    try {
-      row = this.host.ctx.storage.sql
-        .exec<{
-          id: string;
-          status: string;
-          actor: string | null;
-          output_schema_json: string | null;
-          spend_limit_usd: number | null;
-        }>(
-          `SELECT id, status, actor, output_schema_json, spend_limit_usd
-           FROM runs
-           WHERE status IN ('running', 'input_required') AND batched_into IS NULL
-           ORDER BY started_at DESC
-           LIMIT 1`,
-        )
-        .toArray()[0];
-    } catch {
-      return null;
-    }
+    const row = this.host.ctx.storage.sql.exec<ActiveRunRow>(
+      `SELECT id, status, actor, output_schema_json, spend_limit_usd, baseline_entry_id, pi_progress_json
+       FROM runs
+       WHERE status IN ('running', 'input_required') AND batched_into IS NULL
+       ORDER BY started_at DESC
+       LIMIT 1`,
+    ).toArray()[0];
     if (!row) return null;
 
-    const existingRec = this.host.materializeRunRecord(row.id);
     const isRunning = row.status === "running";
-    const tracker: ActiveRunTracker = {
-      runId: row.id,
-      actor: row.actor ?? undefined,
-      outputSchema: row.output_schema_json ? JSON.parse(row.output_schema_json) : null,
-      spendLimitUsd: row.spend_limit_usd ?? null,
-      usage: { ...existingRec.usage },
-      filesChanged: new Set(existingRec.filesChanged),
-      toolCalls: [...existingRec.toolCalls],
-      seenToolStarts: new Set(existingRec.toolCalls.map((t) => t.id)),
-      seenToolEnds: new Set(existingRec.toolCalls.map((t) => t.id)),
-      seenEntryIds: new Set(),
-      baselineEntryId: 0,
-      emittedGenerationAttempt: -1,
-      emittedPartialTextLen: 0,
-      lastEmittedAssistantEntryId: 0,
-      lastRepoCommit: null,
-      accumulatedText: existingRec.text,
-      slotAcquired: isRunning,
-      settled: false,
-      pausedForInput: !isRunning,
-      spendLimitError: null,
-      aborted: false,
-      watchStarting: false,
-      watchHandle: null,
-      watchPromise: null,
-    };
+    const tracker = this.rehydrateTracker(row);
     this.activeTracker = tracker;
     if (isRunning) {
       this.host.setActiveRunId(row.id);
@@ -488,6 +486,53 @@ export class PiAgentEngine {
       }
     }
     return tracker;
+  }
+
+  private rehydrateTracker(row: ActiveRunRow): ActiveRunTracker {
+    const existingRec = this.host.materializeRunRecord(row.id);
+    // Rolls forward from a checkpoint written with the boundary-aware tracker. Older
+    // runs may already have progress in their row that cannot be attributed safely.
+    const progress = row.baseline_entry_id !== null && row.pi_progress_json !== null
+      ? JSON.parse(row.pi_progress_json) as PiRunProgress
+      : null;
+    const isRunning = row.status === "running";
+    const toolCalls = progress ? existingRec.toolCalls : [];
+    return {
+      runId: row.id,
+      actor: row.actor ?? undefined,
+      outputSchema: row.output_schema_json ? JSON.parse(row.output_schema_json) : null,
+      spendLimitUsd: row.spend_limit_usd ?? null,
+      usage: { ...existingRec.usage },
+      filesChanged: new Set(existingRec.filesChanged),
+      toolCalls,
+      openToolCalls: new Set(progress?.openToolCalls),
+      seenToolEnds: new Set(toolCalls.map((t) => t.id)),
+      baselineEntryId: row.baseline_entry_id,
+      submissionId: null,
+      submissionFinished: false,
+      answerEntryId: null,
+      nextRunEntryId: null,
+      lastEntryId: progress?.lastEntryId ?? row.baseline_entry_id,
+      lastMessageEntryId: progress?.lastMessageEntryId ?? null,
+      generationTaskId: progress?.generationTaskId ?? null,
+      generationAttempt: progress?.generationAttempt ?? -1,
+      generationTextStart: progress?.generationTextStart ?? 0,
+      attemptTextStart: progress?.attemptTextStart ?? 0,
+      partialTextLen: progress?.partialTextLen ?? 0,
+      lastRepoCommit: null,
+      accumulatedText: progress ? existingRec.text : "",
+      slotAcquired: isRunning,
+      settling: false,
+      settled: false,
+      pausedForInput: !isRunning,
+      spendLimitError: null,
+      aborted: false,
+      recovered: true,
+      watchStarting: false,
+      watchHandle: null,
+      watchProcessing: null,
+      watchPromise: null,
+    };
   }
 
   async dispose(): Promise<void> {
@@ -585,17 +630,51 @@ export class PiAgentEngine {
     this.persistTrackerProgress(tracker);
   }
 
+  private serializeStreamProgress(tracker: ActiveRunTracker): string | null {
+    if (tracker.lastEntryId === null) return null;
+    return JSON.stringify({
+      lastEntryId: tracker.lastEntryId,
+      lastMessageEntryId: tracker.lastMessageEntryId,
+      generationTaskId: tracker.generationTaskId,
+      generationAttempt: tracker.generationAttempt,
+      generationTextStart: tracker.generationTextStart,
+      attemptTextStart: tracker.attemptTextStart,
+      partialTextLen: tracker.partialTextLen,
+      openToolCalls: [...tracker.openToolCalls],
+    } satisfies PiRunProgress);
+  }
+
   private persistTrackerProgress(tracker: ActiveRunTracker): void {
     this.host.ctx.storage.sql.exec(
       `UPDATE runs
-       SET text = ?1, tool_calls_json = ?2, files_changed_json = ?3, usage_json = ?4
-       WHERE id = ?5`,
+       SET text = ?1, tool_calls_json = ?2, files_changed_json = ?3, usage_json = ?4,
+           baseline_entry_id = ?5, pi_progress_json = ?6
+       WHERE id = ?7 AND status IN ('running', 'input_required')`,
       tracker.accumulatedText,
       JSON.stringify(tracker.toolCalls),
       JSON.stringify([...tracker.filesChanged]),
       JSON.stringify(tracker.usage),
+      tracker.baselineEntryId,
+      this.serializeStreamProgress(tracker),
       tracker.runId,
     );
+  }
+
+  private persistStreamProgress(tracker: ActiveRunTracker, events: RunProgressEvent[]): boolean {
+    const text = events.find((event) => event.type === "text_delta")?.data.delta ?? "";
+    const toolsChanged = events.some((event) => event.type === "tool_call_end");
+    const updated = this.host.ctx.storage.sql.exec(
+      `UPDATE runs
+       SET pi_progress_json = ?1,
+           text = CASE WHEN ?2 = '' THEN text ELSE text || ?2 END,
+           tool_calls_json = COALESCE(?3, tool_calls_json)
+       WHERE id = ?4 AND status IN ('running', 'input_required')`,
+      this.serializeStreamProgress(tracker),
+      text,
+      toolsChanged ? JSON.stringify(tracker.toolCalls) : null,
+      tracker.runId,
+    );
+    return updated.rowsWritten > 0;
   }
 
   private buildCustomAndWebExtension(cfg: AgentConfig): Extension {
@@ -1481,6 +1560,7 @@ export class PiAgentEngine {
     const tracker = this.activeTracker;
     if (
       !tracker ||
+      tracker.settling ||
       tracker.settled ||
       tracker.pausedForInput ||
       tracker.aborted ||
@@ -1493,203 +1573,298 @@ export class PiAgentEngine {
     void this.startWatchForTracker(tracker).catch(() => {});
   }
 
-  private async latestRootEntryId(): Promise<number> {
-    const conv = await this.getRootConversation();
-    if (!conv) return 0;
-    const tail = await conv.entries({ order: "descending" }, 1, undefined, BG);
-    return Number(tail.items[0]?.id ?? 0);
+  private latestRootEntryId(): number {
+    const latest = this.host.ctx.storage.sql.exec<{ id: number }>(
+      `SELECT id FROM pi_entries WHERE conversation_id = ?1 ORDER BY id DESC LIMIT 1`,
+      ROOT_CONVERSATION_ID,
+    ).toArray()[0];
+    return latest?.id ?? 0;
+  }
+
+  private async refreshRunSubmission(tracker: ActiveRunTracker): Promise<void> {
+    if (tracker.submissionFinished || tracker.settled) return;
+    // Pi indexes the original operation ID and stores the entry where it placed the prompt.
+    // An unplaced or absent submission proves nothing about ownership of the transcript.
+    const storage = await this.harness.storage();
+    const submission = await storage.submissionByRequest(ROOT_CONVERSATION_ID, tracker.runId, BG);
+    if (submission?.type !== "input" || tracker.submissionFinished || tracker.settled) return;
+    tracker.submissionId = submission.id;
+    tracker.submissionFinished = submission.status === "done" || submission.status === "unanswered";
+    tracker.answerEntryId = submission.answer ?? null;
+    if (tracker.baselineEntryId === null && submission.entry !== undefined) {
+      tracker.baselineEntryId = Number(submission.entry) - 1;
+      tracker.lastEntryId = tracker.baselineEntryId;
+      this.persistTrackerProgress(tracker);
+    }
+  }
+
+  private observeFollowingRun(tracker: ActiveRunTracker, live: LiveState | undefined): void {
+    const run = live?.run;
+    if (tracker.submissionFinished && tracker.submissionId !== null && tracker.baselineEntryId !== null &&
+        tracker.nextRunEntryId === null && run?.first && run.first > tracker.baselineEntryId &&
+        run.inputs.length > 0 && !run.inputs.includes(tracker.submissionId)) {
+      tracker.nextRunEntryId = run.first;
+    }
+  }
+
+  private isBeforeFollowingRun(tracker: ActiveRunTracker, entry: EntryRecord): boolean {
+    if (tracker.nextRunEntryId !== null) return entry.id < tracker.nextRunEntryId;
+    // A late steer can start and finish in Pi before we observe its live run. The next
+    // prompt belongs to that run. Results of a tool-terminating answer can precede it.
+    if (tracker.answerEntryId !== null && entry.id > tracker.answerEntryId &&
+        CamelRunUserEntry.is(entry) && typeof entry.data.runId === "string" && entry.data.runId !== tracker.runId) {
+      tracker.nextRunEntryId = entry.id;
+      return false;
+    }
+    return true;
+  }
+
+  private addToolStart(
+    tracker: ActiveRunTracker,
+    events: RunProgressEvent[],
+    data: { callId: string; name: string; parentCallId?: string; args?: unknown },
+  ): void {
+    if (tracker.openToolCalls.has(data.callId) || tracker.seenToolEnds.has(data.callId)) return;
+    tracker.openToolCalls.add(data.callId);
+    events.push({ type: "tool_call_start", data });
+  }
+
+  private addToolEnd(
+    tracker: ActiveRunTracker,
+    events: RunProgressEvent[],
+    data: {
+      callId: string;
+      name: string;
+      ok: boolean;
+      parentCallId?: string;
+      isError?: boolean;
+      error?: unknown;
+    },
+  ): void {
+    if (tracker.seenToolEnds.has(data.callId)) return;
+    tracker.seenToolEnds.add(data.callId);
+    tracker.openToolCalls.delete(data.callId);
+    tracker.toolCalls.push({ id: data.callId, name: data.name, ok: data.ok });
+    events.push({ type: "tool_call_end", data });
+  }
+
+  private broadcastRunProgress(tracker: ActiveRunTracker, events: RunProgressEvent[]): void {
+    for (const { type, data } of events) {
+      this.host.broadcastEphemeralEvent(tracker.runId, type, data);
+    }
+  }
+
+  private startGenerationAttempt(tracker: ActiveRunTracker, taskId: number, attempt: number): void {
+    if (taskId === tracker.generationTaskId && attempt === tracker.generationAttempt) return;
+    if (taskId !== tracker.generationTaskId) tracker.generationTextStart = tracker.accumulatedText.length;
+    tracker.generationTaskId = taskId;
+    tracker.generationAttempt = attempt;
+    tracker.attemptTextStart = tracker.accumulatedText.length;
+    tracker.partialTextLen = 0;
+  }
+
+  private appendGenerationText(
+    tracker: ActiveRunTracker,
+    text: string,
+    events: RunProgressEvent[],
+    committed: boolean,
+  ): void {
+    const earlier = tracker.accumulatedText.slice(tracker.generationTextStart, tracker.attemptTextStart);
+    let published = tracker.partialTextLen;
+    if (committed && published > 0) {
+      // A retry may have committed without a live frame. Verify the prefix instead of
+      // assuming that this assistant entry came from the last observed attempt.
+      const suffix = tracker.accumulatedText.slice(tracker.attemptTextStart);
+      const prefix = earlier.slice(0, Math.max(0, published - suffix.length));
+      published = commonPrefixLength(text, prefix + suffix);
+    }
+    const delta = text.slice(Math.max(published, commonPrefixLength(text, earlier)));
+    tracker.partialTextLen = Math.max(tracker.partialTextLen, text.length);
+    if (delta) {
+      tracker.accumulatedText += delta;
+      events.push({ type: "text_delta", data: { delta } });
+    }
   }
 
   private processCommittedEntry(tracker: ActiveRunTracker, entry: EntryRecord): void {
     const entryNum = Number(entry.id);
-    if (tracker.seenEntryIds.has(entryNum)) return;
-    tracker.seenEntryIds.add(entryNum);
+    if (tracker.lastEntryId === null || entryNum <= tracker.lastEntryId || tracker.settled) return;
+    tracker.lastEntryId = entryNum;
+    const events: RunProgressEvent[] = [];
 
-    if (CompactionEntry.is(entry)) {
-      this.host.recordAndBroadcastEvent(null, "context_compacted", {
-        upToSeq: entry.head !== undefined ? Number(entry.head) : entryNum,
-        reason: (entry.data as { reason?: string } | undefined)?.reason ?? "auto",
-      });
-    } else if (AssistantEntry.is(entry)) {
+    if (AssistantEntry.is(entry)) {
+      tracker.lastMessageEntryId = entryNum;
       const msg = entry.model?.[0];
-      if (msg && msg.role === "assistant") {
-        const text = extractAssistantText(msg);
-        if (text.length > tracker.emittedPartialTextLen) {
-          const delta = text.slice(tracker.emittedPartialTextLen);
-          tracker.accumulatedText += delta;
-          this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
+      if (msg?.role === "assistant") {
+        const taskId = Number(entry.byTaskId ?? entry.id);
+        if (taskId !== tracker.generationTaskId) this.startGenerationAttempt(tracker, taskId, -1);
+        this.appendGenerationText(tracker, extractAssistantText(msg), events, true);
+        // Pi can persist the interrupted attempt as an aborted assistant entry and then
+        // retry in the same task. Its streamed prefix still belongs to this generation.
+        if (msg.stopReason !== "aborted" && msg.stopReason !== "error") {
+          tracker.generationTaskId = null;
         }
-        tracker.emittedPartialTextLen = 0;
-        tracker.emittedGenerationAttempt = -1;
-        tracker.lastEmittedAssistantEntryId = entryNum;
-        if (tracker.lastRepoCommit) {
-          this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
-        }
-
         for (const tc of extractAssistantToolCalls(msg)) {
-          if (!tracker.seenToolStarts.has(tc.id)) {
-            tracker.seenToolStarts.add(tc.id);
-            this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_start", {
-              callId: tc.id,
-              name: tc.name,
-              args: tc.arguments ?? {},
-            });
-          }
+          this.addToolStart(tracker, events, { callId: tc.id, name: tc.name, args: tc.arguments ?? {} });
         }
       }
     } else if (ToolResultEntry.is(entry)) {
-      if (tracker.lastRepoCommit) {
+      tracker.lastMessageEntryId = entryNum;
+      const msg = entry.model?.[0];
+      if (msg?.role === "toolResult") {
+        this.addToolEnd(tracker, events, {
+          callId: msg.toolCallId,
+          name: msg.toolName,
+          ok: !msg.isError,
+          ...(msg.isError ? { isError: true } : {}),
+        });
+      }
+    } else if (CamelRunUserEntry.is(entry) && entry.data.runId === tracker.runId) {
+      tracker.lastMessageEntryId = entryNum;
+    }
+
+    // Pi persists transcript entries before publishing them. Save our delivery cursor
+    // and the progress it represents before exposing any events.
+    const persisted = this.host.ctx.storage.transactionSync(() => {
+      if (!this.persistStreamProgress(tracker, events)) return false;
+      if (CompactionEntry.is(entry)) {
+        this.host.recordAndBroadcastEvent(null, "context_compacted", {
+          upToSeq: entry.head !== undefined ? Number(entry.head) : entryNum,
+          reason: (entry.data as { reason?: string } | undefined)?.reason ?? "auto",
+        });
+      }
+      if (tracker.lastMessageEntryId === entryNum && tracker.lastRepoCommit) {
         this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
       }
-      const msg = entry.model?.[0];
-      if (msg && msg.role === "toolResult") {
-        if (!tracker.seenToolEnds.has(msg.toolCallId)) {
-          tracker.seenToolEnds.add(msg.toolCallId);
-          const ok = !msg.isError;
-          tracker.toolCalls.push({ id: msg.toolCallId, name: msg.toolName, ok });
-          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_end", {
-            callId: msg.toolCallId,
-            name: msg.toolName,
-            ok,
-            ...(msg.isError ? { isError: true } : {}),
-          });
-        }
-      }
-    }
+      return true;
+    });
+    if (persisted && !tracker.aborted) this.broadcastRunProgress(tracker, events);
   }
 
-  private async syncRunEntriesFromPi(tracker: ActiveRunTracker): Promise<void> {
+  private async syncRunEntriesFromPi(tracker: ActiveRunTracker, through?: EntryId): Promise<void> {
+    if (tracker.nextRunEntryId !== null) {
+      through = Math.min(through ?? Number.MAX_SAFE_INTEGER, tracker.nextRunEntryId - 1) as EntryId;
+    }
+    if (tracker.lastEntryId === null || (through !== undefined && through <= tracker.lastEntryId)) return;
+    const minEntryId = (tracker.lastEntryId + 1) as EntryId;
     const conv = await this.getRootConversation();
     if (!conv) return;
-    const recent: EntryRecord[] = [];
     let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
-    for (;;) {
-      const page = await conv.entries({ order: "descending" }, 64, cursor, BG);
-      let reachedBaseline = false;
+    do {
+      const page = await conv.entries(
+        { order: "ascending", minEntryId, maxEntryId: through },
+        RUN_ENTRY_PAGE_SIZE,
+        cursor,
+        BG,
+      );
       for (const entry of page.items) {
-        if (Number(entry.id) <= tracker.baselineEntryId) {
-          reachedBaseline = true;
-          break;
-        }
-        recent.push(entry);
+        if (!this.isBeforeFollowingRun(tracker, entry)) return;
+        this.processCommittedEntry(tracker, entry);
       }
-      if (reachedBaseline || !page.next) break;
       cursor = page.next;
+    } while (cursor && !tracker.settled);
+  }
+
+  private processLiveProgress(tracker: ActiveRunTracker, live: LiveState | undefined): void {
+    if (tracker.submissionId === null || !live?.run?.inputs.includes(tracker.submissionId)) return;
+    const events: RunProgressEvent[] = [];
+
+    if (live.generation?.message) {
+      const taskId = Number(live.run.taskId);
+      const { attempt, message } = live.generation;
+      this.startGenerationAttempt(tracker, taskId, attempt);
+      this.appendGenerationText(tracker, extractAssistantText(message as unknown as AssistantMessage), events, false);
     }
-    for (let i = recent.length - 1; i >= 0; i--) {
-      this.processCommittedEntry(tracker, recent[i]!);
+
+    for (const slot of live.tools ?? []) {
+      this.addToolStart(tracker, events, { callId: slot.callId, name: slot.name });
+      if (slot.status === "done") {
+        const ok = !slot.diagnostics?.some((d) => d.severity === "error");
+        this.addToolEnd(tracker, events, { callId: slot.callId, name: slot.name, ok });
+      }
+    }
+    for (const nested of live.nestedTools ?? []) {
+      const call = { callId: nested.callId, name: nested.name, parentCallId: nested.parentCallId };
+      this.addToolStart(tracker, events, { ...call, args: nested.arguments ?? {} });
+      if (nested.status === "done") {
+        this.addToolEnd(tracker, events, {
+          ...call,
+          ok: !nested.summary?.isError,
+          ...(nested.summary?.error ? { error: nested.summary.error } : {}),
+        });
+      }
+    }
+
+    // Pi can publish live documents before persisting them. Claim only new output from
+    // this generation attempt so its next publication can resume without re-emitting it.
+    if (events.length > 0 && this.persistStreamProgress(tracker, events)) {
+      this.broadcastRunProgress(tracker, events);
     }
   }
 
   private async startWatchForTracker(tracker: ActiveRunTracker): Promise<void> {
-    if (tracker.watchHandle || tracker.watchStarting || tracker.settled || tracker.aborted) return;
+    if (tracker.watchHandle || tracker.watchStarting || tracker.settling || tracker.settled || tracker.aborted) return;
     tracker.watchStarting = true;
-    let watch: ConversationWatch;
     try {
-      watch = await this.harness.session(ROOT_SESSION).watch();
+      await tracker.watchProcessing?.catch(() => {});
+      await this.refreshRunSubmission(tracker);
+      if (tracker.lastEntryId === null || tracker.settling || tracker.settled || tracker.aborted) return;
+      const watch = await this.harness.session(ROOT_SESSION).watch({
+        from: (tracker.lastEntryId + 1) as EntryId,
+        min: 1,
+        max: RUN_ENTRY_PAGE_SIZE,
+      });
+      if (tracker.settling || tracker.settled || tracker.aborted) {
+        await watch.stop();
+        return;
+      }
+      tracker.watchHandle = watch;
+      void watch.closed.then(() => {
+        if (tracker.watchHandle === watch) tracker.watchHandle = null;
+      });
+      const processView = async (view: typeof watch.value) => {
+        const canProcess = () => tracker.watchHandle === watch &&
+          !tracker.settled && !tracker.pausedForInput && !tracker.aborted;
+        if (!canProcess()) return;
+        const live = view.docs["pi.live"] as LiveState | undefined;
+        if (tracker.submissionId === null || !live?.run?.inputs.includes(tracker.submissionId)) {
+          await this.refreshRunSubmission(tracker);
+          if (!canProcess()) return;
+          this.observeFollowingRun(tracker, live);
+        }
+        // A slow subscriber can fall behind the watch's bounded window.
+        if (view.before !== undefined) await this.syncRunEntriesFromPi(tracker, view.before);
+        if (!canProcess()) return;
+        for (const entry of view.entries) {
+          if (!this.isBeforeFollowingRun(tracker, entry)) break;
+          this.processCommittedEntry(tracker, entry);
+        }
+        this.processLiveProgress(tracker, live);
+      };
+
+      const consume = async (view: typeof watch.value) => {
+        const processing = processView(view);
+        tracker.watchProcessing = processing;
+        try {
+          await processing;
+        } finally {
+          if (tracker.watchProcessing === processing) tracker.watchProcessing = null;
+        }
+      };
+      try {
+        await consume(watch.value);
+      } catch (error) {
+        await watch.stop();
+        throw error;
+      }
+      if (tracker.watchHandle === watch) {
+        watch.start(async (call) => {
+          if (call.kind === "value") await consume(call.value);
+        });
+      }
     } finally {
       tracker.watchStarting = false;
     }
-    if (tracker.settled || tracker.aborted || tracker.watchHandle) {
-      await watch.stop().catch(() => {});
-      return;
-    }
-    tracker.watchHandle = watch;
-
-    // Seed seenEntryIds with entries from before this run; entries > baselineEntryId are processed below.
-    for (const entry of watch.value.entries) {
-      const entryNum = Number(entry.id);
-      if (entryNum <= tracker.baselineEntryId) {
-        tracker.seenEntryIds.add(entryNum);
-      }
-    }
-
-    const processView = (view: typeof watch.value) => {
-      if (tracker.settled || tracker.pausedForInput || tracker.aborted) return;
-
-      const live = view.docs["pi.live"] as LiveState | undefined;
-
-      // 1. Stream partial assistant text deltas from `pi.live.generation.message`
-      if (live?.generation?.message) {
-        const attempt = live.generation.attempt;
-        const partialMsg = live.generation.message as unknown as AssistantMessage;
-        if (attempt !== tracker.emittedGenerationAttempt) {
-          tracker.emittedGenerationAttempt = attempt;
-          tracker.emittedPartialTextLen = 0;
-        }
-        const fullText = extractAssistantText(partialMsg);
-        if (fullText.length > tracker.emittedPartialTextLen) {
-          const delta = fullText.slice(tracker.emittedPartialTextLen);
-          tracker.emittedPartialTextLen = fullText.length;
-          tracker.accumulatedText += delta;
-          this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
-        }
-      }
-
-      // 2. Inspect newly committed entries (handles fast providers like `mock/*` that commit before a partial frame)
-      for (const entry of view.entries) {
-        this.processCommittedEntry(tracker, entry);
-      }
-
-      // 3. Emit ephemeral tool_call_start / tool_call_end for live ToolSlots
-      for (const slot of live?.tools ?? []) {
-        if (!tracker.seenToolStarts.has(slot.callId)) {
-          tracker.seenToolStarts.add(slot.callId);
-          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_start", {
-            callId: slot.callId,
-            name: slot.name,
-          });
-        }
-        if (slot.status === "done" && !tracker.seenToolEnds.has(slot.callId)) {
-          const hasErrorDiag = slot.diagnostics?.some((d) => d.severity === "error") ?? false;
-          const ok = !hasErrorDiag;
-          tracker.seenToolEnds.add(slot.callId);
-          tracker.toolCalls.push({ id: slot.callId, name: slot.name, ok });
-          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_end", {
-            callId: slot.callId,
-            name: slot.name,
-            ok,
-          });
-        }
-      }
-
-      // 4. Emit ephemeral nested codemode tool calls from `pi.live.nestedTools`
-      for (const nested of live?.nestedTools ?? []) {
-        if (!tracker.seenToolStarts.has(nested.callId)) {
-          tracker.seenToolStarts.add(nested.callId);
-          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_start", {
-            callId: nested.callId,
-            name: nested.name,
-            parentCallId: nested.parentCallId,
-            args: nested.arguments ?? {},
-          });
-        }
-        if (nested.status === "done" && !tracker.seenToolEnds.has(nested.callId)) {
-          const ok = !nested.summary?.isError;
-          tracker.seenToolEnds.add(nested.callId);
-          tracker.toolCalls.push({ id: nested.callId, name: nested.name, ok });
-          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_end", {
-            callId: nested.callId,
-            name: nested.name,
-            parentCallId: nested.parentCallId,
-            ok,
-            ...(nested.summary?.error ? { error: nested.summary.error } : {}),
-          });
-        }
-      }
-      // Live progress (`text`, `toolCalls`, `usage`) is overlaid in memory by `getActiveRunOverlay()`
-      // and persisted to `runs` only on durable boundaries (usage/files/pause/settlement), avoiding
-      // a SQLite `UPDATE runs` storm on every `pi.live` streaming tick.
-    };
-
-    // Process current live snapshot immediately (important when attaching mid-run).
-    processView(watch.value);
-
-    watch.start(async (call) => {
-      if (call.kind === "value") {
-        processView(call.value);
-      }
-    });
   }
 
   private trackSubmissionSettlement(
@@ -1700,6 +1875,16 @@ export class PiAgentEngine {
     const work = (async () => {
       const cfg = this.host.getConfig();
       const tenantStub = getTenantStub(this.host.env, cfg.tenantId);
+      let warnedAboutBoundary = false;
+      const warnIfBoundaryMissing = () => {
+        if (tracker.baselineEntryId !== null || warnedAboutBoundary) return;
+        warnedAboutBoundary = true;
+        console.warn(JSON.stringify({
+          event: "run_recovery_boundary_missing",
+          agentId: cfg.id,
+          runId: tracker.runId,
+        }));
+      };
 
       try {
         if (attachWatch && !tracker.watchHandle) {
@@ -1707,21 +1892,28 @@ export class PiAgentEngine {
         }
         const result = await this.harness.wait(tracker.runId, { session: ROOT_SESSION });
 
-        // Give any final watch microtask a chance to flush last entry deltas, then stop watch.
+        // Give the last watch publication a chance to flush, then finish from Pi's committed transcript.
+        tracker.settling = true;
         if (tracker.watchHandle) {
           await new Promise((r) => setTimeout(r, 0));
-          await tracker.watchHandle.stop().catch(() => {});
+          const watch = tracker.watchHandle;
           tracker.watchHandle = null;
+          await watch?.stop();
         }
-        // Sync any committed entries not yet observed (e.g. headless runs that skipped live `watch()`).
-        await this.syncRunEntriesFromPi(tracker).catch(() => {});
+        await tracker.watchProcessing;
+        await this.refreshRunSubmission(tracker);
+        warnIfBoundaryMissing();
+        if (tracker.baselineEntryId !== null && (result.status === "done" || result.reason !== "not_found")) {
+          // A persisted baseline can exist even if the isolate stopped before Pi accepted the prompt.
+          const pi = await this.harness.pi();
+          this.observeFollowingRun(tracker, await pi.snapshot(LiveDoc, ROOT_CONVERSATION_ID, BG));
+          await this.syncRunEntriesFromPi(tracker);
+        }
 
         if (tracker.settled) return;
-        tracker.settled = true;
 
         await this.recordRunRepoCommit(tracker, this.host.readConfigOrNull() ?? cfg);
 
-        const now = Date.now();
         const postRunSpendError =
           tracker.spendLimitError ??
           (tracker.spendLimitUsd !== null &&
@@ -1734,42 +1926,14 @@ export class PiAgentEngine {
             : null);
 
         if (result.status === "done" && !postRunSpendError) {
-          const finalText = result.text || tracker.accumulatedText;
-          if (finalText.length > tracker.accumulatedText.length) {
-            const delta = finalText.slice(tracker.accumulatedText.length);
-            tracker.accumulatedText = finalText;
-            this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
-          } else {
-            tracker.accumulatedText = finalText;
-          }
-          const parsedOutput = tracker.outputSchema ? tryParseStructuredOutput(finalText) : null;
-
-          this.host.ctx.storage.sql.exec(
-            `UPDATE runs
-             SET status = 'completed', text = ?1, output_json = ?2, tool_calls_json = ?3,
-                 files_changed_json = ?4, usage_json = ?5, error_json = NULL, ended_at = ?6
-             WHERE id = ?7`,
-            finalText,
-            parsedOutput !== null ? JSON.stringify(parsedOutput) : null,
-            JSON.stringify(tracker.toolCalls),
-            JSON.stringify([...tracker.filesChanged]),
-            JSON.stringify(tracker.usage),
-            now,
-            tracker.runId,
-          );
-          this.host.recordAndBroadcastEvent(tracker.runId, "run_completed", {
-            runId: tracker.runId,
-            text: finalText,
-            output: parsedOutput,
-            usage: tracker.usage,
-          });
+          const text = result.text || tracker.accumulatedText;
+          const output = tracker.outputSchema ? tryParseStructuredOutput(text) : null;
+          this.finishTrackedRun(tracker, { status: "completed", text, output });
         } else {
-          // Unanswered or post-step spend limit exceeded: spend limit, abort, input expired, or model error
           const isCancelled =
             !postRunSpendError &&
             (tracker.aborted || (result.status !== "done" && result.reason === "aborted"));
-          const status = isCancelled ? "cancelled" : "failed";
-          const errObj = postRunSpendError
+          const error = postRunSpendError
             ? postRunSpendError
             : isCancelled
               ? { code: "cancelled", message: "Cancelled via abort" }
@@ -1777,28 +1941,9 @@ export class PiAgentEngine {
                   const code = (result.status !== "done" ? result.reason : null) || "run_failed";
                   return { code, message: `Run ended unanswered (${code})` };
                 })();
-          const res = this.host.ctx.storage.sql.exec(
-            `UPDATE runs
-             SET status = ?1, text = ?2, tool_calls_json = ?3, files_changed_json = ?4,
-                 usage_json = ?5, error_json = ?6, ended_at = ?7
-             WHERE id = ?8 AND status NOT IN ('completed', 'failed', 'cancelled')`,
-            status,
-            tracker.accumulatedText,
-            JSON.stringify(tracker.toolCalls),
-            JSON.stringify([...tracker.filesChanged]),
-            JSON.stringify(tracker.usage),
-            JSON.stringify(errObj),
-            now,
-            tracker.runId,
-          );
-          if (res.rowsWritten > 0) {
-            this.host.recordAndBroadcastEvent(
-              tracker.runId,
-              isCancelled ? "run_cancelled" : "run_failed",
-              isCancelled ? { runId: tracker.runId } : { runId: tracker.runId, error: errObj },
-            );
-          }
+          this.finishTrackedRun(tracker, { status: isCancelled ? "cancelled" : "failed", error });
         }
+        tracker.settled = true;
 
         // Settle usage with TenantDO
         if (
@@ -1853,22 +1998,13 @@ export class PiAgentEngine {
             .catch(() => {});
         }
       } catch (err) {
-        if (!tracker.settled) {
-          tracker.settled = true;
-          const apiErr = extractApiError(err);
-          const code = apiErr?.code ?? "run_failed";
-          const message = apiErr?.message ?? (err instanceof Error ? err.message : String(err));
-          this.host.ctx.storage.sql.exec(
-            `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
-            JSON.stringify({ code, message }),
-            Date.now(),
-            tracker.runId,
-          );
-          this.host.recordAndBroadcastEvent(tracker.runId, "run_failed", {
-            runId: tracker.runId,
-            error: { code, message },
-          });
-        }
+        warnIfBoundaryMissing();
+        tracker.settling = true;
+        const apiErr = extractApiError(err);
+        const code = apiErr?.code ?? "run_failed";
+        const message = apiErr?.message ?? (err instanceof Error ? err.message : String(err));
+        this.finishTrackedRun(tracker, { status: "failed", error: { code, message } });
+        tracker.settled = true;
       } finally {
         if (tracker.watchHandle) {
           await tracker.watchHandle.stop().catch(() => {});
@@ -1895,6 +2031,54 @@ export class PiAgentEngine {
     tracker.watchPromise = work;
     this.host.ctx.waitUntil(work);
     return work;
+  }
+
+  private finishTrackedRun(
+    tracker: ActiveRunTracker,
+    terminal: { status: "completed"; text: string; output: unknown } |
+      { status: "failed" | "cancelled"; error: { code: string; message: string } },
+  ): void {
+    const completed = terminal.status === "completed";
+    this.host.ctx.storage.transactionSync(() => {
+      const updated = this.host.ctx.storage.sql.exec(
+        `UPDATE runs
+         SET status = ?1, text = ?2, output_json = ?3, tool_calls_json = ?4,
+             files_changed_json = ?5, usage_json = ?6, error_json = ?7, ended_at = ?8,
+             pi_progress_json = NULL
+         WHERE id = ?9 AND status IN ('running', 'input_required')`,
+        terminal.status,
+        completed ? terminal.text : tracker.accumulatedText,
+        completed && terminal.output !== null ? JSON.stringify(terminal.output) : null,
+        JSON.stringify(tracker.toolCalls),
+        JSON.stringify([...tracker.filesChanged]),
+        JSON.stringify(tracker.usage),
+        completed ? null : JSON.stringify(terminal.error),
+        Date.now(),
+        tracker.runId,
+      );
+      if (updated.rowsWritten === 0) return;
+      if (completed) {
+        const delta = terminal.text.slice(tracker.accumulatedText.length);
+        if (delta && tracker.baselineEntryId !== null) {
+          this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
+        }
+        this.host.recordAndBroadcastEvent(tracker.runId, "run_completed", {
+          runId: tracker.runId,
+          text: terminal.text,
+          output: terminal.output,
+          usage: tracker.usage,
+        });
+      } else {
+        this.host.recordAndBroadcastEvent(
+          tracker.runId,
+          terminal.status === "cancelled" ? "run_cancelled" : "run_failed",
+          terminal.status === "cancelled" ? { runId: tracker.runId } : {
+            runId: tracker.runId,
+            error: terminal.error,
+          },
+        );
+      }
+    });
   }
 
   /**
@@ -1924,15 +2108,17 @@ export class PiAgentEngine {
         slotAcquired = false;
         void tenantStub.releaseSlot(runId).catch(() => {});
       }
-      this.host.ctx.storage.sql.exec(
-        `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
-        JSON.stringify({ code, message }),
-        Date.now(),
-        runId,
-      );
-      this.host.recordAndBroadcastEvent(runId, "run_failed", {
-        runId,
-        error: { code, message },
+      this.host.ctx.storage.transactionSync(() => {
+        const updated = this.host.ctx.storage.sql.exec(
+          `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2
+           WHERE id = ?3 AND status IN ('queued', 'running')`,
+          JSON.stringify({ code, message }),
+          Date.now(),
+          runId,
+        );
+        if (updated.rowsWritten > 0) {
+          this.host.recordAndBroadcastEvent(runId, "run_failed", { runId, error: { code, message } });
+        }
       });
       this.host.notifyRunWaiters(runId);
       return this.host.materializeRunRecord(runId);
@@ -2018,7 +2204,7 @@ export class PiAgentEngine {
         )
         .toArray()[0];
 
-      const baselineEntryId = await this.latestRootEntryId();
+      const baselineEntryId = this.latestRootEntryId();
       const tracker: ActiveRunTracker = {
         runId,
         actor,
@@ -2027,34 +2213,54 @@ export class PiAgentEngine {
         usage: isByok ? { ...emptyUsage(), byok: true } : emptyUsage(),
         filesChanged: new Set(),
         toolCalls: [],
-        seenToolStarts: new Set(),
+        openToolCalls: new Set(),
         seenToolEnds: new Set(),
-        seenEntryIds: new Set(),
         baselineEntryId,
-        emittedGenerationAttempt: -1,
-        emittedPartialTextLen: 0,
-        lastEmittedAssistantEntryId: 0,
+        submissionId: null,
+        submissionFinished: false,
+        answerEntryId: null,
+        nextRunEntryId: null,
+        lastEntryId: baselineEntryId,
+        lastMessageEntryId: null,
+        generationTaskId: null,
+        generationAttempt: -1,
+        generationTextStart: 0,
+        attemptTextStart: 0,
+        partialTextLen: 0,
         lastRepoCommit: null,
         accumulatedText: "",
         slotAcquired,
+        settling: false,
         settled: false,
         pausedForInput: false,
         spendLimitError: null,
         aborted: false,
+        recovered: false,
         watchStarting: false,
         watchHandle: null,
+        watchProcessing: null,
         watchPromise: null,
       };
-      slotAcquired = false; // Ownership transferred to tracker
-      this.activeTracker = tracker;
-      this.host.setActiveRunId(runId);
-
-      this.host.ctx.storage.sql.exec(`UPDATE runs SET status = 'running' WHERE id = ?1`, runId);
-      this.host.recordAndBroadcastEvent(runId, "run_started", {
-        runId,
-        prompt,
-        ...(actor ? { actor } : {}),
+      const started = this.host.ctx.storage.transactionSync(() => {
+        const updated = this.host.ctx.storage.sql.exec(
+          `UPDATE runs SET status = 'running', baseline_entry_id = ?1, usage_json = ?2
+           WHERE id = ?3 AND status = 'queued'`,
+          baselineEntryId,
+          JSON.stringify(tracker.usage),
+          runId,
+        );
+        if (updated.rowsWritten === 0) return false;
+        slotAcquired = false; // Ownership transferred to tracker
+        this.activeTracker = tracker;
+        this.host.setActiveRunId(runId);
+        this.host.recordAndBroadcastEvent(runId, "run_started", {
+          runId,
+          prompt,
+          ...(actor ? { actor } : {}),
+        });
+        return true;
       });
+      if (!started) return failImmediately("cancelled", "Run stopped before Pi accepted the prompt");
 
       if (this.host.hasEventSubscribers()) {
         await this.startWatchForTracker(tracker);
@@ -2275,40 +2481,13 @@ export class PiAgentEngine {
     // Re-attach or resume tracker for this run (handles both in-memory & post-eviction resume!)
     let tracker = this.activeTracker;
     if (!tracker || tracker.runId !== inputRow.run_id || tracker.settled) {
-      const existingRec = this.host.materializeRunRecord(inputRow.run_id);
-      const runRow = this.host.ctx.storage.sql
-        .exec<{ output_schema_json: string | null; spend_limit_usd: number | null; actor: string | null }>(
-          `SELECT output_schema_json, spend_limit_usd, actor FROM runs WHERE id = ?1 LIMIT 1`,
-          inputRow.run_id,
-        )
-        .toArray()[0];
-
-      tracker = {
-        runId: inputRow.run_id,
-        actor: runRow?.actor ?? undefined,
-        outputSchema: runRow?.output_schema_json ? JSON.parse(runRow.output_schema_json) : null,
-        spendLimitUsd: runRow?.spend_limit_usd ?? null,
-        usage: { ...existingRec.usage },
-        filesChanged: new Set(existingRec.filesChanged),
-        toolCalls: [...existingRec.toolCalls],
-        seenToolStarts: new Set(existingRec.toolCalls.map((t) => t.id)),
-        seenToolEnds: new Set(existingRec.toolCalls.map((t) => t.id)),
-        seenEntryIds: new Set(),
-        baselineEntryId: await this.latestRootEntryId(),
-        emittedGenerationAttempt: -1,
-        emittedPartialTextLen: 0,
-        lastEmittedAssistantEntryId: 0,
-        lastRepoCommit: null,
-        accumulatedText: existingRec.text,
-        slotAcquired: false,
-        settled: false,
-        pausedForInput: false,
-        spendLimitError: null,
-        aborted: false,
-        watchStarting: false,
-        watchHandle: null,
-        watchPromise: null,
-      };
+      const runRow = this.host.ctx.storage.sql.exec<ActiveRunRow>(
+        `SELECT id, status, actor, output_schema_json, spend_limit_usd, baseline_entry_id, pi_progress_json
+         FROM runs WHERE id = ?1 LIMIT 1`,
+        inputRow.run_id,
+      ).one();
+      tracker = this.rehydrateTracker(runRow);
+      tracker.pausedForInput = false;
       this.activeTracker = tracker;
       if (this.host.hasEventSubscribers()) {
         await this.startWatchForTracker(tracker);
@@ -2780,6 +2959,8 @@ export class PiAgentEngine {
   }
 
   private async recordRunRepoCommit(tracker: ActiveRunTracker, cfg: AgentConfig): Promise<void> {
+    const targetEntryId = tracker.lastMessageEntryId;
+    if (targetEntryId === null) return;
     let commit = tracker.lastRepoCommit;
     if (!commit && cfg.repoId) {
       commit =
@@ -2789,21 +2970,7 @@ export class PiAgentEngine {
             .catch(() => null)
         )?.commit || null;
     }
-    if (!commit) return;
-
-    let targetEntryId = 0;
-    const conv = await this.getRootConversation().catch(() => undefined);
-    if (conv) {
-      const page = await conv.entries({ order: "descending" }, 8, undefined, BG).catch(() => null);
-      const latest = page?.items.find(
-        (e) => isUserContentEntry(e) || AssistantEntry.is(e) || ToolResultEntry.is(e),
-      );
-      if (latest) targetEntryId = Number(latest.id);
-    }
-    if (!targetEntryId) {
-      targetEntryId = tracker.lastEmittedAssistantEntryId;
-    }
-    if (targetEntryId > 0) {
+    if (commit) {
       this.recordEntryMeta(targetEntryId, tracker.runId, undefined, commit);
     }
   }

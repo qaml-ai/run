@@ -77,6 +77,7 @@ export class AgentDO extends DurableObject<Env> {
   private lastDreamedSeq = 0;
   private lastIdleCompactedSeq = 0;
   private lastEventSeq = 0;
+  private eventSeqReservedUntil = 0;
   private eventSeqLoaded = false;
   private ephemeralEvents: AgentEventRecord[] = [];
   private readonly lastRunActivityAt = new Map<string, number>();
@@ -158,7 +159,9 @@ export class AgentDO extends DurableObject<Env> {
         error_json TEXT,
         max_steps INTEGER NOT NULL DEFAULT 0,
         started_at INTEGER NOT NULL,
-        ended_at INTEGER
+        ended_at INTEGER,
+        baseline_entry_id INTEGER,
+        pi_progress_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status, started_at ASC);
       CREATE TABLE IF NOT EXISTS run_files (
@@ -231,6 +234,12 @@ export class AgentDO extends DurableObject<Env> {
     }
     if (!runColumns.some((column) => column.name === "actor")) {
       this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN actor TEXT");
+    }
+    if (!runColumns.some((column) => column.name === "baseline_entry_id")) {
+      this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN baseline_entry_id INTEGER");
+    }
+    if (!runColumns.some((column) => column.name === "pi_progress_json")) {
+      this.ctx.storage.sql.exec("ALTER TABLE runs ADD COLUMN pi_progress_json TEXT");
     }
     const metaColumns = this.ctx.storage.sql
       .exec<{ name: string }>("PRAGMA table_info(pi_entry_meta)")
@@ -352,13 +361,25 @@ export class AgentDO extends DurableObject<Env> {
   }
 
   private nextEventSeq(): number {
+    const sql = this.ctx.storage.sql;
     if (!this.eventSeqLoaded) {
       this.ensureSql();
-      const row = this.ctx.storage.sql
+      const row = sql
         .exec<{ seq: number }>("SELECT coalesce(max(seq), 0) AS seq FROM events")
         .one();
-      this.lastEventSeq = Number(row.seq ?? 0);
+      const reserved = sql.exec<{ v: string }>(
+        "SELECT v FROM runtime_kv WHERE k = 'event_seq_reserved_until'",
+      ).toArray()[0];
+      this.lastEventSeq = Math.max(row.seq, Number(reserved?.v ?? 0));
       this.eventSeqLoaded = true;
+    }
+    if (this.lastEventSeq >= this.eventSeqReservedUntil) {
+      // A recycled isolate must advance past even the ephemeral events sent before the reset.
+      this.eventSeqReservedUntil = this.lastEventSeq + 128;
+      sql.exec(
+        "INSERT OR REPLACE INTO runtime_kv (k, v) VALUES ('event_seq_reserved_until', ?1)",
+        String(this.eventSeqReservedUntil),
+      );
     }
     this.lastEventSeq += 1;
     return this.lastEventSeq;
@@ -434,10 +455,9 @@ export class AgentDO extends DurableObject<Env> {
       dataJson,
       now,
     );
-    // Keep SQLite events table compact on long-lived agents (newest 200 durable milestones).
-    if (seq > 200 && seq % 200 === 0) {
-      this.ctx.storage.sql.exec(`DELETE FROM events WHERE seq <= ?1`, seq - 200);
-    }
+    this.ctx.storage.sql.exec(
+      `DELETE FROM events WHERE seq <= (SELECT seq FROM events ORDER BY seq DESC LIMIT 1 OFFSET 200)`,
+    );
     const record: AgentEventRecord = {
       seq,
       runId,
@@ -995,12 +1015,15 @@ export class AgentDO extends DurableObject<Env> {
     if (this.destroying || !this.sqlReady || this.queueDrain || this.activeRunId) return;
     const drain = (async () => {
       while (!this.destroying && this.sqlReady) {
-        const pausedRow = this.ctx.storage.sql
-          .exec<{ id: string }>(
-            `SELECT id FROM runs WHERE status = 'input_required' AND batched_into IS NULL LIMIT 1`,
+        const openRun = this.ctx.storage.sql
+          .exec<{ status: string }>(
+            `SELECT status FROM runs WHERE status IN ('running', 'input_required') AND batched_into IS NULL LIMIT 1`,
           )
-          .toArray();
-        if (pausedRow.length > 0) break;
+          .toArray()[0];
+        if (openRun) {
+          if (openRun.status === "running") await this.ensurePiEngine().ensureStarted();
+          break;
+        }
 
         const cfg = this.readConfigOrNull();
         if (!cfg) break;
@@ -1138,13 +1161,18 @@ export class AgentDO extends DurableObject<Env> {
       const apiErr = extractApiError(err);
       const code = apiErr ? apiErr.code : "run_failed";
       const message = apiErr ? apiErr.message : err instanceof Error ? err.message : String(err);
-      this.ctx.storage.sql.exec(
-        `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2 WHERE id = ?3`,
-        JSON.stringify({ code, message }),
-        Date.now(),
-        runId,
-      );
-      this.recordAndBroadcastEvent(runId, "run_failed", { runId, error: { code, message } });
+      this.ctx.storage.transactionSync(() => {
+        const updated = this.ctx.storage.sql.exec(
+          `UPDATE runs SET status = 'failed', error_json = ?1, ended_at = ?2
+           WHERE id = ?3 AND status IN ('queued', 'running')`,
+          JSON.stringify({ code, message }),
+          Date.now(),
+          runId,
+        );
+        if (updated.rowsWritten > 0) {
+          this.recordAndBroadcastEvent(runId, "run_failed", { runId, error: { code, message } });
+        }
+      });
       const failedRecord = this.materializeRunRecord(runId);
       this.finalizeFollowers(failedRecord, batchedFollowerIds);
     } finally {
@@ -2096,9 +2124,9 @@ export class AgentDO extends DurableObject<Env> {
     after?: number | "latest";
     runId?: string | null;
   }): Promise<{ events: AgentEventRecord[]; nextAfter: number }> {
-    this.piEngine?.ensureWatchingActiveRun();
+    this.ensureSql();
+    this.ensureWatchingActiveRun();
     if (opts?.after === "latest") {
-      this.ensureSql();
       const row = opts.runId
         ? this.ctx.storage.sql
             .exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events WHERE run_id = ?1", opts.runId)
@@ -2118,6 +2146,20 @@ export class AgentDO extends DurableObject<Env> {
     const events = this.fetchStoredEvents(after, opts?.runId ?? null);
     const nextAfter = events.length > 0 ? events[events.length - 1]!.seq : after;
     return { events, nextAfter };
+  }
+
+  private ensureWatchingActiveRun(): void {
+    if (this.piEngine?.lifecycle.isStarted()) {
+      this.piEngine.ensureWatchingActiveRun();
+      return;
+    }
+    const running = this.ctx.storage.sql.exec(
+      `SELECT 1 FROM runs WHERE status = 'running' AND batched_into IS NULL LIMIT 1`,
+    ).toArray();
+    if (running.length > 0) {
+      const engine = this.ensurePiEngine();
+      this.ctx.waitUntil(engine.ensureStarted().then(() => engine.ensureWatchingActiveRun()));
+    }
   }
 
   async getHistory(opts?: { after?: number; before?: number; limit?: number }): Promise<{
@@ -2564,6 +2606,7 @@ export class AgentDO extends DurableObject<Env> {
       this.lastDreamedSeq = 0;
       this.lastIdleCompactedSeq = 0;
       this.lastEventSeq = 0;
+      this.eventSeqReservedUntil = 0;
       this.eventSeqLoaded = false;
       this.ephemeralEvents = [];
       this.lastRunActivityAt.clear();
@@ -2595,7 +2638,7 @@ export class AgentDO extends DurableObject<Env> {
         server.serializeAttachment({
           tools: [],
         } satisfies WsAttachment);
-        this.piEngine?.ensureWatchingActiveRun();
+        this.ensureWatchingActiveRun();
         return new Response(null, { status: 101, webSocket: client });
       }
 
