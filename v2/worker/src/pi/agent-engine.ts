@@ -75,12 +75,12 @@ import {
   type BillingUsageEvent,
   type HumanInputRequiredEvent,
 } from "./extensions.ts";
+import { ensurePiHistoryIndexes, readPiHistoryPage } from "./history.ts";
 import {
   CamelRunUserEntry,
   copyPiEntriesToConversation,
   importLegacyTranscriptToPi,
   isUserContentEntry,
-  mapPiEntriesToHistory,
   unwrapCompactionSummary,
   wrapCompactionSummary,
   type ImportedEntryMeta,
@@ -276,6 +276,7 @@ export class PiAgentEngine {
   private activeTracker: ActiveRunTracker | null = null;
   private startPromise: Promise<void> | null = null;
   private rootReady = false;
+  private historyIndexesReady = false;
   private installedCustomFingerprint = "";
   private installedMcpFingerprint = "";
   private lastAppliedAgentConfigFp = "";
@@ -2863,8 +2864,12 @@ export class PiAgentEngine {
     if (!this.rootReady && !this.hasPiRootConversation()) {
       return null;
     }
-    const entries = await this.listAllEntries();
-    return mapPiEntriesToHistory(entries, opts, this.loadEntryMetaMap());
+    const sql = this.host.ctx.storage.sql;
+    if (!this.historyIndexesReady) {
+      ensurePiHistoryIndexes(sql);
+      this.historyIndexesReady = true;
+    }
+    return readPiHistoryPage(sql, opts);
   }
 
   async getMessageCount(): Promise<number | null> {
