@@ -422,189 +422,136 @@ export interface PiEntryMetadata {
   repoCommit?: string | null;
 }
 
-/**
- * Maps `pi-durable` `EntryRecord[]` (ascending by EntryId) into CamelRun v2's
- * `GET /v2/agents/:idOrKey/history` response shape (`StoredMessage[]` + `compaction`).
- */
-export function mapPiEntriesToHistory(
-  entries: readonly EntryRecord[],
-  opts?: { after?: number; before?: number; limit?: number },
-  entryMeta?: ReadonlyMap<number, PiEntryMetadata>,
-): MappedHistoryResult {
-  const allMessages: MappedHistoryMessage[] = [];
-  let latestCompaction: { id: string; upToSeq: number; summary: string } | null = null;
-  let currentRunId: string | null = null;
+export function mapPiHistoryCompaction(entry: EntryRecord): MappedHistoryResult["compaction"] {
+  const seq = Number(entry.id);
+  const msg = entry.model?.[0];
+  const text = msg?.role === "user" ? extractTextFromUserContent(msg.content) : "";
+  if (CompactionEntry.is(entry)) {
+    return {
+      id: `cmp_${seq}`,
+      upToSeq: entry.head !== undefined ? Number(entry.head) : seq,
+      summary: unwrapCompactionSummary(text),
+    };
+  }
+  const handoff = ResetEntry.is(entry) ? text.trim() : "";
+  return handoff ? { id: `rst_${seq}`, upToSeq: seq, summary: handoff } : null;
+}
 
-  for (const entry of entries) {
-    const seq = Number(entry.id);
-    if (SystemEntry.is(entry)) continue;
+/** Map one history row. Tool call blocks stay together on their assistant entry. */
+export function mapPiHistoryMessage(
+  entry: EntryRecord,
+  em: PiEntryMetadata | undefined,
+  currentRunId: string | null,
+): MappedHistoryMessage | null {
+  const seq = Number(entry.id);
+  if (SystemEntry.is(entry)) return null;
 
-    if (CompactionEntry.is(entry)) {
-      const msg = entry.model?.[0];
-      const rawText =
-        msg && msg.role === "user" ? extractTextFromUserContent(msg.content) : "";
-      latestCompaction = {
-        id: `cmp_${seq}`,
-        upToSeq: entry.head !== undefined ? Number(entry.head) : seq,
-        summary: unwrapCompactionSummary(rawText),
-      };
-      currentRunId = null;
-      continue;
+  if (isUserContentEntry(entry)) {
+    const msg = entry.model?.[0];
+    if (!msg || msg.role !== "user") return null;
+    const text = extractTextFromUserContent(msg.content);
+    const nativeData = CamelRunUserEntry.is(entry)
+      ? (entry.data as CamelRunUserEntryData | undefined)
+      : undefined;
+    const runId = nativeData?.runId !== undefined ? nativeData.runId : (em?.runId ?? null);
+
+    const rawMeta: Record<string, unknown> = {
+      ...(em?.meta ?? {}),
+      ...(nativeData?.meta ?? {}),
+    };
+    if (nativeData?.actor) {
+      rawMeta.actor = nativeData.actor;
+      rawMeta.requestId = nativeData.requestId ?? null;
     }
-
-    if (ResetEntry.is(entry)) {
-      const msg = entry.model?.[0];
-      const handoff =
-        msg && msg.role === "user" ? extractTextFromUserContent(msg.content).trim() : "";
-      if (handoff) {
-        latestCompaction = {
-          id: `rst_${seq}`,
-          upToSeq: seq,
-          summary: handoff,
-        };
-      } else {
-        latestCompaction = null;
-      }
-      currentRunId = null;
-      continue;
-    }
-
-    if (isUserContentEntry(entry)) {
-      const msg = entry.model?.[0];
-      if (!msg || msg.role !== "user") continue;
-      const text = extractTextFromUserContent(msg.content);
-      const em = entryMeta?.get(seq);
-      const nativeData = CamelRunUserEntry.is(entry)
-        ? (entry.data as CamelRunUserEntryData | undefined)
-        : undefined;
-      const runId = nativeData?.runId !== undefined ? nativeData.runId : (em?.runId ?? null);
-      currentRunId = runId;
-
-      const rawMeta: Record<string, unknown> = {
-        ...(em?.meta ?? {}),
-        ...(nativeData?.meta ?? {}),
-      };
-      if (nativeData?.actor) {
-        rawMeta.actor = nativeData.actor;
-        rawMeta.requestId = nativeData.requestId ?? null;
-      }
-      const attachedFiles =
-        nativeData?.files && nativeData.files.length > 0
-          ? nativeData.files
-          : Array.isArray(rawMeta._files)
-            ? rawMeta._files
-            : undefined;
-      if ("_files" in rawMeta) delete rawMeta._files;
-      const hasMeta = Object.keys(rawMeta).length > 0;
-      allMessages.push({
-        seq,
-        runId,
-        role: "user",
-        content: {
-          text,
-          ...(attachedFiles ? { files: attachedFiles } : {}),
-          ...(hasMeta ? { meta: rawMeta } : {}),
-        },
-        tokensEst: estimateTokens(text),
-        createdAt: msg.timestamp || 0,
-      });
-      continue;
-    }
-
-    if (AssistantEntry.is(entry)) {
-      const msg = entry.model?.[0];
-      if (!msg || msg.role !== "assistant") continue;
-      const textParts: string[] = [];
-      const toolCalls: ToolCallInvocation[] = [];
-      for (const block of msg.content) {
-        if (block.type === "text" && block.text) {
-          textParts.push(block.text);
-        } else if (block.type === "toolCall") {
-          const args =
-            block.arguments && typeof block.arguments === "object"
-              ? (block.arguments as Record<string, unknown>)
-              : {};
-          toolCalls.push({
-            id: block.id,
-            name: block.name,
-            argumentsJson: JSON.stringify(args),
-            args,
-          });
-        }
-      }
-      const text = textParts.join("");
-      const content: Record<string, unknown> = {};
-      if (text) content.text = text;
-      if (toolCalls.length > 0) content.toolCalls = toolCalls;
-      const em = entryMeta?.get(seq);
-      if (em?.meta && Object.keys(em.meta).length > 0) {
-        content.meta = em.meta;
-      }
-      allMessages.push({
-        seq,
-        runId: em?.runId ?? currentRunId,
-        role: "assistant",
-        content,
-        tokensEst: estimateTokens(text || JSON.stringify(content)),
-        createdAt: msg.timestamp || 0,
-      });
-      continue;
-    }
-
-    if (ToolResultEntry.is(entry)) {
-      const msg = entry.model?.[0];
-      if (!msg || msg.role !== "toolResult") continue;
-      const em = entryMeta?.get(seq);
-      const hasMeta = Boolean(em?.meta && Object.keys(em.meta).length > 0);
-      const text = extractTextFromToolContent(msg.content);
-      const imageBlocks = msg.content.filter(
-        (b): b is ImageContent => b.type === "image" && typeof b.mimeType === "string",
-      );
-      allMessages.push({
-        seq,
-        runId: em?.runId ?? currentRunId,
-        role: "tool",
-        content: {
-          toolCallId: msg.toolCallId,
-          toolName: msg.toolName,
-          text,
-          ...(imageBlocks.length > 0
-            ? {
-                toolImages: imageBlocks.map((img) => ({
-                  contentType: img.mimeType,
-                })),
-              }
-            : {}),
-          ...(msg.isError ? { isError: true } : {}),
-          ...(hasMeta ? { meta: em!.meta } : {}),
-        },
-        tokensEst: estimateTokens(text),
-        createdAt: msg.timestamp || 0,
-      });
-    }
+    const attachedFiles =
+      nativeData?.files && nativeData.files.length > 0
+        ? nativeData.files
+        : Array.isArray(rawMeta._files)
+          ? rawMeta._files
+          : undefined;
+    if ("_files" in rawMeta) delete rawMeta._files;
+    const hasMeta = Object.keys(rawMeta).length > 0;
+    return {
+      seq,
+      runId,
+      role: "user",
+      content: {
+        text,
+        ...(attachedFiles ? { files: attachedFiles } : {}),
+        ...(hasMeta ? { meta: rawMeta } : {}),
+      },
+      tokensEst: estimateTokens(text),
+      createdAt: msg.timestamp || 0,
+    };
   }
 
-  const after = Math.max(0, Number(opts?.after ?? 0));
-  const limit = Math.max(1, Math.min(500, Number(opts?.limit ?? 50)));
-  const before = opts?.before;
-  const newest = before !== undefined;
-
-  let paged: MappedHistoryMessage[];
-  let hasOlder = false;
-
-  if (newest) {
-    const filtered = allMessages.filter((m) => m.seq < before);
-    hasOlder = filtered.length > limit;
-    paged = filtered.slice(-limit);
-  } else {
-    paged = allMessages.filter((m) => m.seq > after).slice(0, limit);
+  if (AssistantEntry.is(entry)) {
+    const msg = entry.model?.[0];
+    if (!msg || msg.role !== "assistant") return null;
+    const textParts: string[] = [];
+    const toolCalls: ToolCallInvocation[] = [];
+    for (const block of msg.content) {
+      if (block.type === "text" && block.text) {
+        textParts.push(block.text);
+      } else if (block.type === "toolCall") {
+        const args =
+          block.arguments && typeof block.arguments === "object"
+            ? (block.arguments as Record<string, unknown>)
+            : {};
+        toolCalls.push({
+          id: block.id,
+          name: block.name,
+          argumentsJson: JSON.stringify(args),
+          args,
+        });
+      }
+    }
+    const text = textParts.join("");
+    const content: Record<string, unknown> = {};
+    if (text) content.text = text;
+    if (toolCalls.length > 0) content.toolCalls = toolCalls;
+    if (em?.meta && Object.keys(em.meta).length > 0) {
+      content.meta = em.meta;
+    }
+    return {
+      seq,
+      runId: em?.runId ?? currentRunId,
+      role: "assistant",
+      content,
+      tokensEst: estimateTokens(text || JSON.stringify(content)),
+      createdAt: msg.timestamp || 0,
+    };
   }
 
-  const nextAfter = paged.at(-1)?.seq ?? after;
-  return {
-    messages: paged,
-    compaction: latestCompaction,
-    nextAfter,
-    ...(newest ? { nextBefore: hasOlder ? paged[0]!.seq : null } : {}),
-  };
+  if (ToolResultEntry.is(entry)) {
+    const msg = entry.model?.[0];
+    if (!msg || msg.role !== "toolResult") return null;
+    const hasMeta = Boolean(em?.meta && Object.keys(em.meta).length > 0);
+    const text = extractTextFromToolContent(msg.content);
+    const imageBlocks = msg.content.filter(
+      (b): b is ImageContent => b.type === "image" && typeof b.mimeType === "string",
+    );
+    return {
+      seq,
+      runId: em?.runId ?? currentRunId,
+      role: "tool",
+      content: {
+        toolCallId: msg.toolCallId,
+        toolName: msg.toolName,
+        text,
+        ...(imageBlocks.length > 0
+          ? {
+              toolImages: imageBlocks.map((img) => ({
+                contentType: img.mimeType,
+              })),
+            }
+          : {}),
+        ...(msg.isError ? { isError: true } : {}),
+        ...(hasMeta ? { meta: em!.meta } : {}),
+      },
+      tokensEst: estimateTokens(text),
+      createdAt: msg.timestamp || 0,
+    };
+  }
+  return null;
 }
