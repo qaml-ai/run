@@ -1809,7 +1809,8 @@ export class AgentDO extends DurableObject<Env> {
           for (const m of page.messages) {
             collected.push({
               seq: m.seq,
-              runId: m.runId,
+              // Source run rows live in the source AgentDO's `runs` table; clear runId so readers never 404 looking up source runs on this DO.
+              runId: null,
               role: m.role,
               content: m.content as StoredMessage["content"],
               tokensEst: m.tokensEst,
