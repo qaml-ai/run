@@ -73,7 +73,6 @@ export class AgentDO extends DurableObject<Env> {
   private destroying = false;
   private storageGeneration = 0;
   private runWaiters = new Map<string, Array<(rec: RunRecord) => void>>();
-  private sseListeners = new Set<(ev: AgentEventRecord) => void>();
   private pendingWsCalls = new Map<string, PendingWsCall>();
   private lastDreamedSeq = 0;
   private lastIdleCompactedSeq = 0;
@@ -101,6 +100,7 @@ export class AgentDO extends DurableObject<Env> {
           this.recordAndBroadcastEvent(runId, type, data),
         broadcastEphemeralEvent: (runId, type, data) =>
           this.broadcastEphemeralEvent(runId, type, data),
+        hasEventSubscribers: () => this.ctx.getWebSockets().length > 0,
         enqueueAppWebhook: (tenantId, eventType, payload) =>
           this.enqueueAppWebhook(tenantId, eventType, payload),
         scheduleNextAlarm: () => this.scheduleNextAlarm(),
@@ -383,14 +383,6 @@ export class AgentDO extends DurableObject<Env> {
         // Closed socket
       }
     }
-
-    for (const listener of this.sseListeners) {
-      try {
-        listener(record);
-      } catch {
-        // Listener disconnected
-      }
-    }
   }
 
   private broadcastEphemeralEvent(
@@ -417,6 +409,10 @@ export class AgentDO extends DurableObject<Env> {
         const oldest = this.lastRunActivityAt.keys().next().value;
         if (oldest !== undefined) this.lastRunActivityAt.delete(oldest);
       }
+      if (RUN_LIFECYCLE_EVENTS.has(type)) {
+        const code = (data.error as { code?: unknown } | undefined)?.code ?? data.code;
+        this.logRunLifecycle(runId, type, typeof code === "string" ? code : undefined);
+      }
     }
     this.dispatchLiveEvent(record);
     return record;
@@ -438,6 +434,10 @@ export class AgentDO extends DurableObject<Env> {
       dataJson,
       now,
     );
+    // Keep SQLite events table compact on long-lived agents (newest 200 durable milestones).
+    if (seq > 200 && seq % 200 === 0) {
+      this.ctx.storage.sql.exec(`DELETE FROM events WHERE seq <= ?1`, seq - 200);
+    }
     const record: AgentEventRecord = {
       seq,
       runId,
@@ -975,7 +975,7 @@ export class AgentDO extends DurableObject<Env> {
       }
     });
 
-    this.recordAndBroadcastEvent(runId, "run_queued", {
+    this.broadcastEphemeralEvent(runId, "run_queued", {
       runId,
       queueMode: cfg.queue.mode,
     });
@@ -2096,6 +2096,7 @@ export class AgentDO extends DurableObject<Env> {
     after?: number | "latest";
     runId?: string | null;
   }): Promise<{ events: AgentEventRecord[]; nextAfter: number }> {
+    this.piEngine?.ensureWatchingActiveRun();
     if (opts?.after === "latest") {
       this.ensureSql();
       const row = opts.runId
@@ -2594,88 +2595,8 @@ export class AgentDO extends DurableObject<Env> {
         server.serializeAttachment({
           tools: [],
         } satisfies WsAttachment);
+        this.piEngine?.ensureWatchingActiveRun();
         return new Response(null, { status: 101, webSocket: client });
-      }
-
-      if (method === "GET" && path === "/events") {
-        const after = Math.max(0, Number(url.searchParams.get("after") ?? 0));
-        const runIdFilter = url.searchParams.get("runId") || null;
-
-        const enc = new TextEncoder();
-        const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-        const writer = writable.getWriter();
-
-        const formatSse = (ev: AgentEventRecord) =>
-          enc.encode(`id: ${ev.seq}\nevent: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
-
-        const isTerminalEvent = (t: string) =>
-          t === "run_completed" ||
-          t === "run_failed" ||
-          t === "run_cancelled" ||
-          t === "input_required";
-
-        const initialEvents = this.fetchStoredEvents(after, runIdFilter);
-        let closed = false;
-
-        const closeStream = (listener?: (ev: AgentEventRecord) => void) => {
-          if (closed) return;
-          closed = true;
-          if (listener) this.sseListeners.delete(listener);
-          void writer.close().catch(() => {});
-        };
-
-        let shouldCloseImmediately = false;
-        if (runIdFilter) {
-          try {
-            const r = this.readRunRowOrThrow(runIdFilter);
-            if (
-              r.status === "completed" ||
-              r.status === "failed" ||
-              r.status === "cancelled" ||
-              r.status === "input_required"
-            ) {
-              shouldCloseImmediately = true;
-            }
-          } catch {
-            // Run might not exist yet
-          }
-        } else if (!this.activeRunId && url.searchParams.get("follow") !== "1") {
-          shouldCloseImmediately = true;
-        }
-
-        const liveListener = (ev: AgentEventRecord) => {
-          if (closed) return;
-          if (runIdFilter && ev.runId !== runIdFilter) return;
-          void writer.write(formatSse(ev)).catch(() => closeStream(liveListener));
-          if (runIdFilter && isTerminalEvent(ev.type)) {
-            closeStream(liveListener);
-          }
-        };
-
-        if (!shouldCloseImmediately) {
-          this.sseListeners.add(liveListener);
-          request.signal.addEventListener("abort", () => closeStream(liveListener), {
-            once: true,
-          });
-        }
-
-        void (async () => {
-          for (const ev of initialEvents) {
-            await writer.write(formatSse(ev));
-          }
-          if (shouldCloseImmediately) {
-            closeStream(liveListener);
-          }
-        })();
-
-        return new Response(readable, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          },
-        });
       }
 
       throw new ApiError(404, "not_found", `Unknown AgentDO stream route: ${method} ${path}`);

@@ -128,6 +128,7 @@ export interface PiAgentHost {
     type: string,
     data: Record<string, unknown>,
   ): AgentEventRecord;
+  hasEventSubscribers(): boolean;
   enqueueAppWebhook(tenantId: string, eventType: string, payload: Record<string, unknown>): void;
   scheduleNextAlarm(): Promise<void>;
   materializeRunRecord(runId: string): RunRecord;
@@ -150,6 +151,7 @@ interface ActiveRunTracker {
   seenToolStarts: Set<string>;
   seenToolEnds: Set<string>;
   seenEntryIds: Set<number>;
+  baselineEntryId: number;
   emittedGenerationAttempt: number;
   emittedPartialTextLen: number;
   lastEmittedAssistantEntryId: number;
@@ -160,6 +162,7 @@ interface ActiveRunTracker {
   pausedForInput: boolean;
   spendLimitError: { code: "spend_limit_exceeded"; message: string } | null;
   aborted: boolean;
+  watchStarting: boolean;
   watchHandle: ConversationWatch | null;
   watchPromise: Promise<void> | null;
 }
@@ -329,14 +332,14 @@ export class PiAgentEngine {
                     keepRecentTokens: Math.min(12_000, Math.floor(effectiveThreshold / 2)),
                     backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
                   },
-                  progress: { persistWithinMs: 10_000 },
+                  progress: { partialIntervalMs: 250, outputIntervalMs: 250, persistWithinMs: 30_000 },
                   afterFailedRun: "keep",
                   restartLimit: 25,
                 };
               }
               return {
                 compaction: { enabled: true },
-                progress: { persistWithinMs: 10_000 },
+                progress: { partialIntervalMs: 250, outputIntervalMs: 250, persistWithinMs: 30_000 },
                 afterFailedRun: "keep",
                 restartLimit: 25,
               };
@@ -461,6 +464,7 @@ export class PiAgentEngine {
       seenToolStarts: new Set(existingRec.toolCalls.map((t) => t.id)),
       seenToolEnds: new Set(existingRec.toolCalls.map((t) => t.id)),
       seenEntryIds: new Set(),
+      baselineEntryId: 0,
       emittedGenerationAttempt: -1,
       emittedPartialTextLen: 0,
       lastEmittedAssistantEntryId: 0,
@@ -471,6 +475,7 @@ export class PiAgentEngine {
       pausedForInput: !isRunning,
       spendLimitError: null,
       aborted: false,
+      watchStarting: false,
       watchHandle: null,
       watchPromise: null,
     };
@@ -478,7 +483,7 @@ export class PiAgentEngine {
     if (isRunning) {
       this.host.setActiveRunId(row.id);
       if (this.lifecycle.isStarted()) {
-        this.trackSubmissionSettlement(tracker, true);
+        this.trackSubmissionSettlement(tracker, this.host.hasEventSubscribers());
       }
     }
     return tracker;
@@ -1471,14 +1476,131 @@ export class PiAgentEngine {
     return { userInput: blocks, verifiedFiles: verified };
   }
 
+  ensureWatchingActiveRun(): void {
+    const tracker = this.activeTracker;
+    if (
+      !tracker ||
+      tracker.settled ||
+      tracker.pausedForInput ||
+      tracker.aborted ||
+      tracker.watchHandle ||
+      tracker.watchStarting ||
+      !this.lifecycle.isStarted()
+    ) {
+      return;
+    }
+    void this.startWatchForTracker(tracker).catch(() => {});
+  }
+
+  private async latestRootEntryId(): Promise<number> {
+    const conv = await this.getRootConversation();
+    if (!conv) return 0;
+    const tail = await conv.entries({ order: "descending" }, 1, undefined, BG);
+    return Number(tail.items[0]?.id ?? 0);
+  }
+
+  private processCommittedEntry(tracker: ActiveRunTracker, entry: EntryRecord): void {
+    const entryNum = Number(entry.id);
+    if (tracker.seenEntryIds.has(entryNum)) return;
+    tracker.seenEntryIds.add(entryNum);
+
+    if (CompactionEntry.is(entry)) {
+      this.host.recordAndBroadcastEvent(null, "context_compacted", {
+        upToSeq: entry.head !== undefined ? Number(entry.head) : entryNum,
+        reason: (entry.data as { reason?: string } | undefined)?.reason ?? "auto",
+      });
+    } else if (AssistantEntry.is(entry)) {
+      const msg = entry.model?.[0];
+      if (msg && msg.role === "assistant") {
+        const text = extractAssistantText(msg);
+        if (text.length > tracker.emittedPartialTextLen) {
+          const delta = text.slice(tracker.emittedPartialTextLen);
+          tracker.accumulatedText += delta;
+          this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
+        }
+        tracker.emittedPartialTextLen = 0;
+        tracker.emittedGenerationAttempt = -1;
+        tracker.lastEmittedAssistantEntryId = entryNum;
+        if (tracker.lastRepoCommit) {
+          this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
+        }
+
+        for (const tc of extractAssistantToolCalls(msg)) {
+          if (!tracker.seenToolStarts.has(tc.id)) {
+            tracker.seenToolStarts.add(tc.id);
+            this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_start", {
+              callId: tc.id,
+              name: tc.name,
+              args: tc.arguments ?? {},
+            });
+          }
+        }
+      }
+    } else if (ToolResultEntry.is(entry)) {
+      if (tracker.lastRepoCommit) {
+        this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
+      }
+      const msg = entry.model?.[0];
+      if (msg && msg.role === "toolResult") {
+        if (!tracker.seenToolEnds.has(msg.toolCallId)) {
+          tracker.seenToolEnds.add(msg.toolCallId);
+          const ok = !msg.isError;
+          tracker.toolCalls.push({ id: msg.toolCallId, name: msg.toolName, ok });
+          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_end", {
+            callId: msg.toolCallId,
+            name: msg.toolName,
+            ok,
+            ...(msg.isError ? { isError: true } : {}),
+          });
+        }
+      }
+    }
+  }
+
+  private async syncRunEntriesFromPi(tracker: ActiveRunTracker): Promise<void> {
+    const conv = await this.getRootConversation();
+    if (!conv) return;
+    const recent: EntryRecord[] = [];
+    let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+    for (;;) {
+      const page = await conv.entries({ order: "descending" }, 64, cursor, BG);
+      let reachedBaseline = false;
+      for (const entry of page.items) {
+        if (Number(entry.id) <= tracker.baselineEntryId) {
+          reachedBaseline = true;
+          break;
+        }
+        recent.push(entry);
+      }
+      if (reachedBaseline || !page.next) break;
+      cursor = page.next;
+    }
+    for (let i = recent.length - 1; i >= 0; i--) {
+      this.processCommittedEntry(tracker, recent[i]!);
+    }
+  }
+
   private async startWatchForTracker(tracker: ActiveRunTracker): Promise<void> {
-    if (tracker.watchHandle) return;
-    const watch = await this.harness.session(ROOT_SESSION).watch();
+    if (tracker.watchHandle || tracker.watchStarting || tracker.settled || tracker.aborted) return;
+    tracker.watchStarting = true;
+    let watch: ConversationWatch;
+    try {
+      watch = await this.harness.session(ROOT_SESSION).watch();
+    } finally {
+      tracker.watchStarting = false;
+    }
+    if (tracker.settled || tracker.aborted || tracker.watchHandle) {
+      await watch.stop().catch(() => {});
+      return;
+    }
     tracker.watchHandle = watch;
 
-    // Seed seenEntryIds with all entries that already existed before this run's watch attached
+    // Seed seenEntryIds with entries from before this run; entries > baselineEntryId are processed below.
     for (const entry of watch.value.entries) {
-      tracker.seenEntryIds.add(Number(entry.id));
+      const entryNum = Number(entry.id);
+      if (entryNum <= tracker.baselineEntryId) {
+        tracker.seenEntryIds.add(entryNum);
+      }
     }
 
     const processView = (view: typeof watch.value) => {
@@ -1505,68 +1627,14 @@ export class PiAgentEngine {
 
       // 2. Inspect newly committed entries (handles fast providers like `mock/*` that commit before a partial frame)
       for (const entry of view.entries) {
-        const entryNum = Number(entry.id);
-        if (tracker.seenEntryIds.has(entryNum)) continue;
-        tracker.seenEntryIds.add(entryNum);
-
-        if (CompactionEntry.is(entry)) {
-          this.host.recordAndBroadcastEvent(null, "context_compacted", {
-            upToSeq: entry.head !== undefined ? Number(entry.head) : entryNum,
-            reason: (entry.data as { reason?: string } | undefined)?.reason ?? "auto",
-          });
-        } else if (AssistantEntry.is(entry)) {
-          const msg = entry.model?.[0];
-          if (msg && msg.role === "assistant") {
-            const text = extractAssistantText(msg);
-            if (text.length > tracker.emittedPartialTextLen) {
-              const delta = text.slice(tracker.emittedPartialTextLen);
-              tracker.accumulatedText += delta;
-              this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
-            }
-            tracker.emittedPartialTextLen = 0;
-            tracker.emittedGenerationAttempt = -1;
-            tracker.lastEmittedAssistantEntryId = entryNum;
-            if (tracker.lastRepoCommit) {
-              this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
-            }
-
-            for (const tc of extractAssistantToolCalls(msg)) {
-              if (!tracker.seenToolStarts.has(tc.id)) {
-                tracker.seenToolStarts.add(tc.id);
-                this.host.recordAndBroadcastEvent(tracker.runId, "tool_call_start", {
-                  callId: tc.id,
-                  name: tc.name,
-                  args: tc.arguments ?? {},
-                });
-              }
-            }
-          }
-        } else if (ToolResultEntry.is(entry)) {
-          if (tracker.lastRepoCommit) {
-            this.recordEntryMeta(entryNum, tracker.runId, undefined, tracker.lastRepoCommit);
-          }
-          const msg = entry.model?.[0];
-          if (msg && msg.role === "toolResult") {
-            if (!tracker.seenToolEnds.has(msg.toolCallId)) {
-              tracker.seenToolEnds.add(msg.toolCallId);
-              const ok = !msg.isError;
-              tracker.toolCalls.push({ id: msg.toolCallId, name: msg.toolName, ok });
-              this.host.recordAndBroadcastEvent(tracker.runId, "tool_call_end", {
-                callId: msg.toolCallId,
-                name: msg.toolName,
-                ok,
-                ...(msg.isError ? { isError: true } : {}),
-              });
-            }
-          }
-        }
+        this.processCommittedEntry(tracker, entry);
       }
 
-      // 3. Emit tool_call_start / tool_call_end for live ToolSlots
+      // 3. Emit ephemeral tool_call_start / tool_call_end for live ToolSlots
       for (const slot of live?.tools ?? []) {
         if (!tracker.seenToolStarts.has(slot.callId)) {
           tracker.seenToolStarts.add(slot.callId);
-          this.host.recordAndBroadcastEvent(tracker.runId, "tool_call_start", {
+          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_start", {
             callId: slot.callId,
             name: slot.name,
           });
@@ -1576,7 +1644,7 @@ export class PiAgentEngine {
           const ok = !hasErrorDiag;
           tracker.seenToolEnds.add(slot.callId);
           tracker.toolCalls.push({ id: slot.callId, name: slot.name, ok });
-          this.host.recordAndBroadcastEvent(tracker.runId, "tool_call_end", {
+          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_end", {
             callId: slot.callId,
             name: slot.name,
             ok,
@@ -1584,11 +1652,11 @@ export class PiAgentEngine {
         }
       }
 
-      // 4. Emit nested codemode tool calls from `pi.live.nestedTools`
+      // 4. Emit ephemeral nested codemode tool calls from `pi.live.nestedTools`
       for (const nested of live?.nestedTools ?? []) {
         if (!tracker.seenToolStarts.has(nested.callId)) {
           tracker.seenToolStarts.add(nested.callId);
-          this.host.recordAndBroadcastEvent(tracker.runId, "tool_call_start", {
+          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_start", {
             callId: nested.callId,
             name: nested.name,
             parentCallId: nested.parentCallId,
@@ -1599,7 +1667,7 @@ export class PiAgentEngine {
           const ok = !nested.summary?.isError;
           tracker.seenToolEnds.add(nested.callId);
           tracker.toolCalls.push({ id: nested.callId, name: nested.name, ok });
-          this.host.recordAndBroadcastEvent(tracker.runId, "tool_call_end", {
+          this.host.broadcastEphemeralEvent(tracker.runId, "tool_call_end", {
             callId: nested.callId,
             name: nested.name,
             parentCallId: nested.parentCallId,
@@ -1610,8 +1678,11 @@ export class PiAgentEngine {
       }
       // Live progress (`text`, `toolCalls`, `usage`) is overlaid in memory by `getActiveRunOverlay()`
       // and persisted to `runs` only on durable boundaries (usage/files/pause/settlement), avoiding
-      // a 10 Hz SQLite `UPDATE runs` storm on every `pi.live` streaming tick.
+      // a SQLite `UPDATE runs` storm on every `pi.live` streaming tick.
     };
+
+    // Process current live snapshot immediately (important when attaching mid-run).
+    processView(watch.value);
 
     watch.start(async (call) => {
       if (call.kind === "value") {
@@ -1635,12 +1706,14 @@ export class PiAgentEngine {
         }
         const result = await this.harness.wait(tracker.runId, { session: ROOT_SESSION });
 
-        // Give any final watch microtask a chance to flush last entry deltas
+        // Give any final watch microtask a chance to flush last entry deltas, then stop watch.
         if (tracker.watchHandle) {
           await new Promise((r) => setTimeout(r, 0));
           await tracker.watchHandle.stop().catch(() => {});
           tracker.watchHandle = null;
         }
+        // Sync any committed entries not yet observed (e.g. headless runs that skipped live `watch()`).
+        await this.syncRunEntriesFromPi(tracker).catch(() => {});
 
         if (tracker.settled) return;
         tracker.settled = true;
@@ -1944,6 +2017,7 @@ export class PiAgentEngine {
         )
         .toArray()[0];
 
+      const baselineEntryId = await this.latestRootEntryId();
       const tracker: ActiveRunTracker = {
         runId,
         actor,
@@ -1955,6 +2029,7 @@ export class PiAgentEngine {
         seenToolStarts: new Set(),
         seenToolEnds: new Set(),
         seenEntryIds: new Set(),
+        baselineEntryId,
         emittedGenerationAttempt: -1,
         emittedPartialTextLen: 0,
         lastEmittedAssistantEntryId: 0,
@@ -1965,6 +2040,7 @@ export class PiAgentEngine {
         pausedForInput: false,
         spendLimitError: null,
         aborted: false,
+        watchStarting: false,
         watchHandle: null,
         watchPromise: null,
       };
@@ -1979,7 +2055,9 @@ export class PiAgentEngine {
         ...(actor ? { actor } : {}),
       });
 
-      await this.startWatchForTracker(tracker);
+      if (this.host.hasEventSubscribers()) {
+        await this.startWatchForTracker(tracker);
+      }
 
       const entryData: JsonObject = {
         runId,
@@ -2036,7 +2114,7 @@ export class PiAgentEngine {
         }
       }
 
-      this.host.recordAndBroadcastEvent(runId, "tool_call_end", {
+      this.host.broadcastEphemeralEvent(runId, "tool_call_end", {
         callId: inp.tool_call_id,
         name: toolName,
         ok: false,
@@ -2215,6 +2293,7 @@ export class PiAgentEngine {
         seenToolStarts: new Set(existingRec.toolCalls.map((t) => t.id)),
         seenToolEnds: new Set(existingRec.toolCalls.map((t) => t.id)),
         seenEntryIds: new Set(),
+        baselineEntryId: await this.latestRootEntryId(),
         emittedGenerationAttempt: -1,
         emittedPartialTextLen: 0,
         lastEmittedAssistantEntryId: 0,
@@ -2225,15 +2304,18 @@ export class PiAgentEngine {
         pausedForInput: false,
         spendLimitError: null,
         aborted: false,
+        watchStarting: false,
         watchHandle: null,
         watchPromise: null,
       };
       this.activeTracker = tracker;
-      await this.startWatchForTracker(tracker);
+      if (this.host.hasEventSubscribers()) {
+        await this.startWatchForTracker(tracker);
+      }
       this.trackSubmissionSettlement(tracker);
     } else {
       tracker.pausedForInput = false;
-      if (!tracker.watchHandle) {
+      if (!tracker.watchHandle && this.host.hasEventSubscribers()) {
         await this.startWatchForTracker(tracker);
       }
       if (!tracker.watchPromise) {
