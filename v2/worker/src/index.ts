@@ -1454,6 +1454,37 @@ app.get("/v2/agents/:idOrKey/history", async (c) => {
   return c.json(await stub.getHistory({ after, limit, before }));
 });
 
+app.post("/v2/agents/:idOrKey/import-history", async (c) => {
+  const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "admin");
+  const body = (await c.req.json().catch(() => null)) as {
+    messages?: unknown;
+    append?: unknown;
+    compaction?: { id: string; upToSeq: number; summary: string; createdAt: number } | null;
+    appendFromAgentId?: unknown;
+  } | null;
+  if (!body || typeof body !== "object") {
+    throw new ApiError(400, "invalid_request", "Request body must be a JSON object");
+  }
+  if (body.messages !== undefined && !Array.isArray(body.messages)) {
+    throw new ApiError(400, "invalid_request", "`messages` must be an array");
+  }
+  if (
+    body.appendFromAgentId !== undefined &&
+    body.appendFromAgentId !== null &&
+    typeof body.appendFromAgentId !== "string"
+  ) {
+    throw new ApiError(400, "invalid_request", "`appendFromAgentId` must be a string or null");
+  }
+  return c.json(
+    await stub.importHistory({
+      messages: body.messages as import("./types.ts").StoredMessage[] | undefined,
+      append: Boolean(body.append),
+      compaction: body.compaction ?? null,
+      appendFromAgentId: (body.appendFromAgentId as string | null | undefined) ?? null,
+    }),
+  );
+});
+
 app.post("/v2/agents/:idOrKey/compact", async (c) => {
   const { stub } = await getAgentTarget(c.env, c.req.raw, c.req.param("idOrKey"), "run");
   const body = (await c.req.json().catch(() => ({}))) as { summary?: string; keepLast?: number };

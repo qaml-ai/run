@@ -1754,6 +1754,85 @@ export class AgentDO extends DurableObject<Env> {
     return { seeded: true };
   }
 
+  async importHistory(body: {
+    messages?: StoredMessage[];
+    append?: boolean;
+    compaction?: { id: string; upToSeq: number; summary: string; createdAt: number } | null;
+    appendFromAgentId?: string | null;
+  }): Promise<{
+    imported: number;
+    appendedFromSource: number;
+    alreadyImported: boolean;
+    messageCount: number;
+  }> {
+    this.ensureSql();
+    const cfg = this.requireConfig();
+    const pending =
+      this.ctx.storage.sql
+        .exec("SELECT 1 FROM runs WHERE status IN ('queued', 'running', 'input_required') LIMIT 1")
+        .toArray().length > 0;
+    if (this.destroying || this.activeRunId || this.queueDrain || this.inputResumeWork || pending) {
+      throw new ApiError(409, "agent_busy", "The agent has work in progress");
+    }
+
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const engine = this.ensurePiEngine();
+    const first =
+      messages.length > 0 || body.compaction || !body.appendFromAgentId
+        ? await engine.importV1Messages(cfg, messages, {
+            append: Boolean(body.append),
+            compaction: body.compaction ?? null,
+          })
+        : {
+            imported: 0,
+            alreadyImported: false,
+            messageCount: (await engine.getMessageCount()) ?? 0,
+          };
+
+    let appendedFromSource = 0;
+    let messageCount = first.messageCount;
+    const sourceRef = body.appendFromAgentId?.trim();
+    if (sourceRef && sourceRef !== cfg.id && sourceRef !== cfg.key && !first.alreadyImported) {
+      const sourceEntry = await getTenantStub(this.env, cfg.tenantId).resolveAgent(sourceRef);
+      if (!sourceEntry) {
+        throw new ApiError(404, "not_found", `Source agent '${sourceRef}' not found`);
+      }
+      if (sourceEntry.id !== cfg.id) {
+        const sourceStub = getAgentStub(this.env, sourceEntry.id);
+        const collected: StoredMessage[] = [];
+        let after = 0;
+        for (let pageIdx = 0; pageIdx < 200; pageIdx++) {
+          const page = await sourceStub.getHistory({ after, limit: 500 });
+          if (!page.messages.length) break;
+          for (const m of page.messages) {
+            collected.push({
+              seq: m.seq,
+              runId: m.runId,
+              role: m.role,
+              content: m.content as StoredMessage["content"],
+              tokensEst: m.tokensEst,
+              createdAt: m.createdAt,
+            });
+          }
+          if (page.nextAfter <= after || page.messages.length < 500) break;
+          after = page.nextAfter;
+        }
+        if (collected.length > 0) {
+          const res = await engine.importV1Messages(cfg, collected, { append: true });
+          appendedFromSource = res.imported;
+          messageCount = res.messageCount;
+        }
+      }
+    }
+
+    return {
+      imported: first.imported,
+      appendedFromSource,
+      alreadyImported: first.alreadyImported,
+      messageCount,
+    };
+  }
+
   async getOpsRunStats(fromMs: number, untilMs: number): Promise<{
     responses: number;
     endUsers: number;

@@ -78,10 +78,13 @@ import {
 import {
   CamelRunUserEntry,
   copyPiEntriesToConversation,
+  importLegacyTranscriptToPi,
   isUserContentEntry,
   mapPiEntriesToHistory,
   unwrapCompactionSummary,
   wrapCompactionSummary,
+  type ImportedEntryMeta,
+  type LegacyCompactionRow,
   type MappedHistoryResult,
 } from "./migrate.ts";
 import {
@@ -1239,6 +1242,136 @@ export class PiAgentEngine {
 
     this.rootReady = true;
     return { created };
+  }
+
+  /**
+   * Imports legacy/v1 or exported messages directly into `pi-durable` (either creating
+   * the root conversation or appending to an existing root conversation for chunked imports).
+   * Splits large imports into memory-safe batches without breaking tool-call/result pairs.
+   */
+  async importV1Messages(
+    cfg: AgentConfig,
+    messages: readonly StoredMessage[],
+    opts?: { append?: boolean; compaction?: LegacyCompactionRow | null },
+  ): Promise<{ imported: number; alreadyImported: boolean; messageCount: number }> {
+    await this.ensureStarted();
+    await this.ensureExtensionsInstalled(cfg);
+    const modelRef = parsePiModelRef(cfg.model, this.host.env);
+
+    const rootExists = this.rootReady || this.hasPiRootConversation();
+    if (!opts?.append && rootExists) {
+      this.rootReady = true;
+      const existingCount = (await this.getMessageCount()) ?? 0;
+      if (existingCount > 0) {
+        return { imported: 0, alreadyImported: true, messageCount: existingCount };
+      }
+    }
+
+    const MAX_BATCH_ROWS = 100;
+    const MAX_BATCH_BYTES = 2 * 1024 * 1024;
+    const batches: StoredMessage[][] = [];
+    let currentBatch: StoredMessage[] = [];
+    let currentBytes = 0;
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!;
+      const msgBytes = JSON.stringify(msg.content ?? {}).length;
+      const shouldFlush =
+        currentBatch.length > 0 &&
+        msg.role !== "tool" &&
+        (currentBatch.length >= MAX_BATCH_ROWS || currentBytes + msgBytes > MAX_BATCH_BYTES);
+      if (shouldFlush) {
+        batches.push(currentBatch);
+        currentBatch = [];
+        currentBytes = 0;
+      }
+      currentBatch.push(msg);
+      currentBytes += msgBytes;
+    }
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+
+    const persistMeta = (importedMeta: ImportedEntryMeta[]) => {
+      if (importedMeta.length === 0) return;
+      this.host.ctx.storage.transactionSync(() => {
+        for (const item of importedMeta) {
+          this.recordEntryMeta(item.entryId, item.runId, item.meta);
+        }
+      });
+    };
+
+    let imported = 0;
+    let startIndex = 0;
+    if (!rootExists) {
+      const firstBatch = batches[0] ?? [];
+      const initialChange = this.buildAgentChange(cfg);
+      let importedMeta: ImportedEntryMeta[] = [];
+      let batchImported = 0;
+      const { created } = await this.harness.root({
+        agent: initialChange,
+        init: async (tx, convId) => {
+          if (firstBatch.length > 0 || opts?.compaction) {
+            const res = await importLegacyTranscriptToPi(
+              tx,
+              convId,
+              opts?.compaction ?? null,
+              firstBatch,
+              modelRef,
+            );
+            importedMeta = res.importedMeta;
+            batchImported = res.importedEntries;
+          }
+        },
+      });
+      if (created) {
+        this.lastAppliedAgentConfigFp = this.agentChangeFingerprint(initialChange);
+        persistMeta(importedMeta);
+        imported += batchImported;
+        startIndex = 1;
+      }
+      this.rootReady = true;
+    } else {
+      this.rootReady = true;
+    }
+
+    if (startIndex < batches.length) {
+      const pi = await this.harness.pi();
+      for (let i = startIndex; i < batches.length; i++) {
+        const batch = batches[i]!;
+        if (batch.length === 0) continue;
+        let importedMeta: ImportedEntryMeta[] = [];
+        let batchImported = 0;
+        await pi.commit(async (tx) => {
+          const res = await importLegacyTranscriptToPi(
+            tx,
+            ROOT_CONVERSATION_ID,
+            i === 0 ? (opts?.compaction ?? null) : null,
+            batch,
+            modelRef,
+          );
+          importedMeta = res.importedMeta;
+          batchImported = res.importedEntries;
+        }, BG);
+        persistMeta(importedMeta);
+        imported += batchImported;
+      }
+    } else if (startIndex === 0 && opts?.compaction) {
+      const pi = await this.harness.pi();
+      await pi.commit(async (tx) => {
+        const res = await importLegacyTranscriptToPi(
+          tx,
+          ROOT_CONVERSATION_ID,
+          opts.compaction ?? null,
+          [],
+          modelRef,
+        );
+        imported += res.importedEntries;
+      }, BG);
+    }
+
+    const messageCount = (await this.getMessageCount()) ?? imported;
+    return { imported, alreadyImported: false, messageCount };
   }
 
   private async refreshModels(
@@ -2637,7 +2770,7 @@ export class PiAgentEngine {
         .exec<{ cnt: number }>(
           `SELECT COUNT(*) AS cnt FROM pi_entries
            WHERE conversation_id = 1
-             AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool_result')`,
+             AND json_extract(record, '$.kind') IN ('pi.user', 'camelrun.user', 'pi.assistant', 'pi.tool-result')`,
         )
         .toArray()[0];
       if (row) return Number(row.cnt ?? 0);

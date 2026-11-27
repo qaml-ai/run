@@ -1,6 +1,11 @@
 import type {
+  AssistantMessage,
   ImageContent,
   TextContent,
+  ToolCall,
+  ToolResultMessage,
+  Usage,
+  UserMessage,
 } from "@earendil-works/pi-ai";
 import type { JsonValue } from "@earendil-works/chord/json";
 import {
@@ -15,6 +20,7 @@ import {
   type EntryId,
   type EntryRecord,
   type JsonObject,
+  type ModelRef,
   type Tx,
 } from "@earendil-works/pi-durable";
 import {
@@ -49,6 +55,278 @@ export function isUserContentEntry(entry: EntryRecord): boolean {
 const COMPACTION_PREFIX =
   "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const COMPACTION_SUFFIX = "\n</summary>";
+
+const ZERO_USAGE: Usage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+export interface LegacyCompactionRow {
+  id: string;
+  upToSeq: number;
+  summary: string;
+  createdAt: number;
+}
+
+export interface ImportedEntryMeta {
+  entryId: number;
+  runId: string | null;
+  meta?: Record<string, unknown>;
+}
+
+const MAX_TOOL_CALL_ARGS_JSON_LENGTH = 512 * 1024;
+const TRUNCATED_TOOL_CALL_PREVIEW_LENGTH = 4_000;
+
+function sanitizeLoneSurrogates(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += text[i]! + text[i + 1]!;
+        i++;
+      } else {
+        out += "\ufffd";
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      out += "\ufffd";
+    } else {
+      out += text[i]!;
+    }
+  }
+  return out;
+}
+
+function safeParseToolArgs(tc: ToolCallInvocation): JsonObject {
+  const rawJson =
+    typeof tc.argumentsJson === "string" && tc.argumentsJson.length > 0
+      ? tc.argumentsJson
+      : tc.args && typeof tc.args === "object"
+        ? JSON.stringify(tc.args)
+        : "";
+  if (rawJson.length > MAX_TOOL_CALL_ARGS_JSON_LENGTH) {
+    return {
+      _truncated: true,
+      originalLength: rawJson.length,
+      preview: sanitizeLoneSurrogates(rawJson.slice(0, TRUNCATED_TOOL_CALL_PREVIEW_LENGTH)),
+    };
+  }
+  if (tc.argumentsJson) {
+    try {
+      const parsed = JSON.parse(tc.argumentsJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as JsonObject;
+      }
+    } catch {
+      // fall through
+    }
+  }
+  if (tc.args && typeof tc.args === "object" && !Array.isArray(tc.args)) {
+    return JSON.parse(JSON.stringify(tc.args)) as JsonObject;
+  }
+  return {};
+}
+
+function formatUserMessageContent(msg: StoredMessage): string {
+  const files = msg.content.files;
+  const textParts: string[] = [];
+  if (msg.content.text) textParts.push(sanitizeLoneSurrogates(msg.content.text));
+  if (files?.length) {
+    for (const file of files) {
+      textParts.push(
+        `Workspace attachment ${JSON.stringify(file.path)} at commit ${file.commit} (${file.contentType}, ${file.size} bytes).`,
+      );
+    }
+  }
+  return textParts.join("\n");
+}
+
+/**
+ * Imports legacy or previously exported messages into a `pi-durable` conversation
+ * with strict assistant toolCall / toolResult pairing so provider transcripts stay valid.
+ */
+export async function importLegacyTranscriptToPi(
+  tx: Tx,
+  conversationId: ConversationId,
+  legacyCompaction: LegacyCompactionRow | null,
+  legacyMessages: readonly StoredMessage[],
+  modelRef: ModelRef,
+): Promise<{ importedEntries: number; maxLegacySeq: number; importedMeta: ImportedEntryMeta[] }> {
+  let importedEntries = 0;
+  let maxLegacySeq = legacyCompaction?.upToSeq ?? 0;
+  const importedMeta: ImportedEntryMeta[] = [];
+
+  const recordMeta = (entryId: EntryId, msg: StoredMessage) => {
+    const meta =
+      msg.content.meta && typeof msg.content.meta === "object"
+        ? (msg.content.meta as Record<string, unknown>)
+        : undefined;
+    if (msg.runId || meta) {
+      importedMeta.push({ entryId: Number(entryId), runId: msg.runId, ...(meta ? { meta } : {}) });
+    }
+  };
+
+  if (legacyCompaction) {
+    const trimmedSummary = legacyCompaction.summary.trim();
+    if (trimmedSummary) {
+      const summaryMsg: UserMessage = {
+        role: "user",
+        content: wrapCompactionSummary(trimmedSummary),
+        timestamp: legacyCompaction.createdAt || Date.now(),
+      };
+      await tx.appendEntry(CompactionEntry, conversationId, {
+        head: "self",
+        model: [summaryMsg],
+        data: { reason: "manual" },
+      });
+      importedEntries++;
+    } else {
+      await tx.appendEntry(ResetEntry, conversationId, {
+        head: "self",
+      });
+      importedEntries++;
+    }
+  }
+
+  for (let i = 0; i < legacyMessages.length; i++) {
+    const msg = legacyMessages[i]!;
+    if (msg.seq > maxLegacySeq) maxLegacySeq = msg.seq;
+
+    if (msg.role === "tool") {
+      continue;
+    }
+
+    if (msg.role === "user" || msg.role === "system") {
+      const userMsg: UserMessage = {
+        role: "user",
+        content: formatUserMessageContent(msg),
+        timestamp: msg.createdAt || Date.now(),
+      };
+      const entryData: JsonObject = {};
+      if (msg.runId) entryData.runId = msg.runId;
+      if (msg.content.files?.length) {
+        entryData.files = JSON.parse(JSON.stringify(msg.content.files)) as JsonValue;
+      }
+      if (msg.content.meta && typeof msg.content.meta === "object") {
+        entryData.meta = JSON.parse(JSON.stringify(msg.content.meta)) as JsonValue;
+      }
+      if (Object.keys(entryData).length > 0) {
+        await tx.appendEntry(CamelRunUserEntry, conversationId, {
+          model: [userMsg],
+          data: entryData,
+        });
+      } else {
+        await tx.appendEntry(UserEntry, conversationId, {
+          model: [userMsg],
+        });
+      }
+      importedEntries++;
+      continue;
+    }
+
+    if (msg.role === "assistant") {
+      const rawCalls = msg.content.toolCalls ?? [];
+      if (rawCalls.length === 0) {
+        const text = sanitizeLoneSurrogates(msg.content.text ?? "");
+        const assistantMsg: AssistantMessage = {
+          role: "assistant",
+          content: [{ type: "text", text }],
+          api: "openai-responses",
+          provider: modelRef.provider,
+          model: modelRef.modelId,
+          usage: ZERO_USAGE,
+          stopReason: "stop",
+          timestamp: msg.createdAt || Date.now(),
+        };
+        const appended = await tx.appendEntry(AssistantEntry, conversationId, {
+          model: [assistantMsg],
+        });
+        recordMeta(appended.id, msg);
+        importedEntries++;
+        continue;
+      }
+
+      const pendingCallIds = new Set(rawCalls.map((c) => c.id));
+      const pairedResults: StoredMessage[] = [];
+      while (legacyMessages[i + 1]?.role === "tool") {
+        const resMsg = legacyMessages[++i]!;
+        if (resMsg.seq > maxLegacySeq) maxLegacySeq = resMsg.seq;
+        const callId = resMsg.content.toolCallId;
+        const runMismatch =
+          msg.runId !== null && resMsg.runId !== null && resMsg.runId !== msg.runId;
+        if (runMismatch || !callId || !pendingCallIds.delete(callId)) {
+          continue;
+        }
+        pairedResults.push(resMsg);
+      }
+
+      const pairedCalls = rawCalls.filter((c) => !pendingCallIds.has(c.id));
+      const contentBlocks: (TextContent | ToolCall)[] = [];
+      if (msg.content.text) {
+        contentBlocks.push({ type: "text", text: sanitizeLoneSurrogates(msg.content.text) });
+      }
+      for (const tc of pairedCalls) {
+        contentBlocks.push({
+          type: "toolCall",
+          id: tc.id,
+          name: tc.name,
+          arguments: safeParseToolArgs(tc),
+        });
+      }
+
+      if (contentBlocks.length > 0) {
+        const assistantMsg: AssistantMessage = {
+          role: "assistant",
+          content: contentBlocks,
+          api: "openai-responses",
+          provider: modelRef.provider,
+          model: modelRef.modelId,
+          usage: ZERO_USAGE,
+          stopReason: pairedCalls.length > 0 ? "toolUse" : "stop",
+          timestamp: msg.createdAt || Date.now(),
+        };
+        const appended = await tx.appendEntry(AssistantEntry, conversationId, {
+          model: [assistantMsg],
+        });
+        recordMeta(appended.id, msg);
+        importedEntries++;
+      }
+
+      for (const resMsg of pairedResults) {
+        const textParts: string[] = [];
+        if (resMsg.content.text) textParts.push(sanitizeLoneSurrogates(resMsg.content.text));
+        if (resMsg.content.toolImages?.length) {
+          for (const img of resMsg.content.toolImages) {
+            textParts.push(
+              `[Tool image ${img.contentType} (${img.width}x${img.height}, digest=${img.digest})]`,
+            );
+          }
+        }
+        const toolResultMsg: ToolResultMessage = {
+          role: "toolResult",
+          toolCallId: resMsg.content.toolCallId!,
+          toolName: resMsg.content.toolName || "tool",
+          content: [{ type: "text", text: textParts.join("\n") }],
+          isError: Boolean(resMsg.content.isError),
+          timestamp: resMsg.createdAt || Date.now(),
+        };
+        const appended = await tx.appendEntry(ToolResultEntry, conversationId, {
+          model: [toolResultMsg],
+          data: { diagnostics: [] },
+        });
+        recordMeta(appended.id, resMsg);
+        importedEntries++;
+      }
+    }
+  }
+
+  return { importedEntries, maxLegacySeq, importedMeta };
+}
 
 export function wrapCompactionSummary(summary: string): string {
   const trimmed = summary.trim();
