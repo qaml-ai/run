@@ -123,6 +123,11 @@ export interface PiAgentHost {
     type: string,
     data: Record<string, unknown>,
   ): AgentEventRecord;
+  broadcastEphemeralEvent(
+    runId: string | null,
+    type: string,
+    data: Record<string, unknown>,
+  ): AgentEventRecord;
   enqueueAppWebhook(tenantId: string, eventType: string, payload: Record<string, unknown>): void;
   scheduleNextAlarm(): Promise<void>;
   materializeRunRecord(runId: string): RunRecord;
@@ -324,12 +329,14 @@ export class PiAgentEngine {
                     keepRecentTokens: Math.min(12_000, Math.floor(effectiveThreshold / 2)),
                     backgroundTokens: Math.min(8_000, Math.floor(effectiveThreshold * 0.2)),
                   },
+                  progress: { persistWithinMs: 10_000 },
                   afterFailedRun: "keep",
                   restartLimit: 25,
                 };
               }
               return {
                 compaction: { enabled: true },
+                progress: { persistWithinMs: 10_000 },
                 afterFailedRun: "keep",
                 restartLimit: 25,
               };
@@ -376,6 +383,22 @@ export class PiAgentEngine {
     return Boolean(
       this.activeTracker && !this.activeTracker.settled && !this.activeTracker.pausedForInput,
     );
+  }
+
+  getActiveRunOverlay(runId: string): {
+    text: string;
+    toolCalls: ToolCallSummary[];
+    filesChanged: string[];
+    usage: RunUsage;
+  } | null {
+    const tracker = this.activeTracker;
+    if (!tracker || tracker.settled || tracker.runId !== runId) return null;
+    return {
+      text: tracker.accumulatedText,
+      toolCalls: [...tracker.toolCalls],
+      filesChanged: [...tracker.filesChanged],
+      usage: { ...tracker.usage },
+    };
   }
 
   async steerActiveRun(prompt: string, steerRunId: string, actor?: string): Promise<void> {
@@ -1476,7 +1499,7 @@ export class PiAgentEngine {
           const delta = fullText.slice(tracker.emittedPartialTextLen);
           tracker.emittedPartialTextLen = fullText.length;
           tracker.accumulatedText += delta;
-          this.host.recordAndBroadcastEvent(tracker.runId, "text_delta", { delta });
+          this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
         }
       }
 
@@ -1498,7 +1521,7 @@ export class PiAgentEngine {
             if (text.length > tracker.emittedPartialTextLen) {
               const delta = text.slice(tracker.emittedPartialTextLen);
               tracker.accumulatedText += delta;
-              this.host.recordAndBroadcastEvent(tracker.runId, "text_delta", { delta });
+              this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
             }
             tracker.emittedPartialTextLen = 0;
             tracker.emittedGenerationAttempt = -1;
@@ -1585,8 +1608,9 @@ export class PiAgentEngine {
           });
         }
       }
-
-      this.persistTrackerProgress(tracker);
+      // Live progress (`text`, `toolCalls`, `usage`) is overlaid in memory by `getActiveRunOverlay()`
+      // and persisted to `runs` only on durable boundaries (usage/files/pause/settlement), avoiding
+      // a 10 Hz SQLite `UPDATE runs` storm on every `pi.live` streaming tick.
     };
 
     watch.start(async (call) => {
@@ -1640,7 +1664,7 @@ export class PiAgentEngine {
           if (finalText.length > tracker.accumulatedText.length) {
             const delta = finalText.slice(tracker.accumulatedText.length);
             tracker.accumulatedText = finalText;
-            this.host.recordAndBroadcastEvent(tracker.runId, "text_delta", { delta });
+            this.host.broadcastEphemeralEvent(tracker.runId, "text_delta", { delta });
           } else {
             tracker.accumulatedText = finalText;
           }

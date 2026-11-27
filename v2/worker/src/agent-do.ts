@@ -77,6 +77,10 @@ export class AgentDO extends DurableObject<Env> {
   private pendingWsCalls = new Map<string, PendingWsCall>();
   private lastDreamedSeq = 0;
   private lastIdleCompactedSeq = 0;
+  private lastEventSeq = 0;
+  private eventSeqLoaded = false;
+  private ephemeralEvents: AgentEventRecord[] = [];
+  private readonly lastRunActivityAt = new Map<string, number>();
   private repoProvisioning?: Promise<{ repoId: string; lineage: string; branch: string }>;
   private piEngine: PiAgentEngine | null = null;
   private periodicRanInAlarm = false;
@@ -95,6 +99,8 @@ export class AgentDO extends DurableObject<Env> {
         invokeWebSocketTool: (name, args, callId) => this.dispatchWebSocketTool(name, args, callId),
         recordAndBroadcastEvent: (runId, type, data) =>
           this.recordAndBroadcastEvent(runId, type, data),
+        broadcastEphemeralEvent: (runId, type, data) =>
+          this.broadcastEphemeralEvent(runId, type, data),
         enqueueAppWebhook: (tenantId, eventType, payload) =>
           this.enqueueAppWebhook(tenantId, eventType, payload),
         scheduleNextAlarm: () => this.scheduleNextAlarm(),
@@ -345,35 +351,20 @@ export class AgentDO extends DurableObject<Env> {
     }
   }
 
-  private recordAndBroadcastEvent(
-    runId: string | null,
-    type: string,
-    data: Record<string, unknown>,
-  ): AgentEventRecord {
-    const now = Date.now();
-    const dataJson = JSON.stringify(data);
-    this.ctx.storage.sql.exec(
-      `INSERT INTO events (run_id, type, data_json, created_at) VALUES (?1, ?2, ?3, ?4)`,
-      runId,
-      type,
-      dataJson,
-      now,
-    );
-    const seqRow = this.ctx.storage.sql
-      .exec<{ seq: number }>(`SELECT last_insert_rowid() AS seq`)
-      .one();
-    const record: AgentEventRecord = {
-      seq: Number(seqRow.seq),
-      runId,
-      type,
-      data,
-      createdAt: now,
-    };
-    if (runId && RUN_LIFECYCLE_EVENTS.has(type)) {
-      const code = (data.error as { code?: unknown } | undefined)?.code ?? data.code;
-      this.logRunLifecycle(runId, type, typeof code === "string" ? code : undefined);
+  private nextEventSeq(): number {
+    if (!this.eventSeqLoaded) {
+      this.ensureSql();
+      const row = this.ctx.storage.sql
+        .exec<{ seq: number }>("SELECT coalesce(max(seq), 0) AS seq FROM events")
+        .one();
+      this.lastEventSeq = Number(row.seq ?? 0);
+      this.eventSeqLoaded = true;
     }
+    this.lastEventSeq += 1;
+    return this.lastEventSeq;
+  }
 
+  private dispatchLiveEvent(record: AgentEventRecord): void {
     const wsPayload = JSON.stringify({
       type: "event",
       seq: record.seq,
@@ -400,6 +391,69 @@ export class AgentDO extends DurableObject<Env> {
         // Listener disconnected
       }
     }
+  }
+
+  private broadcastEphemeralEvent(
+    runId: string | null,
+    type: string,
+    data: Record<string, unknown>,
+  ): AgentEventRecord {
+    const now = Date.now();
+    const seq = this.nextEventSeq();
+    const record: AgentEventRecord = {
+      seq,
+      runId,
+      type,
+      data,
+      createdAt: now,
+    };
+    this.ephemeralEvents.push(record);
+    if (this.ephemeralEvents.length > 512) {
+      this.ephemeralEvents.splice(0, this.ephemeralEvents.length - 512);
+    }
+    if (runId) {
+      this.lastRunActivityAt.set(runId, now);
+      if (this.lastRunActivityAt.size > 64) {
+        const oldest = this.lastRunActivityAt.keys().next().value;
+        if (oldest !== undefined) this.lastRunActivityAt.delete(oldest);
+      }
+    }
+    this.dispatchLiveEvent(record);
+    return record;
+  }
+
+  private recordAndBroadcastEvent(
+    runId: string | null,
+    type: string,
+    data: Record<string, unknown>,
+  ): AgentEventRecord {
+    const now = Date.now();
+    const seq = this.nextEventSeq();
+    const dataJson = JSON.stringify(data);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO events (seq, run_id, type, data_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)`,
+      seq,
+      runId,
+      type,
+      dataJson,
+      now,
+    );
+    const record: AgentEventRecord = {
+      seq,
+      runId,
+      type,
+      data,
+      createdAt: now,
+    };
+    if (runId) {
+      this.lastRunActivityAt.set(runId, now);
+    }
+    if (runId && RUN_LIFECYCLE_EVENTS.has(type)) {
+      const code = (data.error as { code?: unknown } | undefined)?.code ?? data.code;
+      this.logRunLifecycle(runId, type, typeof code === "string" ? code : undefined);
+    }
+
+    this.dispatchLiveEvent(record);
 
     const actor = runId && ["run_started", "run_resumed", "run_completed", "run_failed", "run_cancelled", "input_required"].includes(type)
       ? this.runActor(runId)
@@ -623,6 +677,11 @@ export class AgentDO extends DurableObject<Env> {
       expiresAt: ir.expires_at,
     }));
 
+    const liveOverlay =
+      row.status === "running" || row.status === "input_required"
+        ? this.piEngine?.getActiveRunOverlay(runId) ?? null
+        : null;
+
     return {
       id: row.id,
       agentId: cfg.id,
@@ -631,13 +690,13 @@ export class AgentDO extends DurableObject<Env> {
       startedAt: row.started_at,
       ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
       status: row.status as RunStatus,
-      text: row.text,
+      text: liveOverlay ? liveOverlay.text : row.text,
       output: row.output_json ? JSON.parse(row.output_json) : null,
       batchedInto: row.batched_into,
       inputs,
-      toolCalls: JSON.parse(row.tool_calls_json) as ToolCallSummary[],
-      filesChanged: JSON.parse(row.files_changed_json) as string[],
-      usage: JSON.parse(row.usage_json) as RunUsage,
+      toolCalls: liveOverlay ? liveOverlay.toolCalls : (JSON.parse(row.tool_calls_json) as ToolCallSummary[]),
+      filesChanged: liveOverlay ? liveOverlay.filesChanged : (JSON.parse(row.files_changed_json) as string[]),
+      usage: liveOverlay ? liveOverlay.usage : (JSON.parse(row.usage_json) as RunUsage),
       error: row.error_json ? JSON.parse(row.error_json) : null,
     };
   }
@@ -1131,7 +1190,10 @@ export class AgentDO extends DurableObject<Env> {
           run.id,
         )
         .toArray()[0];
-      const lastProgressAt = lastEvent?.created_at ?? run.started_at;
+      const lastProgressAt = Math.max(
+        lastEvent?.created_at ?? run.started_at,
+        this.lastRunActivityAt.get(run.id) ?? 0,
+      );
       if (now - lastProgressAt < RUN_STALL_AFTER_MS) continue;
       const key = `last_stall_${run.status}`;
       const marker = `${run.id}:${lastProgressAt}`;
@@ -1547,13 +1609,20 @@ export class AgentDO extends DurableObject<Env> {
           }>(`SELECT * FROM events WHERE seq > ?1 ORDER BY seq ASC LIMIT 500`, afterSeq)
           .toArray();
 
-    return rows.map((r) => ({
+    const durable: AgentEventRecord[] = rows.map((r) => ({
       seq: r.seq,
       runId: r.run_id,
       type: r.type,
       data: JSON.parse(r.data_json) as Record<string, unknown>,
       createdAt: r.created_at,
     }));
+
+    const ephemeral = this.ephemeralEvents.filter(
+      (ev) => ev.seq > afterSeq && (!runIdFilter || ev.runId === runIdFilter),
+    );
+    if (ephemeral.length === 0) return durable;
+    const merged = [...durable, ...ephemeral].sort((a, b) => a.seq - b.seq);
+    return merged.slice(0, 500);
   }
 
   // ---- Native Durable Object RPC Methods ----
@@ -1982,7 +2051,9 @@ export class AgentDO extends DurableObject<Env> {
          ORDER BY started_at DESC, rowid DESC LIMIT 64`,
       )
       .toArray();
-    const cursor = sql.exec<{ seq: number }>("SELECT coalesce(max(seq), 0) AS seq FROM events").one().seq;
+    const sqlCursor = sql.exec<{ seq: number }>("SELECT coalesce(max(seq), 0) AS seq FROM events").one().seq;
+    const ephemeralCursor = this.ephemeralEvents.length > 0 ? this.ephemeralEvents[this.ephemeralEvents.length - 1]!.seq : 0;
+    const cursor = Math.max(sqlCursor, ephemeralCursor);
     return {
       cursor,
       activeRunId: this.activeRunId,
@@ -2032,7 +2103,15 @@ export class AgentDO extends DurableObject<Env> {
             .exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events WHERE run_id = ?1", opts.runId)
             .one()
         : this.ctx.storage.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM events").one();
-      return { events: [], nextAfter: row.seq ?? 0 };
+      let ephemeralMax = 0;
+      for (let i = this.ephemeralEvents.length - 1; i >= 0; i--) {
+        const ev = this.ephemeralEvents[i]!;
+        if (!opts.runId || ev.runId === opts.runId) {
+          ephemeralMax = ev.seq;
+          break;
+        }
+      }
+      return { events: [], nextAfter: Math.max(row.seq ?? 0, ephemeralMax) };
     }
     const after = Math.max(0, Number(opts?.after ?? 0));
     const events = this.fetchStoredEvents(after, opts?.runId ?? null);
@@ -2483,6 +2562,10 @@ export class AgentDO extends DurableObject<Env> {
       this.runKeyScopes.clear();
       this.lastDreamedSeq = 0;
       this.lastIdleCompactedSeq = 0;
+      this.lastEventSeq = 0;
+      this.eventSeqLoaded = false;
+      this.ephemeralEvents = [];
+      this.lastRunActivityAt.clear();
       this.sqlReady = false;
       return { deleted: true };
     } finally {
