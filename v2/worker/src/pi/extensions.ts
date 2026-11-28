@@ -78,6 +78,7 @@ import type {
   RpcStub,
 } from "../types.ts";
 import { createCloudflareImageProcessor } from "./camelfs-env.ts";
+import { persistPiImage } from "./image-storage.ts";
 import { calculatePiCostUsd } from "./models.ts";
 
 function getTenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
@@ -115,6 +116,38 @@ function textOutput(value: unknown): ToolExecutionResult {
 
 function toJsonValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value ?? null)) as JsonValue;
+}
+
+export function createCamelRunImageStorageExtension(tenantId: string, bucket?: R2Bucket): Extension {
+  return defineExtension({
+    name: "camelrun-image-storage",
+    hooks: [hook(ToolTask, {
+      async afterTool(call, result) {
+        const content = result.output;
+        if (!content?.some((block) => block.type === "image")) return;
+
+        // Nested tool callers can use the actual image in their program. Pi only
+        // appends model-issued tool results to the conversation transcript.
+        const output: NonNullable<ToolExecutionResult["output"]> = [];
+        let failed = false;
+        for (const block of content) {
+          if (block.type !== "image") {
+            output.push(block);
+            continue;
+          }
+          try {
+            output.push(await persistPiImage(block, tenantId, call.parent ? undefined : bucket));
+          } catch {
+            failed = true;
+            output.push({ type: "text", text: "[Image omitted: could not store tool image]" });
+          }
+        }
+        // Pi catches hook exceptions and keeps the original result. Return a
+        // tool error explicitly so a failed write cannot persist inline bytes.
+        return { ...result, output, ...(failed ? { isError: true } : {}) };
+      },
+    })],
+  });
 }
 
 // ---- 1. Coding Tools Extension (`read`, `write`, `edit`, `bash`) ----
