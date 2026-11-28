@@ -35,4 +35,7 @@ test("agent deletion fences stale queue continuations", async (t) => {
   await t.test("a terminal turn's queue drain settles before deletion clears SQLite", async () => {
     assert.deepEqual(await call("drain"), { deleted: true, deletedEarly: false, storageEmpty: true });
   });
+  await t.test("onRunSettled ignores missing runs and late post-destroy settlements", async () => {
+    assert.deepEqual(await call("settled"), { deleted: true, settledSafely: true, storageEmpty: true });
+  });
 });

@@ -113,9 +113,11 @@ export class AgentDO extends DurableObject<Env> {
         },
         getActiveRunId: () => this.activeRunId,
         onRunSettled: (runId) => {
-          const rec = this.materializeRunRecord(runId);
+          if (this.destroying || !this.sqlReady) return;
           const followerIds = this.followerIdsFor(runId);
           if (followerIds.length > 0) {
+            const rec = this.materializeRunRecordOrNull(runId);
+            if (!rec) return;
             this.finalizeFollowers(rec, followerIds);
             for (const fid of followerIds) this.notifyRunWaiters(fid);
           }
@@ -643,7 +645,7 @@ export class AgentDO extends DurableObject<Env> {
     }
   }
 
-  private readRunRowOrThrow(runId: string) {
+  private readRunRowOrNull(runId: string) {
     const rows = this.ctx.storage.sql
       .exec<{
         id: string;
@@ -665,15 +667,36 @@ export class AgentDO extends DurableObject<Env> {
         ended_at: number | null;
       }>(`SELECT * FROM runs WHERE id = ?1 LIMIT 1`, runId)
       .toArray();
-    if (!rows[0]) {
+    return rows[0] ?? null;
+  }
+
+  private readRunRowOrThrow(runId: string) {
+    const row = this.readRunRowOrNull(runId);
+    if (!row) {
       throw new ApiError(404, "run_not_found", `Run '${runId}' not found`);
     }
-    return rows[0];
+    return row;
+  }
+
+  private materializeRunRecordOrNull(runId: string): RunRecord | null {
+    const row = this.readRunRowOrNull(runId);
+    if (!row) return null;
+    const cfg = this.readConfigOrNull();
+    if (!cfg) return null;
+    return this.materializeRunRecordFromRow(row, cfg);
   }
 
   private materializeRunRecord(runId: string): RunRecord {
     const row = this.readRunRowOrThrow(runId);
     const cfg = this.requireConfig();
+    return this.materializeRunRecordFromRow(row, cfg);
+  }
+
+  private materializeRunRecordFromRow(
+    row: NonNullable<ReturnType<AgentDO["readRunRowOrNull"]>>,
+    cfg: AgentConfig,
+  ): RunRecord {
+    const runId = row.id;
 
     const inputRows = this.ctx.storage.sql
       .exec<{

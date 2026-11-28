@@ -91,6 +91,20 @@ export class TeardownTestAgent extends AgentDO {
     const [{ deleted }] = await Promise.all([deletion, drain]);
     return { deleted, deletedEarly, storageEmpty: !this.runsTableExists() };
   }
+
+  async settleAfterDestroyOrMissingRun() {
+    await this.initAgent({ id: "agent", tenantId: "tenant", key: "agent", model: "fixture/model" });
+    const internals = this as unknown as {
+      ensurePiEngine(): { host: { onRunSettled: (runId: string) => void } };
+    };
+    const host = internals.ensurePiEngine().host;
+    // Missing run row while agent is still live must not throw ApiError('Run ... not found').
+    host.onRunSettled("run_missing_before_destroy");
+    const { deleted } = await this.destroyAgent();
+    // Late settlement callback firing after destroyAgent() must be a safe no-op.
+    host.onRunSettled("run_settled_after_destroy");
+    return { deleted, settledSafely: true, storageEmpty: !this.runsTableExists() };
+  }
 }
 
 export default {
@@ -101,6 +115,7 @@ export default {
       if (mode === "/alarm") return Response.json(await stub.deleteWhileAlarmIsPaused());
       if (mode === "/admission") return Response.json(await stub.deleteWhileAdmissionIsPaused());
       if (mode === "/drain") return Response.json(await stub.deleteWhileDrainIsPaused());
+      if (mode === "/settled") return Response.json(await stub.settleAfterDestroyOrMissingRun());
       return new Response(null, { status: 404 });
     } catch (error) {
       return Response.json({ message: String(error) }, { status: 500 });
