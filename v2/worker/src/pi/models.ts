@@ -8,6 +8,7 @@ import {
   type ApiStreamOptions,
   type AssistantMessage,
   type Context as PiAiContext,
+  type ImageContent,
   type Message as PiAiMessage,
   type Model,
   type MutableModels,
@@ -47,6 +48,7 @@ import {
   type ModelRef,
 } from "@earendil-works/pi-durable";
 import { randomId } from "../crypto.ts";
+import { FILE_LIMITS } from "../lib/limits.ts";
 import { lookupCatalogModel, V2_MODEL_CATALOG, type ModelCostSpec } from "../model-catalog-data.ts";
 import type { TenantDO } from "../tenant-do.ts";
 import {
@@ -60,6 +62,9 @@ import {
   type RpcStub,
   type RunUsage,
 } from "../types.ts";
+import { makeMarker, parseMarker, type ImageReference } from "./image-request-marker.ts";
+import { streamingFetch } from "./image-request-stream.ts";
+import { readStoredPiImage } from "./image-storage.ts";
 
 function tenantStub(env: Env, tenantId: string): RpcStub<TenantDO> {
   return env.TENANT_DO.get(env.TENANT_DO.idFromName(tenantId)) as unknown as RpcStub<TenantDO>;
@@ -608,17 +613,117 @@ interface ResolvedStreamOverride {
   deploymentName?: string;
 }
 
+interface RequestImageStorage {
+  tenantId: string;
+  mediaBucket: Env["MEDIA_BUCKET"];
+}
+
+function prepareRequestImages(
+  model: Model<Api>,
+  context: TranscriptContext,
+  { tenantId, mediaBucket }: RequestImageStorage,
+): { context: TranscriptContext; allowed: Set<string> } {
+  const allowed = new Set<string>();
+  const anthropic = model.api === "anthropic-messages" ||
+    /(?:^|[/.])anthropic(?:[/.]|$)/i.test(`${model.provider}/${model.id}`);
+  const imageLimit = anthropic ? FILE_LIMITS.requestAnthropicImages : FILE_LIMITS.requestImages;
+  let count = 0;
+  let bytes = 0;
+  let messages: PiAiMessage[] | undefined;
+
+  const prepareBlock = (block: ImageContent): ImageContent | TextContent => {
+    if (typeof block.data !== "string") {
+      return { type: "text", text: "[image omitted: invalid image data]" };
+    }
+    if (parseMarker(block.data)) {
+      return { type: "text", text: "[image omitted: reserved request marker]" };
+    }
+    const stored = readStoredPiImage(block, tenantId);
+    if (!mediaBucket) {
+      if (stored) throw new Error("MEDIA_BUCKET is required to read stored images");
+      return block;
+    }
+    // PDFs share Pi's image block but have a separate file budget.
+    if (block.mimeType === "application/pdf") return block;
+    const size = stored ? 4 * Math.ceil(stored.size / 3) : block.data.length;
+    if (count >= imageLimit || bytes + size > FILE_LIMITS.requestImageBase64Bytes) {
+      return { type: "text", text: "[image omitted: request image budget exceeded]" };
+    }
+    count++;
+    bytes += size;
+    if (!stored) return block;
+
+    const reference: ImageReference = { ...stored, nonce: crypto.randomUUID() };
+    allowed.add(JSON.stringify(reference));
+    return { type: "image", mimeType: "image/png", data: makeMarker(reference) };
+  };
+
+  // Favor recent images without changing the durable transcript.
+  for (let index = context.messages.length - 1; index >= 0; index--) {
+    const message = context.messages[index]!;
+    if ((message.role !== "user" && message.role !== "toolResult") || !Array.isArray(message.content)) continue;
+    let content: (ImageContent | TextContent)[] | undefined;
+    for (let part = message.content.length - 1; part >= 0; part--) {
+      const block = message.content[part]!;
+      if (block.type !== "image") continue;
+      const prepared = prepareBlock(block);
+      if (prepared !== block) {
+        content ??= message.content.slice();
+        content[part] = prepared;
+      }
+    }
+    if (content) {
+      messages ??= context.messages.slice();
+      messages[index] = { ...message, content };
+    }
+  }
+  return { context: messages ? { ...context, messages } : context, allowed };
+}
+
+function imageRequestFetch(transport: typeof fetch, codex: boolean): typeof fetch {
+  return async (input, init) => {
+    if (typeof init?.body === "string") return transport(input, init);
+    const request = input instanceof Request ? input : undefined;
+    if (init?.body == null && !request?.body) return transport(input, init);
+
+    const headers = new Headers(init?.headers ?? request?.headers);
+    if (!codex || headers.get("content-encoding") !== "zstd" || !(init?.body instanceof Uint8Array)) {
+      throw new Error("Unsupported provider image request body");
+    }
+
+    // Pi can zstd-compress SSE bodies in Node-compatible runtimes. Decode the
+    // placeholder JSON before expanding it into a known-length upload.
+    init.signal?.throwIfAborted();
+    const zlib = typeof process === "undefined" ? undefined : process.getBuiltinModule?.("node:zlib");
+    if (!zlib?.zstdDecompressSync) {
+      throw new Error("Unable to read the Codex image request body");
+    }
+    const body = zlib.zstdDecompressSync(init.body).toString("utf8");
+    headers.delete("content-encoding");
+    headers.delete("content-length");
+    return transport(input, { ...init, body, headers });
+  };
+}
+
 function wrapStreamsWithOverrides(
   streams: ProviderStreams,
   resolvePerModel: (
     model: Model<Api>,
   ) => ResolvedStreamOverride | Promise<ResolvedStreamOverride>,
+  imageStorage: RequestImageStorage,
 ): ProviderStreams {
   const adapt = async (
     model: Model<Api>,
+    context: TranscriptContext,
     options?: ApiStreamOptions<Api> | SimpleStreamOptions,
-  ): Promise<{ model: Model<Api>; options: ApiStreamOptions<Api> | SimpleStreamOptions }> => {
+  ): Promise<{
+    model: Model<Api>;
+    context: TranscriptContext;
+    options: ApiStreamOptions<Api> | SimpleStreamOptions;
+  }> => {
+    options?.signal?.throwIfAborted();
     const resolved = await resolvePerModel(model);
+    options?.signal?.throwIfAborted();
     const nextModel: Model<Api> = resolved.baseUrl
       ? { ...model, baseUrl: resolved.baseUrl }
       : model;
@@ -644,21 +749,33 @@ function wrapStreamsWithOverrides(
         Object.keys(mergedHeaders).some((k) => k.toLowerCase() === "authorization"),
     );
     const stripDummyAuth = !resolved.apiKey && Boolean(mergedHeaders) && !hasExplicitAuthHeader;
-    const customFetch: typeof fetch | undefined = stripDummyAuth
+    const baseFetch: typeof fetch = options?.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    let customFetch: typeof fetch | undefined = stripDummyAuth
       ? (input, init) => {
-          const headers = new Headers(init?.headers);
+          const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
           headers.delete("authorization");
-          return globalThis.fetch(input, { ...init, headers });
+          return baseFetch(input, { ...init, headers });
         }
-      : undefined;
+      : options?.fetch;
+    const prepared = prepareRequestImages(nextModel, context, imageStorage);
+    const useCodexSse = prepared.allowed.size > 0 && nextModel.api === "openai-codex-responses";
+    if (imageStorage.mediaBucket && prepared.allowed.size > 0) {
+      const transport = streamingFetch(customFetch ?? baseFetch, imageStorage.mediaBucket, {
+        allowReference: (reference) => prepared.allowed.has(JSON.stringify(reference)),
+      });
+      // Codex's WebSocket transport bypasses custom fetch.
+      customFetch = imageRequestFetch(transport, useCodexSse);
+    }
 
     return {
       model: nextModel,
+      context: prepared.context,
       options: {
         ...(options ?? {}),
         ...(resolved.apiKey ? { apiKey: resolved.apiKey } : {}),
         ...(mergedHeaders ? { headers: mergedHeaders } : {}),
         ...(customFetch ? { fetch: customFetch } : {}),
+        ...(useCodexSse ? { transport: "sse" } : {}),
         ...(resolved.baseUrl && nextModel.api === "azure-openai-responses"
           ? { azureBaseUrl: resolved.baseUrl }
           : {}),
@@ -670,14 +787,14 @@ function wrapStreamsWithOverrides(
   return {
     stream: (model, context, options) =>
       lazyStream(model, async () => {
-        const adapted = await adapt(model, options);
-        return streams.stream(adapted.model, context, adapted.options as ApiStreamOptions<Api>);
-      }),
+        const adapted = await adapt(model, context, options);
+        return streams.stream(adapted.model, adapted.context, adapted.options as ApiStreamOptions<Api>);
+      }, undefined, options?.signal),
     streamSimple: (model, context, options) =>
       lazyStream(model, async () => {
-        const adapted = await adapt(model, options);
-        return streams.streamSimple(adapted.model, context, adapted.options as SimpleStreamOptions);
-      }),
+        const adapted = await adapt(model, context, options);
+        return streams.streamSimple(adapted.model, adapted.context, adapted.options as SimpleStreamOptions);
+      }, undefined, options?.signal),
   };
 }
 
@@ -1152,6 +1269,7 @@ export interface BuildPiModelsOptions {
 
 export async function buildPiModels(options: BuildPiModelsOptions): Promise<MutableModels> {
   const { env, tenantId } = options;
+  const imageStorage = { tenantId, mediaBucket: env.MEDIA_BUCKET };
   const normScope = options.keyScope?.trim() || null;
   const prefetched = options.prefetchedCredentials ?? {};
   const requestedRef = options.rawModel ? parsePiModelRef(options.rawModel, env) : null;
@@ -1294,11 +1412,13 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
           "azure-openai-responses": wrapStreamsWithOverrides(
             azureOpenAIResponsesApi(),
             resolvePerAzureModel,
+            imageStorage,
           ),
-          "openai-responses": wrapStreamsWithOverrides(openAIResponsesApi(), resolvePerAzureModel),
+          "openai-responses": wrapStreamsWithOverrides(openAIResponsesApi(), resolvePerAzureModel, imageStorage),
           "openai-completions": wrapStreamsWithOverrides(
             openAICompletionsApi(),
             resolvePerAzureModel,
+            imageStorage,
           ),
         },
       }),
@@ -1345,8 +1465,8 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
         }),
         models: list,
         api: {
-          "openai-responses": wrapStreamsWithOverrides(openAIResponsesApi(), resolveOverride),
-          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride),
+          "openai-responses": wrapStreamsWithOverrides(openAIResponsesApi(), resolveOverride, imageStorage),
+          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride, imageStorage),
         },
       }),
     );
@@ -1392,8 +1512,8 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
         }),
         models: list,
         api: {
-          "anthropic-messages": wrapStreamsWithOverrides(anthropicMessagesApi(), resolveOverride),
-          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride),
+          "anthropic-messages": wrapStreamsWithOverrides(anthropicMessagesApi(), resolveOverride, imageStorage),
+          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride, imageStorage),
         },
       }),
     );
@@ -1446,8 +1566,8 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
         }),
         models: list,
         api: {
-          "google-generative-ai": wrapStreamsWithOverrides(googleGenerativeAIApi(), resolveOverride),
-          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride),
+          "google-generative-ai": wrapStreamsWithOverrides(googleGenerativeAIApi(), resolveOverride, imageStorage),
+          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride, imageStorage),
         },
       }),
     );
@@ -1491,8 +1611,8 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
         }),
         models: list,
         api: {
-          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride),
-          "anthropic-messages": wrapStreamsWithOverrides(anthropicMessagesApi(), resolveOverride),
+          "openai-completions": wrapStreamsWithOverrides(openAICompletionsApi(), resolveOverride, imageStorage),
+          "anthropic-messages": wrapStreamsWithOverrides(anthropicMessagesApi(), resolveOverride, imageStorage),
         },
       }),
     );
@@ -1527,7 +1647,7 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
             baseUrl: (byok?.baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, ""),
             headers: byok?.headers,
           };
-        }),
+        }, imageStorage),
       }),
     );
   }
@@ -1574,7 +1694,7 @@ export async function buildPiModels(options: BuildPiModelsOptions): Promise<Muta
             byok?.modelAliases && Object.hasOwn(byok.modelAliases, model.id)
               ? byok.modelAliases[model.id]
               : undefined,
-        })),
+        }), imageStorage),
       }),
     );
   }

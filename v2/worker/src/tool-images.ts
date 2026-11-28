@@ -18,6 +18,6 @@ function isImageBlock(value: unknown): value is ImageBlock {
   return !!value && typeof value === "object" && "type" in value && value.type === "image";
 }
 
-export function toolImageKey(tenantId: string, ref: ToolImageRef): string {
+export function toolImageKey(tenantId: string, ref: Pick<ToolImageRef, "digest">): string {
   return `${tenantId}/tool-images/${ref.digest}`;
 }

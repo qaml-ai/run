@@ -41,7 +41,6 @@ import { randomId } from "../crypto.ts";
 import { imageHeader } from "../lib/image-header.ts";
 import { consumeInfraCredit } from "../ops-metadata.ts";
 import { isImageAttachment, verifyRunFiles } from "../run-files.ts";
-import { toolImageKey } from "../tool-images.ts";
 import { getSkillStore, type SkillRecord } from "../skills.ts";
 import { getTenantStub, platformCreditReserve } from "../tenant-do.ts";
 import {
@@ -68,6 +67,7 @@ import {
   createCamelRunCodingExtension,
   createCamelRunDelegateExtension,
   createCamelRunHumanExtension,
+  createCamelRunImageStorageExtension,
   createCamelRunMcpExtension,
   createCamelRunRepoExtension,
   createCamelRunSkillsExtension,
@@ -76,6 +76,7 @@ import {
   type HumanInputRequiredEvent,
 } from "./extensions.ts";
 import { ensurePiHistoryIndexes, readPiHistoryPage } from "./history.ts";
+import { persistPiImage, storedPiImage } from "./image-storage.ts";
 import {
   CamelRunUserEntry,
   copyPiEntriesToConversation,
@@ -1093,6 +1094,9 @@ export class PiAgentEngine {
     if (!snap.extension("camelrun-mcp")) {
       this.registry.install(defineExtension({ name: "camelrun-mcp", tools: [] }));
     }
+    if (!snap.extension("camelrun-image-storage")) {
+      this.registry.install(createCamelRunImageStorageExtension(cfg.tenantId, this.host.env.MEDIA_BUCKET));
+    }
   }
 
   private async ensureMcpExtensionReady(cfg: AgentConfig): Promise<void> {
@@ -1531,25 +1535,18 @@ export class PiAgentEngine {
 
     for (const f of verified) {
       if (!isImageAttachment(f)) continue;
-      if (f.resized && this.host.env.MEDIA_BUCKET) {
-        const obj = await this.host.env.MEDIA_BUCKET.get(toolImageKey(cfg.tenantId, f.resized));
-        if (obj) {
-          const buf = Buffer.from(await obj.arrayBuffer());
-          blocks.push({
-            type: "image",
-            mimeType: f.resized.contentType,
-            data: buf.toString("base64"),
-          });
-          continue;
-        }
+      const bucket = this.host.env.MEDIA_BUCKET;
+      if (f.resized && bucket) {
+        blocks.push(storedPiImage(cfg.tenantId, f.resized));
+        continue;
       }
       const read = await cfs.read(f.lineage, { at: f.commit, path: f.path, limit: f.size + 1 });
       if (read.base64) {
-        blocks.push({
-          type: "image",
-          mimeType: f.contentType,
-          data: read.base64,
-        });
+        blocks.push(await persistPiImage(
+          { type: "image", mimeType: f.contentType, data: read.base64 },
+          cfg.tenantId,
+          bucket,
+        ));
       }
     }
 
